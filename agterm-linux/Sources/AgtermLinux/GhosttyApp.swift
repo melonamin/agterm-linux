@@ -191,8 +191,10 @@ final class GhosttyApp: @unchecked Sendable {
                 }
                 return true
             case GHOSTTY_ACTION_MOUSE_OVER_LINK:
-                // a non-null url means the pointer is over a hyperlink → show the hand cursor.
-                Self.wrapper(fromTarget: target)?.setLinkHover(action.action.mouse_over_link.url != nil)
+                // a non-empty url means the pointer is over a hyperlink → show the hand cursor.
+                // libghostty signals hover-clear with an EMPTY url (len == 0); the pointer is never NULL.
+                let action_ = action.action.mouse_over_link
+                Self.wrapper(fromTarget: target)?.setLinkHover(LinkHoverDecision.isActive(url: action_.url, len: action_.len))
                 return true
             case GHOSTTY_ACTION_MOUSE_SHAPE:
                 Self.wrapper(fromTarget: target)?.setMouseShape(action.action.mouse_shape)
