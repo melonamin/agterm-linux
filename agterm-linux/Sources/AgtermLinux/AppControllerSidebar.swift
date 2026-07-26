@@ -216,7 +216,10 @@ extension AppController {
             "<span background=\"#cc3333\" foreground=\"white\"> \(text) </span>".withCString { gtk_label_set_markup(badge, $0) }
             gtk_box_append(cast(box), W(badge))
         }
-        gtk_widget_set_margin_end(W(box), 6)
+        // No trailing margin on the box: the selection highlight is painted by the box itself
+        // (the row stays transparent), so a margin would indent the highlight instead of the
+        // content. The trailing inset lives inside the box as CSS `padding-right` (installAppCSS),
+        // mirroring the leading icon's margin_start on the left.
         gtk_list_box_row_set_child(GLBR(row), W(box))
         let selectClick = gtk_gesture_click_new()
         gtk_gesture_single_set_button(selectClick, 1)

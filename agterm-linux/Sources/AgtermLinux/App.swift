@@ -142,6 +142,8 @@ private let onShutdown: @MainActor @convention(c) (OpaquePointer?, gpointer?) ->
     .agterm-dashboard-caption { background-color: alpha(@window_bg_color, 0.9); color: @window_fg_color; padding: 4px 8px; border-radius: 8px; }
     .agterm-sidebar #workspace-row .workspace-add-session { opacity: 0; }
     .agterm-sidebar #workspace-row:hover .workspace-add-session { opacity: 1; }
+    /* trailing inset inside the selection highlight (the row's content box paints it, so a box margin would indent the highlight itself) */
+    .agterm-session-row-content { padding-right: 6px; }
     """
     css.withCString { gtk_css_provider_load_from_string(provider, $0) }
     // GTK_STYLE_PROVIDER_PRIORITY_APPLICATION = 600; the macro cast isn't available in Swift, the
