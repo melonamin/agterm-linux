@@ -459,47 +459,11 @@ final class GhosttySurface: TerminalSurface {
         applyMouseCursor()
     }
 
-    /// Set the pointer shape over this surface (GHOSTTY_ACTION_MOUSE_SHAPE). ghostty's shapes are named
-    /// after CSS cursors, which GTK accepts directly; preserve the complete libghostty set.
+    /// Set the pointer shape over this surface (GHOSTTY_ACTION_MOUSE_SHAPE). The enum→CSS-name
+    /// mapping lives in `MouseShapeCursorName` (host-free, unit-tested, covers the complete
+    /// libghostty set including GHOSTTY_MOUSE_SHAPE_DEFAULT → the arrow).
     func setMouseShape(_ shape: ghostty_action_mouse_shape_e) {
-        let name: String
-        switch shape {
-        case GHOSTTY_MOUSE_SHAPE_ALIAS: name = "alias"
-        case GHOSTTY_MOUSE_SHAPE_ALL_SCROLL: name = "all-scroll"
-        case GHOSTTY_MOUSE_SHAPE_CELL: name = "cell"
-        case GHOSTTY_MOUSE_SHAPE_COL_RESIZE: name = "col-resize"
-        case GHOSTTY_MOUSE_SHAPE_CONTEXT_MENU: name = "context-menu"
-        case GHOSTTY_MOUSE_SHAPE_COPY: name = "copy"
-        case GHOSTTY_MOUSE_SHAPE_CROSSHAIR: name = "crosshair"
-        case GHOSTTY_MOUSE_SHAPE_E_RESIZE: name = "e-resize"
-        case GHOSTTY_MOUSE_SHAPE_EW_RESIZE: name = "ew-resize"
-        case GHOSTTY_MOUSE_SHAPE_HELP: name = "help"
-        case GHOSTTY_MOUSE_SHAPE_MOVE: name = "move"
-        case GHOSTTY_MOUSE_SHAPE_N_RESIZE: name = "n-resize"
-        case GHOSTTY_MOUSE_SHAPE_NE_RESIZE: name = "ne-resize"
-        case GHOSTTY_MOUSE_SHAPE_NESW_RESIZE: name = "nesw-resize"
-        case GHOSTTY_MOUSE_SHAPE_NO_DROP: name = "no-drop"
-        case GHOSTTY_MOUSE_SHAPE_NOT_ALLOWED: name = "not-allowed"
-        case GHOSTTY_MOUSE_SHAPE_NS_RESIZE: name = "ns-resize"
-        case GHOSTTY_MOUSE_SHAPE_NW_RESIZE: name = "nw-resize"
-        case GHOSTTY_MOUSE_SHAPE_NWSE_RESIZE: name = "nwse-resize"
-        case GHOSTTY_MOUSE_SHAPE_POINTER: name = "pointer"
-        case GHOSTTY_MOUSE_SHAPE_PROGRESS: name = "progress"
-        case GHOSTTY_MOUSE_SHAPE_GRAB: name = "grab"
-        case GHOSTTY_MOUSE_SHAPE_GRABBING: name = "grabbing"
-        case GHOSTTY_MOUSE_SHAPE_ROW_RESIZE: name = "row-resize"
-        case GHOSTTY_MOUSE_SHAPE_S_RESIZE: name = "s-resize"
-        case GHOSTTY_MOUSE_SHAPE_SE_RESIZE: name = "se-resize"
-        case GHOSTTY_MOUSE_SHAPE_SW_RESIZE: name = "sw-resize"
-        case GHOSTTY_MOUSE_SHAPE_TEXT: name = "text"
-        case GHOSTTY_MOUSE_SHAPE_VERTICAL_TEXT: name = "vertical-text"
-        case GHOSTTY_MOUSE_SHAPE_W_RESIZE: name = "w-resize"
-        case GHOSTTY_MOUSE_SHAPE_WAIT: name = "wait"
-        case GHOSTTY_MOUSE_SHAPE_ZOOM_IN: name = "zoom-in"
-        case GHOSTTY_MOUSE_SHAPE_ZOOM_OUT: name = "zoom-out"
-        default: name = "text"
-        }
-        mouseShapeName = name
+        mouseShapeName = MouseShapeCursorName.cssName(for: shape)
         applyMouseCursor()
     }
 
