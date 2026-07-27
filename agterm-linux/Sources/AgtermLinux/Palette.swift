@@ -6,12 +6,14 @@ import agtermCore
 
 @MainActor
 extension AppController {
-    private func paletteActionList() -> [(String, () -> Void)] {
-        // The fixed commands + their titles come from the shared PaletteCommand catalog; this maps each
-        // to its Linux closure. The switch is EXHAUSTIVE, so adding a catalog case fails to compile until
-        // it's wired here — the compiler is the keep-in-sync check.
-        // Each fixed command shows its current keybind (kitty syntax) as a suffix when one resolves — the
-        // palette-row "shortcut" widening. Searching matches the suffix too, so you can find by chord.
+    private func paletteActionList() -> [LinuxPaletteItem] {
+        // The fixed commands, their titles and their rebindable built-ins all come from the shared
+        // PaletteCommand catalog; this file adds ONLY the Linux closure. That switch is EXHAUSTIVE, so
+        // adding a catalog case fails to compile until it's wired here — the compiler is the keep-in-sync
+        // check.
+        // Each fixed command carries its current keybind (kitty syntax) in the row's SHORTCUT field, which
+        // filterPalette renders as a separate right-aligned dim label. Searching still matches the chord
+        // (LinuxPaletteRow.searchKeys keeps a composite key), so you can find by chord.
         // Omit fixed commands that would be no-ops in the current UI state (shared visibility predicates).
         let activeSession = store.selectedSessionID.flatMap { store.session(withID: $0) }
         let paletteContext = PaletteContext(canRemoveWorkspace: store.canRemoveWorkspace,
@@ -23,110 +25,105 @@ extension AppController {
                                             activeSessionHasSplit: activeSession?.hasSplit ?? false,
                                             hasPendingClose: store.pendingCloseSummary != nil,
                                             hasRecentClosed: !library.recentClosedItems.isEmpty)
-        var items: [(String, () -> Void)] = PaletteCommand.allCases.filter { $0.isVisible(in: paletteContext) }.map { cmd in
-            let entry = entry(for: cmd)
-            let chord = entry.builtin.flatMap { a in resolvedBuiltinChords.first(where: { $0.value == a })?.key }
-            let suffix = chord.map { "   \($0.displayString)" } ?? ""
-            return (cmd.title + suffix, entry.run)
+        var items: [LinuxPaletteItem] = PaletteCommand.allCases.filter { $0.isVisible(in: paletteContext) }.map { cmd in
+            let row = LinuxPaletteRow.action(cmd, in: paletteContext, chord: cmd.builtinAction.flatMap(resolvedChord(for:)))
+            return (row: row, run: run(for: cmd))
         }
-        // Open Directory… (Linux exposes it via the palette; macOS has it in the File menu).
-        items.append(("Open Directory…", { self.openDirectory() }))
         // Preferences… (the Linux Settings surface; macOS uses the Settings scene / Cmd+,).
-        items.append(("Preferences…", { self.showSettings() }))
-        items.append(("Manage Integrations…", { self.showSettings(page: .integrations) }))
-        items.append(("Keyboard Shortcuts", { self.showKeyboardShortcuts() }))
-        items.append(("About agterm", { self.showAbout() }))
+        // These Linux-only rows have no BuiltinAction, so no chord resolves and they render title-only.
+        items.append((row: LinuxPaletteRow(title: "Preferences…"), run: { self.showSettings() }))
+        items.append((row: LinuxPaletteRow(title: "Manage Integrations…"), run: { self.showSettings(page: .integrations) }))
+        items.append((row: LinuxPaletteRow(title: "Keyboard Shortcuts"), run: { self.showKeyboardShortcuts() }))
+        items.append((row: LinuxPaletteRow(title: "About agterm"), run: { self.showAbout() }))
         // Linux has no global macOS-style Edit menu; expose the same terminal actions in the command palette.
-        items.append(("Copy Selection", { self.activeSurface()?.performBindingAction("copy_to_clipboard") }))
-        items.append(("Paste", { self.activeSurface()?.performBindingAction("paste_from_clipboard") }))
-        items.append(("Select All", { self.activeSurface()?.performBindingAction("select_all") }))
+        items.append((row: LinuxPaletteRow(title: "Copy Selection"), run: { self.activeSurface()?.performBindingAction("copy_to_clipboard") }))
+        items.append((row: LinuxPaletteRow(title: "Paste"), run: { self.activeSurface()?.performBindingAction("paste_from_clipboard") }))
+        items.append((row: LinuxPaletteRow(title: "Select All"), run: { self.activeSurface()?.performBindingAction("select_all") }))
         // Dynamic: switch to (open/raise) any other window — the Linux window-menu equivalent. New Window
         // is a fixed command above; rename/delete live on the window itself.
         for w in gLibrary.windows where w.id != windowID {
             let target = w.id
-            items.append(("Switch to Window: \(w.name)", { openWindow(target) }))
-            items.append(("Rename Window: \(w.name)", { self.renameWindowDialog(target) }))
+            items.append((row: LinuxPaletteRow(title: "Switch to Window: \(w.name)"), run: { openWindow(target) }))
+            items.append((row: LinuxPaletteRow(title: "Rename Window: \(w.name)"), run: { self.renameWindowDialog(target) }))
             if gLibrary.canRemoveWindow {
-                items.append(("Delete Window: \(w.name)", { self.confirmDeleteWindow(target) }))
+                items.append((row: LinuxPaletteRow(title: "Delete Window: \(w.name)"), run: { self.confirmDeleteWindow(target) }))
             }
         }
         // Dynamic: move the active session to any OTHER workspace.
         if let sid = store.selectedSessionID, let current = store.workspace(forSession: sid) {
             for ws in store.workspaces where ws.id != current.id {
                 let target = ws.id
-                items.append(("Move Session to \(ws.name)", { self.moveActiveSession(to: target) }))
+                items.append((row: LinuxPaletteRow(title: "Move Session to \(ws.name)"), run: { self.moveActiveSession(to: target) }))
             }
         }
         // Dynamic: custom shell commands from keymap.conf (run via the palette; built-in chord dispatch
-        // is a separate item).
+        // is a separate item). They carry a real `custom` BADGE plus their own bound chord, matching
+        // macOS — the title itself is the bare command name, never "<name>  (custom)".
         for cmd in loadKeymapCommands().commands {
-            let command = cmd
-            items.append((cmd.name + "  (custom)", { self.runCustomCommand(command) }))
+            items.append((row: LinuxPaletteRow.custom(cmd), run: { self.runCustomCommand(cmd) }))
         }
-        // Dynamic: focus a single workspace, or clear an active focus.
-        if store.focusedWorkspaceID != nil {
-            items.append(("Clear Workspace Focus", { self.focusWorkspace(nil) }))
-        } else if store.workspaces.count > 1 {
+        // Dynamic: focus a single workspace. Clearing an active focus is the shared catalog's
+        // `Clear Focus` row (visible exactly when a workspace is focused) — do NOT add a second
+        // Linux-only row for it, the way the duplicate `Open Directory…` append used to.
+        if store.focusedWorkspaceID == nil, store.workspaces.count > 1 {
             for ws in store.workspaces {
                 let target = ws.id
-                items.append(("Focus Workspace \(ws.name)", { self.focusWorkspace(target) }))
+                items.append((row: LinuxPaletteRow(title: "Focus Workspace \(ws.name)"), run: { self.focusWorkspace(target) }))
             }
         }
         return items
     }
 
-    /// The built-in action a palette command maps to (for showing its keybind; nil = palette-only, no
-    /// rebindable built-in) PAIRED with its Linux closure. ONE exhaustive switch: adding a catalog case
-    /// fails to compile until it's wired here, so the compiler keeps the palette in sync with the shared
-    /// catalog — and the two halves can't drift from each other.
-    private func entry(for cmd: PaletteCommand) -> (builtin: BuiltinAction?, run: () -> Void) {
+    /// The Linux closure a palette command runs — the ONLY half this file owns. EXHAUSTIVE: adding a
+    /// catalog case fails to compile until it's wired here, so the compiler keeps the palette in sync
+    /// with the shared catalog. The command's rebindable built-in (what the shortcut column resolves a
+    /// chord from) is deliberately NOT restated here — `PaletteCommand.builtinAction` already owns that
+    /// mapping in agtermCore, and a second copy could silently drift from it.
+    private func run(for cmd: PaletteCommand) -> () -> Void {
         switch cmd {
-        case .newSession: return (.newSession, { self.newSession() })
-        case .newWorkspace: return (.newWorkspace, { self.newWorkspace() })
-        case .openDirectory: return (.openDirectory, { self.openDirectory() })
-        case .renameSession: return (.renameSession, { self.startRenameActive() })
-        case .duplicateSession: return (.duplicateSession, {
-            if let id = self.store.selectedSessionID { _ = self.duplicateSession(id) }
-        })
-        case .renameWorkspace: return (.renameWorkspace, { if let id = self.store.currentWorkspaceID { self.beginRename(id: id, isWorkspace: true) } })
-        case .closeSession: return (.closeSession, { if let id = self.store.selectedSessionID { self.requestCloseSession(id) } })
-        case .reopenRecent: return (.reopenRecent, { self.reopenRecentClosed() })
-        case .undoClose: return (.undoClose, { self.undoPendingClose() })
-        case .clearStatus: return (.clearStatus, { self.clearActiveStatus() })
-        case .previousSession: return (.previousSession, { self.navigate(.previous) })
-        case .nextSession: return (.nextSession, { self.navigate(.next) })
-        case .previousAttentionSession: return (.previousAttentionSession, { self.navigate(.previousAttention) })
-        case .nextAttentionSession: return (.nextAttentionSession, { self.navigate(.nextAttention) })
-        case .firstSession: return (.firstSession, { self.navigate(.first) })
-        case .lastSession: return (.lastSession, { self.navigate(.last) })
-        case .showAttention: return (.showAttention, { self.showAttentionPalette() })
-        case .toggleSplit: return (.toggleSplit, { self.toggleSplit() })
-        case .toggleScratch: return (.toggleScratch, { self.toggleScratch() })
-        case .toggleTerminalZoom: return (.toggleTerminalZoom, { self.toggleTerminalZoom() })
-        case .dashboard: return (.dashboard, { self.toggleDashboard() })
-        case .toggleSidebar: return (.toggleSidebar, { self.toggleSidebar() })
-        case .toggleFlag: return (.toggleFlag, { self.toggleFlagActive() })
-        case .focusWorkspace: return (.focusWorkspace, { self.focusActiveWorkspace() })
-        case .find: return (.toggleSearch, { self.toggleSearch() })
-        case .quickTerminal: return (.quickTerminal, { self.toggleQuick() })
-        case .toggleFullscreen: return (.toggleFullscreen, { self.toggleWindowFullscreen() })
-        case .increaseFontSize: return (.increaseFontSize, { self.activeSurface()?.performBindingAction(FontBindingAction.increase) })
-        case .decreaseFontSize: return (.decreaseFontSize, { self.activeSurface()?.performBindingAction(FontBindingAction.decrease) })
-        case .resetFontSize: return (.resetFontSize, { self.activeSurface()?.performBindingAction(FontBindingAction.reset) })
-        case .selectTheme: return (.selectTheme, { self.showThemePicker() })
-        case .deleteWorkspace: return (.deleteWorkspace, { if let id = self.store.currentWorkspaceID { self.store.removeWorkspace(id); self.reconcile() } })
-        case .toggleFlaggedView: return (.toggleFlaggedView, { self.toggleFlaggedView() })
-        case .focusLeftPane: return (.focusLeftPane, { self.focusPane(left: true) })
-        case .focusRightPane: return (.focusRightPane, { self.focusPane(left: false) })
-        // palette-only (no rebindable built-in)
-        case .expandWorkspaces: return (nil, { self.expandWorkspaces() })
-        case .collapseWorkspaces: return (nil, { self.collapseOtherWorkspaces() })
-        case .editKeymap: return (nil, { self.editKeymap() })
-        case .reloadKeymap: return (nil, { _ = self.reloadKeymapDiagnostics() })
-        case .editGhosttyConfig: return (nil, { self.editGhosttyConfig() })
-        case .reloadConfig: return (nil, { self.reloadConfig() })
-        case .clearFlagged: return (nil, { self.clearFlagged() })
-        case .clearFocus: return (nil, { self.focusWorkspace(nil) })
+        case .newSession: return { self.newSession() }
+        case .newWorkspace: return { self.newWorkspace() }
+        case .openDirectory: return { self.openDirectory() }
+        case .renameSession: return { self.startRenameActive() }
+        case .duplicateSession: return { if let id = self.store.selectedSessionID { _ = self.duplicateSession(id) } }
+        case .renameWorkspace: return { if let id = self.store.currentWorkspaceID { self.beginRename(id: id, isWorkspace: true) } }
+        case .closeSession: return { if let id = self.store.selectedSessionID { self.requestCloseSession(id) } }
+        case .reopenRecent: return { self.reopenRecentClosed() }
+        case .undoClose: return { self.undoPendingClose() }
+        case .clearStatus: return { self.clearActiveStatus() }
+        case .previousSession: return { self.navigate(.previous) }
+        case .nextSession: return { self.navigate(.next) }
+        case .previousAttentionSession: return { self.navigate(.previousAttention) }
+        case .nextAttentionSession: return { self.navigate(.nextAttention) }
+        case .firstSession: return { self.navigate(.first) }
+        case .lastSession: return { self.navigate(.last) }
+        case .showAttention: return { self.showAttentionPalette() }
+        case .toggleSplit: return { self.toggleSplit() }
+        case .toggleScratch: return { self.toggleScratch() }
+        case .toggleTerminalZoom: return { self.toggleTerminalZoom() }
+        case .dashboard: return { self.toggleDashboard() }
+        case .toggleSidebar: return { self.toggleSidebar() }
+        case .toggleFlag: return { self.toggleFlagActive() }
+        case .focusWorkspace: return { self.focusActiveWorkspace() }
+        case .find: return { self.toggleSearch() }
+        case .quickTerminal: return { self.toggleQuick() }
+        case .toggleFullscreen: return { self.toggleWindowFullscreen() }
+        case .increaseFontSize: return { self.activeSurface()?.performBindingAction(FontBindingAction.increase) }
+        case .decreaseFontSize: return { self.activeSurface()?.performBindingAction(FontBindingAction.decrease) }
+        case .resetFontSize: return { self.activeSurface()?.performBindingAction(FontBindingAction.reset) }
+        case .selectTheme: return { self.showThemePicker() }
+        case .deleteWorkspace: return { if let id = self.store.currentWorkspaceID { self.store.removeWorkspace(id); self.reconcile() } }
+        case .toggleFlaggedView: return { self.toggleFlaggedView() }
+        case .focusLeftPane: return { self.focusPane(left: true) }
+        case .focusRightPane: return { self.focusPane(left: false) }
+        case .expandWorkspaces: return { self.expandWorkspaces() }
+        case .collapseWorkspaces: return { self.collapseOtherWorkspaces() }
+        case .editKeymap: return { self.editKeymap() }
+        case .reloadKeymap: return { _ = self.reloadKeymapDiagnostics() }
+        case .editGhosttyConfig: return { self.editGhosttyConfig() }
+        case .reloadConfig: return { self.reloadConfig() }
+        case .clearFlagged: return { self.clearFlagged() }
+        case .clearFocus: return { self.focusWorkspace(nil) }
         }
     }
 
@@ -136,19 +133,14 @@ extension AppController {
     /// Jump to a session that needs attention, matching the shared `show_attention` built-in action.
     func showAttentionPalette() { showPalette(attention: true) }
 
-    /// The sessions across every workspace as palette entries (label = "name — workspace"), each
-    /// selecting that session. Mirrors the macOS ⌃P session switcher.
-    private func sessionPaletteList() -> [(String, () -> Void)] {
-        store.navigableSessions.map { s in
+    /// Sessions as palette entries (label = "name — workspace"), each selecting that session.
+    /// `navigableSessions` is the ⌃P switcher's list (every workspace, sidebar order); `attentionSessions`
+    /// is the attention palette's, already ranked blocked→active→completed — which `filterPalette`
+    /// preserves for an empty query rather than alphabetizing.
+    private func sessionRows(_ sessions: [Session]) -> [LinuxPaletteItem] {
+        sessions.map { s in
             let ws = store.workspace(forSession: s.id)?.name ?? ""
-            return ("\(s.displayName)  —  \(ws)", { self.selectSession(s.id) })
-        }
-    }
-
-    private func attentionPaletteList() -> [(String, () -> Void)] {
-        store.attentionSessions.map { s in
-            let ws = store.workspace(forSession: s.id)?.name ?? ""
-            return ("\(s.displayName)  —  \(ws)", { self.selectSession(s.id) })
+            return (row: LinuxPaletteRow(title: "\(s.displayName)  —  \(ws)"), run: { self.selectSession(s.id) })
         }
     }
 
@@ -189,7 +181,9 @@ extension AppController {
         connect(kc, "key-pressed", unsafeBitCast(onPaletteKey as @convention(c) (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> gboolean, to: GCallback.self))
         gtk_widget_add_controller(W(win), kc)
 
-        paletteAll = attention ? attentionPaletteList() : (sessions ? sessionPaletteList() : paletteActionList())
+        paletteAll = attention
+            ? LinuxPaletteList(items: sessionRows(store.attentionSessions), preservesNaturalOrder: true)
+            : LinuxPaletteList(items: sessions ? sessionRows(store.navigableSessions) : paletteActionList())
         filterPalette("")
         gtk_window_present(WIN(win))
         _ = gtk_widget_grab_focus(W(entry))
@@ -198,22 +192,54 @@ extension AppController {
     func filterPalette(_ query: String) {
         guard let lb = paletteList else { return }
         gtk_list_box_remove_all(lb)
-        if query.isEmpty {
-            paletteItems = paletteAll.sorted { $0.0.lowercased() < $1.0.lowercased() }   // empty query → alphabetical
-        } else {
-            // shared ranking seam (lower-is-better, best first, alpha tie-break) — index 0 is
-            // auto-selected below, so the best match is what Enter runs.
-            paletteItems = fuzzyRank(query: query, items: paletteAll, keys: { [$0.0] })
-        }
-        for item in paletteItems {
-            guard let row = op(gtk_list_box_row_new()) else { continue }
-            let label = op(gtk_label_new(item.0))
+        // Shared, host-free ordering seam (lower-is-better, best first, alpha tie-break; the attention
+        // palette keeps its own blocked-first order until something is typed) — index 0 is auto-selected
+        // below, so the head of this list is what Enter runs. searchKeys keeps a composite key beside the
+        // title so find-by-chord still works (see LinuxPaletteRow.searchKeys).
+        let ranked = paletteAll.filtered(query: query)
+        // Accessible-name contract: title, badge and shortcut are SEPARATE GtkLabels, so each exposes its
+        // own text as its own AT-SPI name (labels named "New Session", "custom", "ctrl+shift+t"), which is
+        // what atspi_smoke.py asserts. The GtkListBoxRow's own computed name goes empty once its child is
+        // a multi-label box — nothing depends on it. Do NOT re-merge these into one label to "restore" a
+        // row name; set GTK_ACCESSIBLE_PROPERTY_LABEL on the row instead if a single announcement is wanted.
+        //
+        // runPaletteIndex maps a GtkListBoxRow's index straight into paletteItems, so the two must stay
+        // one-to-one: collect only the rows that were actually built and assign paletteItems from those,
+        // rather than assigning first and letting a skipped row shift every later action by one.
+        var rendered: [LinuxPaletteItem] = []
+        for item in ranked {
+            guard let row = op(gtk_list_box_row_new()), let box = op(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8)) else { continue }
+            gtk_widget_set_margin_top(W(box), 6); gtk_widget_set_margin_bottom(W(box), 6)
+            gtk_widget_set_margin_start(W(box), 10); gtk_widget_set_margin_end(W(box), 10)
+            let label = op(gtk_label_new(item.row.title))
             gtk_label_set_xalign(label, 0)
-            gtk_widget_set_margin_top(W(label), 6); gtk_widget_set_margin_bottom(W(label), 6)
-            gtk_widget_set_margin_start(W(label), 10)
-            gtk_list_box_row_set_child(GLBR(row), W(label))
+            // hexpand is the Spacer equivalent: the box's spare width goes to the title, so the badge and
+            // shortcut sit flush right (they take their natural width, no xalign involved).
+            gtk_widget_set_hexpand(W(label), 1)
+            // Long titles are repetitive with a disambiguating TAIL ("Delete Window: <name>",
+            // "Move Session to <workspace>", "<session>  —  <workspace>"), so ellipsize in the MIDDLE:
+            // END would truncate exactly the part that tells two rows apart, and no ellipsize at all
+            // would push the shortcut column out of the 480px palette instead of truncating.
+            gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_MIDDLE)
+            gtk_box_append(cast(box), W(label))
+            // Trailing pill (currently only "custom") between the title and the shortcut column, so a
+            // keymap command reads as name + badge + its own chord instead of a mangled title. CENTER
+            // valign keeps it at its natural height — a box child defaults to FILL, which would stretch
+            // the CSS background over the full row height and stop it reading as a pill.
+            if let badge = item.row.badge, let pill = op(gtk_label_new(badge)) {
+                gtk_widget_set_valign(W(pill), GTK_ALIGN_CENTER)
+                gtk_widget_add_css_class(W(pill), "agterm-palette-badge")
+                gtk_box_append(cast(box), W(pill))
+            }
+            if let shortcut = item.row.shortcut, let chord = op(gtk_label_new(shortcut)) {
+                gtk_widget_add_css_class(W(chord), "dim-label")
+                gtk_box_append(cast(box), W(chord))
+            }
+            gtk_list_box_row_set_child(GLBR(row), W(box))
             gtk_list_box_append(lb, W(row))
+            rendered.append(item)
         }
+        paletteItems = rendered
         if let first = gtk_list_box_get_row_at_index(lb, 0) { gtk_list_box_select_row(lb, first) }
         if let vadj = paletteVadjustment() { gtk_adjustment_set_value(vadj, 0) }   // reset scroll to top on re-filter
     }
@@ -230,7 +256,7 @@ extension AppController {
 
     private func runPaletteIndex(_ idx: Int) {
         guard idx >= 0, idx < paletteItems.count else { return }
-        let run = paletteItems[idx].1
+        let run = paletteItems[idx].run
         closePalette()
         run()
     }
@@ -240,7 +266,7 @@ extension AppController {
         paletteWindow = nil
         paletteList = nil
         paletteItems = []
-        paletteAll = []
+        paletteAll = LinuxPaletteList()
         resumeAutoFollow()
         gtk_window_destroy(WIN(win))
     }
@@ -250,7 +276,7 @@ extension AppController {
         paletteWindow = nil
         paletteList = nil
         paletteItems = []
-        paletteAll = []
+        paletteAll = LinuxPaletteList()
         resumeAutoFollow()
     }
 

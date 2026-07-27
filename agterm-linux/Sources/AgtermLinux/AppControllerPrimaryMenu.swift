@@ -38,7 +38,7 @@ extension AppController {
             "Keyboard Shortcuts", name: .keyMapping, icon: "input-keyboard-symbolic")
         let common = preferencesGroup("Resolved Bindings")
         for action in BuiltinAction.allCases {
-            guard let chord = resolvedBuiltinChords.first(where: { $0.value == action })?.key else { continue }
+            guard let chord = resolvedChord(for: action) else { continue }
             let row = OpaquePointer(adw_action_row_new())
             shortcutTitle(action).withCString { adw_preferences_row_set_title(cast(row), $0) }
             chord.displayString.withCString { adw_action_row_set_subtitle(cast(row), $0) }

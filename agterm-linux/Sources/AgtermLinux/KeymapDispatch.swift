@@ -150,6 +150,15 @@ extension AppController {
         return diagnostics.count
     }
 
+    /// The chord currently bound to `action`, or nil when nothing resolves (no Linux default, or the
+    /// binding was dropped as reserved). Reverse lookup over the same `resolvedBuiltinChords` dispatch
+    /// uses, shared by the palette's shortcut column and the Keyboard Shortcuts dialog so the two
+    /// surfaces can never render different chords for one action. Named `resolvedChord` rather than
+    /// `chord` so it does not shadow the global `chord(fromKeyval:state:)` inside this extension.
+    func resolvedChord(for action: BuiltinAction) -> Chord? {
+        resolvedBuiltinChords.first(where: { $0.value == action })?.key
+    }
+
     /// The single entry point for a terminal key press (called by GhosttySurface.keyPressed). Returns
     /// true when the key was consumed as an app shortcut / custom command; false to let libghostty encode
     /// it for the terminal. Dispatch order: Esc leader-abort → reserved monitor chords → custom-command

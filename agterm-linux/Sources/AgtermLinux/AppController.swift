@@ -54,8 +54,8 @@ final class AppController {
     // Command palette (Ctrl+Shift+P)
     var paletteWindow: OpaquePointer?
     var paletteList: OpaquePointer?
-    var paletteAll: [(String, () -> Void)] = []
-    var paletteItems: [(String, () -> Void)] = []
+    var paletteAll = LinuxPaletteList()
+    var paletteItems: [LinuxPaletteItem] = []
 
     // In-terminal search bar (Ctrl+Shift+F)
     var searchBar: OpaquePointer?

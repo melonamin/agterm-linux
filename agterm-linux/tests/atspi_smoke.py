@@ -475,10 +475,22 @@ def activate_reveal_action(env, identity):
     )
 
 
-def run_palette_action(app, process_id, window_title, action_name):
+def palette_row_labels(palette):
+    """Every palette row's label names, in widget order."""
+    # A row is a horizontal box of separate labels: title, then the optional `custom` badge, then the
+    # optional right-aligned chord. named() searches the whole subtree and so cannot see order or which
+    # row a label belongs to; comparing this list is what pins the arrangement.
+    return [
+        [label.get_name() or "" for label in collect(row, role="label")]
+        for row in collect(palette, role="list item")
+    ]
+
+
+def open_palette(app, process_id, window_title):
+    """Focus one window, open its command palette, and return (palette frame, search entry)."""
     window = wait_for(
         lambda: named(app, window_title, role="frame"),
-        f"custom-command window {window_title!r} is missing",
+        f"window {window_title!r} is missing",
     )
     focus_accessible_window(window, process_id)
     press_ctrl_shift_p(process_id, window_title=window_title)
@@ -490,15 +502,60 @@ def run_palette_action(app, process_id, window_title, action_name):
         lambda: editable_descendant(palette),
         "command palette search is missing",
     )
+    return palette, search
+
+
+def run_palette_action(app, process_id, window_title, action_name, badge=None):
+    """Filter the palette to one action and run it."""
+    palette, search = open_palette(app, process_id, window_title)
     assert search.get_editable_text_iface().set_text_contents(action_name)
+    # `badge` is the pill the matching row must also render (None = the row carries none). It is never
+    # typed into the search entry, and it is checked ROW-SCOPED — a subtree-wide named() would be
+    # satisfied by any other row's badge.
     wait_for(
-        lambda: named(palette, action_name) and not named(palette, "About agterm"),
-        f"palette action {action_name!r} did not become the selected result",
+        lambda: any(
+            labels[:1] == [action_name] and (badge is None or badge in labels[1:])
+            for labels in palette_row_labels(palette)
+        )
+        and not named(palette, "About agterm"),
+        f"palette action {action_name!r}"
+        + (f" with its {badge!r} badge" if badge else "")
+        + " did not become the selected result",
     )
     press_return(process_id, window_title="Command Palette")
     wait_for(
         lambda: not named(app, "Command Palette", role="frame"),
         f"command palette did not close after {action_name!r}",
+    )
+
+
+def check_palette_row_layout(app, process_id, window_title):
+    """Pin the full three-label row and the de-duplicated catalog row, without running anything."""
+    # run_palette_action only ever drives chordless custom commands, so title + badge + chord together —
+    # the arrangement this rendering actually introduces — has no other coverage.
+    palette, search = open_palette(app, process_id, window_title)
+    editable = search.get_editable_text_iface()
+
+    assert editable.set_text_contents("Chorded Demo")
+    wait_for(
+        lambda: ["Chorded Demo", "custom", "ctrl+shift+e"] in palette_row_labels(palette),
+        "a chorded custom row did not render title, custom badge, and chord in that order",
+    )
+
+    # "Open Directory…" comes from the shared PaletteCommand catalog only — the Linux-only duplicate
+    # append is gone, so exactly one row may carry that title, and it must show its own chord.
+    assert editable.set_text_contents("Open Directory")
+    rows = wait_for(
+        lambda: [labels for labels in palette_row_labels(palette)
+                 if labels and labels[0] == "Open Directory…"],
+        "the catalog Open Directory… row did not render",
+    )
+    assert rows == [["Open Directory…", "ctrl+shift+o"]], f"unexpected Open Directory… rows: {rows}"
+
+    press_escape(process_id, window_title="Command Palette")
+    wait_for(
+        lambda: not named(app, "Command Palette", role="frame"),
+        "command palette did not close after the row-layout check",
     )
 
 
@@ -890,8 +947,13 @@ def verify_window_callback_ownership(env):
             "background command palette did not expose an editable search",
         )
         assert palette_search.get_editable_text_iface().set_text_contents("New Session")
+        # A palette row is a horizontal box of SEPARATE labels: title (left) and, when the command is
+        # bound, its chord (right-aligned, dimmed). Comparing ONE row's labels in order is what pins
+        # that split end-to-end — "ctrl+shift+t" is never typed into the search entry, so only a
+        # rendered shortcut label on that same row can satisfy it.
         wait_for(
-            lambda: named(palette, "New Session   ctrl+shift+t") and not named(palette, "About agterm"),
+            lambda: ["New Session", "ctrl+shift+t"] in palette_row_labels(palette)
+            and not named(palette, "About agterm"),
             "background command palette search routed to the frontmost window",
         )
         press_escape(process.pid, window_title="Command Palette")
@@ -1172,6 +1234,10 @@ def verify_custom_command_failures(env):
             'command "Launch Failure" true\n'
             'command "Exit Failure" exit 23\n'
             'command "Slow Failure" sleep 1; exit 29\n'
+            # never fired — it exists so one palette row carries all three labels at once. ctrl+shift+e
+            # is free in both the Linux and the upstream default chord tables, so it survives keymap
+            # validation and reaches the row as the user's own raw token.
+            'command "Chorded Demo" ctrl+shift+e true\n'
         )
     process, app = launch(env)
     try:
@@ -1198,6 +1264,7 @@ def verify_custom_command_failures(env):
 
         wait_for(lambda: frame("command-origin-a"), "first command window did not become accessible")
         wait_for(lambda: frame("command-origin-b"), "second command window did not become accessible")
+        check_palette_row_layout(app, process.pid, "command-origin-a")
         time.sleep(0.5)
         shutil.rmtree(first_cwd)
         shutil.rmtree(second_cwd)
@@ -1206,7 +1273,7 @@ def verify_custom_command_failures(env):
             (first_window, first_session, "command-origin-a", "command-origin-b"),
             (second_window, second_session, "command-origin-b", "command-exit-a"),
         ):
-            run_palette_action(app, process.pid, title, "Launch Failure  (custom)")
+            run_palette_action(app, process.pid, title, "Launch Failure", badge="custom")
             launch_prefix = "command failed to launch: Launch Failure —"
             wait_for(
                 lambda: failure_named(frame(title), launch_prefix),
@@ -1224,7 +1291,7 @@ def verify_custom_command_failures(env):
             )
             wait_for(lambda: frame(exit_title), f"{exit_title} did not become accessible")
             exit_titles[window_id] = exit_title
-            run_palette_action(app, process.pid, exit_title, "Exit Failure  (custom)")
+            run_palette_action(app, process.pid, exit_title, "Exit Failure", badge="custom")
             exit_message = "command failed (exit 23): Exit Failure"
             wait_for(
                 lambda: named(frame(exit_title), exit_message),
@@ -1234,7 +1301,7 @@ def verify_custom_command_failures(env):
                 f"non-zero failure from {exit_title} leaked into {other_title}"
             )
 
-        run_palette_action(app, process.pid, exit_titles[first_window], "Slow Failure  (custom)")
+        run_palette_action(app, process.pid, exit_titles[first_window], "Slow Failure", badge="custom")
         control_json(env, "window", "close", first_window, "--json")
         wait_for(
             lambda: not next(item for item in window_list(env) if item["id"] == first_window)["open"],

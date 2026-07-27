@@ -140,6 +140,7 @@ private let onShutdown: @MainActor @convention(c) (OpaquePointer?, gpointer?) ->
     .agterm-dashboard-cell { border: 2px solid alpha(@window_fg_color, 0.16); border-radius: 10px; background-color: @view_bg_color; }
     .agterm-dashboard-cell.selected { border-color: @accent_color; box-shadow: 0 0 0 2px alpha(@accent_color, 0.35); }
     .agterm-dashboard-caption { background-color: alpha(@window_bg_color, 0.9); color: @window_fg_color; padding: 4px 8px; border-radius: 8px; }
+    .agterm-palette-badge { font-size: 0.8em; padding: 1px 6px; border-radius: 6px; background-color: alpha(@window_fg_color, 0.14); color: alpha(@window_fg_color, 0.7); }  /* keymap-command pill */
     .agterm-sidebar #workspace-row .workspace-add-session { opacity: 0; }
     .agterm-sidebar #workspace-row:hover .workspace-add-session { opacity: 1; }
     """
