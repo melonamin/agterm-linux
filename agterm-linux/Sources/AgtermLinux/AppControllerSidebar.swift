@@ -42,8 +42,7 @@ extension AppController {
     func applySidebarFontSize() {
         guard let display = gdk_display_get_default() else { return }
         let settings = linuxSettingsStore().load()
-        let size = AppSettings.clampSidebarFontSize(settings.sidebarFontSize ?? AppSettings.defaultSidebarFontSize)
-        let css = ".agterm-sidebar label { font-size: \(size)pt; }"
+        let css = LinuxSidebarPolicy.sidebarCSS(fontSize: settings.sidebarFontSize)
         if Self.sidebarFontProvider == nil {
             let provider = OpaquePointer(gtk_css_provider_new())
             Self.sidebarFontProvider = provider

@@ -1368,6 +1368,99 @@ def verify_surface_configuration_lifetimes(env):
         stop(process)
 
 
+def verify_sidebar_row_height_follows_font_size(env):
+    """Sidebar rows must follow the sidebar font size instead of Adwaita's 36px navigation-sidebar pin."""
+    settings_path = os.path.join(env["AGTERM_STATE_DIR"], "settings.json")
+
+    def sample_row_height(app):
+        # Preferences AdwActionRows carry the same `list item` role, so this scenario's single-session
+        # state is what pins the measurement to the sidebar row; an extra row means something else
+        # opened and the reading would be meaningless, so that case ASSERTS (naming the count) instead
+        # of polling, which would otherwise surface 12s later as a generic timeout. Extents are read in
+        # WINDOW coordinates because SCREEN reports a 0,0 origin under Wayland. A row is published to
+        # the accessibility tree before its first allocate and reports height 0, so an implausible
+        # sample returns None and lets the caller poll; the 20px gate sits deliberately BELOW the
+        # smallest CSS floor this scenario can reach (24px at 9pt) so an override that never applied
+        # fails loudly in the band assertion rather than as "never reported a settled height".
+        rows = collect(app, role="list item")
+        if not rows:
+            return None
+        assert len(rows) == 1, f"expected exactly one sidebar row, found {len(rows)} list items"
+        try:
+            component = rows[0].get_component_iface()
+            if component is None:
+                return None
+            height = component.get_extents(Atspi.CoordType.WINDOW).height
+        except Exception:
+            return None
+        return height if height >= 20 else None
+
+    def settled_row_height(app):
+        first = sample_row_height(app)
+        if first is None:
+            return None
+        time.sleep(0.1)
+        return first if sample_row_height(app) == first else None
+
+    def measure(font_size, label, check):
+        if font_size is not None:
+            # Merge rather than clobber, so a future first-run settings write is not silently reset and
+            # this keeps measuring a font-size change against otherwise unchanged state.
+            settings = {}
+            if os.path.exists(settings_path):
+                with open(settings_path, encoding="utf-8") as source:
+                    settings = json.load(source)
+            settings["sidebarFontSize"] = font_size
+            with open(settings_path, "w", encoding="utf-8") as destination:
+                json.dump(settings, destination)
+        process, app = launch(env)
+        try:
+            height = wait_for(
+                lambda: settled_row_height(app),
+                f"the sidebar row never reported a settled height {label}",
+            )
+            check(height)
+            return height
+        except AssertionError:
+            describe_tree(app)
+            raise
+        finally:
+            stop(process)
+
+    def default_band(height):
+        # Triage: a height at or near 36 means the emitted CSS override never applied at all - the theme
+        # pin makes anything under 36 unreachable without it.
+        assert 28 <= height < 36, (
+            f"default sidebar row height {height}px left the 28px floor .. 36px Adwaita pin band"
+        )
+
+    def dense_band(height):
+        # Only the CSS floor is asserted upward: the exact height is host font metrics (Cantarell here,
+        # whatever fontconfig picks in the CI container), and the densification claim is carried by the
+        # comparison against the default row rather than by a hand-tuned pixel cap.
+        assert height >= 24, f"9pt sidebar row height {height}px sank below the 24px floor"
+        assert height < default_height, (
+            f"9pt rows ({height}px) did not densify below the default rows ({default_height}px)"
+        )
+
+    def large_band(height):
+        # min-height is a FLOOR, not a cap: 20pt text must grow the row past both its own floor and the
+        # default row instead of being clipped to a fixed height.
+        assert height >= 35, f"20pt sidebar row height {height}px sank below the 35px floor"
+        assert height > default_height, (
+            f"20pt rows ({height}px) did not grow past the default rows ({default_height}px)"
+        )
+
+    # The two comparison bands read `default_height`, so the passes must stay in this order.
+    default_height = measure(None, "at the default sidebar font size", default_band)
+    small_height = measure(9, "at the 9pt sidebar font size", dense_band)
+    large_height = measure(20, "at the 20pt sidebar font size", large_band)
+    print(
+        "OK: sidebar row height follows the sidebar font size "
+        f"({default_height}px default -> {small_height}px at 9pt -> {large_height}px at 20pt)"
+    )
+
+
 def verify_preferences_pages(env, home):
     process, app = launch(env)
     try:
@@ -1632,7 +1725,8 @@ def main():
             "normal", "upstream-controls", "dashboard-modal", "context-menu",
             "window-ownership", "preferences-pages",
             "notification-reveal", "notification-focus", "session-pickers",
-            "custom-command-failures", "surface-lifetimes", "auto-follow", "hidden-toolbar",
+            "custom-command-failures", "surface-lifetimes", "sidebar-row-height",
+            "auto-follow", "hidden-toolbar",
         ):
             child_env = dict(os.environ, AGTERM_ATSPI_SCENARIO=child_scenario)
             result = subprocess.run([sys.executable, __file__], env=child_env)
@@ -1682,6 +1776,8 @@ def main():
             verify_custom_command_failures(env)
         elif scenario == "surface-lifetimes":
             verify_surface_configuration_lifetimes(env)
+        elif scenario == "sidebar-row-height":
+            verify_sidebar_row_height_follows_font_size(env)
         elif scenario == "preferences-pages":
             verify_preferences_pages(env, home)
         elif scenario == "auto-follow":

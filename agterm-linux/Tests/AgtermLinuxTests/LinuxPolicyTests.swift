@@ -95,6 +95,36 @@ struct LinuxPolicyTests {
         #expect(LinuxSidebarPolicy.flaggedRowLabel(for: session, in: store) == "main  —  work")
     }
 
+    @Test("sidebar CSS derives row height from the shared font-size clamp")
+    func sidebarCSS() {
+        let standard = LinuxSidebarPolicy.sidebarCSS(fontSize: 13)
+        #expect(standard.contains(".agterm-sidebar label { font-size: 13.0pt; }"))
+        // The full selector, closing brace included, pins the exact libadwaita rule being lowered.
+        #expect(standard.contains(".agterm-sidebar .navigation-sidebar > row { min-height: 28px; }"))
+        // Only the row rule may be emitted: Adwaita's inner-box rule is AdwSidebar-scoped and never
+        // matches this port's widget tree, so an override there would be inert CSS.
+        #expect(!standard.contains("> row > box"))
+        // nil means "unset", which resolves to the same shared default as an explicit 13pt.
+        #expect(LinuxSidebarPolicy.sidebarCSS(fontSize: nil) == standard)
+
+        let dense = LinuxSidebarPolicy.sidebarCSS(fontSize: 9)
+        #expect(dense.contains("font-size: 9.0pt;"))
+        #expect(dense.contains("> row { min-height: 24px; }"))
+
+        let large = LinuxSidebarPolicy.sidebarCSS(fontSize: 20)
+        #expect(large.contains("font-size: 20.0pt;"))
+        #expect(large.contains("> row { min-height: 35px; }"))
+
+        // A hand-edited fractional size keeps its exact point value while the row height rounds.
+        let fractional = LinuxSidebarPolicy.sidebarCSS(fontSize: 13.6)
+        #expect(fractional.contains("font-size: 13.6pt;"))
+        #expect(fractional.contains("> row { min-height: 29px; }"))
+
+        // Out-of-range values clamp to the shared bounds rather than emitting a degenerate row.
+        #expect(LinuxSidebarPolicy.sidebarCSS(fontSize: 40) == large)
+        #expect(LinuxSidebarPolicy.sidebarCSS(fontSize: 2) == dense)
+    }
+
     @Test("notification delivery delegates policy and identity to shared core")
     @MainActor
     func notificationDelivery() {
