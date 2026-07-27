@@ -560,7 +560,10 @@ final class GhosttySurface: TerminalSurface {
         var ke = ghostty_input_key_s()
         ke.action = GHOSTTY_ACTION_PRESS
         ke.keycode = keycode                 // GDK hardware keycode == XKB == ghostty's Linux native code
-        ke.mods = ghosttyMods(state)
+        // Modifier-only keys: X11/GDK reports the state PRIOR to the event, so the pressed key's own
+        // bit is still clear — add it back (see ModifierKeyMods) or libghostty's hover/cursor-shape
+        // recompute waits for the next mouse motion. Non-modifier keys pass through unchanged.
+        ke.mods = ghosttyMods(ModifierKeyMods.adjustedState(forKeyval: keyval, state: state, pressing: true))
         ke.consumed_mods = GHOSTTY_MODS_NONE
 
         let unicode = gdk_keyval_to_unicode(keyval)
@@ -578,6 +581,21 @@ final class GhosttySurface: TerminalSurface {
             ke.text = nil
             return ghostty_surface_key(surface, ke)
         }
+    }
+
+    /// Forward a modifier-only key release to libghostty (upstream macOS `keyUp` parity): the raw
+    /// release state still carries the released key's bit (X11 prior-state), so it is cleared via
+    /// ModifierKeyMods before the event goes out.
+    func modifierKeyReleased(keyval: UInt32, keycode: UInt32, state: UInt32) {
+        guard let surface else { return }
+        var ke = ghostty_input_key_s()
+        ke.action = GHOSTTY_ACTION_RELEASE
+        ke.keycode = keycode
+        ke.mods = ghosttyMods(ModifierKeyMods.adjustedState(forKeyval: keyval, state: state, pressing: false))
+        ke.consumed_mods = GHOSTTY_MODS_NONE
+        ke.text = nil
+        ke.unshifted_codepoint = 0
+        _ = ghostty_surface_key(surface, ke)
     }
 
     /// The IM context committed composed text (dead-key/compose/CJK result) → send it to the terminal.
@@ -733,11 +751,14 @@ private let surfaceResize: @MainActor @convention(c) (OpaquePointer?, Int32, Int
 private let surfaceKeyPressed: @MainActor @convention(c) (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> gboolean = { _, keyval, keycode, state, data in
     MainActor.assumeIsolated { (wrap(data)?.keyPressed(keyval: keyval, keycode: keycode, state: state) ?? false) ? 1 : 0 }
 }
-/// Ctrl release commits the Ctrl-Tab session-switch cycle (the only key release agterm reacts to; ghostty
-/// tracks its own key state internally).
-private let surfaceKeyReleased: @MainActor @convention(c) (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> Void = { _, keyval, _, _, data in
+/// Ctrl release commits the Ctrl-Tab session-switch cycle; modifier-only releases also reach
+/// libghostty (macOS `flagsChanged` parity) so its hover/cursor state tracks the transition itself.
+private let surfaceKeyReleased: @MainActor @convention(c) (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> Void = { _, keyval, keycode, state, data in
     if keyval == 0xFFE3 || keyval == 0xFFE4 {   // Control_L / Control_R
         MainActor.assumeIsolated { wrap(data)?.controller?.endSessionSwitch() }
+    }
+    if ModifierKeyMods.modifierBit(forKeyval: keyval) != nil {
+        MainActor.assumeIsolated { wrap(data)?.modifierKeyReleased(keyval: keyval, keycode: keycode, state: state) }
     }
 }
 private let surfaceFocusEnter: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { _, data in
