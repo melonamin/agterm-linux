@@ -66,6 +66,9 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
         return
     }
     gApp = app
+    // Route every deferred main-actor job (MainTimer) through g_timeout_add BEFORE any store or
+    // controller exists — see `agterm-linux/docs/main-loop.md`.
+    installGLibMainTimer()
     // The notification click-to-reveal target: an `app.reveal` action carrying a session-id string.
     let revealAction = g_simple_action_new("reveal", g_variant_type_new("s"))
     connect(revealAction, "activate", unsafeBitCast(onRevealAction as @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void, to: GCallback.self))

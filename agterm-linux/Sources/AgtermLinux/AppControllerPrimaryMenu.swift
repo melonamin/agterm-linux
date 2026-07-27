@@ -94,9 +94,28 @@ extension AppController {
         connect(
             dialog, "closed", unsafeBitCast(onAuxiliaryDialogClosed, to: GCallback.self),
             data)
+        if let dialog { auxiliaryDialogs.append(dialog) }
         noteUserActivity()
         suppressAutoFollow()
         return data
+    }
+
+    /// Force-close every auxiliary dialog (Keyboard Shortcuts, About) this window still owns: like the
+    /// Settings dialog they are hosted AdwDialogs holding a `passRetained` on "closed", so that signal must
+    /// be emitted at a point we control (see `.claude/rules/main-loop.md`). Tracked as a set because they are
+    /// built ad hoc, with no single dialog slot to dismiss.
+    func dismissAuxiliaryDialogs() {
+        let open = auxiliaryDialogs
+        auxiliaryDialogs.removeAll()
+        for dialog in open { adw_dialog_force_close(cast(dialog)) }
+    }
+
+    /// An auxiliary dialog emitted "closed": drop it from the tracked set so a later dismissal cannot
+    /// force-close a dialog libadwaita already destroyed. Idempotent — the window-close sweep clears the
+    /// set first, so the handler it triggers finds nothing left to remove.
+    func auxiliaryDialogDidClose(_ dialog: OpaquePointer?) {
+        guard let dialog else { return }
+        auxiliaryDialogs.removeAll { $0 == dialog }
     }
 }
 
@@ -137,6 +156,7 @@ private let onAuxiliaryDialogClosed: @MainActor @convention(c) (OpaquePointer?, 
     guard let data else { return }
     MainActor.assumeIsolated {
         let context = Unmanaged<AuxiliaryDialogContext>.fromOpaque(data).takeRetainedValue()
+        context.controller.auxiliaryDialogDidClose(context.dialog)
         context.controller.resumeAutoFollow()
     }
 }

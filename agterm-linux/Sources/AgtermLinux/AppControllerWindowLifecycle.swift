@@ -53,7 +53,29 @@ extension AppController {
         customCommandOrigin.invalidate()
         commitBackgroundOpacity()
         dismissSessionPicker()
+        // EVERY dialog this window owns is dismissed here, or it outlives the widget tree and keeps the
+        // controller alive with it — a bare toplevel (the theme picker, the palette) is not destroyed with
+        // its transient parent under GTK4, and a hosted AdwDialog holds the same `passRetained` on "closed".
+        // The theme picker's dismissal is a CANCELLATION (`cancelTheme` reverts the live preview and clears
+        // the process-global override), never a bare close; it is inert with no picker up. Full rationale:
+        // `.claude/rules/main-loop.md`.
+        cancelTheme()
+        closePalette()
+        dismissSettings()
+        dismissAuxiliaryDialogs()
         sidebarMetadataDebouncer.cancel()
+        // These deferred jobs now really fire on Linux, and each outlives this window if something else
+        // still holds the controller (an open Settings dialog, palette or theme picker retains it): a
+        // pending layout save would `store.save()` after `removeWindow` deleted `windows/<id>.json` and
+        // resurrect it as an orphan, a pending preview would set the theme override with no picker left to
+        // clear it, and the trailing soft-close reconcile would rebuild an already-destroyed widget tree.
+        layoutSaveDebouncer.cancel()
+        themePreviewDebouncer.cancel()
+        softCloseReconcile.cancel()
+        // The soft-close grace finalizer is STORE-scoped, so none of the window-scoped cancels above reach
+        // it. FINALIZE rather than cancel — cancelling strands the held records and leaks what only the
+        // finalizer's teardown sweeps (see `.claude/rules/main-loop.md`).
+        store.finalizeAllPendingCloses()
         cancelPendingWorkspaceToggle()
         cancelLeaderDeadlineForWindowClose()
         splitRatioRestore.cancelAll()

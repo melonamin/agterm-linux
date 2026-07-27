@@ -82,6 +82,15 @@ extension AppController {
         gtk_box_append(cast(box), W(button))
     }
 
+    /// Whether a sidebar context menu is on screen right now. The `contextMenuPopover` handle OUTLIVES an
+    /// autohide dismissal (GTK pops the popover down itself when the user clicks away, and only the next
+    /// `dismissContextMenu()` clears the handle), so visibility is the live signal — a deferred rebuild
+    /// gating on the bare handle would defer forever after one click-away dismissal.
+    var contextMenuIsOpen: Bool {
+        guard let popover = contextMenuPopover else { return false }
+        return gtk_widget_get_visible(W(popover)) != 0
+    }
+
     func dismissContextMenu() {
         if let popover = contextMenuPopover {
             gtk_popover_popdown(POPOVER(popover))
@@ -254,7 +263,7 @@ extension AppController {
             return
         }
         if linuxSettingsStore().load().closeGraceUndoEnabled ?? true {
-            if store.softCloseSessions(targets) { reconcileSoftClose(preserving: targets) }
+            if store.softCloseSessions(targets) { reconcileSoftClose() }
         } else {
             for target in targets { store.closeSession(target) }
             reconcile()

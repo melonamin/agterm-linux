@@ -110,6 +110,10 @@ extension WindowLibrary {
         let h = gtk_widget_get_height(W(ctl.windowPointer))
         if w > 0, h > 0 { library.setGeometry(WindowGeometry.Size(width: Double(w), height: Double(h)), forWindow: id) }
     }
+    // Close out any soft-close grace still running: the quit path does not go through `windowWillClose`,
+    // so without this the held records would be dropped with the process — leaking their watermark PNGs and
+    // recency entries — and the snapshot below would be written while a finalizer was still pending.
+    library.finalizeAllPendingCloses()
     library.saveAllOpen()
     library.saveIndex()
 }

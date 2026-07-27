@@ -481,6 +481,11 @@ This only changes raw-text line breaks — the rendered markdown is identical �
   Triggers on the `Ghostty/` surfaces, `ContentView.swift`, `TerminalView`/`TerminalSearchBar`.
 - `app-icon.md` — the adaptive Icon Composer `.icon` build rules.
   Triggers on `AppIcon.icon/`, `project.yml`.
+- `main-loop.md` — the GTK/Linux main-loop contract: deferred main-actor work goes through `agtermCore`'s
+  `MainTimer` seam (GLib drains neither the dispatch main queue nor the main-actor executor),
+  `runOnMain` for hops, and the `withFakeMainTimer` test rule.
+  Triggers on `MainTimer`/`Debouncer`/`AppStore*`/`WindowLibrary.swift` in core and any
+  `agterm-linux/Sources/AgtermLinux/` file.
 - `ci.md` — the `ci.yml` job graph: the `test`/`coverage`/`lint`/`build` split,
   coverage → Coveralls-on-Linux with the `SF:`-path rewrite, the paths-filter, and the badge scope.
   Triggers on `.github/workflows/**`.

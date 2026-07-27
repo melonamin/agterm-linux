@@ -1,4 +1,5 @@
 import CGtk
+import Foundation
 
 @MainActor
 func makeTerminalDeck() -> OpaquePointer {
@@ -21,5 +22,12 @@ struct DeckPagePresentation: Equatable {
         childVisible = isActive || dashboardOpen
         opacity = isActive || dashboardOpen ? 1 : 0
         canTarget = isActive && !dashboardOpen
+    }
+
+    /// A page is active only while a session is selected: a nil `activeID` — the visible tree names no
+    /// session, which is what soft-closing the LAST one leaves behind while its surfaces are held for the
+    /// undo — makes EVERY page inactive instead of keeping the previous selection on screen and targetable.
+    init(pageID: UUID, activeID: UUID?, dashboardOpen: Bool) {
+        self.init(isActive: activeID == pageID, dashboardOpen: dashboardOpen)
     }
 }

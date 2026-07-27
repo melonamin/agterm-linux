@@ -7,9 +7,6 @@ extension AppController {
     // MARK: - Control channel dispatch (a core subset of the macOS ControlServer)
 
     func handleControl(_ req: ControlRequest) -> ControlResponse {
-        func ok(_ id: UUID? = nil) -> ControlResponse { ControlResponse(ok: true, result: ControlResult(id: id?.uuidString)) }
-        func err(_ m: String) -> ControlResponse { ControlResponse(ok: false, error: m) }
-
         // The Linux-local dispatcher owns the migrated synchronous commands; the rest fall through to the
         // inline switch below. Keep it in the Linux target so GTK control-flow needs do not leak into
         // upstream macOS-only core code.
@@ -71,42 +68,22 @@ extension AppController {
             return typeQuickSync(text: text)
         case .quickText:
             return readQuickTextSync(all: req.args?.all ?? false, lines: req.args?.lines)
+        // ONE implementation per window command, in the `ControlActions` conformance
+        // (`ControlActions+AppControllerWindows.swift`): the protocol requires those methods, so an inline
+        // copy here is a twin that silently diverges — `window.list` already had, dropping the
+        // fullscreen/zoom read-back the conformance fills in. The two `async` arms forward to their `*Sync`
+        // cores because this dispatch is synchronous. `.windowMove` and the rest of the family never reach
+        // this switch at all: `LinuxControlDispatcher` claims them.
         case .windowNew:
-            let info = library.newWindow(name: req.args?.name?.linuxTrimmedOrNil)
-            openWindow(info.id)
-            return ok(info.id)
+            return windowNew(name: req.args?.name)
         case .windowList:
-            let nodes = projectingLinuxAutoFollow(library.controlWindowNodes())
-            return ControlResponse(ok: true, result: ControlResult(windows: nodes))
+            return windowList()
         case .windowSelect:
-            guard case .resolved(let id) = library.resolveWindow(req.target ?? "active") else {
-                return resolveError("window", target: req.target, candidates: library.windows.map(\.id))
-            }
-            openWindow(id)
-            return ok(id)
+            return windowSelectSync(req.target)
         case .windowClose:
-            guard case .resolved(let id) = library.resolveWindow(req.target ?? "active") else {
-                return resolveError("window", target: req.target, candidates: library.windows.map(\.id))
-            }
-            guard let ctl = gWindows[id] else {
-                library.closeWindow(id)
-                return ok(id)
-            }
-            gtk_window_close(WIN(ctl.windowPointer))
-            return ok(id)
+            return windowCloseSync(req.target)
         case .windowDelete:
-            guard case .resolved(let id) = library.resolveWindow(req.target ?? "active") else {
-                return resolveError("window", target: req.target, candidates: library.windows.map(\.id))
-            }
-            guard library.canRemoveWindow else { return err("cannot delete last window") }
-            if let ctl = gWindows[id] {
-                gtk_window_close(WIN(ctl.windowPointer))
-            }
-            library.removeWindow(id)
-            return ok(id)
-        case .windowMove:
-            // GTK4/Wayland gives no programmatic window positioning; the compositor owns it.
-            return err("window.move is not supported on this platform (the compositor controls window position)")
+            return windowDelete(req.target)
         default:
             return err("command not yet supported on Linux: \(req.cmd.rawValue)")
         }
@@ -118,17 +95,15 @@ extension AppController {
         return nil
     }
 
-    /// The resolution error for a failed inline session resolve: an ambiguous prefix vs not-found,
-    /// mirroring the shared dispatcher's notFound so the inline arm emits the SAME distinction.
-    private func resolveError(_ noun: String, target: String?, candidates: [UUID]) -> ControlResponse {
-        if let target, case let .ambiguous(hits) = ControlResolve.resolve(target, candidates: candidates, active: nil) {
-            return ControlResponse(ok: false, error: ControlResolve.ambiguousMessage(noun: noun, target: target, hits: hits))
-        }
-        return ControlResponse(ok: false, error: ControlResolve.notFoundMessage(noun: noun, target: target ?? "active"))
-    }
-
+    /// The resolution error for the one remaining inline session resolve (`session.search`): an ambiguous
+    /// prefix vs not-found, mirroring the shared dispatcher's distinction so the inline arm emits the SAME
+    /// one.
     private func sessionResolveError(_ target: String?) -> ControlResponse {
-        resolveError("session", target: target, candidates: store.workspaces.flatMap { $0.sessions.map(\.id) })
+        let candidates = store.workspaces.flatMap { $0.sessions.map(\.id) }
+        if let target, case let .ambiguous(hits) = ControlResolve.resolve(target, candidates: candidates, active: nil) {
+            return err(ControlResolve.ambiguousMessage(noun: "session", target: target, hits: hits))
+        }
+        return err(ControlResolve.notFoundMessage(noun: "session", target: target ?? "active"))
     }
 
     /// Open a brand-new window (the New Window palette action).
@@ -143,19 +118,34 @@ extension AppController {
     }
 
     /// Keep GTK/libghostty surface ownership intact while agtermCore holds a soft-close record.
-    /// The core finalizer tears down the terminal after the grace interval; this later reconcile
-    /// removes the now-dead deck page and adapter dictionaries unless the close was undone.
-    func reconcileSoftClose(preserving ids: [UUID]) {
-        reconcile(preservingSurfaceIDs: Set(ids))
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 3_100_000_000)
-            self?.reconcile()
-        }
+    /// The core finalizer tears down the terminal after the grace; this later reconcile removes the now-dead
+    /// deck page and adapter dictionaries unless the close was undone. The delay TRAILS
+    /// `AppStore.pendingCloseGraceInterval` — the same default every `softClose*` entry point uses — rather
+    /// than taking it as an argument, so it cannot be handed a SHORTER grace that would destroy a live
+    /// surface out from under a still-pending undo. The held session's surfaces need no argument either:
+    /// `reconcile` spares every id `AppStore.pendingHeldSessionIDs()` reports, so no reconcile from any other
+    /// path can reap it. Scheduled through `MainTimer`, never `Task.sleep` (see
+    /// `agterm-linux/docs/main-loop.md`), and owned by `softCloseReconcile` rather than fired and forgotten:
+    /// `windowWillClose` disarms it (it would otherwise rebuild a destroyed widget tree) and a live inline
+    /// rename or context menu defers it.
+    ///
+    /// The trailing pass runs with `focusActive: false`: it exists to drop dead deck pages, and a
+    /// timer-driven `grab_focus` on the deck seconds after the close would STEAL the keyboard from whatever
+    /// the user moved to meanwhile. The `deferWhile` gate covers only the sidebar's own focus owners (inline
+    /// rename, context menu); the search entry and the quick terminal are plain widgets in the SAME toplevel,
+    /// so a grab there would silently reroute the rest of the user's typing into the active session's shell.
+    /// The immediate reconcile still focuses — that one IS the user's own close action.
+    func reconcileSoftClose() {
+        reconcile()
+        softCloseReconcile.arm(
+            after: AppStore.pendingCloseGraceInterval + 0.1,
+            deferWhile: { [weak self] in self?.sidebarInteractionInProgress ?? false },
+            run: { [weak self] in self?.reconcile(focusActive: false) })
     }
 
     func closeSessionFromGUI(_ id: UUID) {
         if linuxSettingsStore().load().closeGraceUndoEnabled ?? true {
-            if store.softCloseSession(id) { reconcileSoftClose(preserving: [id]) }
+            if store.softCloseSession(id) { reconcileSoftClose() }
         } else {
             closeSession(id)
         }

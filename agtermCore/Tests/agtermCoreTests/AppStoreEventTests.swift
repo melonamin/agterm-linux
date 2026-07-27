@@ -300,28 +300,49 @@ final class AppStoreEventTests {
     }
 
     @Test func treeChangesCoalescePerWindowAndStayIndependent() throws {
+        // Driven through the injected timer, NOT `flushTreeEvents()`: flush is level-triggered — it runs the
+        // latest stored action once whether or not the reschedule ever cancelled the prior timer, so a seam
+        // that stopped coalescing would still look green through it while `agtermctl subscribe` got a
+        // duplicate storm.
         let library = WindowLibrary(directory: directory, controlEventRing: ControlEventRing(runID: run))
         let firstWindow = try #require(library.windows.first)
         let firstStore = try #require(library.store(for: firstWindow.id))
         let secondWindow = library.newWindow(name: "second")
         let secondStore = try #require(library.store(for: secondWindow.id))
-        library.flushTreeEvents()
+        library.flushTreeEvents() // drain what seeding scheduled, before the fake seam goes in
         let anchor = try eventBatch(library.readEvents(ControlEventReadOptions(cursor: nil, kinds: nil, limit: 100)))
+        let cursor = ControlEventCursor(run: anchor.run, after: anchor.next)
 
-        let workspace = firstStore.addWorkspace(name: "one")
-        firstStore.renameWorkspace(workspace.id, to: "renamed")
-        _ = secondStore.addSession(toWorkspace: secondStore.workspaces[0].id, cwd: "/tmp")
+        try withFakeMainTimer { timers in
+            let workspace = firstStore.addWorkspace(name: "one")
+            firstStore.renameWorkspace(workspace.id, to: "renamed")
+            _ = secondStore.addSession(toWorkspace: secondStore.workspaces[0].id, cwd: "/tmp")
 
-        let beforeFlush = try eventBatch(library.readEvents(ControlEventReadOptions(
-            cursor: ControlEventCursor(run: anchor.run, after: anchor.next), kinds: [.treeChanged], limit: 100
-        )))
-        #expect(beforeFlush.items.isEmpty)
-        library.flushTreeEvents()
-        let batch = try eventBatch(library.readEvents(ControlEventReadOptions(
-            cursor: ControlEventCursor(run: anchor.run, after: anchor.next), kinds: [.treeChanged], limit: 100
-        )))
-        #expect(Set(batch.items.compactMap(\.window)) == Set([firstWindow.id.uuidString, secondWindow.id.uuidString]))
-        #expect(batch.items.count == 2)
+            // two mutations in the first window armed two entries; the reschedule cancelled the first, so
+            // only ONE survives — that is the coalescing, and the second window's entry is untouched.
+            let treeEntries = timers.delays.indices.filter { timers.delays[$0] == 0.1 }
+            #expect(treeEntries.count == 3)
+            // Membership, never equality: the seam is process-global, so an unrelated debouncer elsewhere in
+            // the process can land its own cancel in this list.
+            #expect(timers.cancelled.contains(treeEntries[0]))
+            #expect(!timers.cancelled.contains(treeEntries[1]))
+            #expect(!timers.cancelled.contains(treeEntries[2]))
+
+            let beforeFire = try eventBatch(library.readEvents(ControlEventReadOptions(
+                cursor: cursor, kinds: [.treeChanged], limit: 100)))
+            #expect(beforeFire.items.isEmpty) // nothing is emitted while the timers are pending
+
+            timers.fire(treeEntries[1])
+            let afterFirst = try eventBatch(library.readEvents(ControlEventReadOptions(
+                cursor: cursor, kinds: [.treeChanged], limit: 100)))
+            #expect(afterFirst.items.map(\.window) == [firstWindow.id.uuidString]) // ONE event for two mutations
+
+            timers.fire(treeEntries[2])
+            let afterSecond = try eventBatch(library.readEvents(ControlEventReadOptions(
+                cursor: cursor, kinds: [.treeChanged], limit: 100)))
+            #expect(afterSecond.items.map(\.window)
+                == [firstWindow.id.uuidString, secondWindow.id.uuidString]) // each window debounces alone
+        }
     }
 
     @Test func statusAndSelectionDoNotScheduleStructuralInvalidation() throws {
@@ -339,6 +360,32 @@ final class AppStoreEventTests {
             cursor: ControlEventCursor(run: anchor.run, after: anchor.next), kinds: [.treeChanged], limit: 100
         )))
         #expect(batch.items.isEmpty)
+    }
+
+    @Test func treeChangedReachesTheRingOnlyWhenTheDebounceTimerFires() throws {
+        // The PRODUCTION emission path, with no `flushTreeEvents()` anywhere: a structural mutation must
+        // reach the ring through the `MainTimer` seam. Every other tree-event test flushes by hand, which
+        // is exactly why a never-firing timer looked green here while `agtermctl subscribe` saw nothing.
+        let library = WindowLibrary(directory: directory, controlEventRing: ControlEventRing(runID: run))
+        let window = try #require(library.windows.first)
+        let store = try #require(library.store(for: window.id))
+        library.flushTreeEvents() // drain what seeding scheduled, before the fake seam goes in
+        let anchor = try eventBatch(library.readEvents(ControlEventReadOptions(cursor: nil, kinds: nil, limit: 100)))
+        let cursor = ControlEventCursor(run: anchor.run, after: anchor.next)
+
+        try withFakeMainTimer { timers in
+            _ = store.addWorkspace(name: "one")
+
+            let beforeFire = try eventBatch(library.readEvents(
+                ControlEventReadOptions(cursor: cursor, kinds: [.treeChanged], limit: 100)))
+            #expect(beforeFire.items.isEmpty) // still coalescing — nothing is emitted while the timer is pending
+
+            timers.fire(try #require(timers.index(ofDelay: 0.1)))
+
+            let batch = try eventBatch(library.readEvents(
+                ControlEventReadOptions(cursor: cursor, kinds: [.treeChanged], limit: 100)))
+            #expect(batch.items.map(\.window) == [window.id.uuidString])
+        }
     }
 
     @Test func openRecentRecreationEmitsCreatedAfterHardClose() throws {

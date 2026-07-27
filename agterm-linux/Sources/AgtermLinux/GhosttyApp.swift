@@ -108,8 +108,14 @@ final class GhosttyApp: @unchecked Sendable {
 
     /// Build a config for one surface with a final per-session overlay (`background-image*`, solid
     /// `background`, and/or a font-size override). The returned config is owned by the caller.
+    ///
+    /// Resolves through the live theme-picker preview (hence `@MainActor`): the per-surface watermark
+    /// reapply runs off the preview's own OSC color-change action, so a persisted-settings base would
+    /// rebuild the surface with the OLD theme's palette mid-preview.
+    @MainActor
     func configWithOverlay(_ overlayText: String, settings: AppSettings? = nil) -> ghostty_config_t? {
-        let base = AppController.ghosttyLines(for: settings ?? linuxSettingsStore().load())
+        let base = AppController.ghosttyLines(
+            for: settings ?? AppController.resolvedThemeSettings(persisted: linuxSettingsStore().load()))
         let overlay = overlayText.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
         return buildConfig(extraLines: base + overlay)
     }

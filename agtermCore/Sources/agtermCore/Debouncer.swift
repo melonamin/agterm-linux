@@ -9,7 +9,9 @@ import Foundation
 /// (AppStore saves, SettingsModel theme preview). Foundation-only — host-free.
 @MainActor
 public final class Debouncer {
-    private var work: DispatchWorkItem?
+    /// Cancels the pending deferred fire; nil when nothing is scheduled. Deferral goes through
+    /// `MainTimer`, the host timer seam — see its note for why a host may have to replace it.
+    private var cancelTimer: (@MainActor () -> Void)?
     private var action: (@MainActor () -> Void)?
 
     public init() {}
@@ -17,31 +19,29 @@ public final class Debouncer {
     /// Cancels any pending action and schedules `action` to run after `delay`. Only the
     /// most recently scheduled action survives, so a burst of calls collapses to one run.
     public func schedule(after delay: TimeInterval, _ action: @escaping @MainActor () -> Void) {
-        work?.cancel()
+        cancelTimer?()
         self.action = action
-        let item = DispatchWorkItem { [weak self] in self?.fire() }
-        work = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+        cancelTimer = MainTimer.schedule(after: delay) { [weak self] in self?.fire() }
     }
 
     /// Runs the pending action immediately (if any) and clears it. A no-op when nothing
-    /// is pending. The deferred dispatch is cancelled so the action can't run twice.
+    /// is pending. The deferred timer is cancelled so the action can't run twice.
     public func flush() {
-        work?.cancel()
+        cancelTimer?()
         fire()
     }
 
     /// Drops the pending action without running it.
     public func cancel() {
-        work?.cancel()
-        work = nil
+        cancelTimer?()
+        cancelTimer = nil
         action = nil
     }
 
     /// Runs and clears the pending action. Clearing first makes a re-entrant call a no-op.
     private func fire() {
         guard let action else { return }
-        work = nil
+        cancelTimer = nil
         self.action = nil
         action()
     }

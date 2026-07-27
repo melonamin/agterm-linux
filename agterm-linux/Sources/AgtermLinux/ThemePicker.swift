@@ -106,12 +106,27 @@ extension AppController {
     func commitTheme() {
         if let lb = themeList, let row = gtk_list_box_get_selected_row(lb) {
             let idx = Int(gtk_list_box_row_get_index(row))
-            if idx >= 0, idx < themeItems.count { applyTheme(themeName(themeItems[idx])) }
+            if idx >= 0, idx < themeItems.count {
+                applyTheme(themeName(themeItems[idx]))
+                closeThemePicker()
+                return
+            }
         }
-        closeThemePicker()
+        // Nothing selected to commit — a query matching no theme leaves the list EMPTY, so Enter lands here
+        // with the LAST previewed theme still on every live surface. Closing would clear the preview
+        // override without reverting, stranding an unpersisted theme that the next chrome re-resolve
+        // repaints from the persisted one — the exact drift the override exists to prevent. Revert instead.
+        cancelTheme()
     }
 
     func cancelTheme() {
+        // Guard FIRST, before `previewTheme` sets the process-global override: `closeThemePicker` is what
+        // clears it, and that is a no-op with no picker up, so a cancel reached after teardown would pin
+        // every window to a stale, unpersisted theme for the rest of the process. Three callers reach this:
+        // Esc in `onThemeKey`, `commitTheme`'s empty-list fallthrough (where the `row-activated` and
+        // entry-`activate` signals land too, since both go through `commitTheme`), and `windowWillClose` —
+        // so the invariant belongs here rather than in each caller.
+        guard themeWindow != nil else { return }
         themePreviewDebouncer.cancel()   // drop a pending nav preview so it can't override the revert
         previewTheme(themeCommitted)     // revert the live preview immediately (no persist)
         closeThemePicker()
@@ -119,19 +134,23 @@ extension AppController {
 
     func closeThemePicker() {
         guard let win = themeWindow else { return }
-        themePreviewDebouncer.cancel()   // any close path (incl. commit) cancels a pending preview
-        themeWindow = nil
-        themeList = nil
-        themeItems = []
-        resumeAutoFollow()
+        teardownThemePicker()
         gtk_window_destroy(WIN(win))
     }
 
     /// Handles the window-manager close path, which is a cancellation rather than a commit.
     func themePickerWasDestroyed() {
         guard themeWindow != nil else { return }
-        themePreviewDebouncer.cancel()
-        previewTheme(themeCommitted)
+        previewTheme(themeCommitted)   // revert the live preview; the window is already going away
+        teardownThemePicker()
+    }
+
+    /// The state every picker exit shares — ONE place, so preview state added later cannot be cleared on
+    /// only one of the two paths (a leaked `themePreviewSettings` would shadow the persisted theme for the
+    /// rest of the process).
+    private func teardownThemePicker() {
+        themePreviewDebouncer.cancel()   // any close path (incl. commit) cancels a pending preview
+        Self.themePreviewSettings = nil  // later config_change re-resolves read the persisted theme again
         themeWindow = nil
         themeList = nil
         themeItems = []

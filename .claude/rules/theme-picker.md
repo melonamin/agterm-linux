@@ -4,6 +4,8 @@ paths:
   - "agterm/SettingsModel.swift"
   - "agterm/SettingsCatalog.swift"
   - "agterm/AppActions*.swift"
+  - "agterm-linux/Sources/AgtermLinux/ThemePicker.swift"
+  - "agterm-linux/Sources/AgtermLinux/GhosttyConfigTheme.swift"
 ---
 
 ## Theme picker
@@ -91,3 +93,42 @@ paths:
   it back; accepted (matches the Settings-picker behavior, a colors-only reload isn't cheaply available
   from libghostty).
 
+- **Linux (GTK port): the preview is an UNPERSISTED override every preview-path reader must resolve
+  through.**
+  The Linux picker (`agterm-linux/Sources/AgtermLinux/ThemePicker.swift`) applies a theme without persisting
+  it, and applying it makes libghostty emit `config_change` + OSC color-change actions whose handlers
+  re-derive chrome/palette from settings — reading the store there repaints the preview with the OLD
+  persisted theme (the sidebar "flashes then reverts" bug).
+  `AppController.themePreviewSettings` (declared in `GhosttyConfigTheme.swift`, next to its readers) holds
+  the live preview: `previewTheme` sets it, and it is cleared on commit (`applyTheme`) and by
+  `teardownThemePicker()`, the ONE exit path `closeThemePicker` and `themePickerWasDestroyed` share — a
+  leaked override pins the whole process to a stale theme until restart, so any preview state added later
+  must be cleared there too.
+  Clearing it is necessary but not sufficient — an exit that clears WITHOUT reverting strands the last
+  preview on every live surface, which the next chrome re-resolve then repaints from the persisted theme,
+  so the terminal palette and the chrome disagree.
+  Two exits therefore route through `cancelTheme()` rather than a bare close: `windowWillClose` calls it
+  directly (the picker is its own toplevel, and GTK4 does NOT destroy a transient child with its parent, so
+  `themePickerWasDestroyed` may never fire), and `commitTheme` falls through when no row resolves — a query
+  matching no theme leaves the list EMPTY, so Enter has nothing to commit.
+  `cancelTheme` owns the "is a picker still up?" guard itself, BEFORE it sets the override — its clear runs
+  inside `closeThemePicker`, which is a no-op with no picker, so a cancel arriving after teardown would
+  otherwise set a process-global override nothing would ever clear; keeping the guard at the entry point
+  rather than in each of its three callers (Esc in `onThemeKey`, the `commitTheme` fallthrough, and
+  `windowWillClose` — the `row-activated` and entry-`activate` signals reach it only through `commitTheme`)
+  is what makes that unreachable.
+  Both readers — `applyResolvedWindowThemeColors` and `GhosttyApp.configWithOverlay` — go through
+  `AppController.resolvedThemeSettings(persisted:)`, the single place the `preview ?? persisted` precedence
+  is spelled out; `AppController.themeSettings(_:base:)` is the shared builder for the preview and the
+  commit (both pin ONE appearance-independent theme, clearing `darkTheme`/`followSystemAppearance`).
+  Reading the override made `configWithOverlay` `@MainActor` (a `@MainActor` static cannot be reached from a
+  nonisolated autoclosure) — the shape any future override reader will need too.
+  Covered host-free by `AgtermLinuxTests/GhosttyConfigThemeTests.swift`
+  (`AppControllerThemeSettingsTests`); the picker's own preview/commit/cancel remains a manual GUI check.
+  KNOWN, ACCEPTED: the override is a process-global `static`, and the two APP-GLOBAL re-appliers that
+  bypass the picker — `setTheme` (the `theme.set` control arm) and the desktop light/dark flip
+  (`onColorSchemeChanged`) — both `reloadConfig()` from PERSISTED settings without clearing it, so while a
+  live preview is up the terminals repaint persisted while the chrome still resolves the preview.
+  It needs a socket call or a desktop theme flip to RACE an open picker, and it self-heals on the next
+  picker exit (commit or cancel both re-resolve the chrome), so it is documented rather than fixed —
+  clearing the override from those paths would silently drop the user's in-progress preview instead.

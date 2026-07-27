@@ -6,7 +6,15 @@ import agtermCore
 extension AppController {
     // MARK: - Reconcile
 
-    func reconcile(preservingSurfaceIDs: Set<UUID> = [], focusActive: Bool = true) {
+    /// Rebuild the deck from the store's tree: realize a surface for every session it names, then drop the
+    /// surfaces of sessions it no longer does.
+    ///
+    /// A soft-closed session is deliberately absent from the tree while its record waits out the undo
+    /// grace, so the "no longer named" set is the tree ids UNION the ids a pending close still holds —
+    /// every reconcile, not only the trailing one a soft close arms. Reaping a held session would free its
+    /// ghostty surfaces (killing the shells) while `undoPendingClose` still offers to bring it back, and
+    /// the undo would then silently spawn a brand-new login shell in place of the user's running one.
+    func reconcile(focusActive: Bool = true) {
         let dashboardRestore = prepareDashboardForReconcile()
         clearInvalidTerminalZoom()
         for ws in store.workspaces {
@@ -17,9 +25,9 @@ extension AppController {
                 syncOverlay(s, allowFocus: focusActive)   // after scratch so an open overlay wins the visible child
             }
         }
-        // Drop closed sessions.
+        // Drop closed sessions, but never one a pending close still holds for its undo window.
         var live = Set(store.workspaces.flatMap { $0.sessions.map(\.id) })
-        live.formUnion(preservingSurfaceIDs)
+        live.formUnion(store.pendingHeldSessionIDs())
         for id in Array(surfaces.keys) where !live.contains(id) { removeSession(id) }
         rebuildSidebar()
         showActive(focus: focusActive)
@@ -451,16 +459,24 @@ extension AppController {
         }
     }
 
+    /// Push every deck page to the presentation the current selection implies, then focus the active pane.
+    ///
+    /// The no-active-session case must still run: `store.activeSession` is nil whenever the visible tree
+    /// names none, which is exactly what a soft close of the LAST session produces while its record waits out
+    /// the undo grace — and `reconcile` deliberately KEEPS that session's surfaces alive then
+    /// (`pendingHeldSessionIDs`). Returning early would leave the just-closed stack on screen at full opacity
+    /// and still accepting keystrokes until the grace finalizer tears it down, so nil active means every page
+    /// goes inactive rather than keeping whatever the last selection left behind.
     func showActive(focus: Bool = true) {
-        guard let active = store.activeSession else { return }
+        let active = store.activeSession
         for (id, stack) in sessionStacks {
-            let presentation = DeckPagePresentation(isActive: id == active.id, dashboardOpen: dashboard.isOpen)
+            let presentation = DeckPagePresentation(pageID: id, activeID: active?.id, dashboardOpen: dashboard.isOpen)
             gtk_widget_set_opacity(W(stack), presentation.opacity)
             gtk_widget_set_can_target(W(stack), presentation.canTarget ? 1 : 0)
             gtk_widget_set_child_visible(W(stack), presentation.childVisible ? 1 : 0)
         }
-        updateFloatingOverlayVisibility(activeID: active.id)
-        if focus {
+        updateFloatingOverlayVisibility(activeID: active?.id)
+        if focus, let active {
             if active.overlayActive {
                 overlaySurfaces[active.id]?.grabFocus()
             } else if active.scratchActive {
@@ -474,7 +490,7 @@ extension AppController {
         updateToggleIcons()
     }
 
-    private func updateFloatingOverlayVisibility(activeID: UUID) {
+    private func updateFloatingOverlayVisibility(activeID: UUID?) {
         for (id, frame) in floatingOverlayFrames {
             let visible = id == activeID && (store.session(withID: id)?.overlayActive == true)
             gtk_widget_set_visible(W(frame), visible ? 1 : 0)
@@ -548,9 +564,23 @@ extension AppController {
         scheduleSidebarMetadataRefresh()
     }
 
-    private func scheduleSidebarMetadataRefresh() {
-        sidebarMetadataDebouncer.schedule(after: 0.01) { [weak self] in
-            self?.rebuildSidebar()
+    /// Coalesce OSC title/pwd churn from every session into one sidebar rebuild.
+    ///
+    /// A rebuild destroys and re-creates every row, so it must NOT land while the user is interacting with
+    /// one: it would tear down an in-progress inline rename (whose entry commits its half-typed text on the
+    /// focus-out that disposal triggers) and dismiss an open context menu — both from a background shell's
+    /// prompt redraw. Those interactions are short, so the refresh re-arms itself at a slower cadence
+    /// instead of being dropped; whichever ends the interaction rebuilds anyway, and the retry is then a
+    /// cheap no-op repaint. The gate is the shared `sidebarInteractionInProgress`, so this and the trailing
+    /// soft-close reconcile defer on exactly the same condition.
+    private func scheduleSidebarMetadataRefresh(after delay: TimeInterval = 0.01) {
+        sidebarMetadataDebouncer.schedule(after: delay) { [weak self] in
+            guard let self else { return }
+            guard !self.sidebarInteractionInProgress else {
+                self.scheduleSidebarMetadataRefresh(after: AppController.sidebarInteractionRetryInterval)
+                return
+            }
+            self.rebuildSidebar()
         }
     }
 

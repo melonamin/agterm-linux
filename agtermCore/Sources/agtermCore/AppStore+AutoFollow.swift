@@ -101,6 +101,12 @@ extension AppStore {
         withObservationTracking {
             _ = attentionSessions // read the observable inputs (workspaces + each agentIndicator); value unused
         } onChange: { [weak self] in
+            // The one `DispatchQueue.main.async` left in shared core: a nonisolated->main THREAD hop, which
+            // the `@MainActor` `MainTimer` seam cannot express (you must already be on the main actor to
+            // call it) and core has no hop seam. Unreachable under GTK — this observer is registered only
+            // on the off->on `setAutoFollow(timeout:)` edge, which the Linux port never takes
+            // (`LinuxAutoFollowCoordinator` owns its auto-follow runtime on GLib). See
+            // `agterm-linux/docs/main-loop.md`.
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.scheduleAutoFollowRearm() } }
         }
     }
@@ -112,7 +118,9 @@ extension AppStore {
     private func scheduleAutoFollowRearm() {
         guard !autoFollowRearmScheduled else { return }
         autoFollowRearmScheduled = true
-        DispatchQueue.main.async { [weak self] in
+        // Zero delay through the host timer seam, not `DispatchQueue.main.async`: a host whose main loop
+        // does not drain the dispatch main queue (the GTK port's GLib loop) would never run the re-arm.
+        MainTimer.schedule(after: 0) { [weak self] in
             guard let self else { return }
             self.autoFollowRearmScheduled = false
             guard let timeout = self.autoFollowTimeout else { return } // disabled: let the tracker die

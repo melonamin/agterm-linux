@@ -67,7 +67,9 @@ final class AppController {
     var searchTotal: Int?
     var searchSelected: Int?
 
-    // Theme picker (live preview)
+    // Theme picker (live preview). The unpersisted preview override itself — `themePreviewSettings` and its
+    // `previewTheme`/`applyTheme` setters — lives in `GhosttyConfigTheme.swift`, next to the resolvers that
+    // read it.
     var themeWindow: OpaquePointer?
     var themeList: OpaquePointer?
     var themeItems: [String] = []
@@ -81,6 +83,10 @@ final class AppController {
     let sidebarMetadataDebouncer = Debouncer()
     /// Owner-scoped, cancellable retries for persisted split divider restoration.
     let splitRatioRestore = SplitRatioRestoreCoordinator()
+    /// The trailing deck reconcile a soft close arms: cancellable at window close and deferred while a
+    /// sidebar interaction is live (see `SoftCloseReconcileCoordinator`).
+    let softCloseReconcile = SoftCloseReconcileCoordinator(
+        retryInterval: AppController.sidebarInteractionRetryInterval)
     var surfaces: [UUID: GhosttySurface] = [:]        // primary pane per session
     var splitSurfaces: [UUID: GhosttySurface] = [:]   // second pane (when split)
     var scratchSurfaces: [UUID: GhosttySurface] = [:] // full-overlay scratch shell
@@ -117,6 +123,9 @@ final class AppController {
     var pendingRenameWindow: UUID?                    // window awaiting the rename-dialog response
     var pendingRenameEntry: OpaquePointer?            // the rename dialog's GtkEntry
     var settingsDialog: OpaquePointer?
+    // The Keyboard Shortcuts / About dialogs currently up. Each retains this controller through its
+    // "closed" handler, so `windowWillClose` must force-close them alongside the other dialogs.
+    var auxiliaryDialogs: [OpaquePointer] = []
     var settingsCustomDirectoryRow: OpaquePointer?
     var settingsConfigDirectoryRow: OpaquePointer?
     var settingsAutoFollowAwayRow: OpaquePointer?
@@ -823,25 +832,6 @@ final class AppController {
         reconcile()
     }
 
-    /// Preview one theme as a single appearance-independent value without persisting it.
-    func previewTheme(_ name: String?) {
-        var settings = linuxSettingsStore().load()
-        settings.theme = (name?.isEmpty == false) ? name : nil
-        settings.darkTheme = nil
-        settings.followSystemAppearance = nil
-        applySettings(settings)
-    }
-
-    /// Apply a ghostty theme to every live surface and persist it so it survives relaunch.
-    func applyTheme(_ name: String?) {
-        var settings = linuxSettingsStore().load()
-        settings.theme = (name?.isEmpty == false) ? name : nil
-        settings.darkTheme = nil
-        settings.followSystemAppearance = nil
-        try? linuxSettingsStore().save(settings)
-        applySettings(settings)
-    }
-
     nonisolated static var systemIsDark: Bool {
         adw_style_manager_get_dark(adw_style_manager_get_default()) != 0
     }
@@ -995,6 +985,8 @@ final class AppController {
             css.withCString { gtk_css_provider_load_from_string(cast(provider), $0) }
         }
     }
-    /// Re-theme the chrome to the PERSISTED theme (window build, settings change, config reload).
+    /// Re-theme the chrome (window build, settings change, config reload) to the theme currently in effect
+    /// — the live theme-picker preview when one is up, else the persisted one; see
+    /// `applyResolvedWindowThemeColors` in `GhosttyConfigTheme.swift`.
     func applySidebarThemeColor() { applyResolvedWindowThemeColors() }
 }

@@ -203,7 +203,7 @@ extension AppStore {
     public func undoPendingClose(_ id: UUID? = nil, selecting sessionID: UUID? = nil) -> Bool {
         let closeID = id ?? pendingCloseSummary?.id
         guard let closeID, let record = pendingCloseRecords.removeValue(forKey: closeID) else { return false }
-        pendingCloseTasks.removeValue(forKey: closeID)?.cancel()
+        pendingCloseCancels.removeValue(forKey: closeID)?()
         pendingCloseOrder.removeAll { $0 == closeID }
         switch record {
         case .sessions(let close):
@@ -220,7 +220,7 @@ extension AppStore {
 
     func finalizePendingClose(_ id: UUID) {
         guard let record = pendingCloseRecords.removeValue(forKey: id) else { return }
-        pendingCloseTasks.removeValue(forKey: id)?.cancel()
+        pendingCloseCancels.removeValue(forKey: id)?()
         pendingCloseOrder.removeAll { $0 == id }
         switch record {
         case .sessions(let close):
@@ -263,11 +263,12 @@ extension AppStore {
         }
     }
 
+    /// Arm the grace timer through the `MainTimer` host seam — NOT a `Task.sleep`, which a host whose main
+    /// loop drains no main-actor executor (the GTK port's GLib loop) would silently never run, leaving the
+    /// undo window open forever and the closed session's surfaces alive.
     private func schedulePendingCloseFinalization(id: UUID, grace: TimeInterval) {
-        pendingCloseTasks[id]?.cancel()
-        let delay = UInt64(max(0, grace) * 1_000_000_000)
-        pendingCloseTasks[id] = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: delay)
+        pendingCloseCancels[id]?()
+        pendingCloseCancels[id] = MainTimer.schedule(after: max(0, grace)) { [weak self] in
             self?.finalizePendingClose(id)
         }
     }
@@ -284,7 +285,7 @@ extension AppStore {
         for closeID in pendingCloseOrder {
             guard case .workspace(let close)? = pendingCloseRecords[closeID], close.workspace.id == workspace.id else { continue }
             pendingCloseRecords.removeValue(forKey: closeID)
-            pendingCloseTasks.removeValue(forKey: closeID)?.cancel()
+            pendingCloseCancels.removeValue(forKey: closeID)?()
             let present = Set(folded.sessions.map(\.id))
             folded.sessions.append(contentsOf: close.workspace.sessions.filter { !present.contains($0.id) })
         }
@@ -294,8 +295,10 @@ extension AppStore {
 
     /// Session ids a pending close still holds. They are absent from the tree, but their live objects are
     /// intact and an undo reinserts them, so a restore that rebuilt one from a snapshot would put two
-    /// objects under a single id. Callers union this with the tree's ids to decide what is already taken.
-    func pendingHeldSessionIDs() -> Set<UUID> {
+    /// objects under a single id. Callers union this with the tree's ids to decide what is already taken —
+    /// a host that reaps host surfaces the tree no longer names must do the same, or a soft close tears
+    /// down the very shells its undo window promises to bring back.
+    public func pendingHeldSessionIDs() -> Set<UUID> {
         var held: Set<UUID> = []
         for record in pendingCloseRecords.values {
             switch record {

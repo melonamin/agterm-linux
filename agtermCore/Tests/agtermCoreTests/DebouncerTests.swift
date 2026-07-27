@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import agtermCore
 
@@ -54,6 +55,40 @@ struct DebouncerTests {
             try? await Task.sleep(for: .milliseconds(200))
         }
         #expect(first == 0) // the first action was cancelled by the reschedule, never fired
+    }
+
+    @Test func scheduleRoutesThroughInjectedTimerSeam() throws {
+        // The GTK port replaces MainTimer's dispatch-main-queue default (never drained under a GLib main
+        // loop) with a g_timeout_add timer; drive a fake timer to prove the Debouncer's schedule /
+        // reschedule / fire route through that shared seam.
+        try withFakeMainTimer { timers in
+            let debouncer = Debouncer()
+            var ran = 0
+            debouncer.schedule(after: 5) { ran += 1 }
+            #expect(timers.delays == [5])
+            debouncer.schedule(after: 7) { ran += 10 } // reschedule cancels the first pending timer
+            #expect(timers.cancelled == [0])
+            timers.fire(try #require(timers.index(ofDelay: 7))) // the injected timer fires -> latest action only
+            #expect(ran == 10)
+        }
+    }
+
+    @Test func cancelAndFlushStopTheInjectedTimer() {
+        withFakeMainTimer { timers in
+            let debouncer = Debouncer()
+            var ran = 0
+            debouncer.schedule(after: 1) { ran += 1 }
+            debouncer.cancel()
+            #expect(timers.cancelled == [0])
+            timers.fireEvenIfCancelled(0) // a stale fire after cancel finds no action — must be a no-op
+            #expect(ran == 0)
+            debouncer.schedule(after: 1) { ran += 10 }
+            debouncer.flush() // flush cancels the timer and runs the action synchronously
+            #expect(timers.cancelled == [0, 1])
+            #expect(ran == 10)
+            timers.fireEvenIfCancelled(1) // stale fire after flush: action already consumed
+            #expect(ran == 10)
+        }
     }
 
     @Test func actionCallingFlushReentrantlyIsSafeNoOp() {

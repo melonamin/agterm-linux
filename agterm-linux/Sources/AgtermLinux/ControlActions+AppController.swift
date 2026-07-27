@@ -10,11 +10,13 @@ extension AppController: ControlActions {
         case failure(ControlResponse)
     }
 
-    private func ok(_ id: UUID? = nil) -> ControlResponse {
+    // Internal rather than private: the `window.*` arms live in `ControlActions+AppControllerWindows.swift`
+    // (the family split that keeps this file under the line cap) and share these response shapers.
+    func ok(_ id: UUID? = nil) -> ControlResponse {
         ControlResponse(ok: true, result: ControlResult(id: id?.uuidString))
     }
 
-    private func err(_ message: String) -> ControlResponse {
+    func err(_ message: String) -> ControlResponse {
         ControlResponse(ok: false, error: message)
     }
 
@@ -41,7 +43,7 @@ extension AppController: ControlActions {
         }
     }
 
-    private func resolveWindowResponse(_ target: String?) -> ResolveResponse<UUID> {
+    func resolveWindowResponse(_ target: String?) -> ResolveResponse<UUID> {
         let candidates = library.windows.map(\.id)
         switch ControlResolve.resolve(target ?? "active", candidates: candidates, active: library.activeWindowID) {
         case .resolved(let id): return .success(id)
@@ -187,7 +189,7 @@ extension AppController: ControlActions {
             let affected: Int
             if linuxSettingsStore().load().closeGraceUndoEnabled ?? true {
                 affected = store.softCloseSessions(ids) ? ids.count : 0
-                if affected > 0 { reconcileSoftClose(preserving: ids) }
+                if affected > 0 { reconcileSoftClose() }
             } else {
                 affected = ids.reduce(into: 0) { count, id in
                     guard store.session(withID: id) != nil else { return }
@@ -886,104 +888,6 @@ extension AppController: ControlActions {
                 return err("session not realized")
             }
             return ControlResponse(ok: true, result: ControlResult(id: id.uuidString, text: text))
-        }
-    }
-
-    func windowNew(name: String?) -> ControlResponse {
-        let info = library.newWindow(name: name?.linuxTrimmedOrNil)
-        openWindow(info.id)
-        return ok(info.id)
-    }
-
-    func windowList() -> ControlResponse {
-        let nodes = projectingLinuxAutoFollow(library.controlWindowNodes(flags: { id in
-            guard let ctl = gWindows[id] else { return nil }
-            return (fullscreen: gtk_window_is_fullscreen(WIN(ctl.windowPointer)) != 0,
-                    zoomed: gtk_window_is_maximized(WIN(ctl.windowPointer)) != 0)
-        }))
-        return ControlResponse(ok: true, result: ControlResult(windows: nodes))
-    }
-
-    func windowSelect(_ target: String?) async -> ControlResponse {
-        switch resolveWindowResponse(target) {
-        case .failure(let response): return response
-        case .success(let id):
-            openWindow(id)
-            return ok(id)
-        }
-    }
-
-    func windowClose(_ target: String?) async -> ControlResponse {
-        switch resolveWindowResponse(target) {
-        case .failure(let response): return response
-        case .success(let id):
-            if let ctl = gWindows[id] {
-                gtk_window_close(WIN(ctl.windowPointer))
-            } else {
-                library.closeWindow(id)
-            }
-            return ok(id)
-        }
-    }
-
-    func windowRename(_ target: String?, name: String) -> ControlResponse {
-        switch resolveWindowResponse(target) {
-        case .failure(let response): return response
-        case .success(let id):
-            library.renameWindow(id, to: name)
-            gWindows[id]?.updateTitle()
-            return ok(id)
-        }
-    }
-
-    func windowDelete(_ target: String?) -> ControlResponse {
-        switch resolveWindowResponse(target) {
-        case .failure(let response): return response
-        case .success(let id):
-            guard library.canRemoveWindow else { return err("cannot delete last window") }
-            if let ctl = gWindows[id] {
-                gtk_window_close(WIN(ctl.windowPointer))
-            }
-            library.removeWindow(id)
-            return ok(id)
-        }
-    }
-
-    func windowResize(_ target: String?, width: Int, height: Int) -> ControlResponse {
-        switch resolveWindowResponse(target) {
-        case .failure(let response): return response
-        case .success(let id):
-            guard let ctl = gWindows[id] else { return err("window not open — window.select it first") }
-            gtk_window_set_default_size(WIN(ctl.windowPointer), Int32(width), Int32(height))
-            return ok(id)
-        }
-    }
-
-    func windowMove(_ target: String?, x: Int, y: Int, display: Int?) -> ControlResponse {
-        err("window.move is not supported on this platform (the compositor controls window position)")
-    }
-
-    func windowZoom(_ target: String?) -> ControlResponse {
-        switch resolveWindowResponse(target) {
-        case .failure(let response): return response
-        case .success(let id):
-            guard let ctl = gWindows[id] else { return err("window not open — window.select it first") }
-            if gtk_window_is_maximized(WIN(ctl.windowPointer)) != 0 {
-                gtk_window_unmaximize(WIN(ctl.windowPointer))
-            } else {
-                gtk_window_maximize(WIN(ctl.windowPointer))
-            }
-            return ok(id)
-        }
-    }
-
-    func windowFullscreen(_ target: String?) -> ControlResponse {
-        switch resolveWindowResponse(target) {
-        case .failure(let response): return response
-        case .success(let id):
-            guard let ctl = gWindows[id] else { return err("window not open — window.select it first") }
-            ctl.requestWindowFullscreenToggle()
-            return ok(id)
         }
     }
 

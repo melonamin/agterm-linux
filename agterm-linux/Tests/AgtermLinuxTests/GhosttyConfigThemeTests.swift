@@ -1,4 +1,5 @@
 import Testing
+import agtermCore
 @testable import AgtermLinux
 
 @Suite("Resolved Ghostty chrome colors")
@@ -32,5 +33,54 @@ struct GhosttyConfigThemeTests {
     func derivedSelectionHighlight() {
         #expect(ThemeColorResolver.selectionHighlight(background: "#303030", preferred: nil) == "#555555")
         #expect(ThemeColorResolver.selectionHighlight(background: "#FFFCF0", preferred: nil) == "#DBD9CE")
+    }
+}
+
+/// The theme-picker preview override: the builder both the preview and the commit path share, and the
+/// precedence every preview-path settings reader resolves through. Serialized because
+/// `AppController.themePreviewSettings` is a process-global static.
+@MainActor
+@Suite(.serialized)
+struct AppControllerThemeSettingsTests {
+    @Test("a theme name pins one appearance-independent theme and keeps the rest of the settings")
+    func themeSettingsPinsTheName() {
+        var base = AppSettings()
+        base.theme = "old"
+        base.darkTheme = "old-dark"
+        base.followSystemAppearance = true
+        base.sidebarFontSize = 13
+        let settings = AppController.themeSettings("Nord", base: base)
+        #expect(settings.theme == "Nord")
+        #expect(settings.darkTheme == nil)          // one value, so a system appearance flip cannot undo it
+        #expect(settings.followSystemAppearance == nil)
+        #expect(settings.sidebarFontSize == 13)     // unrelated settings survive the theme change
+    }
+
+    @Test("an empty or absent name clears back to ghostty's built-in default")
+    func themeSettingsClearsForEmptyNames() {
+        var base = AppSettings()
+        base.theme = "old"
+        #expect(AppController.themeSettings(nil, base: base).theme == nil)
+        #expect(AppController.themeSettings("", base: base).theme == nil)
+    }
+
+    @Test("preview-path readers see the live preview, and the persisted theme once it is cleared")
+    func resolvedThemeSettingsPrefersTheLivePreview() {
+        AppController.themePreviewSettings = nil
+        defer { AppController.themePreviewSettings = nil }
+        var persisted = AppSettings()
+        persisted.theme = "persisted"
+
+        #expect(AppController.resolvedThemeSettings(persisted: persisted).theme == "persisted")
+
+        var preview = AppSettings()
+        preview.theme = "preview"
+        AppController.themePreviewSettings = preview
+        // this is the reported bug: while a preview is up, a config_change re-resolve must NOT fall back to
+        // the persisted theme and repaint the chrome with it
+        #expect(AppController.resolvedThemeSettings(persisted: persisted).theme == "preview")
+
+        AppController.themePreviewSettings = nil    // what every picker exit path must do
+        #expect(AppController.resolvedThemeSettings(persisted: persisted).theme == "persisted")
     }
 }
