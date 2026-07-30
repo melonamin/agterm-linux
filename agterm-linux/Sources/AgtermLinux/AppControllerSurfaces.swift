@@ -209,11 +209,6 @@ extension AppController {
         return CommandRestore.shellQuotedLine(captured) + "\n"
     }
 
-    func loadKeymapCommands() -> (commands: [CustomCommand], diagnostics: Int) {
-        let (keymap, diags) = loadLinuxKeymap(configDirectory: configDirectory())
-        return (keymap.commands, diags.count)
-    }
-
     func runCustomCommand(_ cmd: CustomCommand, origin: GhosttySurface? = nil,
                           allowSessionless: Bool = false) {
         let s = store.activeSession

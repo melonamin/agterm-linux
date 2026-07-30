@@ -59,7 +59,14 @@ extension AppController {
         // Dynamic: custom shell commands from keymap.conf (run via the palette; built-in chord dispatch
         // is a separate item). They carry a real `custom` BADGE plus their own bound chord, matching
         // macOS — the title itself is the bare command name, never "<name>  (custom)".
-        for cmd in loadKeymapCommands().commands {
+        // Read the CACHED `keymap`, never a fresh disk parse: key dispatch runs off this same cache
+        // (reloadKeymapDiagnostics rebuilds it), so the chord in the shortcut column is exactly the chord
+        // that fires. A fresh read would show an edited-but-not-yet-reloaded chord as if it were live,
+        // while pressing it did nothing — and keymap.conf edits deliberately apply only on Reload Keymap
+        // (README:679: File ▸ Reload Keymap, this palette's `Reload Keymap` row, or `agtermctl keymap
+        // reload`). macOS reads the same cache: `agterm/AppActions+Palette.swift:132`
+        // (`settingsModel?.keymap.commands`).
+        for cmd in keymap.commands {
             items.append((row: LinuxPaletteRow.custom(cmd), run: { self.runCustomCommand(cmd) }))
         }
         // Dynamic: focus a single workspace. Clearing an active focus is the shared catalog's

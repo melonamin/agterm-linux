@@ -393,20 +393,27 @@ Whatever is chosen, cleanup must not leave the main checkout on a different bran
 - Modify: `agterm-linux/Sources/AgtermLinux/Palette.swift`
 - Modify: `agterm-linux/Sources/AgtermLinux/AppControllerSurfaces.swift`
 
-- [ ] change `Palette.swift:62` to `for cmd in keymap.commands {`
-- [ ] rewrite the comment above it (lines 59-61) to record the *why*: dispatch runs off this same cache, so
+- [x] change `Palette.swift:62` to `for cmd in keymap.commands {`
+- [x] rewrite the comment above it (lines 59-61) to record the *why*: dispatch runs off this same cache, so
       the chord in the shortcut column is exactly the chord that fires, and edits land on Reload Keymap per
       README:679 — plus the macOS parity pointer (`agterm/AppActions+Palette.swift:132`)
-- [ ] delete `loadKeymapCommands()` from `AppControllerSurfaces.swift:220-223`
-- [ ] grep the whole repo to confirm no reference to `loadKeymapCommands` survives
-- [ ] confirm no custom row *disappears*: a command whose shortcut cross-section validation cleared keeps its
+- [x] delete `loadKeymapCommands()` from `AppControllerSurfaces.swift:220-223`
+      — the function sat at `AppControllerSurfaces.swift:212-215` in the working tree; deleted there
+- [x] grep the whole repo to confirm no reference to `loadKeymapCommands` survives
+      — no `.swift`/`.py`/`.sh` hit remains; only this plan and the historical
+      `docs/plans/completed/20260726-linux-palette-shortcut-column.md:444` record, both deliberately left
+- [x] confirm no custom row *disappears*: a command whose shortcut cross-section validation cleared keeps its
       row with `shortcut == ""` (`KeymapDispatch.swift:90`), which `LinuxPaletteRow.custom` already renders
       chord-less via `linuxTrimmedOrNil` (`PalettePresentation.swift:98`)
-- [ ] no unit test in this task: the change is a `@MainActor` read of controller state with no host-free
+      — re-verified: `parseKeymap` only assigns `commands[index].shortcut = ""`, it never removes the
+      element, and the cached `keymap` holds that same parsed array
+- [x] no unit test in this task: the change is a `@MainActor` read of controller state with no host-free
       logic to assert. Its behavioral coverage is the "must NOT appear before reload" leg of Task 5; the
       existing `PalettePresentationTests` already cover `LinuxPaletteRow.custom` and need no change
-- [ ] run tests + build: `cd agterm-linux && swift test`, `swift build --product AgtermLinux`
-- [ ] **commit 1** here — this is the reviewer's ask, complete and reviewable on its own
+- [x] run tests + build: `cd agterm-linux && swift test`, `swift build --product AgtermLinux`
+      — build clean; `swift test` = 133 tests / 17 suites with the single known-unrelated
+      `IntegrationServiceTests.swift:765` failure, identical to the Task 1 baseline
+- [x] **commit 1** here — this is the reviewer's ask, complete and reviewable on its own
 
 ### Task 3: Extract the reload count reduction and the toast wording
 
