@@ -19,9 +19,10 @@ struct SessionSwitcherModel: Equatable, Sendable {
         return current
     }
 
-    mutating func advance() -> UUID? {
+    mutating func advance(reverse: Bool = false) -> UUID? {
         guard !candidates.isEmpty else { return nil }
-        index = (index + 1) % candidates.count
+        let delta = reverse ? -1 : 1
+        index = ((index + delta) % candidates.count + candidates.count) % candidates.count
         return current
     }
 

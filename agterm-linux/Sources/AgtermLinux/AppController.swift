@@ -765,9 +765,9 @@ final class AppController {
     /// first press lands on the most-recent OTHER session; further presses (while Ctrl is held) walk the
     /// MRU; releasing Ctrl commits (endSessionSwitch). The snapshot insulates the cycle from the recency
     /// reordering each in-cycle selection triggers.
-    func quickSwitchSession() {
+    func quickSwitchSession(reverse: Bool = false) {
         if sessionSwitcher.isActive {
-            if let id = sessionSwitcher.advance() { selectSession(id) }
+            if let id = sessionSwitcher.advance(reverse: reverse) { selectSession(id) }
         } else {
             let valid = Set(store.navigableSessions.map(\.id))
             let mru = store.sessionRecency.top(min(10, valid.count), in: valid)

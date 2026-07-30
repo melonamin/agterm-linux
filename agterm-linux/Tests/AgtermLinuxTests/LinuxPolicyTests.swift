@@ -57,9 +57,12 @@ struct LinuxPolicyTests {
     func sessionSwitcher() {
         let first = UUID()
         let second = UUID()
+        let third = UUID()
         var switcher = SessionSwitcherModel()
         #expect(switcher.begin([first]) == nil)
-        #expect(switcher.begin([first, second]) == second)
+        #expect(switcher.begin([first, second, third]) == second)
+        #expect(switcher.advance(reverse: true) == first)
+        #expect(switcher.advance(reverse: true) == third)
         #expect(switcher.advance() == first)
         switcher.end()
         #expect(!switcher.isActive)
