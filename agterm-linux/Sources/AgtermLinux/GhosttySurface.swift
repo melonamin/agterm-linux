@@ -492,7 +492,7 @@ final class GhosttySurface: TerminalSurface {
 
     // MARK: - Input
 
-    func keyPressed(keyval: UInt32, keycode: UInt32, state: UInt32) -> Bool {
+    func keyPressed(keyval: UInt32, keycode: UInt32, state: UInt32, event: OpaquePointer?) -> Bool {
         guard let surface else { return false }
         controller?.noteUserActivity()
 
@@ -508,7 +508,8 @@ final class GhosttySurface: TerminalSurface {
         // the fixed arrow/page/font fallback). All the dispatch logic lives in AppController.handleKey so
         // this handler stays thin; ghostty still gets its own binds (Ctrl+Shift+C/V) when handleKey passes.
         if controller?.handleKey(keyval: keyval, keycode: keycode, state: state,
-                                 sessionID: sessionID, origin: self) == true {
+                                 sessionID: sessionID, origin: self,
+                                 context: shortcutKeyContext(event: event, keycode: keycode)) == true {
             return true
         }
 
@@ -712,8 +713,13 @@ private let surfaceRender: @MainActor @convention(c) (OpaquePointer?, OpaquePoin
 private let surfaceResize: @MainActor @convention(c) (OpaquePointer?, Int32, Int32, gpointer?) -> Void = { _, w, h, data in
     MainActor.assumeIsolated { wrap(data)?.resize(width: w, height: h) }
 }
-private let surfaceKeyPressed: @MainActor @convention(c) (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> gboolean = { _, keyval, keycode, state, data in
-    MainActor.assumeIsolated { (wrap(data)?.keyPressed(keyval: keyval, keycode: keycode, state: state) ?? false) ? 1 : 0 }
+private let surfaceKeyPressed: @MainActor @convention(c) (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> gboolean = { controller, keyval, keycode, state, data in
+    MainActor.assumeIsolated {
+        let event = controller.flatMap { gtk_event_controller_get_current_event($0) }
+        return (wrap(data)?.keyPressed(
+            keyval: keyval, keycode: keycode, state: state, event: event
+        ) ?? false) ? 1 : 0
+    }
 }
 /// Ctrl release commits the Ctrl-Tab session-switch cycle; modifier-only releases also reach
 /// libghostty (macOS `flagsChanged` parity) so its hover/cursor state tracks the transition itself.

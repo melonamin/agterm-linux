@@ -55,8 +55,15 @@ let onEmptyWindowKeyPressed: @MainActor @convention(c)
             guard let owner = controllerForEventController(controller), owner.store.activeSession == nil else {
                 return 0
             }
+            let event = controller.flatMap { gtk_event_controller_get_current_event($0) }
             return owner.handleKey(
-                keyval: keyval, keycode: keycode, state: state, sessionID: UUID(), origin: nil) ? 1 : 0
+                keyval: keyval,
+                keycode: keycode,
+                state: state,
+                sessionID: UUID(),
+                origin: nil,
+                context: shortcutKeyContext(event: event, keycode: keycode)
+            ) ? 1 : 0
     }
 }
 

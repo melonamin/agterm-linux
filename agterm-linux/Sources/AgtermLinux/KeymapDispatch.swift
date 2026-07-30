@@ -5,14 +5,45 @@
 //
 // Resolution: a built-in's chord is `keymap.builtinOverrides[action] ?? action.linuxDefaultChord` (the
 // macOS BuiltinAction.defaultChord is Cmd-based and unsuitable on Linux). Custom commands feed a
-// KeybindMatcher (simple chords + leader sequences). The arrow/page nav, the font keys, and the reserved
-// monitor chords (Ctrl+Tab, Ctrl+1/2) are not Chord-expressible / not rebindable and stay in a fixed
-// fallback.
+// KeybindMatcher (simple chords + leader sequences). The arrow/page nav and font keys stay fixed; reserved
+// monitor chords (Ctrl+Tab, Ctrl+1/2) are resolved before custom/built-in bindings.
 import CGtk
 import Foundation
 import agtermCore
 
 private let linuxPreferencesChord = Chord(mods: [.control], key: ",")
+
+enum LinuxFixedShortcut: Equatable {
+    case preferences
+    case focusPane(left: Bool)
+    case fontIncrease
+    case fontDecrease
+    case fontReset
+    case sessionSwitch(reverse: Bool)
+}
+
+func linuxFixedShortcut(for chord: Chord) -> LinuxFixedShortcut? {
+    if chord.key == "tab", chord.mods.contains(.control) {
+        return .sessionSwitch(reverse: chord.mods.contains(.shift))
+    }
+    switch chord {
+    case linuxPreferencesChord:
+        return .preferences
+    case Chord(mods: [.control], key: "1"):
+        return .focusPane(left: true)
+    case Chord(mods: [.control], key: "2"):
+        return .focusPane(left: false)
+    case Chord(mods: [.control], key: "+"), Chord(mods: [.control], key: "="),
+         Chord(mods: [.control, .shift], key: "="):
+        return .fontIncrease
+    case Chord(mods: [.control], key: "-"), Chord(mods: [.control], key: "_"):
+        return .fontDecrease
+    case Chord(mods: [.control], key: "0"):
+        return .fontReset
+    default:
+        return nil
+    }
+}
 
 func isLinuxReservedChord(_ chord: Chord) -> Bool {
     isReservedMonitorChord(chord) || chord == linuxPreferencesChord
@@ -152,10 +183,11 @@ extension AppController {
 
     /// The single entry point for a terminal key press (called by GhosttySurface.keyPressed). Returns
     /// true when the key was consumed as an app shortcut / custom command; false to let libghostty encode
-    /// it for the terminal. Dispatch order: Esc leader-abort → reserved monitor chords → custom-command
-    /// matcher → built-in (override/default) → fixed fallback (arrows, page-nav, font).
+    /// it for the terminal. Dispatch order: Esc leader-abort → reserved host chord → custom command
+    /// matcher → built-in → fixed shortcut → raw arrow/page navigation.
     func handleKey(keyval: UInt32, keycode: UInt32, state: UInt32, sessionID: UUID,
-                   origin: GhosttySurface? = nil) -> Bool {
+                   origin: GhosttySurface? = nil,
+                   context: @autoclosure () -> ShortcutKeyContext? = nil) -> Bool {
         // Reset the leader deadline to the FINAL armed state on every exit: a fresh leader (re)starts the
         // 1.5s timer, a fired/aborted leader cancels it (macOS-parity leader timeout — see syncLeaderDeadline).
         defer { syncLeaderDeadline() }
@@ -165,39 +197,64 @@ extension AppController {
             return false
         }
 
-        guard let chord = chord(fromKeyval: keyval, state: state) else {
+        let needsKeyContext = needsShortcutKeyContext(
+            state: state, leaderArmed: customCommandEngine.isArmed
+        )
+        guard let chord = shortcutChord(
+            fromKeyval: keyval,
+            keycode: keycode,
+            state: state,
+            context: needsKeyContext ? context() : nil
+        ) else {
             // A non-Chord key (arrow/page/F-key) can't continue a leader sequence; abandon a half-typed
-            // one so a stale prefix can't complete across it (there's no Linux leader timeout yet).
+            // one so a stale prefix can't complete across it.
             if customCommandEngine.isArmed { customCommandEngine.reset() }
-            return fallbackShortcut(keyval: keyval, state: state, sessionID: sessionID, origin: origin)
+            return rawNavigationShortcut(keyval: keyval, state: state)
         }
 
-        // Reserved monitor chords (Ctrl+Tab, Ctrl+1/2) are never rebindable — they also can't be part of a
-        // custom keybind, so abandon any armed leader and go straight to the fallback.
         if isLinuxReservedChord(chord) {
             if customCommandEngine.isArmed { customCommandEngine.reset() }
-            return fallbackShortcut(keyval: keyval, state: state, sessionID: sessionID, origin: origin)
+            guard let shortcut = linuxFixedShortcut(for: chord) else { return false }
+            dispatchFixedShortcut(shortcut, origin: origin)
+            return true
         }
 
-        // Custom-command leader matcher (disjoint from built-ins by parseKeymap validation).
         switch customCommandEngine.advance(chord) {
-        case .fired(let cmd):
-            runCustomCommand(cmd, origin: origin, allowSessionless: store.activeSession == nil)
+        case .fired(let command):
+            runCustomCommand(command, origin: origin, allowSessionless: store.activeSession == nil)
             return true
         case .armed:
-            return true   // leader in progress: consume and wait for the next chord
+            return true
         case .unmatched:
             break
         }
 
-        // Built-in (user override or Linux default).
         if let action = resolvedBuiltinChords[chord] {
             dispatchBuiltin(action, sessionID: sessionID)
             return true
         }
+        if let shortcut = linuxFixedShortcut(for: chord) {
+            dispatchFixedShortcut(shortcut, origin: origin)
+            return true
+        }
+        return rawNavigationShortcut(keyval: keyval, state: state)
+    }
 
-        // Expressible but unbound (e.g. the font keys): the fixed fallback.
-        return fallbackShortcut(keyval: keyval, state: state, sessionID: sessionID)
+    private func dispatchFixedShortcut(_ shortcut: LinuxFixedShortcut, origin: GhosttySurface?) {
+        switch shortcut {
+        case .preferences:
+            showSettings()
+        case .focusPane(let left):
+            focusPane(left: left)
+        case .fontIncrease:
+            (origin ?? focusedSurface())?.performBindingAction(FontBindingAction.increase)
+        case .fontDecrease:
+            (origin ?? focusedSurface())?.performBindingAction(FontBindingAction.decrease)
+        case .fontReset:
+            (origin ?? focusedSurface())?.performBindingAction(FontBindingAction.reset)
+        case .sessionSwitch(let reverse):
+            quickSwitchSession(reverse: reverse)
+        }
     }
 
     /// Abandon a half-typed leader sequence (called on terminal focus loss — mirrors the macOS
@@ -279,15 +336,9 @@ extension AppController {
         }
     }
 
-    /// The non-rebindable shortcuts: arrow/page navigation + reorder, the reserved monitor chords
-    /// (Ctrl+Tab MRU switch, Ctrl+1/2 pane focus), and the font keys (Ctrl+=/+/-/0 — kept here so both
-    /// `=` and `+` increase, while a user `map` can still rebind the font actions through the matcher).
-    private func fallbackShortcut(keyval: UInt32, state: UInt32, sessionID: UUID,
-                                  origin: GhosttySurface? = nil) -> Bool {
-        let ctrl = (state & (1 << 2)) != 0
-        let shift = (state & (1 << 0)) != 0
-        let altOrSuper = (state & ((1 << 3) | (1 << 26))) != 0   // Alt/Super also held → not a reserved/font chord
-        if ctrl, shift {
+    private func rawNavigationShortcut(keyval: UInt32, state: UInt32) -> Bool {
+        let relevant = state & ((1 << 0) | (1 << 2) | (1 << 3) | (1 << 26))
+        if relevant == (1 << 0) | (1 << 2) {
             switch keyval {
             case 0xFF52: reorderActiveSession(.up); return true        // Ctrl+Shift+Up
             case 0xFF54: reorderActiveSession(.down); return true      // Ctrl+Shift+Down
@@ -295,23 +346,13 @@ extension AppController {
             case 0xFF56: reorderActiveWorkspace(.down); return true    // Ctrl+Shift+PageDown
             case 0xFF51: focusPane(left: true); return true           // Ctrl+Shift+Left
             case 0xFF53: focusPane(left: false); return true          // Ctrl+Shift+Right
-            case 0x2B: (origin ?? focusedSurface())?.performBindingAction(FontBindingAction.increase); return true  // Ctrl++
             default: return false
             }
-        } else if ctrl, !altOrSuper {
-            // Sole-Control (no Alt/Super): the reserved pane chords + the font keys. A `where` on a
-            // multi-pattern case binds only the last pattern, so the Alt/Super exclusion is on the branch.
+        }
+        if relevant == (1 << 2) {
             switch keyval {
-            case 0x2C: showSettings(); return true                       // Ctrl+, Preferences
             case 0xFF56: navigate(.next); return true                 // Ctrl+Page_Down
             case 0xFF55: navigate(.previous); return true             // Ctrl+Page_Up
-            case 0xFF09: quickSwitchSession(); return true            // Ctrl+Tab (reserved MRU switch)
-            case 0x31, 0x32:                                          // Ctrl+1 / Ctrl+2 (reserved; split only)
-                guard store.session(withID: sessionID)?.hasSplit == true else { return false }
-                focusPane(left: keyval == 0x31); return true
-            case 0x3D, 0x2B: (origin ?? focusedSurface())?.performBindingAction(FontBindingAction.increase); return true  // Ctrl+= / +
-            case 0x2D, 0x5F: (origin ?? focusedSurface())?.performBindingAction(FontBindingAction.decrease); return true  // Ctrl+-
-            case 0x30: (origin ?? focusedSurface())?.performBindingAction(FontBindingAction.reset); return true            // Ctrl+0
             default: return false
             }
         }
