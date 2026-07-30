@@ -284,7 +284,7 @@ final class AppController {
         applyAutoFollowSettings()
         gtk_window_present(WIN(window))
         applySidebarThemeColor()   // tint the sidebar to the terminal theme background
-        reloadKeymapDiagnostics()   // load keymap.conf → built-in overrides + custom-command chords for key dispatch
+        loadKeymapAtStartup()   // this window's own keymap.conf caches; NOT an app-wide reload
         reconcile()
         becameFrontmost()
     }

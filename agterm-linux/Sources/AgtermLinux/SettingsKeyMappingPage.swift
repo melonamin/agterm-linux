@@ -111,10 +111,12 @@ private let onUseDefaultConfigDirectory: @MainActor @convention(c) (OpaquePointe
 }
 private let onReloadKeymapSettings: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { button, _ in
     MainActor.assumeIsolated {
+        // No `guard` on the controller — see `reloadKeymapAllWindows(reportingIn:)`: the fan-out never
+        // depends on it resolving. This is the ONE reload the user asked for by pressing a button, so it
+        // is also the one that confirms success; the seam itself only reports errors, which is what ends
+        // this site's old double-toast (a per-window error banner plus its own summary).
         let controller = controllerForWidget(button)
-        let count = gWindows.values.map { $0.reloadKeymapDiagnostics() }.max() ?? 0
-        controller?.showToast(
-            count == 0 ? "keymap.conf reloaded" : "keymap.conf: \(count) diagnostic(s)")
+        if reloadKeymapAllWindows(reportingIn: controller) == 0 { controller?.showToast("keymap.conf reloaded") }
         controller?.rebuildSettings(page: .keyMapping)
     }
 }

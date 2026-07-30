@@ -8,6 +8,15 @@ paths:
   - "agtermCore/Sources/agtermCore/ConfigPaths.swift"
   - "agterm/Commands/CustomCommandRunner.swift"
   - "agtermUITests/KeymapUITests.swift"
+  - "agterm-linux/Sources/AgtermLinux/KeymapDispatch.swift"
+  - "agterm-linux/Sources/AgtermLinux/Palette.swift"
+  - "agterm-linux/Sources/AgtermLinux/LinuxKeyboardPolicy.swift"
+  - "agterm-linux/Sources/AgtermLinux/WindowManager.swift"
+  - "agterm-linux/Sources/AgtermLinux/AppControllerSurfaces.swift"
+  - "agterm-linux/Sources/AgtermLinux/SettingsKeyMappingPage.swift"
+  - "agterm-linux/Sources/AgtermLinux/LinuxSettingsController.swift"
+  - "agterm-linux/Sources/AgtermLinux/ControlActions+AppController.swift"
+  - "agterm-linux/Tests/AgtermLinuxTests/LinuxKeymapTests.swift"
 ---
 
 ## Keymap
@@ -187,6 +196,65 @@ paths:
   is exposed as File ▸ Reload Keymap, an action-palette entry, AND the `keymap.reload` control command
   — all ONE path.
   See the Control API catalog for the `keymap.reload` four-point audit.
+- **Linux caches the parsed keymap PER WINDOW CONTROLLER, so every explicit reload MUST go through
+  `reloadKeymapAllWindows(reportingIn:)`.**
+  macOS keeps one app-wide `SettingsModel.keymap`, so a reload there is automatically app-global.
+  The GTK port instead caches `keymap`, `resolvedBuiltinChords`, and `customCommandEngine` on EACH
+  `AppController`, rebuilt only by `reloadKeymapDiagnostics()`
+  (`agterm-linux/Sources/AgtermLinux/KeymapDispatch.swift`).
+  A reload that rebuilds one controller's caches therefore leaves every OTHER window dispatching the
+  previous bindings.
+  The seam is the app-wide free function `reloadKeymapAllWindows(reportingIn:)`
+  (`agterm-linux/Sources/AgtermLinux/WindowManager.swift`), which maps `reloadKeymapDiagnostics()` over
+  `gWindows.values`, reduces the identical per-window counts with `max() ?? 0`, reports parse errors once,
+  and returns the count.
+  All four explicit-reload sites route through it: the palette's `Reload Keymap` row, the `keymap.reload`
+  control command, the Settings ▸ Key Mapping reload button, and `setConfigDirectory` (which reloads
+  because a new config directory means a DIFFERENT `keymap.conf`, and which consequently went from a
+  per-window error banner to a single one in the acting window).
+  `setConfigDirectory` already bannered before the seam — its `gWindows` loop toasted inside every
+  `reloadKeymapDiagnostics()` — so the seam reduced N banners to one; it did not add reporting.
+  Do NOT treat that banner as this path's user-visible reporting either:
+  an `AdwToast` lands on the window CONTENT (the `AdwToastOverlay` is the `AdwApplicationWindow`'s
+  content child), while Settings is an `AdwPreferencesDialog` presented over it,
+  so the toast is at best dimmed under the dialog and expires before the user closes it.
+  The channel that actually reports there is the Key Mapping page's Diagnostics group (per-line,
+  persistent), which the caller rebuilds immediately after.
+  Hand-written per-site fanouts are exactly what caused the original bug — two of the four sites had one
+  and two did not, so the palette row and `keymap.reload` silently stayed single-window, contradicting
+  `site/commands.html` and `.claude/rules/control-api.md`, which already document `keymap.reload` as
+  app-global.
+  So ROUTE ANY NEW OR NEWLY-IMPLEMENTED RELOAD SITE THROUGH THE SEAM, never a fresh `gWindows` loop.
+  That specifically includes the one still missing: `README.md` promises the Edit Keymap overlay reloads
+  automatically when the editor is saved and quit, and the Linux `editKeymap()`
+  (`agterm-linux/Sources/AgtermLinux/AppControllerSurfaces.swift`) only OPENS the overlay, so whoever
+  wires up that overlay-close reload adds the FIFTH caller and owes it the seam.
+  Three details the seam depends on.
+  Startup is deliberately NOT fanned out — window construction builds ONE new controller's cache rather
+  than reloading the app, so it calls `loadKeymapAtStartup()` (a thin `reloadKeymapDiagnostics()` +
+  report wrapper) directly, and a dirty `keymap.conf` banners once per window opened, which is per-window
+  on purpose because each window loads it for the first time.
+  Reporting belongs to the CALLER, via `keymapReloadToast(count:)`, not to `reloadKeymapDiagnostics()` —
+  that is what keeps an app-wide reload from bannering every window.
+  A load REPORTS ERRORS AND IS OTHERWISE SILENT, matching macOS `SettingsModel.reloadKeymap()`, which
+  notifies only on a non-empty `keymapDiagnostics`; silence matters most for `agtermctl keymap reload`, a
+  scripted surface that must not banner the frontmost window on every invocation.
+  The ONE success confirmation is the Settings ▸ Key Mapping reload BUTTON, which posts its own
+  `"keymap.conf reloaded"` at its own call site because there the user pressed a button and expects an
+  answer — do NOT push that back into the seam.
+  `reportingIn:` is OPTIONAL on purpose: the Settings button reloads unconditionally and only
+  optional-chains its banner off `controllerForWidget(button)`, so a non-optional parameter would turn an
+  unresolved button into "nothing reloads at all" — the fan-out never depends on the controller, which
+  only decides where the single banner lands.
+  The same cache is what the Linux action palette reads for its custom rows (`keymap.commands` in
+  `agterm-linux/Sources/AgtermLinux/Palette.swift`, matching macOS), never a fresh disk parse — otherwise
+  the shortcut column would advertise an edited-but-unreloaded chord that dispatch does not have.
+  `keymapReloadToast(count:)` is file-level and internal (not `private`) so `LinuxKeymapTests` can reach
+  it; it holds the only host-free logic, leaving the seam itself with `map` + `max` + `showToast` over
+  live GTK controllers.
+  Those live parts are pinned only by two AT-SPI checks: `check_keymap_reload_fanout` for the fan-out
+  (an explicit reload reaching EVERY window) and `check_keymap_error_banner` for the caller-side reporting
+  (a malformed `keymap.conf` still bannering its parse errors).
 - **Edit Keymap (GUI-only).**
   `AppActions.editKeymap()` (File ▸ Edit Keymap… + the ⌃⇧P palette) opens `keymap.conf` in the user's
   editor inside a 95% FLOATING overlay over the active session via `AppStore.openOverlay(…, sizePercent: 95)`.

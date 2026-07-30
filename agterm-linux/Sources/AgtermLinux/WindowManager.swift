@@ -114,6 +114,33 @@ extension WindowLibrary {
     library.saveIndex()
 }
 
+/// Re-read `keymap.conf` in EVERY open window and report any parse errors once, in `controller`.
+///
+/// The parsed keymap is cached PER WINDOW CONTROLLER on Linux (unlike macOS, where one app-wide
+/// `SettingsModel` holds it), so an explicit reload that rebuilds only one controller's caches leaves
+/// every other window dispatching the previous bindings — which is exactly the bug this seam closes:
+/// each of the four reload call sites hand-wrote its own `gWindows` fanout and two of them (the palette's
+/// `Reload Keymap` row and the `keymap.reload` control command) never got one, contradicting the shipped
+/// docs that call `keymap.reload` app-global. One seam, so the four surfaces cannot drift again.
+///
+/// `controller` is OPTIONAL on purpose: the Settings ▸ Key Mapping reload button reloads every window
+/// unconditionally and only optional-chains its toast off `controllerForWidget(button)`. Making the
+/// parameter non-optional would turn an unresolved button into "no window reloads at all" — a regression
+/// hidden inside a behavior-preserving refactor. So the fan-out never depends on the controller; the
+/// controller only decides WHERE the single error banner lands (and a nil one simply means no banner).
+///
+/// Errors are reported once, in the acting window, rather than per window: a per-window banner would make
+/// window B announce a reload the user performed in window A. A CLEAN reload is silent here — see
+/// `keymapReloadToast(count:)` for why, and for the one site that adds its own success confirmation.
+@discardableResult
+@MainActor func reloadKeymapAllWindows(reportingIn controller: AppController?) -> Int {
+    // Every window parses the same keymap.conf, so the counts are identical and `max()` just picks one
+    // rather than making an arbitrary choice; `?? 0` is the empty-`gWindows` case.
+    let count = gWindows.values.map { $0.reloadKeymapDiagnostics() }.max() ?? 0
+    if let message = keymapReloadToast(count: count) { controller?.showToast(message) }
+    return count
+}
+
 /// Open the window for `id` (raise it if already open).
 @MainActor func openWindow(_ id: UUID) {
     if let existing = gWindows[id] {

@@ -556,7 +556,7 @@ extension AppController: ControlActions {
     }
 
     func reloadKeymap() -> ControlResponse {
-        let diagnostics = reloadKeymapDiagnostics()
+        let diagnostics = reloadKeymapAllWindows(reportingIn: self)   // app-global: MUST fan out
         return ControlResponse(ok: true, result: ControlResult(count: diagnostics))
     }
 

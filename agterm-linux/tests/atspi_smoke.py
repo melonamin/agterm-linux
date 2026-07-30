@@ -73,6 +73,18 @@ def named(root, name, role=None):
     return matches[0] if matches else None
 
 
+def named_prefix(root, prefix):
+    """The first accessible under `root` whose name STARTS WITH `prefix`, or None (None `root` included).
+
+    Toast and banner names carry their payload (`command failed: …`, `keymap.conf: 1 error — …`), so they
+    can only be found by prefix; tolerating a missing `root` lets a caller compose this with a frame
+    lookup inside a `wait_for` predicate.
+    """
+    if root is None:
+        return None
+    return next((item for item in collect(root) if (item.get_name() or "").startswith(prefix)), None)
+
+
 def preferences_windows(root):
     return collect(root, role="dialog", name="Preferences") + collect(
         root, role="panel", name="Preferences"
@@ -556,6 +568,132 @@ def check_palette_row_layout(app, process_id, window_title):
     wait_for(
         lambda: not named(app, "Command Palette", role="frame"),
         "command palette did not close after the row-layout check",
+    )
+
+
+def check_keymap_reload_fanout(app, process_id, env, first_title, second_title):
+    """Pin that an explicit keymap reload reaches EVERY window, and an unreloaded edit reaches none.
+
+    `first_title`/`second_title` are FRAME titles — the SESSION names (`command-origin-a` /
+    `command-origin-b`), never the window NAME (`command-window-b`) — because `open_palette` looks its
+    window up with `named(app, title, role="frame")`.
+
+    Two separate bugs are covered, both of which used to rebuild a SINGLE controller's caches while every
+    other window kept dispatching the previous bindings: the `keymap.reload` control command and the
+    palette's own `Reload Keymap` row. Each is asserted in BOTH windows — asserting both is what makes
+    the check independent of which controller the reload resolved, so it cannot pass without the fan-out.
+    The palette rows themselves come from the cached keymap, so the pre-reload leg doubles as the
+    "an edited-but-not-yet-reloaded chord must not be advertised" assertion.
+
+    `keymap.conf` is APPENDED to along the way and RESTORED to the caller's seeded content before
+    returning, so nothing downstream runs against keymap state this function wrote.
+    """
+    # Derived the same way the scenario itself derives its config dir, so `env` alone locates the fixture.
+    keymap = os.path.join(env["AGTERM_STATE_DIR"], "config", "keymap.conf")
+    with open(keymap, encoding="utf-8") as source:
+        seeded = source.read()
+
+    def filtered_rows(title, needle, sentinel, message):
+        """Open one window's palette, filter it to `needle`, wait for `sentinel`, and return every row.
+
+        Waiting for a row that MUST be present is what keeps the caller's ABSENCE assertions honest: a
+        palette that has not finished filtering renders no rows at all, so a bare "row is missing" check
+        would pass vacuously against an empty list.
+        """
+        palette, search = open_palette(app, process_id, title)
+        assert search.get_editable_text_iface().set_text_contents(needle)
+
+        def settled():
+            rows = palette_row_labels(palette)
+            return rows if sentinel in rows else None
+
+        rows = wait_for(settled, message)
+        press_escape(process_id, window_title="Command Palette")
+        wait_for(
+            lambda: not named(app, "Command Palette", role="frame"),
+            f"command palette did not close in {title!r}",
+        )
+        return rows
+
+    chorded_row = ["Chorded Demo", "custom", "ctrl+shift+e"]
+    # ctrl+shift+y is free everywhere the parser looks, the same reasoning as the seeded ctrl+shift+e:
+    # isReservedMonitorChord covers only ctrl+tab / ctrl+1 / ctrl+2, isLinuxReservedChord adds only
+    # ctrl+comma, the Linux default table binds no `y`, and no shared default uses key "y" — so
+    # cross-section validation never clears this shortcut and it reaches the row as the raw token.
+    with open(keymap, "a", encoding="utf-8") as target:
+        target.write('command "Late Demo" ctrl+shift+y true\n')
+
+    for title in (first_title, second_title):
+        rows = filtered_rows(title, "Demo", chorded_row,
+                             f"the seeded custom rows did not render in {title}'s palette")
+        assert not any(row[:1] == ["Late Demo"] for row in rows), (
+            f"an edited-but-unreloaded keymap.conf already shows in {title}'s palette"
+        )
+
+    # Bug one: `agtermctl keymap reload` used to rebuild only the controller it resolved.
+    control_json(env, "keymap", "reload", "--json")
+    for title in (first_title, second_title):
+        filtered_rows(title, "Demo", ["Late Demo", "custom", "ctrl+shift+y"],
+                      f"agtermctl keymap reload did not reach {title}'s palette")
+
+    # Bug two: the palette's own `Reload Keymap` row — driven in the FIRST window, asserted in the SECOND.
+    # The second command is deliberately chord-less; the chord column is already pinned above, and a
+    # second chord would need its own cross-section-validation argument to stay meaningful.
+    with open(keymap, "a", encoding="utf-8") as target:
+        target.write('command "Palette Demo" true\n')
+    run_palette_action(app, process_id, first_title, "Reload Keymap")
+    filtered_rows(second_title, "Demo", ["Palette Demo", "custom"],
+                  f"the palette's Reload Keymap row did not reach {second_title}'s palette")
+
+    # Restore the fixture the CALLER seeded, so everything after this returns to the keymap state it wrote
+    # rather than to whatever this check appended. Every reload above was clean, hence silent, so there is
+    # no banner left queued for the next check to trip over.
+    with open(keymap, "w", encoding="utf-8") as target:
+        target.write(seeded)
+    control_json(env, "keymap", "reload", "--json")
+
+
+def check_keymap_error_banner(app, env, first_title, second_title):
+    """Pin that a malformed `keymap.conf` still banners its parse errors on reload.
+
+    A clean reload is SILENT, so no other leg posts a banner. Surfacing parse errors also moved from
+    inside `reloadKeymapDiagnostics` (where it was guaranteed) out to each caller, so assert one actually
+    reaches the user. `map ctrl+, new_session` is a reserved Linux chord and yields exactly one
+    diagnostic; `LinuxKeymapTests` pins that count host-free, so the expected text below is derived rather
+    than guessed.
+
+    Like `check_keymap_reload_fanout`, this RESTORES `keymap.conf` before returning — and additionally
+    waits its own banner out, so nothing downstream runs against the malformed file or the toast queue.
+    """
+    keymap = os.path.join(env["AGTERM_STATE_DIR"], "config", "keymap.conf")
+    with open(keymap, encoding="utf-8") as source:
+        seeded = source.read()
+
+    def banner_in(title):
+        return named_prefix(named(app, title, role="frame"), "keymap.conf")
+
+    with open(keymap, "a", encoding="utf-8") as target:
+        target.write("map ctrl+, new_session\n")
+    control_json(env, "keymap", "reload", "--json")
+    # Asserted in EITHER window rather than a specific one: the seam reports once, in whichever controller
+    # the command resolved, and pinning that resolution here would test `gController`, not the banner.
+    banner = wait_for(
+        lambda: banner_in(first_title) or banner_in(second_title),
+        "a malformed keymap.conf reloaded without reporting the parse error",
+    )
+    assert banner.get_name() == "keymap.conf: 1 error — bad line ignored", (
+        f"unexpected keymap banner: {banner.get_name()!r}"
+    )
+
+    # Restore, then wait the banner out. showToast posts to an AdwToastOverlay that shows one toast at a
+    # time and queues the rest at AdwToast's ~5 s default, so a live banner would sit in FRONT of the
+    # launch/exit-failure toasts the caller asserts next.
+    with open(keymap, "w", encoding="utf-8") as target:
+        target.write(seeded)
+    control_json(env, "keymap", "reload", "--json")
+    wait_for(
+        lambda: not banner_in(first_title) and not banner_in(second_title),
+        "the keymap.conf error banner never cleared",
     )
 
 
@@ -1259,12 +1397,13 @@ def verify_custom_command_failures(env):
         def frame(title):
             return named(app, title, role="frame")
 
-        def failure_named(window, prefix):
-            return next((item for item in collect(window) if (item.get_name() or "").startswith(prefix)), None)
-
         wait_for(lambda: frame("command-origin-a"), "first command window did not become accessible")
         wait_for(lambda: frame("command-origin-b"), "second command window did not become accessible")
         check_palette_row_layout(app, process.pid, "command-origin-a")
+        # Both frames are proven present by the waits above, so the keymap checks reuse this two-window
+        # fixture instead of launching a scenario of their own. Each restores keymap.conf before returning.
+        check_keymap_reload_fanout(app, process.pid, env, "command-origin-a", "command-origin-b")
+        check_keymap_error_banner(app, env, "command-origin-a", "command-origin-b")
         time.sleep(0.5)
         shutil.rmtree(first_cwd)
         shutil.rmtree(second_cwd)
@@ -1276,10 +1415,10 @@ def verify_custom_command_failures(env):
             run_palette_action(app, process.pid, title, "Launch Failure", badge="custom")
             launch_prefix = "command failed to launch: Launch Failure —"
             wait_for(
-                lambda: failure_named(frame(title), launch_prefix),
+                lambda: named_prefix(frame(title), launch_prefix),
                 f"launch failure toast did not appear in {title}",
             )
-            assert not failure_named(frame(other_title), launch_prefix), (
+            assert not named_prefix(frame(other_title), launch_prefix), (
                 f"launch failure from {title} leaked into {other_title}"
             )
 

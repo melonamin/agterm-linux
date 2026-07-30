@@ -133,7 +133,13 @@ extension AppController {
         let value = path?.trimmingCharacters(in: .whitespacesAndNewlines)
         persist(\.configDirectory, value?.isEmpty == false ? value : nil)
         ensureStarterFiles()
-        for controller in gWindows.values { _ = controller.reloadKeymapDiagnostics() }
+        // Through the seam, not a hand-written `gWindows` loop: a new config directory means a DIFFERENT
+        // keymap.conf, so every window must re-parse. The old loop bannered errors once PER WINDOW (each
+        // `reloadKeymapDiagnostics()` toasted its own count); this reports at most once, in this window.
+        // Do NOT read that banner as this path's user-visible reporting: an AdwToast lands on the window
+        // CONTENT, under the Settings dialog the user is still in. What they actually read is the Key
+        // Mapping page's Diagnostics group, which the caller rebuilds right after with the per-line detail.
+        reloadKeymapAllWindows(reportingIn: self)
         reloadConfig()
     }
 

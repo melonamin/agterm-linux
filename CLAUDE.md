@@ -468,7 +468,11 @@ This only changes raw-text line breaks — the rendered markdown is identical �
 - `keymap.md` — the kitty-flavored `keymap.conf` parser, built-in-override resolution,
   custom-command monitor, `{AGT_X}` tokens, reload + Edit Keymap.
   Triggers on `Keybind`/`KeybindMatcher`/`Keymap`/`BuiltinAction`/`CustomCommand`/`ConfigPaths`,
-  `CustomCommandRunner.swift`, and the keymap UI tests.
+  `CustomCommandRunner.swift`, the Linux `KeymapDispatch`/`LinuxKeyboardPolicy` sources plus the
+  reload seam (`WindowManager`) and its call sites
+  (`Palette`/`SettingsKeyMappingPage`/`LinuxSettingsController`/`ControlActions+AppController`),
+  plus `AppControllerSurfaces` for the pending Edit-Keymap reload,
+  and the keymap UI + `LinuxKeymapTests` tests.
 - `notifications.md` — terminal OSC 9/777 + control `notify`, suppression,
   click-to-reveal identity, the unseen badge, the agent-status glyph.
   Triggers on `NotificationManager.swift`, `Notifications`/`AgentStatus`.

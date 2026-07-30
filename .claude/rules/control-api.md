@@ -1076,6 +1076,13 @@ paths:
   drives, so the GUI half and the control half can't diverge — control-native only in the count it reports
   back; no `--window` selector (the keymap is app-global — a single app-wide `SettingsModel`,
   constructed once in `agtermApp.init` and shared with `ControlServer`).
+  **Linux adapter:** there is no app-wide `SettingsModel` — the parsed keymap is cached PER WINDOW
+  CONTROLLER, so the app-global guarantee is MANUFACTURED by `reloadKeymapAllWindows(reportingIn:)`
+  (`agterm-linux/Sources/AgtermLinux/WindowManager.swift`).
+  Never call `reloadKeymapDiagnostics()` directly from a control arm — it rebuilds one window and leaves
+  the rest on the previous bindings.
+  A clean reload stays SILENT there (no banner) precisely because this is a scripted surface;
+  see `.claude/rules/keymap.md`.
   Four-point keep-in-sync audit for `keymap.reload`: (1) `case keymapReload = "keymap.reload"` in `ControlProtocol.swift`
   (returns the new `ControlResult.count: Int?`, no target/args), (2) the `.keymapReload` dispatch arm
   in `ControlServer`, (3) the `keymap reload` subcommand in `agtermctlKit`,

@@ -1,3 +1,6 @@
 # build outputs
 .build/
 vendor/
+
+# python bytecode cache from the AT-SPI suite under tests/
+__pycache__/

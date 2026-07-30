@@ -92,6 +92,26 @@ func loadLinuxKeymap(configDirectory: URL) -> (keymap: Keymap, diagnostics: [Key
     return (Keymap(builtinOverrides: overrides, commands: commands), diagnostics)
 }
 
+/// The toast for a keymap load, or `nil` when the load produced nothing worth saying.
+///
+/// A load REPORTS ERRORS AND OTHERWISE STAYS SILENT, whether it happened at startup or on an explicit
+/// reload — matching macOS, where `SettingsModel.reloadKeymap()` notifies only on a non-empty
+/// `keymapDiagnostics`. Silence matters most for `agtermctl keymap reload`, a scripted/headless surface
+/// (hooks, custom commands) that must not banner the frontmost window on every invocation. The one
+/// success confirmation in the app is the Settings ▸ Key Mapping reload BUTTON, which posts its own
+/// (see `SettingsKeyMappingPage.swift`) because there the user pressed a button and expects an answer.
+///
+/// It lives in a helper because both the app-wide reload seam and startup report the same wording, and
+/// returning `String?` puts the "do not toast" case in the value instead of an `if` each caller repeats.
+/// Internal, not `private`, so `AgtermLinuxTests` can reach it — this wording is the only host-free part
+/// of the reload seam, which otherwise runs over live GTK controllers.
+func keymapReloadToast(count: Int) -> String? {
+    guard count > 0 else { return nil }
+    // Kitty-style: a malformed line is skipped and the rest of the file still loads, so name the count
+    // instead of silently dropping the bad lines.
+    return "keymap.conf: \(count) error\(count == 1 ? "" : "s") — bad line\(count == 1 ? "" : "s") ignored"
+}
+
 @MainActor
 private final class LeaderTimeoutContext {
     weak var controller: AppController?
@@ -120,8 +140,11 @@ private let onLeaderTimeout: @MainActor @convention(c) (gpointer?) -> gboolean =
 extension AppController {
     /// (Re)load keymap.conf and rebuild the dispatch caches: the resolved built-in chord→action map, the
     /// custom-command leader matcher, and the id→command lookup. Returns the parse-diagnostic count.
-    /// Called at startup and from the `keymap.reload` control command.
-    @discardableResult
+    ///
+    /// This rebuilds ONE window's caches and deliberately does NOT toast — the CALLER owns the toast, via
+    /// `keymapReloadToast(count:)`. Toasting here would banner every window on an app-wide reload (see
+    /// `reloadKeymapAllWindows(reportingIn:)`, which fans this out and reports once). Direct callers are
+    /// `loadKeymapAtStartup()` and that seam; every explicit reload goes through the seam.
     func reloadKeymapDiagnostics() -> Int {
         let (km, diagnostics) = loadLinuxKeymap(configDirectory: configDirectory())
         keymap = km
@@ -141,13 +164,17 @@ extension AppController {
         // Custom commands: the shared engine indexes by id + builds the leader matcher (parseKeymap already
         // cleared shortcuts that collide with built-ins / reserved chords / each other).
         customCommandEngine = CustomCommandEngine(commands: km.commands)
-        // Surface parse errors instead of silently dropping the bad lines (kitty-style: a malformed line
-        // is skipped, the rest of the file still loads) — a transient banner naming the count.
-        if !diagnostics.isEmpty {
-            let n = diagnostics.count
-            showToast("keymap.conf: \(n) error\(n == 1 ? "" : "s") — bad line\(n == 1 ? "" : "s") ignored")
-        }
         return diagnostics.count
+    }
+
+    /// Build THIS new controller's keymap caches while the window is being constructed.
+    ///
+    /// Deliberately NOT `reloadKeymapAllWindows(reportingIn:)`: this is one window's FIRST load, not an
+    /// app-wide reload, and fanning out here would re-parse every already-open window on every window
+    /// open. A malformed `keymap.conf` therefore toasts once per window opened, which is per-window on
+    /// purpose — each window is loading the file for the first time.
+    func loadKeymapAtStartup() {
+        if let message = keymapReloadToast(count: reloadKeymapDiagnostics()) { showToast(message) }
     }
 
     /// The chord currently bound to `action`, or nil when nothing resolves (no Linux default, or the
