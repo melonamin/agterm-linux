@@ -406,6 +406,11 @@ agterm is built to run from the keyboard. Every action has a shortcut and appear
 
 For jumping back to sessions you have been working in, a Ctrl-Tab switcher walks a most-recently-used list across every workspace, macOS app-switcher style: hold Ctrl and tap Tab to move through it, release to switch, and a single tap flips straight back to the session you were just in. The list survives a relaunch, so the switcher works right after your sessions restore. A title-bar clock button opens the same list for the mouse: a popover of the sessions you have used recently, tinted to the terminal theme, that you hover to highlight and click to switch to. Shortcuts also step between adjacent sessions, panes, and windows.
 
+On Linux, app shortcuts remain usable after switching from a Latin layout to a non-Latin layout such as Russian, Greek, Hebrew, Arabic, or Thai.
+An ASCII-capable layout such as US, Dvorak, Colemak, French, or German remains semantic, so its own letters and shifted punctuation are not rewritten to US keys.
+A layout that cannot type the complete ASCII alphabet resolves every shortcut key by its physical ANSI position, matching upstream macOS behavior and avoiding punctuation exceptions in Greek and Hebrew.
+Ctrl+Shift+Tab reverses an active Ctrl-Tab cycle, and the reserved Ctrl+Tab variants are consumed by the session switcher rather than sent to the terminal.
+
 The same recently-used history decides where you land when you close the session you are in: agterm returns you to the session you were most recently working in, not to whichever row happens to sit next to the one that closed. The pick stays inside the closing session's workspace, and in the flagged view stays within the flagged set, widening beyond the workspace only when the close leaves nothing there to return to; if no recent session qualifies, it falls back to the adjacent row in that workspace — to the adjacent flagged row in the flagged view, unless the close took the last flagged session, where the plain neighbor stands — and, when the closed session was the last one in its workspace, to the first session of another workspace.
 
 ## Settings
