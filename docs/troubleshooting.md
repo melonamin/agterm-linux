@@ -153,6 +153,12 @@ The full ghostty key reference is at <https://ghostty.org/docs/config>.
 
 ## Copy/paste and shortcuts on a non-Latin or alternative layout
 
+On Linux, agterm resolves shortcuts once per active layout, matching upstream macOS behavior.
+ASCII-capable layouts remain semantic, so alternative Latin layouts and their shifted punctuation stay layout-local.
+Layouts that cannot type the complete ASCII alphabet resolve every shortcut key by its physical ANSI position.
+This keeps shortcuts such as Ctrl+Shift+J working after an English-to-Russian switch and also covers Greek or Hebrew positions that produce ASCII punctuation instead of letters.
+Ctrl+Shift+Tab reverses the active Ctrl-Tab session cycle; Ctrl+Tab with additional modifiers remains reserved for that switcher.
+
 ⌘C and ⌘V copy and paste on any keyboard layout, non-Latin ones (Russian, Greek, and so on) included, because agterm binds them to the physical key positions rather than to the character a layout prints. The physical C and V keys then work no matter what those keys produce in the active layout.
 
 The reason is that ghostty's own copy/paste binds match the produced character: on a Russian layout the physical V key yields `м`, so the built-in `super+v` bind never fires. The bundled agterm defaults add physical-key binds (`super+key_c`, `super+key_v`) that match by position instead.
