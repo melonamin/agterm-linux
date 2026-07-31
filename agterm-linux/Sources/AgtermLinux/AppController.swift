@@ -360,14 +360,6 @@ final class AppController {
     /// background window's unseen badges after a bump).
     func refreshSidebar() { rebuildSidebar() }
 
-    /// Re-push the system light/dark scheme to every live surface (on a style-manager change).
-    func reapplyColorScheme() {
-        for s in surfaces.values { s.applyColorScheme() }
-        for s in splitSurfaces.values { s.applyColorScheme() }
-        for s in scratchSurfaces.values { s.applyColorScheme() }
-        for s in overlaySurfaces.values { s.applyColorScheme() }
-    }
-
     func navigate(_ dir: SessionNavigation, userInitiated: Bool = true) {
         let attentionBefore = Set(store.attentionSessions.map(\.id))
         if userInitiated { noteUserActivity() }
@@ -856,10 +848,10 @@ final class AppController {
     /// isn't a findable theme file — Linux ships none of its own ghostty resources, so it falls back to
     /// the system themes dir, which doesn't carry `agterm`. Without this the default look silently
     /// degrades to ghostty's built-in default. macOS stages the theme file, so this would be a no-op there.
-    nonisolated static func ghosttyLines(for settings: AppSettings) -> [String] {
+    nonisolated static func ghosttyLines(for settings: AppSettings, isDark: Bool) -> [String] {
         var rendered = settings
         if settings.followSystemAppearance == true {
-            rendered.theme = settings.activeTheme(isDark: systemIsDark)
+            rendered.theme = settings.activeTheme(isDark: isDark)
             rendered.darkTheme = nil
             rendered.followSystemAppearance = nil
         }

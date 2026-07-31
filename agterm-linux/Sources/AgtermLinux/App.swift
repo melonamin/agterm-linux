@@ -56,7 +56,8 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
 
 /// First-time application setup (idempotent — a second activate/open raises the frontmost instead): the
 /// reveal action, the WindowLibrary, the starter config files, app CSS/icons, the control server, the
-/// quit-signal handlers, the color-scheme tracker, then the saved windows. Shared by `activate`+`open`.
+/// quit-signal handlers, the color-scheme tracker, saved windows, then appearance reconciliation.
+/// Shared by `activate`+`open`.
 @MainActor func activateApplication(_ app: OpaquePointer?) {
     // A second launch (or any re-activate) of the single-instance GApplication fires activate again:
     // raise the frontmost window instead of no-op'ing, so launching agterm while it runs focuses it.
@@ -90,6 +91,10 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
     let ids = gLibrary.openIDs()
     let toOpen = ids.isEmpty ? [gLibrary.windows.first?.id].compactMap { $0 } : ids
     for id in toOpen { openWindow(id) }
+    if let controller = gWindows.values.first {
+        _ = controller.reloadConfigForAppearanceChange(
+            LinuxAppearanceSide(isDark: AppController.systemIsDark))
+    }
     #if DEBUG
     if let rawURL = ProcessInfo.processInfo.environment["AGTERM_ATSPI_OPEN_URL"], !rawURL.isEmpty {
         GhosttyApp.exerciseURLAction(rawURL)
@@ -120,7 +125,10 @@ func linuxSettingsStore() -> SettingsStore {
 /// open window's snapshot — AppStore only saves on structural mutations, so a live `cd` since the last
 /// one would otherwise be lost.
 private let onShutdown: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { _, _ in
-    MainActor.assumeIsolated { flushOnQuit() }
+    MainActor.assumeIsolated {
+        colorSchemeChangeDebouncer.cancel()
+        flushOnQuit()
+    }
 }
 
 /// Install the app-wide CSS once: the `.agterm-blink` keyframe animation that pulses an in-progress
@@ -206,11 +214,32 @@ nonisolated private func iconResourceCandidates() -> [String] {
     }
 }
 
+@MainActor private let colorSchemeChangeDebouncer = Debouncer()
+private let colorSchemeChangeDebounceInterval: TimeInterval = 0.05
+
+@MainActor private func colorSchemeReloadContext() -> AppearanceReloadContext {
+    let settings = linuxSettingsStore().load()
+    return AppearanceReloadContext(
+        followsSystemAppearance: settings.followSystemAppearance == true,
+        hasLightSlot: settings.theme != nil,
+        hasDarkSlot: settings.darkTheme != nil,
+        currentSide: LinuxAppearanceSide(isDark: AppController.systemIsDark)
+    )
+}
+
 private let onColorSchemeChanged: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, _, _ in
     MainActor.assumeIsolated {
-        for ctl in gWindows.values { ctl.reapplyColorScheme() }
-        gWindows.values.first?.reloadConfig()
-        for ctl in gWindows.values { ctl.rebuildSettingsForColorSchemeChange() }
+        guard gAppearanceReloadPolicy.isEligible(for: colorSchemeReloadContext()) else {
+            colorSchemeChangeDebouncer.cancel()
+            return
+        }
+        colorSchemeChangeDebouncer.schedule(after: colorSchemeChangeDebounceInterval) {
+            let context = colorSchemeReloadContext()
+            guard gAppearanceReloadPolicy.isEligible(for: context) else { return }
+            guard let controller = gWindows.values.first,
+                  controller.reloadConfigForAppearanceChange(context.currentSide) else { return }
+            for ctl in gWindows.values { ctl.rebuildSettingsForColorSchemeChange() }
+        }
     }
 }
 

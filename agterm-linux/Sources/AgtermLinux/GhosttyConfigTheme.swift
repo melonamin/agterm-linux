@@ -91,11 +91,12 @@ extension AppController {
     /// otherwise repaint the chrome right after the preview did.
     func applyResolvedWindowThemeColors() {
         let settings = AppController.resolvedThemeSettings(persisted: linuxSettingsStore().load())
-        let lines = Self.ghosttyLines(for: settings)
+        let isDark = Self.systemIsDark
+        let lines = Self.ghosttyLines(for: settings, isDark: isDark)
         guard let config = GhosttyApp.shared.buildConfig(extraLines: lines) else { return }
         defer { ghostty_config_free(config) }
         applyWindowThemeColors(
-            for: settings.activeTheme(isDark: Self.systemIsDark),
+            for: settings.activeTheme(isDark: isDark),
             resolvedColors: GhosttyConfigTheme.colors(from: config))
     }
 }

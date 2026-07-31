@@ -199,6 +199,8 @@ final class GhosttySurface: TerminalSurface {
         if command != nil {
             cfg.wait_after_command = waitAfterCommand
         }
+        let appearanceSide = LinuxAppearanceSide(isDark: AppController.systemIsDark)
+        GhosttyApp.shared.applyColorScheme(appearanceSide)
         surface = ghostty_surface_new(app, &cfg)
         guard let surface else {
             storage.release()
@@ -208,7 +210,7 @@ final class GhosttySurface: TerminalSurface {
         ghostty_surface_set_content_scale(surface, Double(scale), Double(scale))
         pushSize()
         ghostty_surface_set_focus(surface, true)
-        applyColorScheme()   // report the system light/dark scheme (OSC color-scheme queries)
+        applyColorScheme(appearanceSide)   // report the system light/dark scheme (OSC color-scheme queries)
         feed(GhosttyApp.shared.currentThemeOSC)   // push theme colors the embedded GL renderer won't adopt from config
         if controller?.store.session(withID: sessionID)?.backgroundWatermark != nil {
             applyWatermarkFromSession()
@@ -488,11 +490,11 @@ final class GhosttySurface: TerminalSurface {
         name.withCString { gtk_widget_set_cursor_from_name(W(glArea), $0) }
     }
 
-    /// Push the current system light/dark scheme to the surface (at create + on style-manager change).
-    func applyColorScheme() {
+    /// Push the captured system light/dark scheme to the surface (at create + on style-manager change).
+    func applyColorScheme(_ side: LinuxAppearanceSide) {
         guard let surface else { return }
-        let dark = adw_style_manager_get_dark(adw_style_manager_get_default()) != 0
-        ghostty_surface_set_color_scheme(surface, dark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT)
+        ghostty_surface_set_color_scheme(
+            surface, side.isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT)
     }
 
     func grabFocus() {

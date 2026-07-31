@@ -4,11 +4,22 @@ import agtermCore
 
 @MainActor
 extension AppController {
-    func applySettings(_ settings: AppSettings) {
-        let lines = Self.ghosttyLines(for: settings)
-        guard let config = GhosttyApp.shared.buildConfig(extraLines: lines) else { return }
+    @discardableResult
+    func applySettings(
+        _ settings: AppSettings,
+        appearanceSide: LinuxAppearanceSide? = nil
+    ) -> Bool {
+        let side = appearanceSide ?? LinuxAppearanceSide(isDark: Self.systemIsDark)
+        let lines = Self.ghosttyLines(for: settings, isDark: side.isDark)
+        guard let config = GhosttyApp.shared.buildConfig(extraLines: lines) else { return false }
         let chromeColors = GhosttyConfigTheme.colors(from: config)
         GhosttyApp.shared.currentThemeBackgroundHex = chromeColors.background
+        GhosttyApp.shared.applyColorScheme(side)
+        for controller in gWindows.values {
+            for surface in controller.configurableSurfaces {
+                surface.applyColorScheme(side)
+            }
+        }
         GhosttyApp.shared.updateConfig(config)
         for controller in gWindows.values {
             for surface in controller.configurableSurfaces {
@@ -20,7 +31,7 @@ extension AppController {
         ghostty_config_free(config)
 
         let osc = AppSettings.themeOSC(from: lines)
-        let activeTheme = settings.activeTheme(isDark: Self.systemIsDark)
+        let activeTheme = settings.activeTheme(isDark: side.isDark)
         let liveOSC = osc.isEmpty && activeTheme == nil ? AppSettings.themeResetOSC : osc
         GhosttyApp.shared.currentThemeOSC = liveOSC
         for controller in gWindows.values {
@@ -30,6 +41,14 @@ extension AppController {
             }
             controller.applyWindowThemeColors(for: activeTheme, resolvedColors: chromeColors)
         }
+        recordAppliedColorSchemeSide(side)
+        return true
+    }
+
+    /// Automatic appearance reconciliation restores complete per-session overlays.
+    /// Explicit config reload stays watermark-only.
+    func reloadConfigForAppearanceChange(_ side: LinuxAppearanceSide) -> Bool {
+        applySettings(linuxSettingsStore().load(), appearanceSide: side)
     }
 
     func persist<V>(_ keyPath: WritableKeyPath<AppSettings, V>, _ value: V) {

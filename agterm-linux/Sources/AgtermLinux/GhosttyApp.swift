@@ -46,7 +46,7 @@ final class GhosttyApp: @unchecked Sendable {
         // Persisted settings (font/size/theme/scroll) are layered on at launch so they survive
         // relaunch. Translucency is omitted: Linux has no window-level compositing yet.
         let saved = linuxSettingsStore().load()
-        let lines = AppController.ghosttyLines(for: saved)
+        let lines = AppController.ghosttyLines(for: saved, isDark: AppController.systemIsDark)
         currentThemeOSC = AppSettings.themeOSC(from: lines)
         let cfg = buildConfig(extraLines: lines)
         if let cfg {
@@ -82,6 +82,12 @@ final class GhosttyApp: @unchecked Sendable {
     func updateConfig(_ config: ghostty_config_t) {
         guard let app else { return }
         ghostty_app_update_config(app, config)
+    }
+
+    func applyColorScheme(_ side: LinuxAppearanceSide) {
+        guard let app else { return }
+        ghostty_app_set_color_scheme(
+            app, side.isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT)
     }
 
     /// Build a ghostty config (bundled defaults + the user's ~/.config/ghostty + the given
