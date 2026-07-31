@@ -7,6 +7,7 @@ extension AppController {
     @discardableResult
     func applySettings(
         _ settings: AppSettings,
+        preserveSessionConfig: Bool = false,
         appearanceSide: LinuxAppearanceSide? = nil
     ) -> Bool {
         let side = appearanceSide ?? LinuxAppearanceSide(isDark: Self.systemIsDark)
@@ -24,8 +25,13 @@ extension AppController {
         for controller in gWindows.values {
             for surface in controller.configurableSurfaces {
                 surface.applyConfig(config)
-                surface.reapplyWatermarkIfNeeded(
-                    windowOpacity: settings.backgroundOpacity ?? 1, settings: settings)
+                if preserveSessionConfig {
+                    surface.reapplySessionConfigIfNeeded(
+                        windowOpacity: settings.backgroundOpacity ?? 1, settings: settings)
+                } else {
+                    surface.reapplyWatermarkIfNeeded(
+                        windowOpacity: settings.backgroundOpacity ?? 1, settings: settings)
+                }
             }
         }
         ghostty_config_free(config)
@@ -48,7 +54,8 @@ extension AppController {
     /// Automatic appearance reconciliation restores complete per-session overlays.
     /// Explicit config reload stays watermark-only.
     func reloadConfigForAppearanceChange(_ side: LinuxAppearanceSide) -> Bool {
-        applySettings(linuxSettingsStore().load(), appearanceSide: side)
+        applySettings(
+            linuxSettingsStore().load(), preserveSessionConfig: true, appearanceSide: side)
     }
 
     func persist<V>(_ keyPath: WritableKeyPath<AppSettings, V>, _ value: V) {

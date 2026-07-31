@@ -325,6 +325,12 @@ final class GhosttySurface: TerminalSurface {
         reapplyBackgroundOverlay(windowOpacity: windowOpacity, settings: settings)
     }
 
+    /// Automatic appearance reconciliation restores every per-session overlay.
+    /// Explicit reloads keep the watermark-only path.
+    func reapplySessionConfigIfNeeded(windowOpacity: Double? = nil, settings: AppSettings? = nil) {
+        reapplyBackgroundOverlay(windowOpacity: windowOpacity, settings: settings)
+    }
+
     /// Make a program's per-pane OSC 11 background visible through agterm's transparent surface config.
     /// libghostty already owns the live color override; this overlay supplies the matching opacity and is
     /// retained/re-applied per surface across config reloads.
