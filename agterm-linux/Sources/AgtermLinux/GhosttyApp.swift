@@ -38,6 +38,7 @@ final class GhosttyApp: @unchecked Sendable {
     /// Set at launch from the persisted theme; refreshed by AppController.previewTheme on every theme change.
     var currentThemeOSC: String = ""
     var currentThemeBackgroundHex: String?
+    @MainActor private var appliedAppearanceSide: LinuxAppearanceSide?
 
     func start() {
         setGhosttyResourcesEnv()   // export GHOSTTY_RESOURCES_DIR before init + buildConfig read it
@@ -84,10 +85,11 @@ final class GhosttyApp: @unchecked Sendable {
         ghostty_app_update_config(app, config)
     }
 
-    func applyColorScheme(_ side: LinuxAppearanceSide) {
+    @MainActor func applyColorScheme(_ side: LinuxAppearanceSide) {
         guard let app else { return }
         ghostty_app_set_color_scheme(
             app, side.isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT)
+        appliedAppearanceSide = side
     }
 
     /// Build a ghostty config (bundled defaults + the user's ~/.config/ghostty + the given
@@ -125,7 +127,8 @@ final class GhosttyApp: @unchecked Sendable {
     @MainActor
     func configWithOverlay(_ overlayText: String, settings: AppSettings? = nil) -> ghostty_config_t? {
         let base = AppController.ghosttyLines(
-            for: settings ?? AppController.resolvedThemeSettings(persisted: linuxSettingsStore().load()))
+            for: settings ?? AppController.resolvedThemeSettings(persisted: linuxSettingsStore().load()),
+            isDark: appliedAppearanceSide?.isDark ?? AppController.systemIsDark)
         let overlay = overlayText.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
         return buildConfig(extraLines: base + overlay)
     }
