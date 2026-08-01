@@ -30,7 +30,7 @@ extension AppController {
         guard Self.workspaceRowToggleEnabled(linuxSettingsStore().load().workspaceRowClickExpands) else { return }
         let isExpanded = store.workspaces.first(where: { $0.id == workspaceID })?.isExpanded ?? true
         store.setWorkspaceExpanded(workspaceID, expanded: !isExpanded)
-        rebuildSidebar()
+        rebuildSidebarKeepingKeyboard()
     }
 
     static func workspaceRowToggleEnabled(_ setting: Bool?) -> Bool { setting ?? true }
@@ -133,7 +133,7 @@ extension AppController {
         return (interfacePanelWidth(width), Int32(fittedHeight))
     }
 
-    /// Whether a sidebar row interaction is live: an inline rename, or an open context menu.
+    /// Whether a sidebar interaction is live: an inline rename, an open context menu, or parked keyboard.
     ///
     /// `rebuildSidebar()` destroys and re-creates every row, so an ASYNC rebuild must not land here — it
     /// would tear down the in-progress rename entry (whose disposal fires a focus-out that commits its
@@ -141,20 +141,46 @@ extension AppController {
     /// rebuilds — the sidebar-metadata refresh and the trailing soft-close reconcile — gate on this ONE
     /// predicate so they cannot drift apart. A SYNCHRONOUS rebuild is a direct consequence of a user action
     /// and is deliberately not gated.
-    var sidebarInteractionInProgress: Bool { renaming != nil || contextMenuIsOpen }
+    var sidebarInteractionInProgress: Bool {
+        renaming != nil || contextMenuIsOpen || sidebarHoldsKeyboardFocus
+    }
+
+    /// Whether the window's focus widget is a LIVE sidebar widget — one `rebuildSidebar()` would destroy.
+    /// The `mapped` test keeps the gate self-clearing: focus inside a HIDDEN sidebar or a minimized window
+    /// would otherwise stall the refresh forever.
+    var sidebarHoldsKeyboardFocus: Bool {
+        guard let focus = gtk_window_get_focus(WIN(window)),
+              gtk_widget_is_ancestor(focus, W(sidebarBox)) != 0 else { return false }
+        return gtk_widget_get_mapped(focus) != 0
+    }
 
     /// How long a deferred rebuild waits before re-checking `sidebarInteractionInProgress`. It belongs to the
     /// GATE rather than to either job: the metadata refresh and the soft-close reconcile are unrelated jobs
     /// that happen to defer on the same predicate, so neither owning the other's retry cadence.
     static let sidebarInteractionRetryInterval: TimeInterval = 0.25
 
+    /// For a handler that can be driven BY KEYBOARD from a sidebar widget the rebuild then destroys.
+    /// Safe from a deferred caller too: `refocusIfStranded()` is steal-proof by its own guard.
+    func rebuildSidebarKeepingKeyboard() {
+        rebuildSidebar()
+        refocusIfStranded()
+    }
+
     func rebuildSidebar() {
         let settings = linuxSettingsStore().load()
         // GtkPopover is parented to the row's GtkListBox while its context menu is open. Detach it
         // before destroying that list box: GtkListBox disposal otherwise treats the popover as a row,
-        // repeatedly fails to remove it, and starves the GTK main loop.
-        dismissContextMenu()
-        updateAttentionButton(settings: settings)
+        // repeatedly fails to remove it, and starves the GTK main loop. Both dismissals below take
+        // `refocus: false` — a grab fires `surfaceDidFocus`, which RE-ENTERS this function — so the
+        // keyboard repair runs at the TAIL instead, and the capture is read BEFORE them: `detachPopover`
+        // consumes it even under `refocus: false`.
+        let popoverHeldSearchEntry = popoverTookKeyboardFromSearchEntry
+        let dismissedContextMenu = contextMenuPopover != nil
+        dismissContextMenu(refocus: false)
+        // `updateAttentionButton` may dismiss an open session picker one statement later.
+        let hadSessionPicker = sessionPickerPopover != nil
+        updateAttentionButton(settings: settings, refocusOnDismiss: false)
+        let dismissedSessionPicker = hadSessionPicker && sessionPickerPopover == nil
         updateDashboardStatusIndicators()
         while let child = gtk_widget_get_first_child(W(sidebarBox)) {
             gtk_box_remove(cast(sidebarBox), child)
@@ -190,6 +216,12 @@ extension AppController {
         // selection changes update synchronously. Disarmed in `windowWillClose` — a pending job
         // must not touch a destroyed widget tree (`.claude/rules/main-loop.md`).
         selectionRepublish.arm { [weak self] in self?.syncSidebarSelectionStyles() }
+        // Only when a dismissal above actually took a popover down, since it skipped its own grab. The
+        // `refocusIfStranded()` leg can re-enter this function through `surfaceDidFocus` — bounded, as it
+        // is the last statement and the rebuild above is complete.
+        if dismissedContextMenu || dismissedSessionPicker {
+            if !(popoverHeldSearchEntry && restoreSearchEntryFocus()) { refocusIfStranded() }
+        }
     }
 
     private func updateWorkspaceFilterButton() {
@@ -216,6 +248,7 @@ extension AppController {
             let collapsed = !(store.workspaces.first(where: { $0.id == wsID })?.isExpanded ?? true)
             if let disc = op(gtk_button_new_from_icon_name(collapsed ? "pan-end-symbolic" : "pan-down-symbolic")) {
                 gtk_button_set_has_frame(BUTTON(disc), 0)
+                gtk_widget_set_focus_on_click(W(disc), 0)
                 gtk_widget_add_css_class(W(disc), "flat")
                 workspaceDiscButtons[disc] = wsID
                 connect(disc, "clicked", unsafeBitCast(onWorkspaceDisclosure as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self), RAW(disc))
@@ -234,6 +267,7 @@ extension AppController {
             if !settings.isInterfaceElementHidden(.workspaceAddSession),
                let add = op(gtk_button_new_from_icon_name("list-add-symbolic")) {
                 gtk_button_set_has_frame(BUTTON(add), 0)
+                gtk_widget_set_focus_on_click(W(add), 0)
                 gtk_widget_add_css_class(W(add), "flat")
                 gtk_widget_add_css_class(W(add), "workspace-add-session")
                 "New Session in \(title)".withCString { gtk_widget_set_tooltip_text(W(add), $0) }
@@ -422,8 +456,9 @@ extension AppController {
         g_value_unset(&value)
     }
 
-    func updateAttentionButton(settings: AppSettings? = nil) {
-        updateRecentSessionsButton()
+    /// `refocusOnDismiss: false` only from `rebuildSidebar()`, whose tail repair takes over.
+    func updateAttentionButton(settings: AppSettings? = nil, refocusOnDismiss: Bool = true) {
+        updateRecentSessionsButton(refocusOnDismiss: refocusOnDismiss)
         guard let button = attentionButton else { return }
         let enabled = (settings ?? linuxSettingsStore().load()).attentionButtonEnabled ?? false
         gtk_widget_set_visible(W(button), enabled ? 1 : 0)
@@ -432,7 +467,7 @@ extension AppController {
         let hasBlocked = sessions.contains { $0.agentIndicator.status == .blocked }
         gtk_button_set_icon_name(BUTTON(button), hasBlocked ? "dialog-warning-symbolic" : "emblem-important-symbolic")
         if !enabled || sessions.isEmpty, sessionPickerPopover != nil, sessionPickerShowsAttention {
-            dismissSessionPicker()
+            dismissSessionPicker(refocus: refocusOnDismiss)
         }
     }
 

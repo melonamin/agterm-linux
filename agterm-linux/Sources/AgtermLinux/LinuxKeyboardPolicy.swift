@@ -6,6 +6,40 @@ enum FontBindingAction {
     static let reset = "reset_font_size"
 }
 
+/// Chrome tooltips rendered FROM the Linux default-chord table, so a title-bar hint and the keymap
+/// default cannot disagree.
+///
+/// These strings are contract, not decoration: an icon-only GtkButton exposes its tooltip as its AT-SPI
+/// accessible NAME, and the e2e scenarios look buttons up by exact tooltip text.
+///
+/// The DEFAULT chord, not the effective one — the header is built before `reloadKeymapDiagnostics()`
+/// runs, so a user's `keymap.conf` override is not known yet.
+enum LinuxChromeTooltip {
+    /// `"Toggle Sidebar (Ctrl+Shift+S)"`, or the bare title when the action has no default chord.
+    static func text(_ title: String, _ action: BuiltinAction) -> String {
+        guard let chord = action.linuxDefaultChord else { return title }
+        return text(title, shortcut: label(chord))
+    }
+
+    /// Escape hatch for a chord with NO `BuiltinAction` behind it: Ctrl+Tab is a reserved monitor chord,
+    /// so it is deliberately absent from `linuxDefaultChord`.
+    static func text(_ title: String, shortcut: String) -> String {
+        "\(title) (\(shortcut))"
+    }
+
+    /// `"Ctrl+Shift+S"`, ``"Ctrl+`"``. Modifier order mirrors `Chord.displayString`; on Linux `.command`
+    /// is Super and `.option` is Alt.
+    static func label(_ chord: Chord) -> String {
+        var parts: [String] = []
+        if chord.mods.contains(.control) { parts.append("Ctrl") }
+        if chord.mods.contains(.command) { parts.append("Super") }
+        if chord.mods.contains(.option) { parts.append("Alt") }
+        if chord.mods.contains(.shift) { parts.append("Shift") }
+        parts.append(chord.key.count == 1 ? chord.key.uppercased() : chord.key.capitalized)
+        return parts.joined(separator: "+")
+    }
+}
+
 extension BuiltinAction {
     var linuxDefaultChord: Chord? {
         switch self {

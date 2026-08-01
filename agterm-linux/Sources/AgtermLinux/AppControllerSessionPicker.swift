@@ -66,7 +66,9 @@ extension AppController {
         }
         guard !sessions.isEmpty else { return }
 
-        dismissSessionPicker()
+        // Read the capture BEFORE the dismissal consumes it (see `popupPopover`).
+        let heldSearchEntry = searchEntryCaptureSurvives(sessionPickerPopover)
+        dismissSessionPicker(refocus: false)
         guard let popover = op(gtk_popover_new()), let rows = op(gtk_box_new(GTK_ORIENTATION_VERTICAL, 2)) else {
             return
         }
@@ -135,45 +137,54 @@ extension AppController {
             (OpaquePointer?, gpointer?) -> Void, to: GCallback.self),
             Unmanaged.passUnretained(self).toOpaque())
         gtk_popover_set_child(POPOVER(popover), W(scroller))
-        gtk_popover_popup(POPOVER(popover))
+        popupPopover(popover, keepingCapture: heldSearchEntry)
     }
 
-    func updateRecentSessionsButton() {
+    /// `refocusOnDismiss: false` only from inside `rebuildSidebar()`, whose tail repair takes over.
+    func updateRecentSessionsButton(refocusOnDismiss: Bool = true) {
         guard let button = recentSessionsButton else { return }
         let hasOther = store.recentSessions(limit: 2).contains { $0 != store.selectedSessionID }
         gtk_widget_set_sensitive(W(button), hasOther ? 1 : 0)
         gtk_widget_set_opacity(W(button), hasOther ? 1 : 0.35)
-        if !hasOther, sessionPickerPopover != nil, !sessionPickerShowsAttention { dismissSessionPicker() }
+        if !hasOther, sessionPickerPopover != nil, !sessionPickerShowsAttention {
+            dismissSessionPicker(refocus: refocusOnDismiss)
+        }
     }
 
     func activateSessionPickerRow(_ context: SessionPickerRowContext) {
         let id = context.sessionID
         let attention = context.attention
         let statusPane = context.statusPane
-        dismissSessionPicker()
+        // Read the capture BEFORE the dismissal consumes it; unconditional, NOT through
+        // `searchEntryCaptureSurvives` — see that helper's boundary note. `refocus: false` because this
+        // handler re-targets focus itself below.
+        let popoverHeldSearchEntry = popoverTookKeyboardFromSearchEntry
+        dismissSessionPicker(refocus: false)
         selectSession(id)
         if attention {
             handleAutoFollow(id, statusPane: statusPane)
-        } else {
-            sessionFocusTarget(for: id)?.grabFocus()
         }
+        // The attention leg needs this too: `handleAutoFollow` is shared with the auto-follow timer and
+        // declines to focus while a quick terminal is visible. Entry restore first.
+        if !(popoverHeldSearchEntry && restoreSearchEntryFocus()) { focusActiveSurface() }
     }
 
-    func dismissSessionPicker() {
+    /// Programmatic dismissal; Escape and click-away arrive at `sessionPickerDidClose` instead. The state
+    /// is cleared BEFORE `detachPopover(popdown: true)` pops it down.
+    func dismissSessionPicker(refocus: Bool = true) {
         guard let popover = sessionPickerPopover else { return }
-        sessionPickerPopover = nil
-        sessionPickerShowsAttention = false
-        sessionPickerContexts.removeAll()
-        if sessionPickerSuppressesAutoFollow {
-            sessionPickerSuppressesAutoFollow = false
-            resumeAutoFollow()
-        }
-        gtk_popover_popdown(POPOVER(popover))
-        gtk_widget_unparent(W(popover))
+        clearSessionPickerState()
+        detachPopover(popover, popdown: true, refocus: refocus)
     }
 
+    /// GTK dismissed the picker itself: Escape, or a click away.
     func sessionPickerDidClose(_ popover: OpaquePointer?) {
-        guard popover == sessionPickerPopover else { return }
+        guard let popover, popover == sessionPickerPopover else { return }
+        clearSessionPickerState()
+        detachPopover(popover, popdown: false)
+    }
+
+    private func clearSessionPickerState() {
         sessionPickerPopover = nil
         sessionPickerShowsAttention = false
         sessionPickerContexts.removeAll()
@@ -181,7 +192,6 @@ extension AppController {
             sessionPickerSuppressesAutoFollow = false
             resumeAutoFollow()
         }
-        gtk_widget_unparent(W(popover))
     }
 }
 

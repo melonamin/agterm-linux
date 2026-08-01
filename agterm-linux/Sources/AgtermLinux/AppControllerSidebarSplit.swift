@@ -138,10 +138,18 @@ extension AppController {
         return paned
     }
 
+    func toggleSidebar() {
+        store.toggleSidebarVisible()   // saving mutator, so the visibility survives relaunch
+        applySidebarVisibility()
+    }
+
+    /// The refocus lives here, not in `toggleSidebar()`, so the button, the `sidebar` control arm and the
+    /// settings fan-out all get it.
     func applySidebarVisibility() {
         guard let paned = splitView, let sidebar = gtk_paned_get_start_child(paned) else { return }
         gtk_widget_set_visible(sidebar, store.sidebarVisible ? 1 : 0)
         applySidebarWidth(paned)
+        refocusIfStranded()   // hiding the column strands an inline rename's entry
     }
 
     /// Persist a divider position the USER dragged to. A position the LAYOUT produced — GTK clamping

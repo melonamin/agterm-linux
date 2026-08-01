@@ -16,7 +16,13 @@ extension AppController {
                 NotificationManager.withdraw(windowID: windowID, sessionID: id)
                 rebuildSidebar()
             }
-            showActive()
+            // Reactivation can preempt a popover dismissal's own refocus, so it must be no coarser — and
+            // must decline while a live search entry holds the keyboard.
+            if searchEntryHoldsKeyboard() {
+                showActive(focus: false)
+            } else {
+                showActiveFocusingVisibleSurface()
+            }
             searchTargetSurface(for: id)?.refresh()
         }
     }
@@ -52,8 +58,13 @@ extension AppController {
     func windowWillClose() {
         customCommandOrigin.invalidate()
         commitBackgroundOpacity()
-        dismissSessionPicker()
-        dismissControlPick(retainResultThroughRegistry: true)
+        // `refocus: false` throughout: the widget tree is about to be destroyed, and the control pick's
+        // deferred grab would fire after that against a finalized window.
+        dismissSessionPicker(refocus: false)
+        dismissControlPick(retainResultThroughRegistry: true, refocus: false)
+        // Not optional cleanup: a popover left parented at destroy hangs the close, and GTK emits no
+        // `"closed"` then, so this call is the only notice.
+        dismissContextMenu(refocus: false)
         // EVERY dialog this window owns is dismissed here, or it outlives the widget tree and keeps the
         // controller alive with it — a bare toplevel (the theme picker, the palette) is not destroyed with
         // its transient parent under GTK4, and a hosted AdwDialog holds the same `passRetained` on "closed".

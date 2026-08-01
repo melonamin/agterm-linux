@@ -31,6 +31,7 @@ extension AppController {
         func iconButton(_ icon: String, _ tip: String, _ cb: @escaping @convention(c) (OpaquePointer?, gpointer?) -> Void) {
             let b = OpaquePointer(gtk_button_new_from_icon_name(icon))
             gtk_widget_set_tooltip_text(W(b), tip)
+            gtk_widget_set_focus_on_click(W(b), 0)   // Prev/Next must not pull focus off the entry
             connect(b, "clicked", unsafeBitCast(cb, to: GCallback.self))
             gtk_box_append(cast(bar), W(b))
         }
@@ -117,6 +118,36 @@ extension AppController {
         searchTotal = nil
         searchSelected = nil
         gtk_widget_set_visible(W(searchBar), 0)
+        // Unlike `searchDidEnd` above, there is no owner left to hand the keyboard back to.
+        refocusIfStranded()
+    }
+
+    /// End a live search because the ACTIVE SESSION is about to change — the bar belongs to the outgoing
+    /// session's surface. No refocus: both callers hand the keyboard on themselves via `showActive()`.
+    func endSearchForSelectionChange() {
+        guard let owner = searchSurface else { return }
+        owner.endSearch()
+        endSearchAutoFollowSuppression()
+        searchSessionID = nil
+        searchSurface = nil
+        gtk_widget_set_visible(W(searchBar), 0)
+    }
+
+    /// Whether the window's focus widget sits inside a LIVE search's entry — the one legitimate keyboard
+    /// owner `focusActiveSurface()` cannot resolve, since it is chrome rather than a surface.
+    func searchEntryHoldsKeyboard() -> Bool {
+        guard searchSessionID != nil, let entry = searchEntry,
+              gtk_widget_get_mapped(W(entry)) != 0,
+              let focus = gtk_window_get_focus(WIN(window)) else { return false }
+        return focus == W(entry) || gtk_widget_is_ancestor(focus, W(entry)) != 0
+    }
+
+    /// Hand the keyboard back to a live search's entry. Returns `false` whenever the grab did not land
+    /// (search ended, bar unmapped, GTK refused) — the caller MUST then run its own fallback repair.
+    func restoreSearchEntryFocus() -> Bool {
+        guard searchSessionID != nil, let entry = searchEntry,
+              gtk_widget_get_mapped(W(entry)) != 0 else { return false }
+        return gtk_widget_grab_focus(W(entry)) != 0
     }
 
     func searchQueryChanged(_ text: String) { searchSurface?.sendSearchQuery(text) }

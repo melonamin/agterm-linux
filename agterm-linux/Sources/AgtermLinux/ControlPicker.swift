@@ -237,19 +237,21 @@ extension AppController {
         dismissControlPick(retainResultThroughRegistry: false)
     }
 
-    func dismissControlPick(retainResultThroughRegistry: Bool) {
+    /// `refocus: false` is for `windowWillClose` only, where the deferred grab below would run against a
+    /// finalized window.
+    func dismissControlPick(retainResultThroughRegistry: Bool, refocus: Bool = true) {
         if !retainResultThroughRegistry, pickController.pending != nil {
             pickController.cancel()
         }
         guard let win = controlPickWindow else {
-            finishControlPickDismissal()
+            finishControlPickDismissal(refocus: refocus)
             return
         }
         controlPickWindow = nil
         controlPickList = nil
         controlPickEntry = nil
         controlPickRows = []
-        finishControlPickDismissal()
+        finishControlPickDismissal(refocus: refocus)
         gtk_window_destroy(WIN(win))
     }
 
@@ -260,17 +262,21 @@ extension AppController {
         controlPickEntry = nil
         controlPickRows = []
         if pickController.pending != nil { pickController.cancel() }
-        finishControlPickDismissal()
+        finishControlPickDismissal(refocus: true)
     }
 
-    private func finishControlPickDismissal() {
+    /// The deferred one-shot re-checks controller identity because it can fire after `windowWillClose`
+    /// finalized the window, and tests the search entry at FIRE time, not at dismissal time.
+    private func finishControlPickDismissal(refocus: Bool) {
         if controlPickSuppressesAutoFollow {
             controlPickSuppressesAutoFollow = false
             resumeAutoFollow()
         }
-        guard gtk_window_is_active(WIN(windowPointer)) != 0 else { return }
+        guard refocus, gtk_window_is_active(WIN(windowPointer)) != 0 else { return }
         MainTimer.schedule(after: 0) { [weak self] in
-            self?.sessionFocusTarget()?.grabFocus()
+            guard let self, gWindows[self.windowID] === self,
+                  !self.searchEntryHoldsKeyboard() else { return }
+            self.focusActiveSurface()
         }
     }
 }

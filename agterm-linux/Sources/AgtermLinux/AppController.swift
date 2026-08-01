@@ -156,7 +156,8 @@ final class AppController {
     var confirmedClose = false                       // set once the quit-confirm is accepted
     var badgeEnabled = linuxSettingsStore().load().notificationBadgeEnabled ?? true   // gates the unseen-count pill
     var sessionSwitcher = SessionSwitcherModel()                                  // Ctrl-Tab hold-to-cycle state
-    var contextMenuPopover: OpaquePointer?            // the live row context-menu popover
+    var contextMenuPopover: OpaquePointer?                       // live row context menu
+    var popoverTookKeyboardFromSearchEntry = false               // set at popup: it took the keyboard from a live search
     var pendingWorkspaceToggle: UUID?
     var cancelPendingWorkspaceToggleTimer: (@MainActor () -> Void)?
     var sessionProgress: [UUID: Int] = [:]            // per-session OSC 9;4 progress
@@ -220,6 +221,7 @@ final class AppController {
             let b = OpaquePointer(gtk_button_new_from_icon_name(icon))
             gtk_widget_set_tooltip_text(W(b), tip)
             gtk_button_set_has_frame(BUTTON(b), 0)
+            gtk_widget_set_focus_on_click(W(b), 0)
             connect(b, "clicked", unsafeBitCast(cb, to: GCallback.self))
             return b
         }
@@ -247,22 +249,22 @@ final class AppController {
         // Title-bar session pickers and terminal toggles mirror the macOS top-right action cluster.
         // `pack_end` stacks leftward, so construction proceeds from the visual right edge.
         // Sidebar toggle on the LEFT (macOS sidebar.left), always visible so a hidden sidebar can return.
-        let sidebarBtn = OpaquePointer(gtk_button_new_from_icon_name("agterm-sidebar-symbolic"))
-        sidebarToggleBtn = sidebarBtn
-        gtk_widget_set_tooltip_text(W(sidebarBtn), "Toggle Sidebar (Ctrl+Shift+B)")
-        connect(sidebarBtn, "clicked", unsafeBitCast(onSidebarToggle as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
-        adw_header_bar_pack_start(contentHeader, W(sidebarBtn))
+        sidebarToggleBtn = linuxHeaderToggle(contentHeader, "agterm-sidebar-symbolic",
+                                             LinuxChromeTooltip.text("Toggle Sidebar", .toggleSidebar),
+                                             onSidebarToggle, packStart: true)
         installPreferencesShortcut()
         // Left-to-right: Recent, Attention | Scratch, Split | Dashboard, Quick; split/scratch gain fill when active.
-        quickToggleBtn = linuxHeaderToggle(contentHeader, "agterm-quick-symbolic", "Quick Terminal (Ctrl+`)", onQuickToggle)
-        dashboardButton = linuxHeaderToggle(contentHeader, "agterm-grid-symbolic", "Dashboard (Ctrl+Shift+M)", onDashboardToggle)
+        quickToggleBtn = linuxHeaderToggle(contentHeader, "agterm-quick-symbolic", LinuxChromeTooltip.text("Quick Terminal", .quickTerminal), onQuickToggle)
+        dashboardButton = linuxHeaderToggle(contentHeader, "agterm-grid-symbolic", LinuxChromeTooltip.text("Dashboard", .dashboard), onDashboardToggle)
         titlebarDividerAfterB = linuxHeaderSeparator(contentHeader)
-        splitToggleBtn = linuxHeaderToggle(contentHeader, "agterm-split-symbolic", "Toggle Split (Ctrl+Shift+D)", onSplitToggle)
-        scratchToggleBtn = linuxHeaderToggle(contentHeader, "agterm-scratch-symbolic", "Scratch Terminal (Ctrl+Shift+J)", onScratchToggle)
+        splitToggleBtn = linuxHeaderToggle(contentHeader, "agterm-split-symbolic", LinuxChromeTooltip.text("Toggle Split", .toggleSplit), onSplitToggle)
+        scratchToggleBtn = linuxHeaderToggle(contentHeader, "agterm-scratch-symbolic", LinuxChromeTooltip.text("Scratch Terminal", .toggleScratch), onScratchToggle)
         titlebarDividerAfterA = linuxHeaderSeparator(contentHeader)
-        attentionButton = linuxHeaderToggle(contentHeader, "emblem-important-symbolic", "Show sessions that need attention (Ctrl+Shift+I)", onAttentionButton)
-        recentSessionsButton = linuxHeaderToggle(contentHeader, "document-open-recent-symbolic", "Recent Sessions (Ctrl+Tab)", onRecentSessionsButton)
-        registerInterfaceWidgets(sidebarToggle: sidebarBtn)
+        attentionButton = linuxHeaderToggle(contentHeader, "emblem-important-symbolic",
+                                            LinuxChromeTooltip.text("Show sessions that need attention", .showAttention), onAttentionButton)
+        recentSessionsButton = linuxHeaderToggle(contentHeader, "document-open-recent-symbolic",
+                                                 LinuxChromeTooltip.text("Recent Sessions", shortcut: "Ctrl+Tab"), onRecentSessionsButton)
+        registerInterfaceWidgets(sidebarToggle: sidebarToggleBtn)
         updateAttentionButton()
         updateDashboardButton()
         applyInterfaceElements()
@@ -335,13 +337,7 @@ final class AppController {
         let prev = store.selectedSessionID
         let focusWasEnabled = store.focusEnabled
         let needsRefresh = clearedRowChanges(id) || (prev.map(clearedRowChanges) ?? false)
-        if prev != id, let owner = searchSurface {
-            owner.endSearch()
-            endSearchAutoFollowSuppression()
-            searchSessionID = nil
-            searchSurface = nil
-            gtk_widget_set_visible(W(searchBar), 0)
-        }
+        if prev != id { endSearchForSelectionChange() }
         if userInitiated { noteUserActivity() }
         store.selectSession(id)
         let focusFilterChanged = focusWasEnabled != store.focusEnabled
@@ -485,11 +481,6 @@ final class AppController {
         reconcile()
         resumeTerminalZoomAfterPrimaryPanePromotion(zoomTarget)
     }
-    func toggleSidebar() {
-        store.toggleSidebarVisible()   // saving mutator, so the visibility survives relaunch
-        applySidebarVisibility()
-    }
-
     /// Swap the split/scratch title-bar toggles to their `.fill` variant when the active session has that
     /// mode on (mirrors the macOS active-state icons). Called whenever the active session or its state
     /// changes.
@@ -534,19 +525,22 @@ final class AppController {
         quickVisible = visible
         gtk_widget_set_visible(W(frame), visible ? 1 : 0)
         updateAllPaneDimming()
-        if visible { quickSurface?.grabFocus() }
+        if visible { quickSurface?.grabFocus() } else { refocusIfStranded() }
     }
 
     func toggleQuick() { setQuick(!quickVisible) }
 
     /// The quick shell exited: tear it down (a fresh one spawns on next show).
     func closeQuick() {
+        // Clear the zoom target BEFORE freeing the surface it points at.
+        if terminalZoom.target == .quick { setTerminalZoom(.off, target: .quick) }
         if let frame = quickFrame, let overlay = deckOverlay { gtk_overlay_remove_overlay(overlay, W(frame)) }
         quickSurface?.teardown()
         quickFrame = nil
         quickSurface = nil
         quickVisible = false
         updateAllPaneDimming()
+        refocusIfStranded()
     }
 
     func toggleFlagActive() {
@@ -580,7 +574,7 @@ final class AppController {
         cancelPendingWorkspaceToggle()
         let isExpanded = store.workspaces.first(where: { $0.id == wsID })?.isExpanded ?? true
         store.setWorkspaceExpanded(wsID, expanded: !isExpanded)
-        rebuildSidebar()
+        rebuildSidebarKeepingKeyboard()
     }
 
     /// Collapse every workspace except the active one to a header — the palette + `sidebar.collapse` arm.
@@ -658,7 +652,8 @@ final class AppController {
         }
         runOnMain { [weak self] in MainActor.assumeIsolated { self?.rebuildAfterRename() } }
     }
-    func rebuildAfterRename() { rebuildSidebar(); syncSidebarSelection(); updateTitle() }
+    /// The ENTER commit fires while the rename entry still holds focus, and the rebuild destroys it.
+    func rebuildAfterRename() { rebuildSidebar(); syncSidebarSelection(); updateTitle(); refocusIfStranded() }
 
     func cancelInlineRename() {
         guard renaming != nil else { return }

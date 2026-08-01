@@ -18,18 +18,25 @@ extension AppController {
         guard let sid = rowSession[row] else { return }
         noteUserActivity()
         if !store.sidebarSelectionIDs.contains(sid) {
+            // This path bypasses `selectSession`, so it owes its end-search convention.
+            endSearchForSelectionChange()
             store.selectSession(sid, sidebarSelection: [sid])
             sidebarSelectionAnchor = sid
             syncSidebarSelection()
-            showActive()
+            // `focus: false`: a grab here re-enters `rebuildSidebar` and frees the row this function
+            // parents the menu to below.
+            showActive(focus: false)
         }
         // Tear down the previous popover before storing the replacement. Popping down a newly-created,
-        // not-yet-mapped GtkPopover crashes inside gtk_popover_popdown.
-        dismissContextMenu()
+        // not-yet-mapped GtkPopover crashes inside gtk_popover_popdown. Read the capture BEFORE the
+        // dismissal consumes it (see `popupPopover`).
+        let heldSearchEntry = searchEntryCaptureSurvives(contextMenuPopover)
+        dismissContextMenu(refocus: false)
         contextMenuSession = sid
         guard let popover = op(gtk_popover_new()) else { return }
         attachControllerContext(to: popover, windowID: windowID)
         contextMenuPopover = popover
+        connectContextMenuClosed(popover)
         gtk_widget_set_parent(W(popover), W(row))
         var rect = GdkRectangle(x: Int32(x), y: Int32(y), width: 1, height: 1)
         gtk_popover_set_pointing_to(POPOVER(popover), &rect)
@@ -73,7 +80,14 @@ extension AppController {
         addContextButton(box, targets.count > 1 ? "Close \(targets.count) Sessions" : "Close Session",
                          unsafeBitCast(onCtxClose as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
         gtk_popover_set_child(POPOVER(popover), W(box))
-        gtk_popover_popup(POPOVER(popover))
+        popupPopover(popover, keepingCapture: heldSearchEntry)
+    }
+
+    /// Every popover assigned to the shared `contextMenuPopover` slot must connect this, or GTK's own
+    /// Escape / click-away dismissal goes unnoticed.
+    private func connectContextMenuClosed(_ popover: OpaquePointer) {
+        connect(popover, "closed", unsafeBitCast(onCtxClosed as @convention(c)
+            (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
     }
 
     private func addContextButton(_ box: OpaquePointer?, _ label: String, _ handler: GCallback?) {
@@ -84,21 +98,32 @@ extension AppController {
         gtk_box_append(cast(box), W(button))
     }
 
-    /// Whether a sidebar context menu is on screen right now. The `contextMenuPopover` handle OUTLIVES an
-    /// autohide dismissal (GTK pops the popover down itself when the user clicks away, and only the next
-    /// `dismissContextMenu()` clears the handle), so visibility is the live signal — a deferred rebuild
-    /// gating on the bare handle would defer forever after one click-away dismissal.
+    /// Whether a sidebar context menu is on screen right now. Visibility, not the bare handle: a missed
+    /// `"closed"` emission may then let a deferred rebuild run, but can never make it defer forever.
     var contextMenuIsOpen: Bool {
         guard let popover = contextMenuPopover else { return false }
         return gtk_widget_get_visible(W(popover)) != 0
     }
 
-    func dismissContextMenu() {
-        if let popover = contextMenuPopover {
-            gtk_popover_popdown(POPOVER(popover))
-            gtk_widget_unparent(W(popover))
-            contextMenuPopover = nil
-        }
+    /// Programmatic dismissal: an item was activated, a new menu is opening, or the window is closing.
+    /// Escape and click-away arrive at `contextMenuDidClose` instead.
+    func dismissContextMenu(refocus: Bool = true) {
+        guard let popover = contextMenuPopover else { return }
+        clearContextMenuState()
+        detachPopover(popover, popdown: true, refocus: refocus)
+    }
+
+    /// GTK dismissed the menu itself: Escape, or a click away.
+    func contextMenuDidClose(_ popover: OpaquePointer?) {
+        guard let popover, popover == contextMenuPopover else { return }
+        clearContextMenuState()
+        detachPopover(popover, popdown: false)
+    }
+
+    /// Always called BEFORE `detachPopover(popdown: true)`, so the `"closed"` that popdown emits
+    /// synchronously early-returns instead of unparenting twice.
+    private func clearContextMenuState() {
+        contextMenuPopover = nil
         contextMoveTargets.removeAll()
     }
 
@@ -154,12 +179,14 @@ extension AppController {
     func showWorkspaceContextMenu(_ rowData: gpointer?, x: Double, y: Double) {
         guard let rowData, let wsID = workspaceDiscButtons[OpaquePointer(rowData)] else { return }
         let parent = OpaquePointer(rowData)
-        // See showRowContextMenu: the old popover must be dismissed before the new one is registered.
-        dismissContextMenu()
+        // See showRowContextMenu: dismiss the old popover before registering the new one, capture first.
+        let heldSearchEntry = searchEntryCaptureSurvives(contextMenuPopover)
+        dismissContextMenu(refocus: false)
         contextMenuWorkspace = wsID
         guard let popover = op(gtk_popover_new()) else { return }
         attachControllerContext(to: popover, windowID: windowID)
         contextMenuPopover = popover
+        connectContextMenuClosed(popover)
         gtk_widget_set_parent(W(popover), W(parent))
         var rect = GdkRectangle(x: Int32(x), y: Int32(y), width: 1, height: 1)
         gtk_popover_set_pointing_to(POPOVER(popover), &rect)
@@ -177,7 +204,7 @@ extension AppController {
             addContextButton(box, "Delete Workspace", unsafeBitCast(onCtxWorkspaceDelete as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
         }
         gtk_popover_set_child(POPOVER(popover), W(box))
-        gtk_popover_popup(POPOVER(popover))
+        popupPopover(popover, keepingCapture: heldSearchEntry)
     }
 
     func contextWorkspaceRename() {

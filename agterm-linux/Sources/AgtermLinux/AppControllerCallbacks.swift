@@ -417,6 +417,11 @@ let onCtxClose: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = 
     MainActor.assumeIsolated { controllerForWidget(button)?.contextCloseSession() }
 }
 
+/// The context menu's `"closed"` signal — GTK's own Escape / click-away dismissal.
+let onCtxClosed: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { popover, _ in
+    MainActor.assumeIsolated { controllerForWidget(popover)?.contextMenuDidClose(popover) }
+}
+
 let onMenuButton: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { button, _ in
     MainActor.assumeIsolated { controllerForWidget(button)?.showPalette() }
 }

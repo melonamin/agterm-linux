@@ -105,8 +105,11 @@ paths:
   Finalize, never cancel: cancelling strands the held records and leaks the surfaces, watermark PNGs and
   recency entries that only the finalizer's teardown sweeps.
 - **EVERY dialog this window owns is dismissed in `windowWillClose` — not just the theme picker.**
-  A bare toplevel (`gtk_window_new` + `gtk_window_set_transient_for`, today the theme picker and the command
-  palette) is NOT destroyed with its transient parent under GTK4: left up it stays on screen orphaned, keeps
+  A bare toplevel (`gtk_window_new` + `gtk_window_set_transient_for`, today the theme picker, the command
+  palette, and the control-pick window — dismissed there as
+  `dismissControlPick(retainResultThroughRegistry: true, refocus: false)`, retaining the pick's terminal
+  result so a poll after the window died still reads it) is NOT destroyed with its transient parent under
+  GTK4: left up it stays on screen orphaned, keeps
   the controller alive through the `passRetained` on its "destroy" handler — which is what lets every other
   deferred job outlive the window — and runs its rows against a freed widget tree.
   An AdwDialog hosted in the window (the Settings dialog, and the Keyboard Shortcuts / About dialogs its
@@ -122,7 +125,8 @@ paths:
   A dialog whose retained context is released by its OWN async callback and re-checked with a
   `gWindows[controller.windowID] === controller` staleness guard (the GtkFileDialog choosers) needs no
   dismissal — GTK owns the dialog and the guard is what makes the late callback a no-op.
-- **A deferred job that rebuilds the sidebar defers while the user is interacting with it.**
+- **A deferred job that rebuilds the sidebar defers while the user is interacting with it — including with
+  the KEYBOARD.**
   `rebuildSidebar()` destroys every row, so an async rebuild landing on a live inline rename commits its
   half-typed text (the entry's disposal fires a focus-out) and dismisses an open context menu.
   Gate on the shared `AppController.sidebarInteractionInProgress` and re-arm at
@@ -130,14 +134,175 @@ paths:
   direct consequence of a user action and is deliberately not gated.
   Both live with the GATE, not with either deferred job — `SoftCloseReconcileCoordinator` takes the cadence
   by injection so it stays independent of what its `deferWhile` reads.
+  The gate's third disjunct is `sidebarHoldsKeyboardFocus` — the window's focus widget is a MAPPED
+  descendant of `sidebarBox` — which covers Tab-parked focus on the disclosure, the add-session "+" or a
+  session row; it is read from GTK rather than tracked, because unlike the other two it is a widget
+  identity and not a state the app is in.
+  Deferral rather than repair, because a deferred rebuild does not leave the window keyboard-dead the way a
+  synchronous one does: GTK re-homes focus at the next frame to the first focusable widget (the workspace
+  disclosure), silently RESETTING the user's Tab position from a timer they never triggered.
+  A regression probe must therefore park ONE Tab further along than the disclosure, which recovers onto its
+  own replacement and passes either way (`chrome-focus-sidebar` parks on the add-session button).
+  The `mapped` test keeps the gate self-clearing: focus inside a HIDDEN sidebar or a minimized window is
+  not a position worth preserving, and deferring on it would stall the refresh with nothing left to repair it.
 - **A deferred job must not GRAB keyboard focus — that gate covers the sidebar only.**
   `reconcile()` defaults to `focusActive: true`, which ends in `grab_focus` on the active session's pane, so
   a timer-driven reconcile takes the keyboard away from whatever the user moved to during the delay.
-  `sidebarInteractionInProgress` sees only the inline rename and the context menu; the in-terminal search
-  entry and the quick terminal are plain widgets in the SAME toplevel and are invisible to it, so a grab
-  silently reroutes the rest of the user's typing into a live shell.
+  `sidebarInteractionInProgress` sees only what lives INSIDE the sidebar — the inline rename, the context
+  menu, and keyboard focus parked under `sidebarBox`; the in-terminal search entry and the quick terminal
+  are plain widgets in the SAME toplevel and are invisible to it, so a grab silently reroutes the rest of
+  the user's typing into a live shell.
   Pass `reconcile(focusActive: false)` from any timer (the trailing soft-close reconcile does);
   focus belongs to the SYNCHRONOUS reconcile that the user's own action drives.
+  What this bars is a COARSE grab, NOT `refocusIfStranded()`: that helper is steal-proof by its own guard,
+  which is why deferred call sites do use it — `firePendingWorkspaceToggle`, `rebuildAfterRename()` behind
+  its `runOnMain` hop, and `closeQuick()` from the quick shell's exit callback.
+  The deferred sidebar rebuild still DEFERS rather than repairs, for the Tab-position reason in the bullet
+  above, not because the helper is barred there.
+- **Chrome buttons must never own the keyboard: EVERY chrome construction seam sets
+  `gtk_widget_set_focus_on_click(…, 0)`.**
+  GTK4's `GtkButton` grabs focus in its click handler by default, and the terminal receives keys ONLY
+  through its own surface controller (`onEmptyWindowKeyPressed` returns 0 whenever a session is active), so
+  a button left holding focus both re-fires on the next Space and swallows every character typed after it,
+  with no chord able to recover.
+  `grep -rn focus_on_click agterm-linux/Sources` is the inventory, rather than a list here that goes stale
+  at the next seam; a button inside a POPOVER is the one exception, where the flag would be cargo cult
+  because the popover itself owns the theft (see the popover bullet below).
+  Leave `can-focus` ALONE — Tab reachability and screen readers depend on it — which is why
+  `focus-on-click` is only HALF the invariant: it governs the CLICK, and a keyboard user can still hold
+  focus ON a chrome button and press Space, so a handler that DESTROYS its own button owes the keyboard
+  repair as well (`rebuildSidebarKeepingKeyboard`, next bullet).
+- **Hiding or destroying a focused widget strands the keyboard, and GTK will NOT fix it for you.**
+  GTK4 does not clear the window's focus widget on unmap — `gtk_window_get_focus` keeps returning the same
+  widget with `gtk_widget_get_mapped == 0`, and keystrokes then reach NOTHING.
+  So `refocusIfStranded()` (`AppControllerSurfaces.swift`) treats "focus is nil, or focus is unmapped while
+  the TOPLEVEL is mapped" as stranded: a nil-only guard would be dead code, and dropping the toplevel
+  qualifier would let a minimized window (where every descendant reports `mapped == 0`) steal focus from a
+  live owner.
+  That qualifier is also the safety property — a live owner (a visible quick terminal, the dashboard
+  key-catcher, the in-terminal search entry) is mapped, so the helper can never take the keyboard from one —
+  and it opens with the `gWindows[windowID] === self` staleness guard, because `closeQuick()` reaches it
+  from the quick shell's exit callback, which `runOnMain` can drain after `windowWillClose`.
+  `grep -rn refocusIfStranded agterm-linux/Sources` is the call-site inventory.
+  The sidebar's own buttons are the KEYBOARD-only case `focus-on-click` cannot reach: `can-focus` is
+  deliberately intact, so Space on the Tab-focused disclosure runs `toggleWorkspaceCollapse`, whose
+  `rebuildSidebar()` destroys the button holding the keyboard.
+  That handler, and every other workspace-focus mutation that rebuilds the sidebar (the
+  `AppControllerWorkspaceFocus.swift` handlers, the `workspace.focus`/`workspace.filter` control arms),
+  routes through `rebuildSidebarKeepingKeyboard()` (`AppControllerSidebar.swift`).
+  The repair belongs at the HANDLERS, not at the tail of `rebuildSidebar()`: that function also runs from
+  the deferred metadata refresh, and a grab inside it re-enters it through `surfaceDidFocus`, rebuilding
+  the sidebar from inside a rebuild whose caller still holds pointers to the rows the inner one destroyed.
+  The ONE tail repair `rebuildSidebar()` carries is scoped to the popovers it dismisses itself with
+  `refocus: false` (the context menu; the session picker its
+  `updateAttentionButton`/`updateRecentSessionsButton` calls take down), and fires only when one actually
+  came down: it restores the search ENTRY if `popupPopover`'s capture — read before those dismissals
+  consume it — says the popover took the keyboard from a live search, else `refocusIfStranded()`.
+  Known limitation, accepted: because the unmapped disjunct is qualified by the TOPLEVEL being mapped, a
+  HIDE performed while the window itself is unmapped (`agtermctl quick hide` on a minimized window) is
+  never repaired; the destroy case still works, since the `focus == nil` disjunct carries no such qualifier.
+- **A GtkPopover takes the keyboard on popup and does NOT give it back — the dismissal has to.**
+  Measured (GTK 4.22): `gtk_popover_popup` moves the window's focus widget onto the popover's first item
+  WHETHER OR NOT that item sets `focus-on-click`, and `gtk_popover_popdown` hands focus to the popover's
+  PARENT — never back to the widget that held it before, and `refocusIfStranded()` cannot see that case
+  because the parent is mapped.
+  BOTH popovers therefore route every dismissal through `AppController.detachPopover(_:popdown:refocus:)`,
+  which unparents and then calls `focusActiveSurface()` when the keyboard is inside the dying popover,
+  already parked on its host, or gone — that focus test is what makes it steal-proof, since a live owner
+  elsewhere is none of those.
+  **The UNPARENT is ordered BEFORE the grab because the grab has to outlive the popdown**: `"closed"` is
+  emitted from INSIDE `gtk_popover_popdown` before it moves focus to the parent, so a grab taken while the
+  popover is still parented is silently undone; the unparent also stays SYNCHRONOUS for the close-hang
+  bullet below, and a programmatic dismissal (`dismissContextMenu`/`dismissSessionPicker`) clears its own
+  handle BEFORE popping down so its `"closed"` handler early-returns instead of unparenting twice.
+  **The ONE pre-popover owner the repair cannot re-derive is the in-terminal SEARCH ENTRY** —
+  `focusActiveSurface()` resolves surfaces, so a dismissal landing in the shell under a still-visible bar
+  would reroute the rest of the user's query into the terminal.
+  Every opener therefore pops up through `AppController.popupPopover`, which records
+  `searchEntryHoldsKeyboard()` (the shared predicate in `Search.swift`); a `refocus: true` dismissal
+  restores the ENTRY through `restoreSearchEntryFocus()`, which declines once the search ended or its bar
+  is unmapped (a grab on an unmapped entry is a silent no-op that would leave the keyboard NOWHERE), and
+  `becameFrontmost()` consults the same predicate and declines its own grab — which is what makes the pair
+  ORDER-INDEPENDENT.
+  A `refocus: false` dismissal consumes the capture along with the grab, so the two callers whose popovers
+  may genuinely have taken the keyboard from the entry — `rebuildSidebar()`'s tail and
+  `activateSessionPickerRow` — read the capture BEFORE dismissing and restore the ENTRY first in their own
+  repair; and an opener that CHANGES the selection ends a live search BEFORE it selects
+  (`endSearchForSelectionChange()`, the `selectSession` convention it mirrors), because its own
+  `showActive()` moves the keyboard off the entry before the capture would run.
+  **A dismissal that is about to be replaced, or torn down, passes `refocus: false`** — the detach still
+  runs and only the grab is skipped, because that grab is not free there: it lands in `surfaceDidFocus`,
+  which rebuilds the whole sidebar from inside an opener still holding the row's pointers, or from inside
+  `windowWillClose`.
+  A new popover needs the `"closed"` seam, not a hand-rolled regrab.
+  The bar is on the GRAB, not on the dismissal, so it covers every OTHER grab an opener makes too:
+  `showRowContextMenu`'s select-on-right-click branch calls `showActive(focus: false)`, because that grab
+  lands in the same rebuild and frees the `GtkListBox` it is about to parent the menu to.
+  A REPLACEMENT opener also reads the capture before its own dismissal and hands it to
+  `popupPopover(_:keepingCapture:)`, because re-reading the entry there answers `false` — the outgoing
+  popover, not the entry, holds the keyboard at that moment.
+  It reads it through `searchEntryCaptureSurvives(_:)`, which carries the `true` only while the OUTGOING
+  popover still owns the keyboard: focus can move to a live surface while a popover is up (a control
+  command grabbing one), and a stale carry would make the replacement's dismissal steal THAT surface's
+  keyboard for the entry — the inverse theft.
+  That ownership test belongs to the OPENERS ONLY: the two dismissal-time repairs read the flag raw, on
+  purpose, because under a reactivating WM the keyboard has already left the popover by the time they run,
+  so testing ownership there declines and drops the user into the shell under a live search bar — measured,
+  both covering `chrome-focus-popovers` steps fail when it is applied to them.
+  The residual is known and accepted: a focus move to another surface WHILE a popover is up (a `quick show`
+  over an open picker) still makes those two restore the entry.
+- **A path that hands the keyboard back after a MODE CHANGE goes through `focusActiveSurface()`, never
+  `showActive()`'s own focus leg.**
+  `showActive(focus:)` resolves overlay → scratch → split → primary for the active session and knows nothing
+  about the surfaces that sit ON TOP of the deck: a visible quick terminal, a zoom host, an open dashboard.
+  A path that ALSO has to refresh deck presentation uses `showActiveFocusingVisibleSurface()`, the two-call
+  shape (`showActive(focus: false)` then `focusActiveSurface()`); it is behaviour-preserving in the plain
+  case, because `focusActiveSurface`'s fallback is `searchTargetSurface(for:)`, byte-for-byte what
+  `showActive` inlines.
+  Its three call sites are `setTerminalZoom`'s exit leg (`AppControllerZoom.swift`), where nothing on the
+  zoom path clears `quickVisible`, so `restoreZoomedSurface(.quick)` re-shows the quick card and the old
+  grab landed on the deck pane behind it; `closeDashboard(refocus:)`, whose `mountDashboard` grabbed the
+  dashboard host, so the close destroys the keyboard's owner and MUST hand it back — its old
+  split-or-primary `focusedSurface()` leg could grab an UNMAPPED widget, a silent no-op that leaves the
+  keyboard nowhere at all; and `becameFrontmost()`, the masking path for a popover dismissal, which must
+  not be a COARSER refocus than the helper it preempts (the quick card is an overlay inset from the top, so
+  the header bar stays clickable with a popover up, and its old grab typed into the deck shell behind a
+  visible quick terminal) and which declines outright while the search entry holds the keyboard.
+  A path that changes NO presentation calls `focusActiveSurface()` alone: `setQuick`'s hide leg answers
+  with `refocusIfStranded()` (the same primitive behind its stranding guard);
+  `finishControlPickDismissal` (`ControlPicker.swift`), a bare-toplevel dismissal behind the `gWindows`
+  staleness guard, with `refocus: false` threaded from `windowWillClose` and a fire-time
+  `searchEntryHoldsKeyboard()` decline; and `activateSessionPickerRow`, whose attention leg delegates to
+  `handleAutoFollow` — SHARED with the auto-follow timer and so declining to focus while a quick terminal
+  is visible, right for the timer but wrong for the user's own click, so both its legs end in
+  `focusActiveSurface()` behind the search-entry restore above.
+  The `refocus: false` callers stay on `showActive()`, which is already overlay/scratch-aware, because
+  `agtermctl dashboard --close` re-targets nothing of its own.
+- **A popover left PARENTED when its window is destroyed HANGS the close — the unparent's second, unmasked
+  job.**
+  A GtkPopover left parented to a session `GtkListBox` makes `gtk_window_destroy` spin forever: the list
+  box's dispose calls `gtk_list_box_remove` on a non-row child, which refuses and never advances (measured:
+  needs SIGKILL; the same run with an unparent first exits cleanly).
+  GTK does NOT emit `"closed"` during that destroy, so `windowWillClose` calls `dismissContextMenu()`
+  itself alongside `dismissSessionPicker()`.
+  Because `contextMenuDidClose` clears `contextMenuPopover`, the handle is non-nil only while the menu is
+  genuinely open — which is what lets `sidebarInteractionInProgress` defer the two deferred rebuilds
+  whenever a menu is up, making the context-menu half of `rebuildSidebar()`'s tail repair unreachable from
+  a deferred job.
+- **A teardown path clears its own zoom target BEFORE freeing the surface.**
+  While zoomed, the surface's `GtkGLArea` lives in `zoomHost` and `splitView` is hidden, so a surface torn down
+  under the host stays MAPPED (the refocus guard correctly declines) over a deck nothing can reach.
+  `setQuick(_:)`'s hide leg and `closeQuick()` both start with
+  `if terminalZoom.target == .quick { setTerminalZoom(.off, target: .quick) }`; that is what lets
+  `refocusIfStranded`'s zoom branch assume its target's surface is live.
+- **The refocus lives in the SHARED apply function, not in the GUI handler.**
+  `applySidebarVisibility()`'s callers are `toggleSidebar()`, the `sidebar` control arm
+  (`setSidebarVisibility`), and `LinuxSettingsController.applyInactiveWindowSidebarHidingIfEnabled()`,
+  which fans out over `gWindows.values` — so putting it there makes the button, `agtermctl sidebar hide`
+  and the settings-driven fan-out keep-in-sync by construction instead of by three call sites someone must
+  remember.
+  Deliberately NOT `showActive()`: that also rewrites deck presentation, which `setTerminalZoom` suppresses
+  while zoomed and the dashboard suppresses via `focus: false`.
 - **Tests that swap `MainTimer.scheduleTimer` go through `withFakeMainTimer`** (agtermCore test fixtures):
   the seam is a process-global static and swift-testing runs in parallel, so the swap window must contain no
   `await` — the helper's synchronous closure makes that unrepresentable.

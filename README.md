@@ -748,6 +748,8 @@ select_theme       toggle_fullscreen  toggle_terminal_zoom
 dashboard
 ```
 
+On Linux the title-bar button tooltips are rendered from the table of **default** chords, never from the loaded keymap, so a `map` line that rebinds e.g. `toggle_sidebar` does not change what the tooltip says — not after `keymap reload`, and not in a window opened afterwards either. The binding itself works; only the hint is stale. The command palette (`ctrl+shift+p`) always renders the effective chord.
+
 The shell line of a `command` may use these `{AGT_X}` tokens, expanded at fire time (the same values are also exported as `$AGT_X` environment variables on the spawned process):
 
 ```

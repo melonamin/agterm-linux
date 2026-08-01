@@ -346,14 +346,14 @@ extension AppController: ControlActions {
         case .failure(let response): return response
         case .success(let id):
             store.applyFocusMode(mode, to: id)
-            rebuildSidebar()
+            rebuildSidebarKeepingKeyboard()
             return ok(id)
         }
     }
 
     func setWorkspaceFilter(window: String?, mode: ControlToggleMode) -> ControlResponse {
         store.applyWorkspaceFilter(mode)
-        rebuildSidebar()
+        rebuildSidebarKeepingKeyboard()
         return ok()
     }
 

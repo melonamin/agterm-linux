@@ -50,7 +50,8 @@ extension AppController {
         gtk_widget_set_visible(W(splitView), zoomed ? 0 : 1)
         if let host = zoomHost { gtk_widget_set_visible(W(host), zoomed ? 1 : 0) }
         refreshPaneOverlayCoverage()
-        if !zoomed { showActive() }
+        // Nothing here clears `quickVisible`, so the quick card can come back on screen over the deck.
+        if !zoomed { showActiveFocusingVisibleSurface() }
     }
 
     func surface(for target: TerminalZoomTarget) -> GhosttySurface? {
@@ -86,6 +87,7 @@ extension AppController {
 
         let exit = OpaquePointer(gtk_button_new_with_label("Exit Terminal Zoom"))
         gtk_widget_set_tooltip_text(W(exit), "Exit Terminal Zoom")
+        gtk_widget_set_focus_on_click(W(exit), 0)
         connect(exit, "clicked", unsafeBitCast(onTerminalZoomExit, to: GCallback.self))
         adw_header_bar_pack_end(header, W(exit))
         adw_toolbar_view_add_top_bar(host, W(header))

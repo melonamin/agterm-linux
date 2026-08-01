@@ -4,11 +4,19 @@ import agtermCore
 @MainActor
 @discardableResult
 func linuxHeaderToggle(_ header: OpaquePointer?, _ icon: String, _ tooltip: String,
-                       _ callback: @escaping @convention(c) (OpaquePointer?, gpointer?) -> Void) -> OpaquePointer? {
+                       _ callback: @escaping @convention(c) (OpaquePointer?, gpointer?) -> Void,
+                       packStart: Bool = false) -> OpaquePointer? {
     let button = OpaquePointer(gtk_button_new_from_icon_name(icon))
     gtk_widget_set_tooltip_text(W(button), tooltip)
+    // Chrome must never own the keyboard; `can-focus` stays untouched so Tab and screen readers still
+    // reach the button (`.claude/rules/main-loop.md`).
+    gtk_widget_set_focus_on_click(W(button), 0)
     connect(button, "clicked", unsafeBitCast(callback, to: GCallback.self))
-    adw_header_bar_pack_end(header, W(button))
+    if packStart {
+        adw_header_bar_pack_start(header, W(button))
+    } else {
+        adw_header_bar_pack_end(header, W(button))
+    }
     return button
 }
 

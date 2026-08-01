@@ -30,6 +30,11 @@ APP_STDERR_ATTACHED = os.environ.get(
     "AGTERM_UI_APP_STDERR_MARKER", "agterm-ui-smoke: app stderr sink attached"
 )
 
+# How long a NEGATIVE assertion ("this did not happen") settles before it is believed. `wait_for` can only
+# wait for truth, so these are bare sleeps — sized for a loaded runner, because a negative assertion fails
+# OPEN and a short window turns a real regression into a pass.
+NEGATIVE_SETTLE_SECONDS = 6
+
 
 def collect(node, role=None, name=None, out=None):
     """Depth-first collection that tolerates transiently disappearing GTK nodes."""
@@ -919,13 +924,18 @@ def palette_row_labels(palette):
     ]
 
 
-def open_palette(app, process_id, window_title):
-    """Focus one window, open its command palette, and return (palette frame, search entry)."""
-    window = wait_for(
-        lambda: named(app, window_title, role="frame"),
-        f"window {window_title!r} is missing",
-    )
-    focus_accessible_window(window, process_id)
+def open_palette(app, process_id, window_title=None):
+    """Focus one window, open its command palette, and return (palette frame, search entry).
+
+    `window_title=None` skips the by-title focus step for a single-window scenario, where the title is not
+    known up front (it tracks the active session's name) and `focus_window` already picks the right one.
+    """
+    if window_title:
+        window = wait_for(
+            lambda: named(app, window_title, role="frame"),
+            f"window {window_title!r} is missing",
+        )
+        focus_accessible_window(window, process_id)
     press_ctrl_shift_p(process_id, window_title=window_title)
     palette = wait_for(
         lambda: named(app, "Command Palette", role="frame"),
@@ -1144,6 +1154,14 @@ def verify_normal_toolbar(env, state, home):
         control_json(env, "tree", "--json")
 
         assert not named(app, "Main Menu"), "toolbar still exposes the removed Main Menu button"
+
+        # An icon-only GtkButton publishes its tooltip as its accessible NAME, and those names are
+        # rendered from `BuiltinAction.linuxDefaultChord`. The unit test pins the FORMATTER; only a live
+        # lookup pins the WIRING, so swapping two arguments at a construction site cannot pass. The other
+        # four names are already looked up by `dashboard-modal`, `session-pickers` and `chrome-focus-*`.
+        for tooltip in ("Quick Terminal (Ctrl+`)", "Toggle Split (Ctrl+Shift+D)",
+                        "Scratch Terminal (Ctrl+Shift+J)"):
+            assert actionable(app, tooltip), f"title-bar button {tooltip!r} is missing or renamed"
 
         assert not preferences_window(app), "Preferences was open before shortcut verification"
         focus_window(process.pid)
@@ -3916,6 +3934,758 @@ def verify_session_pickers(env, state):
         stop(process)
 
 
+def keyboard_owner(marker_path, process_id):
+    """Type a command that names WHICH surface received it, and return what that surface wrote.
+
+    A session shell carries BOTH `AGTERM_SESSION_ID` and `AGTERM_WINDOW_ID`; the quick terminal
+    deliberately carries only the window id (`SurfaceEnvironment.quickTerminal`); and `AGTERM_PANE`
+    names the surface's slot within its session (`left` for the main pane, `scratch` for the scratch
+    terminal, absent for the quick terminal). So the marker's CONTENT —
+    `owner=<session>/<window>/left` vs `owner=/<window>/` vs `owner=<session>/<window>/scratch` —
+    identifies the answering surface POSITIVELY rather than by an absence. Existence alone would not
+    identify anything: after the quick terminal is hidden, GTK leaves focus on its unmapped GLArea, and
+    typing that still reached the quick shell would write the file just as happily as the wanted session
+    shell. And an absence alone would not either — a regression that stopped injecting
+    `AGTERM_SESSION_ID` would make the SESSION shell answer with the quick terminal's shape.
+
+    The pane field is what makes the two shells of ONE session distinguishable, which the dashboard-close
+    step needs: primary and scratch share a session id, so `owner=<session>/<window>` alone could not
+    tell "typed into the scratch the user can see" from "typed into the pane behind it".
+
+    All three variables are QUOTED so an unset one still contributes an EMPTY argument; unquoted,
+    `%s/%s/%s` would consume the window id first and the quick terminal would answer `owner=<window>//`.
+    Quoted expansion of an unset variable yields one empty string under sh/bash/zsh AND fish, and the
+    harness inherits `SHELL` from whoever runs it. Returns None when nothing typed ever landed.
+    """
+    if os.path.exists(marker_path):
+        os.remove(marker_path)
+    command = (
+        "printf 'owner=%s/%s/%s' \"$AGTERM_SESSION_ID\" \"$AGTERM_WINDOW_ID\" \"$AGTERM_PANE\" > "
+        + shlex.quote(marker_path)
+    )
+    for attempt in range(3):
+        if attempt:
+            # A partially delivered attempt (focus moved mid-type) leaves half a command in the line
+            # buffer, and appending the retry to it runs garbage — which makes a REAL failure unreadable.
+            press_x11_key("ctrl+c", process_id)
+        type_x11_text(command, process_id)
+        press_return(process_id)
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            if os.path.exists(marker_path):
+                with open(marker_path, encoding="utf-8") as marker:
+                    value = marker.read()
+                if value:
+                    return value
+            time.sleep(0.1)
+    return None
+
+
+class ChromeFocus:
+    """Shared fixture for the three `chrome-focus-*` scenarios: one launched app plus focus helpers.
+
+    Chrome must never be left holding the GTK keyboard; the invariants live in
+    `.claude/rules/main-loop.md`. A chrome BUTTON must be clicked with `mouse_click`, never `activate()`:
+    `do_action(0)` bypasses GtkButton's click gesture and never grabs focus, so such a step passes
+    unfixed. Popover ROWS are exempt — the theft there is `popup`'s, not the click's.
+    """
+
+    def __init__(self, env):
+        self.env = env
+        self.process, self.app = launch(env)
+
+    def setup(self):
+        """Resolve the window and session this scenario asserts against. Called INSIDE the scenario's
+        `try`, so a failure here still dumps the tree and stops the app instead of leaking it into the
+        rest of the sweep."""
+        self.window_id = wait_for(
+            lambda: next((item["id"] for item in window_list(self.env) if item["open"]), None),
+            "initial window was not registered",
+        )
+        wait_for(lambda: self.tree().get("sidebarVisible"), "sidebar was not visible at launch")
+        # Resolve the session by its `active` flag at a known-clean point, before any step mutates
+        # sidebar state: a positional index would silently assert against the wrong session once a step
+        # reorders it. (`workspace()` may index positionally — these scenarios launch with exactly one.)
+        self.session_id = next(
+            (session["id"] for session in self.sessions() if session.get("active")), None)
+        assert self.session_id, "the launched window has no active session to assert against"
+        self.session_owner = f"owner={self.session_id}/{self.window_id}/left"
+        self.quick_owner = f"owner=/{self.window_id}/"
+        self.scratch_owner = f"owner={self.session_id}/{self.window_id}/scratch"
+
+    def tree(self):
+        return window_tree(self.env, self.window_id)
+
+    def sessions(self):
+        return [session for workspace in self.tree()["workspaces"]
+                for session in workspace["sessions"]]
+
+    def workspace(self):
+        return self.tree()["workspaces"][0]
+
+    def owner_after(self, step):
+        """Type a marker from whichever surface holds the keyboard, and return which one answered."""
+        return keyboard_owner(
+            os.path.join(self.env["AGTERM_STATE_DIR"], f"chrome-focus-{step}"), self.process.pid)
+
+    def assert_space_does_not_refire(self, key, message):
+        """Press Space and assert `key` did not flip back — the negative half of every chrome click."""
+        before = self.tree().get(key)
+        press_x11_key("space", self.process.pid)
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert self.tree().get(key) == before, message
+
+    def shift_tab_until(self, predicate, message):
+        """Walk the chrome BACKWARD until `predicate` holds. Forward Tab is absorbed by the terminal
+        (libghostty hands it to the shell), so the chrome is entered from the search entry and walked
+        with Shift+Tab; the loop breaks on the a11y FOCUSED state, never on a press count, which is
+        layout-dependent."""
+        for _ in range(20):
+            press_x11_key("shift+Tab", self.process.pid)
+            time.sleep(0.3)
+            if predicate():
+                break
+        assert predicate(), message
+
+    def wait_scratch(self, on, message):
+        """Wait until the scenario session's scratch flag reads `on` off the tree."""
+        wait_for(lambda: any(session["id"] == self.session_id and bool(session.get("scratch")) == on
+                             for session in self.sessions()), message)
+
+    def open_search(self, reason):
+        press_x11_key("ctrl+shift+f", self.process.pid)
+        wait_for(lambda: actionable(self.app, "Next match (Enter)"),
+                 "Ctrl+Shift+F did not open the search bar " + reason)
+
+    def close_search(self, reason):
+        """Ctrl+Shift+F is a toggle (`toggleSearch`), so this also hands focus back via `searchDidEnd`."""
+        press_x11_key("ctrl+shift+f", self.process.pid)
+        wait_for(lambda: actionable(self.app, "Next match (Enter)") is None,
+                 "the search bar did not close " + reason)
+
+    def match_count(self):
+        """The match count is a plain GtkLabel, so its accessible NAME is its text ("5/6")."""
+        return next((label.get_name() for label in collect(self.app, role="label")
+                     if re.fullmatch(r"\d+/\d+", label.get_name() or "")), None)
+
+    def open_counted_query(self, reason):
+        """Open the search bar on a needle the scrollback matches. A reopened search carries the previous
+        needle back into the entry (`searchDidStart` applies whatever start_search reports), so it is
+        cleared first: the query must READ a count before the popover, or the "No results" flip below
+        could not discriminate."""
+        self.open_search(reason)
+        press_x11_key("ctrl+a", self.process.pid)
+        type_x11_text("zzq", self.process.pid)
+        wait_for(self.match_count, "the search never counted matches " + reason)
+
+    def assert_typing_reaches_query(self, message):
+        """Append to the query: it then matches nothing, which the label reports as "No results". When
+        the keyboard was handed to the shell instead, the count just sits where it was."""
+        type_x11_text("x", self.process.pid)
+        wait_for(lambda: named(self.app, "No results", role="label"), message)
+
+    def picker_row(self):
+        return next((item for item in collect(self.app, role="button")
+                     if "workspace 1 ·" in (item.get_name() or "")), None)
+
+    def attention_row(self):
+        """The INNERMOST row match. `picker_row` returns the first, which here is the attention HEADER
+        button itself: the popover is parented to it and GTK4 derives the un-labelled toggle's name from
+        its descendants, popover row included, so activating that would toggle the picker instead of the
+        row. `collect` is depth-first, so the real row is last."""
+        rows = [item for item in collect(self.app, role="button")
+                if "workspace 1 ·" in (item.get_name() or "")]
+        return rows[-1] if rows else None
+
+    def enable_attention_button(self):
+        """Settings are re-read on every sidebar rebuild, so writing the file is enough."""
+        settings_path = os.path.join(self.env["AGTERM_STATE_DIR"], "settings.json")
+        settings = {}
+        if os.path.exists(settings_path):
+            with open(settings_path, encoding="utf-8") as source:
+                settings = json.load(source)
+        settings["attentionButtonEnabled"] = True
+        with open(settings_path, "w", encoding="utf-8") as destination:
+            json.dump(settings, destination)
+
+    def open_attention_picker(self, reason):
+        """Mark the session blocked so the attention button becomes actionable, then click it open."""
+        control_json(self.env, "session", "status", "blocked", "--target", self.session_id, "--json")
+        wait_for(lambda: actionable(self.app, "Show sessions that need attention (Ctrl+Shift+I)"),
+                 "the attention button did not become actionable " + reason)
+        mouse_click(lambda: actionable(self.app, "Show sessions that need attention (Ctrl+Shift+I)"),
+                    self.process.pid, button="left")
+        wait_for(self.picker_row, "clicking the attention button did not open the picker " + reason)
+
+    def open_session_picker(self, reason):
+        mouse_click(lambda: actionable(self.app, "Recent Sessions (Ctrl+Tab)"),
+                    self.process.pid, button="left")
+        wait_for(self.picker_row, "clicking Recent Sessions did not open the session picker " + reason)
+
+    def select_session(self, session_id, message):
+        control_json(self.env, "session", "select", "--target", session_id, "--json")
+        wait_for(lambda: any(session["id"] == session_id and session.get("active")
+                             for session in self.sessions()), message)
+
+    def sole_nameless_button(self):
+        """The workspace disclosure triangle. It carries no tooltip, so it is looked up by ROLE alone —
+        exactly one push button is nameless in the default layout. The count has to SETTLE at one rather
+        than be trusted on the first non-empty read: a widget GTK has just destroyed lingers in the
+        AT-SPI cache reporting an EMPTY name. Returning the button itself keeps every use index-free."""
+        buttons = [button for button in collect(self.app, role="button")
+                   if not (button.get_name() or "")]
+        return buttons[0] if len(buttons) == 1 else None
+
+    @staticmethod
+    def has_keyboard(button):
+        """A state read races a rebuild — a widget GTK has just destroyed raises here rather than
+        answering, and for a focus predicate that is a `False`, not an error."""
+        try:
+            return bool(button) and button.get_state_set().contains(Atspi.StateType.FOCUSED)
+        except Exception:
+            return False
+
+    def disclosure_has_keyboard(self):
+        return any(self.has_keyboard(button) for button in collect(self.app, role="button")
+                   if not (button.get_name() or ""))
+
+    def add_session_has_keyboard(self):
+        return self.has_keyboard(named(self.app, "New Session in workspace 1", role="button"))
+
+    def repark_on_add_session(self, reason):
+        """Cycle the search bar and walk back onto the add-session button. The marker typing moved the
+        keyboard into the terminal, and Shift+Tab is terminal-absorbed there, so the walk has to re-enter
+        the chrome through a freshly-focused search entry every time."""
+        self.close_search("before re-parking " + reason)
+        self.open_search("to re-park " + reason)
+        self.shift_tab_until(
+            self.add_session_has_keyboard,
+            "Shift+Tab never re-parked the keyboard on the add-session button " + reason)
+
+
+def verify_chrome_focus_buttons(env):
+    """Chrome BUTTONS and the surface-stranding paths: a real click must leave the keyboard on the
+    terminal, and hiding or tearing down a focused surface must hand it back to a VISIBLE one."""
+    ctx = ChromeFocus(env)
+    try:
+        ctx.setup()
+        # Click the toggle from a HIDDEN sidebar, not a visible one. GTK4 reports the accessible extents
+        # of a content-header `pack_start` child well to the LEFT of where it really is while the sidebar
+        # is visible (measured under Xvfb), and mouse_click trusts those extents, so the click silently
+        # lands on the paned divider. Hidden, the button is anchored to the window's left edge. Same
+        # button, same seam — only the starting state differs.
+        control_json(env, "sidebar", "hide", "--json")
+        wait_for(lambda: not ctx.tree().get("sidebarVisible"),
+                 "sidebar did not hide over the control socket")
+        mouse_click(lambda: actionable(ctx.app, "Toggle Sidebar (Ctrl+Shift+S)"),
+                    ctx.process.pid, button="left")
+        wait_for(lambda: ctx.tree().get("sidebarVisible"),
+                 "clicking the Toggle Sidebar button did not show the sidebar")
+        ctx.assert_space_does_not_refire(
+            "sidebarVisible",
+            "Space after a Toggle Sidebar click toggled the sidebar again — the header button kept "
+            "keyboard focus")
+        # That Space landed in the shell's line buffer instead, so the marker command is typed with a
+        # LEADING SPACE (harmless in sh/bash/zsh). `owner_after` proves WHICH surface answered.
+        owner = ctx.owner_after("input")
+        assert owner == ctx.session_owner, (
+            "the terminal did not accept keyboard input after a title-bar button click — the header "
+            f"button kept keyboard focus (marker read {owner!r})")
+
+        # The sidebar FOOTER is its own construction seam (`footerButton`), and `toggleFlaggedView` has
+        # no refocus of its own — unlike a sidebar-row click, which already calls showActive().
+        assert ctx.tree().get("sidebarMode") == "tree", "sidebar did not start in workspace-tree mode"
+        mouse_click(lambda: actionable(ctx.app, "Show Flagged Only"), ctx.process.pid, button="left")
+        wait_for(lambda: ctx.tree().get("sidebarMode") == "flagged",
+                 "clicking Show Flagged Only did not switch the sidebar to flagged mode")
+        ctx.assert_space_does_not_refire(
+            "sidebarMode",
+            "Space after a Show Flagged Only click toggled the sidebar mode back — the footer button "
+            "kept keyboard focus")
+        # The positive half: `toggleFlaggedView` has no refocus of its own, so the failure mode the
+        # negative assertion cannot see is focus stranded NOWHERE — which only a marker read catches.
+        owner = ctx.owner_after("footer-button")
+        assert owner == ctx.session_owner, (
+            "the terminal did not accept keyboard input after a sidebar-footer button click "
+            f"(marker read {owner!r})")
+
+        # Hiding a widget that HOLDS focus is a second, independent stranding path that focus-on-click
+        # cannot touch: after `gtk_widget_set_visible(frame, 0)` the window's focus widget is STILL the
+        # quick terminal's GLArea, now unmapped — GTK4 does not clear it — so every keystroke is routed
+        # at a widget that is off screen.
+        press_x11_key("ctrl+grave", ctx.process.pid)
+        wait_for(lambda: ctx.tree().get("quickVisible"), "Ctrl+` did not open the quick terminal")
+        owner = ctx.owner_after("quick")
+        assert owner == ctx.quick_owner, (
+            f"the quick terminal did not take keyboard focus when shown (marker read {owner!r})")
+        # Hide over the control socket, not Ctrl+`: the next assertion is about where keystrokes go, so
+        # the hide itself must not depend on that.
+        control_json(env, "quick", "hide", "--json")
+        wait_for(lambda: not ctx.tree().get("quickVisible"),
+                 "quick terminal did not hide over the control socket")
+        owner = ctx.owner_after("session")
+        assert owner == ctx.session_owner, (
+            "typing after the quick terminal was hidden did not reach the session terminal — GTK left "
+            f"keyboard focus on the unmapped quick pane (marker read {owner!r})")
+
+        # Third stranding path: EXITING a quick-terminal zoom re-shows the quick card (nothing on the
+        # zoom path clears `quickVisible`), so the refocus must resolve the card and not the deck pane
+        # behind it. Driven over the socket, which is what the `Exit Terminal Zoom` button reaches too.
+        press_x11_key("ctrl+grave", ctx.process.pid)
+        wait_for(lambda: ctx.tree().get("quickVisible"), "Ctrl+` did not re-open the quick terminal")
+        control_json(env, "surface", "zoom", "show", "--target", "quick", "--json")
+        wait_for(lambda: ctx.tree().get("zoomedSurface") == "quick",
+                 "the quick terminal did not zoom over the control socket")
+        control_json(env, "surface", "zoom", "hide", "--target", "quick", "--json")
+        wait_for(lambda: not ctx.tree().get("zoomedSurface"),
+                 "the quick terminal did not un-zoom over the control socket")
+        assert ctx.tree().get("quickVisible"), (
+            "exiting the zoom hid the quick terminal, so the assertion below would not be about a "
+            "VISIBLE card")
+        owner = ctx.owner_after("unzoom-quick")
+        assert owner == ctx.quick_owner, (
+            "exiting a quick-terminal zoom moved the keyboard to the deck session behind the still-"
+            f"visible quick card, so typing went into a shell the user cannot see (marker read {owner!r})")
+
+        # Fourth stranding path, from the SAME zoom: a quick shell that EXITS while zoomed. Its GLArea
+        # lives in `zoomHost`, so it stays MAPPED after the surface behind it is freed and the refocus
+        # guard correctly declines — leaving a dead zoom host over a hidden deck unless closeQuick()
+        # drops its own `.quick` zoom first.
+        control_json(env, "surface", "zoom", "show", "--target", "quick", "--json")
+        wait_for(lambda: ctx.tree().get("zoomedSurface") == "quick",
+                 "the quick terminal did not re-zoom over the control socket")
+        type_x11_text("exit", ctx.process.pid)
+        press_return(ctx.process.pid)
+        wait_for(lambda: not ctx.tree().get("quickVisible") and not ctx.tree().get("zoomedSurface"),
+                 "the zoomed quick terminal did not tear its zoom down when its shell exited")
+        owner = ctx.owner_after("zoom-exit")
+        assert owner == ctx.session_owner, (
+            "typing after a ZOOMED quick shell exited did not reach the session terminal — the stale "
+            f"zoom host was left on screen over a hidden deck (marker read {owner!r})")
+
+        # Fifth stranding path: closing the DASHBOARD, whose own host held the keyboard and is destroyed
+        # by the close — so the hand-back must resolve the SCRATCH the user can see, not the
+        # split-or-primary pane behind it. Escape is `onDashboardKey`, the same `closeDashboard()` the
+        # `Exit Dashboard` button reaches. This is the step the marker's `AGTERM_PANE` field exists for:
+        # the scratch and the pane behind it share a session id, so nothing else tells them apart.
+        control_json(env, "session", "scratch", "on", "--target", ctx.session_id, "--json")
+        ctx.wait_scratch(True, "the scratch terminal did not open over the control socket")
+        owner = ctx.owner_after("scratch")
+        assert owner == ctx.scratch_owner, (
+            f"the scratch terminal did not take the keyboard when it opened (marker read {owner!r})")
+        control_json(env, "dashboard", "--mru", "--json")
+        wait_for(lambda: ctx.tree().get("dashboardMembers"),
+                 "the dashboard did not open over the control socket")
+        press_escape(ctx.process.pid)
+        wait_for(lambda: not ctx.tree().get("dashboardMembers"), "Escape did not close the dashboard")
+        owner = ctx.owner_after("dashboard-close")
+        assert owner == ctx.scratch_owner, (
+            "closing the dashboard did not hand the keyboard back to the VISIBLE scratch terminal — it "
+            "resolved the split-or-primary pane behind it instead, and that pane is not even on screen "
+            f"while the scratch is up (marker read {owner!r})")
+        # The OTHER leg of the same close: `agtermctl dashboard --close` re-targets nothing of its own,
+        # so `closeDashboard(refocus: false)` falls back to `showActive()`'s own focus leg — which is
+        # scratch-aware. Dropping that fallback leaves the control path with no focus widget at all.
+        control_json(env, "dashboard", "--mru", "--json")
+        wait_for(lambda: ctx.tree().get("dashboardMembers"),
+                 "the dashboard did not re-open over the control socket")
+        control_json(env, "dashboard", "--close", "--json")
+        wait_for(lambda: not ctx.tree().get("dashboardMembers"),
+                 "dashboard --close did not close the dashboard over the control socket")
+        owner = ctx.owner_after("dashboard-control-close")
+        assert owner == ctx.scratch_owner, (
+            "closing the dashboard over the control socket did not hand the keyboard back to the VISIBLE "
+            f"scratch terminal — the refocus:false leg lost its showActive() fallback (marker {owner!r})")
+        control_json(env, "session", "scratch", "off", "--target", ctx.session_id, "--json")
+        ctx.wait_scratch(False, "the scratch terminal did not hide over the control socket")
+
+        # Sixth stranding path: committing an inline rename with ENTER destroys the entry that still
+        # HOLDS focus (the deferred rebuildAfterRename()), leaving the window with no focus widget.
+        # Driven from the palette because Linux binds no rename chord and a sidebar-row double-click is
+        # not deliverable here — session rows do not receive pointer events at their own, sane extents on
+        # this box, the same defect that fails the pre-existing `context-menu` scenario.
+        # The footer click above left the sidebar in `flagged` mode, and an inline rename needs its row
+        # both RENDERED (flagged lists only flagged sessions, of which there are none) and MAPPED.
+        control_json(env, "sidebar", "mode", "tree", "--json")
+        control_json(env, "sidebar", "show", "--json")
+        wait_for(lambda: ctx.tree().get("sidebarVisible") and ctx.tree().get("sidebarMode") == "tree",
+                 "the sidebar did not return to a visible workspace tree over the control socket")
+        # `window_title=None`: this scenario has one window, whose title tracks the session name.
+        run_palette_action(ctx.app, ctx.process.pid, None, "Rename Session")
+        type_x11_text("chrome-focus-renamed", ctx.process.pid)
+        press_return(ctx.process.pid)
+        wait_for(lambda: any(session["id"] == ctx.session_id
+                             and session.get("name") == "chrome-focus-renamed"
+                             for session in ctx.sessions()),
+                 "the inline rename never committed, so its focus behaviour cannot be asserted")
+        owner = ctx.owner_after("rename-commit")
+        assert owner == ctx.session_owner, (
+            "typing after an inline rename was committed with Enter did not reach the session terminal "
+            f"— the rebuild destroyed the focused entry and left focus nowhere (marker read {owner!r})")
+
+        print("OK: chrome buttons and surface teardown leave the keyboard on a surface the user can see")
+    except AssertionError:
+        describe_tree(ctx.app)
+        raise
+    finally:
+        stop(ctx.process)
+
+
+def verify_chrome_focus_sidebar(env):
+    """Sidebar REBUILDS: every path that destroys or unmaps the widget the keyboard is parked on owes a
+    repair, and a rebuild the user did not ask for owes leaving the parked position alone."""
+    ctx = ChromeFocus(env)
+    try:
+        ctx.setup()
+        # The workspace DISCLOSURE triangle is the seam where `focus-on-click = 0` is the only
+        # protection: `toggleWorkspaceCollapse` ends in `rebuildSidebar()`, which DESTROYS the button
+        # that took focus, so nothing masks it and the failure mode is the worst one — no focus widget at
+        # all, and a window that drops every keystroke.
+        wait_for(ctx.sole_nameless_button,
+                 "the sidebar never settled on exactly one nameless push button (the disclosure)")
+        assert not ctx.workspace().get("collapsed"), (
+            "the workspace did not start expanded, so a disclosure click cannot be asserted")
+        mouse_click(ctx.sole_nameless_button, ctx.process.pid, button="left")
+        wait_for(lambda: ctx.workspace().get("collapsed"),
+                 "clicking the workspace disclosure did not collapse the workspace")
+        owner = ctx.owner_after("disclosure")
+        assert owner == ctx.session_owner, (
+            "typing after a workspace-disclosure click did not reach the session terminal — the sidebar "
+            f"rebuild destroyed the focused button and left focus nowhere (marker read {owner!r})")
+
+        # Same button, the other INPUT PATH, where `focus-on-click = 0` is no protection: `can-focus`
+        # stays intact so Tab and screen readers keep working, so a keyboard user can hold focus ON the
+        # disclosure and Space it — and the rebuild then destroys the focused button, leaving the window
+        # dropping EVERY keystroke with not even a chord left to recover.
+        ctx.open_search("to enter the focus chain from")
+        ctx.shift_tab_until(
+            ctx.disclosure_has_keyboard,
+            "Shift+Tab from the search entry never landed keyboard focus on the workspace disclosure, so "
+            "the activation below would not be the keyboard path this step is about")
+
+        # Same destruction, a trigger the user never asked for: `scheduleSidebarMetadataRefresh` rebuilds
+        # the sidebar on a DEBOUNCE whenever ANY session reports an OSC title/pwd. A deferred job may not
+        # answer that with a focus grab, so the rebuild WAITS (`sidebarHoldsKeyboardFocus`) and the
+        # assertion is that the parked position SURVIVES.
+        # The park has to be the ADD-SESSION button, not the disclosure, and that is what makes this step
+        # discriminate: after a rebuild detaches the focus widget GTK re-homes focus at the next frame on
+        # the FIRST focusable widget, which IS the disclosure — a probe parked there recovers onto its
+        # own replacement and cannot tell fixed from broken.
+        press_x11_key("Tab", ctx.process.pid)
+        wait_for(ctx.add_session_has_keyboard,
+                 "Tab from the workspace disclosure did not land on the add-session button, so the parked "
+                 "position this step is about was never established")
+
+        # Driven over the control socket, because X11 keys would move the very focus under test. The
+        # trigger is the OSC 7 (pwd) half of the seam — `sessionDidReportPwd` and `sessionDidReportTitle`
+        # schedule the SAME refresh, but only `cwd` has a stable read-back (an OSC 0 title is overwritten
+        # by the next prompt within the poll interval). The sequence is EMITTED by the `printf`, never
+        # left to the shell: a bare `cd` reports pwd only under shell integration, which CI's container
+        # shell lacks, and the URL carries a real hostname because libghostty drops a bare `file:///usr`.
+        # The marker file proves the shell RAN it, the tree's `cwd` proves the app INGESTED it — only
+        # then is the refresh armed and the settle below meaningful.
+        probe_marker = os.path.join(env["AGTERM_STATE_DIR"], "chrome-focus-osc-probe")
+        if os.path.exists(probe_marker):
+            os.remove(probe_marker)
+
+        def session_cwd():
+            return next((session.get("cwd") for session in ctx.sessions()
+                         if session["id"] == ctx.session_id), None)
+
+        assert session_cwd() != "/usr", "the session already sits in the probe directory"
+        control_json(
+            env, "session", "type", "--target", ctx.session_id,
+            "cd /usr && printf '\\033]7;file://%s/usr\\033\\\\' \"$(uname -n)\" && : > "
+            + shlex.quote(probe_marker) + "\n",
+            "--json",
+        )
+        wait_for(lambda: os.path.exists(probe_marker),
+                 "the pwd probe never ran in the session shell, so no metadata refresh was armed")
+        wait_for(lambda: session_cwd() == "/usr",
+                 "the session never reported the probe's OSC 7 pwd, so no metadata refresh was armed")
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert ctx.add_session_has_keyboard(), (
+            "a background shell's pwd report moved the keyboard off the sidebar button the user had "
+            "tabbed to — the debounced metadata rebuild destroyed it, and GTK re-homed focus on the "
+            "first focusable widget instead of leaving the parked position alone")
+
+        # Hand the keyboard back to the disclosure for the Space assertion.
+        press_x11_key("shift+Tab", ctx.process.pid)
+        wait_for(ctx.disclosure_has_keyboard,
+                 "Shift+Tab did not return the keyboard to the workspace disclosure")
+        assert ctx.workspace().get("collapsed"), (
+            "the workspace is not collapsed here, so a Space on the disclosure cannot be asserted")
+        press_x11_key("space", ctx.process.pid)
+        wait_for(lambda: not ctx.workspace().get("collapsed"),
+                 "Space on the keyboard-focused disclosure did not expand the workspace")
+        owner = ctx.owner_after("kbd-disclosure")
+        assert owner == ctx.session_owner, (
+            "typing after the workspace disclosure was activated BY KEYBOARD did not reach the session "
+            f"terminal — the rebuild destroyed the button that held focus (marker read {owner!r})")
+        ctx.close_search("after the disclosure walks")
+        # Put the workspace back the way this step found it, because the steps below park POSITIONALLY:
+        # expanded, a long session row is wider than the sidebar's 240px viewport, and a later rebuild
+        # scrolls the sidebar horizontally — AT-SPI then reports its buttons left of the viewport and
+        # every click on them lands on nothing. Collapsed, the content cannot overflow.
+        control_json(env, "workspace", "collapse", "--target", ctx.workspace()["id"], "--json")
+        wait_for(lambda: ctx.workspace().get("collapsed"),
+                 "the workspace did not collapse again over the control socket")
+
+        # The search bar's icon buttons: clicking Next must leave the keyboard on the search ENTRY, or
+        # the next character of the query is swallowed mid-search (Search.swift). The scrollback the
+        # query matches is seeded over the socket, not typed: `close_search`'s hand-back is one of the
+        # seams this PR changes, and a regression there must not surface as a setup failure here.
+        control_json(env, "session", "type", "--target", ctx.session_id, "echo zzq zzq zzq\n", "--json")
+        ctx.open_search("for the search-icon step")
+        type_x11_text("zzq", ctx.process.pid)
+        counted = wait_for(ctx.match_count, "the search bar never reported a match count for the query")
+        mouse_click(lambda: actionable(ctx.app, "Next match (Enter)"), ctx.process.pid, button="left")
+        wait_for(lambda: ctx.match_count() not in (None, counted),
+                 "clicking Next with a real pointer did not move the search selection")
+        ctx.assert_typing_reaches_query(
+            "the character typed after a real Next click never reached the search entry — the search "
+            "icon button kept keyboard focus")
+        press_escape(ctx.process.pid)
+
+        # Seventh stranding path, and the first CONTROL-DRIVEN one: `workspace.focus` (and its
+        # `workspace.filter` sibling) rebuild the sidebar from a socket command, which fires at ANY time —
+        # including while the keyboard is Tab-parked on a sidebar button. The arm therefore routes through
+        # `rebuildSidebarKeepingKeyboard()`; a bare rebuild destroys the parked button instead.
+        ctx.open_search("to re-enter the focus chain from")
+        ctx.shift_tab_until(
+            ctx.add_session_has_keyboard,
+            "Shift+Tab from the search entry never parked keyboard focus on the add-session button, so "
+            "the control-driven rebuild below would not be destroying the keyboard's owner")
+        # The read leg is the workspace NODE's `focused` membership, not the top-level `workspaceFilter`:
+        # the Linux auto-follow projection rebuilds `ControlTree` without carrying that field, so it reads
+        # nil here regardless of filter state — an upstream read-back drift, orthogonal to focus.
+        workspace_id = ctx.workspace()["id"]
+        control_json(env, "workspace", "focus", "on", "--target", workspace_id, "--json")
+        wait_for(lambda: ctx.workspace().get("focused"), "workspace.focus on did not mark the workspace")
+        owner = ctx.owner_after("control-rebuild")
+        assert owner == ctx.session_owner, (
+            "typing after a control-driven workspace.focus rebuilt the sidebar did not reach the session "
+            "terminal — the rebuild destroyed the parked sidebar button without repairing the keyboard "
+            f"(marker read {owner!r})")
+        # The owner assert alone is not the whole discriminator: with the keyboard re-homed on the
+        # disclosure REPLACEMENT, the marker's own Space ACTIVATES it (whose collapse handler repairs the
+        # keyboard) and `keyboard_owner`'s retry loop re-types into the now-focused shell — self-healing
+        # the marker while silently expanding a workspace the user never touched.
+        assert ctx.workspace().get("collapsed"), (
+            "the marker typing expanded the collapsed workspace — the control-driven rebuild re-homed "
+            "the keyboard on the disclosure and the typed Space activated it instead of reaching the shell")
+
+        # The GUI half of the same seam: the footer filter button. `focus-on-click = 0` keeps the CLICK
+        # from moving the keyboard, so `toggleWorkspaceFilter` fires with the keyboard still parked on the
+        # add-session button its `rebuildSidebarKeepingKeyboard()` destroys. The filter is ON here, so the
+        # button reads "Show All Workspaces", and its tooltip flip is the read-back.
+        ctx.repark_on_add_session("for the footer filter click")
+        mouse_click(lambda: actionable(ctx.app, "Show All Workspaces"), ctx.process.pid, button="left")
+        wait_for(lambda: actionable(ctx.app, "Show Only Focused Workspaces"),
+                 "clicking the footer filter button did not suspend the workspace filter")
+        owner = ctx.owner_after("footer-filter")
+        assert owner == ctx.session_owner, (
+            "typing after the footer filter button rebuilt the sidebar did not reach the session "
+            f"terminal — the rebuild destroyed the parked add-session button (marker read {owner!r})")
+        assert ctx.workspace().get("collapsed"), (
+            "the marker typing expanded the collapsed workspace — the footer-click rebuild re-homed the "
+            "keyboard on the disclosure instead of repairing it")
+
+        # And the `workspace.filter` control arm — an independent call site, not the `workspace.focus` arm
+        # wearing another name, so it gets the same park + rebuild + repair round trip.
+        ctx.repark_on_add_session("for the workspace.filter arm")
+        control_json(env, "workspace", "filter", "on", "--json")
+        wait_for(lambda: actionable(ctx.app, "Show All Workspaces"),
+                 "workspace.filter on did not re-apply the filter (footer tooltip never flipped back)")
+        owner = ctx.owner_after("control-filter")
+        assert owner == ctx.session_owner, (
+            "typing after a control-driven workspace.filter rebuilt the sidebar did not reach the "
+            f"session terminal — the arm lost its keyboard repair (marker read {owner!r})")
+        assert ctx.workspace().get("collapsed"), (
+            "the marker typing expanded the collapsed workspace — the workspace.filter rebuild re-homed "
+            "the keyboard on the disclosure instead of repairing it")
+
+        # HIDING the sidebar with the keyboard parked inside it is `applySidebarVisibility()`'s repair
+        # leg. The parked button is unmapped, not destroyed, so this is the unmapped-focus disjunct of
+        # `refocusIfStranded()` — and nothing masks it: no popover, no toplevel reactivation.
+        ctx.repark_on_add_session("for the sidebar hide")
+        control_json(env, "sidebar", "hide", "--json")
+        wait_for(lambda: not ctx.tree().get("sidebarVisible"),
+                 "sidebar hide over the control socket did not hide the sidebar")
+        owner = ctx.owner_after("sidebar-hide-parked")
+        assert owner == ctx.session_owner, (
+            "typing after the sidebar was hidden with the keyboard parked on one of its buttons did not "
+            f"reach the session terminal — the hide left focus on an unmapped widget (marker {owner!r})")
+
+        print("OK: every sidebar rebuild repairs or preserves the keyboard's owner")
+    except AssertionError:
+        describe_tree(ctx.app)
+        raise
+    finally:
+        stop(ctx.process)
+
+
+def verify_chrome_focus_popovers(env):
+    """POPOVER seams. `focus-on-click = 0` is useless for these: a GtkPopover takes the keyboard on popup
+    regardless and hands it to the popover's PARENT on popdown, so the theft happens on the DISMISSAL.
+
+    Only the dismissals that actually strand the keyboard are covered here. A plain dismissal over the
+    deck is MASKED on this harness: a popover's grab deactivates the toplevel and its dismissal
+    reactivates it, and `becameFrontmost()` refocuses before `"closed"` is even emitted. What survives
+    masking is a dismissal over a surface the deck refocus resolves WRONG (a visible quick terminal) or
+    over an owner it cannot resolve at all (a live search entry, which is chrome, not a surface).
+    """
+    ctx = ChromeFocus(env)
+    try:
+        ctx.setup()
+        # The session picker needs a second session to become sensitive, and the selection is put back so
+        # the marker still names the session this scenario asserts against.
+        control_json(env, "session", "new", "--json")
+        ctx.select_session(ctx.session_id,
+                           "the original session did not become active again over the control socket")
+
+        # A picker dismissed over the QUICK TERMINAL: the masking reactivation answers the dismissal, and
+        # it must refocus through `focusActiveSurface()` (quick / zoom / dashboard aware) rather than
+        # `showActive()`'s deck-only leg. The quick card is an overlay with a 56px top inset, so the
+        # header bar stays clickable while it is up.
+        press_x11_key("ctrl+grave", ctx.process.pid)
+        wait_for(lambda: ctx.tree().get("quickVisible"),
+                 "Ctrl+` did not open the quick terminal over the deck")
+        ctx.open_session_picker("over the quick terminal")
+        press_escape(ctx.process.pid)
+        wait_for(lambda: ctx.picker_row() is None, "Escape did not dismiss the session picker")
+        owner = ctx.owner_after("quick-picker")
+        assert owner == ctx.quick_owner, (
+            "dismissing a popover opened over the VISIBLE quick terminal moved the keyboard to the deck "
+            f"session behind it, so typing went into a shell the user cannot see (marker read {owner!r})")
+
+        # ROW ACTIVATION over the quick terminal, on the ATTENTION picker: that leg hands the selection to
+        # `handleAutoFollow`, shared with the auto-follow TIMER, which deliberately declines to focus
+        # while the quick terminal is visible — so the row handler itself must end in
+        # `focusActiveSurface()` or nothing returns the keyboard the popup stole. No reactivation answers
+        # a row activation on this WM, so nothing masks it.
+        ctx.enable_attention_button()
+        ctx.open_attention_picker("over the quick terminal")
+        row = wait_for(ctx.attention_row, "the attention picker never presented its row")
+        activate(row)
+        wait_for(lambda: ctx.picker_row() is None,
+                 "activating the attention row did not dismiss the picker")
+        owner = ctx.owner_after("attention-row-quick")
+        assert owner == ctx.quick_owner, (
+            "activating an attention-picker row over the VISIBLE quick terminal left the keyboard off "
+            f"the quick card the user can see (marker read {owner!r})")
+        control_json(env, "session", "status", "idle", "--target", ctx.session_id, "--json")
+        control_json(env, "quick", "hide", "--json")
+        wait_for(lambda: not ctx.tree().get("quickVisible"),
+                 "quick terminal did not hide over the control socket")
+
+        # A popover opened while the user is typing INTO THE SEARCH ENTRY must hand the keyboard back to
+        # the ENTRY on dismissal, not to the shell under the still-visible bar. `focusActiveSurface()`
+        # resolves surfaces only, so `popupPopover` records the entry as the pre-popover owner at popup
+        # time and `detachPopover` restores it BYPASSING its `heldTheKeyboard` test — this WM's masking
+        # re-homes the keyboard onto the deck shell before `"closed"` arrives, so that test reads false.
+        # Seed the scrollback the query below has to match. Injected over the socket rather than typed,
+        # so it does not depend on where the quick terminal's hide left the keyboard.
+        control_json(env, "session", "type", "--target", ctx.session_id, "echo zzq zzq zzq\n", "--json")
+        ctx.open_counted_query("for the popover-over-search step")
+        ctx.open_session_picker("over the search entry")
+        press_escape(ctx.process.pid)
+        wait_for(lambda: ctx.picker_row() is None, "Escape did not dismiss the picker over the search")
+        ctx.assert_typing_reaches_query(
+            "the character typed after dismissing a picker over a live search never reached the search "
+            "entry — the dismissal handed the keyboard to the shell instead of back to the query")
+        press_escape(ctx.process.pid)
+        wait_for(lambda: actionable(ctx.app, "Next match (Enter)") is None,
+                 "the search bar did not close after the popover-over-search step")
+
+        # A REPLACEMENT opener carries that capture across its own `refocus: false` dismissal, because
+        # re-reading the entry there answers `false` — but the carry holds only while the OUTGOING popover
+        # still owns the keyboard. Here a control command grabs the quick terminal while the picker is up,
+        # so the flag is stale: honoring it would hand the keyboard to the ENTRY on the replacement's
+        # dismissal, stealing it from the surface the user was moved to — the INVERSE theft.
+        ctx.open_counted_query("for the stale-carry step")
+        ctx.open_session_picker("for the stale-carry step")
+        control_json(env, "quick", "show", "--json")
+        wait_for(lambda: ctx.tree().get("quickVisible"),
+                 "quick terminal did not open over the control socket while the picker was up")
+        # That the grab really left the picker is NOT observable from here — while a popover is up its
+        # own grab eats every keystroke (no marker lands anywhere) and the deactivated toplevel reports
+        # no a11y FOCUSED state. What establishes it is the differential: with the ownership test removed
+        # from `searchEntryCaptureSurvives` this step fails, which it could only do if the test had been
+        # answering `false`, i.e. if the keyboard had moved off the picker.
+        # Re-fire the OPENING button to replace the picker with a fresh one. `activate()`, not
+        # `mouse_click`: a real click on that button is a click-away that GTK answers by dismissing the
+        # picker, leaving no REPLACEMENT to test. `picker_row()` resolves the button itself while its
+        # popover is up (see `attention_row`) — the header toggle carries no name of its own, so GTK4
+        # derives one from its descendants, popover row included.
+        activate(wait_for(ctx.picker_row, "the session picker's opening button never resolved"))
+        time.sleep(1.0)
+        # A REPLACEMENT, not a dismissal: without a second popup nothing reads the carry and the marker
+        # below would read `quick_owner` for the wrong reason.
+        assert ctx.picker_row() is not None, (
+            "re-firing the opening button took the picker down instead of replacing it, so no "
+            "replacement opener ran and the assertion below cannot discriminate")
+        press_escape(ctx.process.pid)
+        wait_for(lambda: ctx.picker_row() is None, "Escape did not dismiss the replacement picker")
+        owner = ctx.owner_after("stale-carry")
+        assert owner == ctx.quick_owner, (
+            "dismissing a picker that REPLACED one opened over a live search restored the search entry, "
+            "taking the keyboard off the quick terminal a control command had focused while the first "
+            f"picker was up (marker read {owner!r})")
+        control_json(env, "quick", "hide", "--json")
+        wait_for(lambda: not ctx.tree().get("quickVisible"),
+                 "quick terminal did not hide after the stale-carry step")
+        ctx.close_search("after the stale-carry step")
+
+        # A control-driven rebuild arriving while a picker is OPEN reaches the dismissal INSIDE
+        # `rebuildSidebar()`, which detaches with `refocus: false` (a grab there would re-enter the
+        # rebuild) and repairs at its tail. That tail must ALSO honor `popupPopover`'s search-entry
+        # capture, which the `refocus: false` detach consumes without restoring — so the capture is read
+        # BEFORE the dismissals and the tail restores the ENTRY first, falling back to the surface
+        # repair. `updateAttentionButton` is the dismissal under test: it takes an open attention picker
+        # down as soon as the attention set empties.
+        ctx.open_counted_query("for the in-rebuild-over-search step")
+        ctx.open_attention_picker("over the search entry")
+        control_json(env, "session", "status", "idle", "--target", ctx.session_id, "--json")
+        wait_for(lambda: ctx.picker_row() is None,
+                 "a control-driven rebuild did not take down the attention picker opened over the search")
+        ctx.assert_typing_reaches_query(
+            "the character typed after an in-rebuild dismissal of a picker opened over a live search "
+            "never reached the search entry — the rebuild's tail repaired the keyboard into the shell "
+            "instead of back to the query")
+        press_escape(ctx.process.pid)
+        wait_for(lambda: actionable(ctx.app, "Next match (Enter)") is None,
+                 "the search bar did not close after the in-rebuild-over-search step")
+
+        # A picker ROW ACTIVATION that KEEPS the selection must honor the capture too: the attention
+        # picker names the already-selected session (`attentionSessions` does not filter it out, unlike
+        # the recent leg), and `selectSession` ends a live search only on a selection CHANGE — so the bar
+        # is still up after activating that row, and the handler (which dismisses with `refocus: false`,
+        # consuming the capture) must restore the ENTRY rather than run its unconditional surface grab.
+        ctx.open_counted_query("for the same-selection-row step")
+        ctx.open_attention_picker("over the search entry for the same-selection-row step")
+        row = wait_for(ctx.attention_row,
+                       "the attention picker never presented its row over the search entry")
+        activate(row)
+        wait_for(lambda: ctx.picker_row() is None,
+                 "activating the already-selected session's attention row did not dismiss the picker")
+        ctx.assert_typing_reaches_query(
+            "the character typed after activating the already-selected session's attention row over a "
+            "live search never reached the search entry — the row handler repaired the keyboard into the "
+            "shell under the still-visible bar")
+        press_escape(ctx.process.pid)
+        wait_for(lambda: actionable(ctx.app, "Next match (Enter)") is None,
+                 "the search bar did not close after the same-selection-row step")
+        control_json(env, "session", "status", "idle", "--target", ctx.session_id, "--json")
+
+        print("OK: every popover dismissal leaves the keyboard on the surface or entry that owned it")
+    except AssertionError:
+        describe_tree(ctx.app)
+        raise
+    finally:
+        stop(ctx.process)
+
+
 def verify_auto_follow(env, state):
     auto_state = state + "-auto-follow"
     os.makedirs(auto_state)
@@ -3960,7 +4730,7 @@ def verify_auto_follow(env, state):
             "startup Preferences dialog did not open for auto-follow test",
         )
         set_status("blocked")
-        time.sleep(6)
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
         assert not auto_followed(), "auto-follow changed sessions while Preferences was open"
         print("OK: GTK/GLib auto-follow pauses for Preferences")
     finally:
@@ -3987,6 +4757,7 @@ def main():
             "sidebar-width-floor",
             "sidebar-click-rename", "sidebar-session-drag", "sidebar-workspace-drag",
             "sidebar-multiselect",
+            "chrome-focus-buttons", "chrome-focus-sidebar", "chrome-focus-popovers",
             "auto-follow", "hidden-toolbar",
         ):
             child_env = dict(os.environ, AGTERM_ATSPI_SCENARIO=child_scenario)
@@ -4015,6 +4786,15 @@ def main():
         AGTERM_APP_ID=f"io.github.melonamin.agterm.atspi.{scenario.replace('-', '_')}",
         PATH="/usr/bin:/bin",
     )
+    # Running the suite from inside an agterm session would otherwise bake the outer session identity into
+    # the app-under-test shells. It could also let a child without an explicit SurfaceEnvironment inherit
+    # the real app's control socket. The focus scenarios use these identifiers to determine surface ownership.
+    for inherited in (
+        "AGTERM_SESSION_ID", "AGTERM_WINDOW_ID", "AGTERM_WORKSPACE_ID", "AGTERM_PANE",
+        "AGTERM_PANE_ID", "AGTERM_SOCKET", "AGTERM_ENABLED",
+    ):
+        env.pop(inherited, None)
+
     # Keep ordinary scenarios free of ambient renderer overrides. The dedicated inversion scenario installs
     # a deterministic `all` fixture after this scrub and proves both the app's normalization and child restore.
     for gdk_variable in ("GDK_DISABLE", "GDK_DEBUG"):
@@ -4076,6 +4856,12 @@ def main():
             verify_sidebar_multiselect_collapse(env)
         elif scenario == "preferences-pages":
             verify_preferences_pages(env, home)
+        elif scenario == "chrome-focus-buttons":
+            verify_chrome_focus_buttons(env)
+        elif scenario == "chrome-focus-sidebar":
+            verify_chrome_focus_sidebar(env)
+        elif scenario == "chrome-focus-popovers":
+            verify_chrome_focus_popovers(env)
         elif scenario == "auto-follow":
             verify_auto_follow(env, state)
         elif scenario == "session-pickers":

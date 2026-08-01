@@ -618,6 +618,88 @@ extension AppController {
         updateToggleIcons()
     }
 
+    /// Put keyboard focus back on the active surface when GTK has just stranded it.
+    func refocusIfStranded() {
+        // A late callback can reach this after `windowWillClose` tore the widget tree down.
+        guard gWindows[windowID] === self else { return }
+        let focus = gtk_window_get_focus(WIN(window))
+        if let focus {
+            // "Unmapped" means STRANDED only while the TOPLEVEL is mapped — an unmapped window reports
+            // `mapped == 0` for every descendant, a live focus owner included.
+            guard gtk_widget_get_mapped(W(window)) != 0, gtk_widget_get_mapped(focus) == 0 else { return }
+        }
+        focusActiveSurface()
+    }
+
+    /// Hand the keyboard to whichever surface is on screen and should own it. `refocusIfStranded()` is
+    /// this plus the "GTK actually stranded focus" guard; reach it directly only when the loss is one
+    /// that guard cannot see.
+    func focusActiveSurface() {
+        // Teardown paths clear their own zoom target first, so a stale target is not a case to design for.
+        if let target = terminalZoom.target {
+            surface(for: target)?.grabFocus()
+            return
+        }
+        if quickVisible {
+            quickSurface?.grabFocus()
+            return
+        }
+        guard !dashboard.isOpen, let id = store.activeSession?.id else { return }
+        searchTargetSurface(for: id)?.grabFocus()
+    }
+
+    /// The shape a path that hands the keyboard back after a MODE CHANGE must use: `showActive()`'s own
+    /// focus leg is deck-only, so it misses the quick terminal, the zoom host and the dashboard.
+    func showActiveFocusingVisibleSurface() {
+        showActive(focus: false)
+        focusActiveSurface()
+    }
+
+    /// Detach a dying popover and hand the keyboard back when the popover was holding it — the dismissal
+    /// seam both the context menu and the session picker owe.
+    ///
+    /// `popdown: true` (a programmatic dismissal) emits `"closed"` synchronously from inside the popdown,
+    /// so such a caller MUST clear its own popover handle FIRST, or the popover is unparented twice.
+    /// `popdown: false` is GTK's own dismissal arriving on `"closed"`.
+    ///
+    /// The unparent is ordered BEFORE the grab — on the `"closed"` path the popdown is still in flight and
+    /// moves focus to the parent afterwards, undoing a grab taken while the popover is still parented —
+    /// and stays SYNCHRONOUS, since a popover left parented at window destroy hangs the close.
+    ///
+    /// `refocus: false` keeps the detach and drops only the grab, but still CONSUMES the search-entry
+    /// capture, so such a caller must read the flag before dismissing.
+    func detachPopover(_ popover: OpaquePointer, popdown: Bool, refocus: Bool = true) {
+        let host = gtk_widget_get_parent(W(popover))
+        let stoleKeyboardFromSearchEntry = popoverTookKeyboardFromSearchEntry
+        popoverTookKeyboardFromSearchEntry = false
+        if popdown { gtk_popover_popdown(POPOVER(popover)) }
+        let focus = gtk_window_get_focus(WIN(window))
+        let heldTheKeyboard = focus == nil || focus == host
+            || (focus.map { gtk_widget_is_ancestor($0, W(popover)) != 0 } ?? false)
+        if gtk_widget_get_parent(W(popover)) != nil { gtk_widget_unparent(W(popover)) }
+        guard refocus else { return }
+        if stoleKeyboardFromSearchEntry, restoreSearchEntryFocus() { return }
+        if heldTheKeyboard { focusActiveSurface() }
+    }
+
+    /// The ONLY legal popup seam, never a bare `gtk_popover_popup`: it records whether the keyboard sat
+    /// in the in-terminal search entry, which is unknowable by dismissal time. `detachPopover` consumes
+    /// the capture. `keepingCapture` carries a still-live one across a REPLACEMENT, where re-reading the
+    /// entry answers `false` because the outgoing popover holds the keyboard.
+    func popupPopover(_ popover: OpaquePointer, keepingCapture: Bool = false) {
+        popoverTookKeyboardFromSearchEntry = keepingCapture || searchEntryHoldsKeyboard()
+        gtk_popover_popup(POPOVER(popover))
+    }
+
+    /// Whether a REPLACEMENT opener may carry the capture: only while `outgoing` still OWNS the keyboard.
+    /// BOUNDARY, measured — do NOT apply this to the dismissal-time repairs (`rebuildSidebar()`'s tail,
+    /// `activateSessionPickerRow`); both covering `chrome-focus-popovers` steps fail when it is.
+    func searchEntryCaptureSurvives(_ outgoing: OpaquePointer?) -> Bool {
+        guard popoverTookKeyboardFromSearchEntry, let outgoing else { return false }
+        guard let focus = gtk_window_get_focus(WIN(window)) else { return true }
+        return focus == W(outgoing) || gtk_widget_is_ancestor(focus, W(outgoing)) != 0
+    }
+
     private func updateFloatingOverlayVisibility(activeID: UUID?) {
         for (id, frame) in floatingOverlayFrames {
             let visible = id == activeID && (store.session(withID: id)?.overlayActive == true)

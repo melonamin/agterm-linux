@@ -139,8 +139,8 @@ extension AppController {
     /// The trailing pass runs with `focusActive: false`: it exists to drop dead deck pages, and a
     /// timer-driven `grab_focus` on the deck seconds after the close would STEAL the keyboard from whatever
     /// the user moved to meanwhile. The `deferWhile` gate covers only the sidebar's own focus owners (inline
-    /// rename, context menu); the search entry and the quick terminal are plain widgets in the SAME toplevel,
-    /// so a grab there would silently reroute the rest of the user's typing into the active session's shell.
+    /// rename, context menu, parked focus); the search entry and the quick terminal are plain widgets in
+    /// the SAME toplevel, so a grab there would silently reroute the rest of the user's typing into the active session's shell.
     /// The immediate reconcile still focuses — that one IS the user's own close action.
     func reconcileSoftClose() {
         reconcile()

@@ -80,6 +80,44 @@ struct LinuxKeymapTests {
         #expect(keymapReloadToast(count: loaded.diagnostics.count) == "keymap.conf: 1 error — bad line ignored")
     }
 
+    /// An icon-only GtkButton exposes its tooltip as its AT-SPI accessible NAME, and the e2e scenarios
+    /// look buttons up by exact text — so these seven strings are contract. Pinning every one here means
+    /// a changed `linuxDefaultChord` fails the build instead of silently renaming a widget the harness
+    /// depends on.
+    @Test("every title-bar tooltip renders its exact accessible name")
+    func chromeTooltipsRenderExactNames() {
+        #expect(LinuxChromeTooltip.text("Quick Terminal", .quickTerminal) == "Quick Terminal (Ctrl+`)")
+        #expect(LinuxChromeTooltip.text("Dashboard", .dashboard) == "Dashboard (Ctrl+Shift+M)")
+        #expect(LinuxChromeTooltip.text("Toggle Split", .toggleSplit) == "Toggle Split (Ctrl+Shift+D)")
+        #expect(LinuxChromeTooltip.text("Scratch Terminal", .toggleScratch) == "Scratch Terminal (Ctrl+Shift+J)")
+        #expect(LinuxChromeTooltip.text("Show sessions that need attention", .showAttention)
+                == "Show sessions that need attention (Ctrl+Shift+I)")
+        // Ctrl+Tab is a reserved monitor chord, so Recent Sessions goes through the `shortcut:` overload.
+        #expect(LinuxChromeTooltip.text("Recent Sessions", shortcut: "Ctrl+Tab") == "Recent Sessions (Ctrl+Tab)")
+        // The one string that CHANGES: the button shipped a stale (Ctrl+Shift+B) hardcoded literal.
+        #expect(LinuxChromeTooltip.text("Toggle Sidebar", .toggleSidebar) == "Toggle Sidebar (Ctrl+Shift+S)")
+    }
+
+    @Test("chord labels name Linux modifiers, uppercase single keys, and capitalize named keys")
+    func chromeTooltipLabelsRenderReachableShapes() {
+        #expect(LinuxChromeTooltip.label(Chord(mods: [.control, .shift], key: "s")) == "Ctrl+Shift+S")
+        #expect(LinuxChromeTooltip.label(Chord(mods: [.control], key: "`")) == "Ctrl+`")
+        // Modifier order mirrors Chord.displayString (ctrl+cmd+opt+shift); on Linux .command is the Super
+        // key and .option is Alt. Neither is reachable from today's seven callers, but the switch is total.
+        #expect(LinuxChromeTooltip.label(Chord(mods: [.control, .command, .option, .shift], key: "p"))
+                == "Ctrl+Super+Alt+Shift+P")
+        // A named key CAPITALIZES so a future named default agrees with the hand-written `Ctrl+Tab`
+        // literal the Recent Sessions button renders through the `shortcut:` overload.
+        #expect(LinuxChromeTooltip.label(Chord(mods: [.control], key: "space")) == "Ctrl+Space")
+        #expect(LinuxChromeTooltip.label(Chord(mods: [.control], key: "tab")) == "Ctrl+Tab")
+    }
+
+    @Test("an action with no Linux default chord renders a bare tooltip")
+    func chromeTooltipFallsBackToBareTitle() {
+        #expect(BuiltinAction.customCommandPalette.linuxDefaultChord == nil)
+        #expect(LinuxChromeTooltip.text("Custom Commands", .customCommandPalette) == "Custom Commands")
+    }
+
     /// The keymap `verify_custom_command_failures` seeds, plus the two lines the fan-out check appends.
     private var atspiFanoutKeymap: String {
         """

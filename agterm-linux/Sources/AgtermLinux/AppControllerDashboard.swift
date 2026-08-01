@@ -94,8 +94,13 @@ extension AppController {
         resumeAutoFollow()
         restoreSessionTopPages()
         gtk_widget_set_can_target(W(splitView), 1)
-        showActive()
-        if refocus { sessionFocusTarget()?.grabFocus() }
+        // The overlay removal above destroyed the host `mountDashboard` grabbed, so both legs must hand
+        // the keyboard back.
+        if refocus {
+            showActiveFocusingVisibleSurface()
+        } else {
+            showActive()
+        }
     }
 
     func selectDashboardMember(_ member: DashboardMember) {
@@ -174,6 +179,7 @@ extension AppController {
         adw_header_bar_set_title_widget(header, W(titleLabel))
         let exit = OpaquePointer(gtk_button_new_with_label("Exit Dashboard"))
         gtk_widget_set_tooltip_text(W(exit), "Exit Dashboard")
+        gtk_widget_set_focus_on_click(W(exit), 0)
         connect(exit, "clicked", unsafeBitCast(onDashboardExit, to: GCallback.self))
         adw_header_bar_pack_end(header, W(exit))
         adw_toolbar_view_add_top_bar(host, W(header))
