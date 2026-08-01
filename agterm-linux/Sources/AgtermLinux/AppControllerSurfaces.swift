@@ -691,6 +691,12 @@ extension AppController {
         gtk_popover_popup(POPOVER(popover))
     }
 
+    /// A deliberate focus transfer wins over the owner recorded before a popover took the keyboard.
+    /// Clear it at the transfer seam; dismissal-time focus is unreliable under reactivating window managers.
+    func invalidatePopoverSearchEntryCapture() {
+        popoverTookKeyboardFromSearchEntry = false
+    }
+
     /// Whether a REPLACEMENT opener may carry the capture: only while `outgoing` still OWNS the keyboard.
     /// BOUNDARY, measured — do NOT apply this to the dismissal-time repairs (`rebuildSidebar()`'s tail,
     /// `activateSessionPickerRow`); both covering `chrome-focus-popovers` steps fail when it is.

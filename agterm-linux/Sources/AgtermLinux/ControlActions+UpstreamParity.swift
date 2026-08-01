@@ -20,7 +20,7 @@ extension AppController {
         case .failure(let response): return response
         case .success(let id):
             store.setWorkspaceExpanded(id, expanded: expanded)
-            rebuildSidebar()
+            rebuildSidebarKeepingKeyboard()
             syncSidebarSelection()
             return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
         }

@@ -190,6 +190,8 @@ paths:
   That handler, and every other workspace-focus mutation that rebuilds the sidebar (the
   `AppControllerWorkspaceFocus.swift` handlers, the `workspace.focus`/`workspace.filter` control arms),
   routes through `rebuildSidebarKeepingKeyboard()` (`AppControllerSidebar.swift`).
+  Every NON-FOCUS-CHANGING control mutation that rebuilds sidebar chrome uses the same wrapper; an
+  intentional focus operation may use a bare rebuild only when it immediately grabs its explicit target.
   The repair belongs at the HANDLERS, not at the tail of `rebuildSidebar()`: that function also runs from
   the deferred metadata refresh, and a grab inside it re-enters it through `surfaceDidFocus`, rebuilding
   the sidebar from inside a rebuild whose caller still holds pointers to the rows the inner one destroyed.
@@ -249,8 +251,10 @@ paths:
   purpose, because under a reactivating WM the keyboard has already left the popover by the time they run,
   so testing ownership there declines and drops the user into the shell under a live search bar — measured,
   both covering `chrome-focus-popovers` steps fail when it is applied to them.
-  The residual is known and accepted: a focus move to another surface WHILE a popover is up (a `quick show`
-  over an open picker) still makes those two restore the entry.
+  A deliberate competing transfer instead invalidates the capture AT ITS OWNERSHIP SEAM before grabbing;
+  `setQuick(true)` calls `invalidatePopoverSearchEntryCapture()` before the Quick surface takes focus.
+  This keeps the unconditional dismissal repair needed by reactivating WMs while making the explicit
+  transfer win without timing or dismissal-time focus inference.
 - **A path that hands the keyboard back after a MODE CHANGE goes through `focusActiveSurface()`, never
   `showActive()`'s own focus leg.**
   `showActive(focus:)` resolves overlay → scratch → split → primary for the active session and knows nothing

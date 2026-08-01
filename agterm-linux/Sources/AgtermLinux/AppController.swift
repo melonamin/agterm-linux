@@ -525,7 +525,12 @@ final class AppController {
         quickVisible = visible
         gtk_widget_set_visible(W(frame), visible ? 1 : 0)
         updateAllPaneDimming()
-        if visible { quickSurface?.grabFocus() } else { refocusIfStranded() }
+        if visible {
+            invalidatePopoverSearchEntryCapture()
+            quickSurface?.grabFocus()
+        } else {
+            refocusIfStranded()
+        }
     }
 
     func toggleQuick() { setQuick(!quickVisible) }
@@ -559,13 +564,13 @@ final class AppController {
     /// Unflag every session (the palette "Clear Flagged" + the `session.flag clear` control mode).
     func clearFlagged() {
         store.clearFlags()
-        rebuildSidebar()
+        rebuildSidebarKeepingKeyboard()
     }
 
     /// Expand every workspace (show all sessions) — the palette + `sidebar.expand` control arm.
     func expandWorkspaces() {
         store.setWorkspacesExpanded(Set(store.workspaces.map(\.id)))
-        rebuildSidebar()
+        rebuildSidebarKeepingKeyboard()
     }
 
     /// Toggle one workspace's collapsed state — the sidebar header disclosure triangle.
@@ -581,7 +586,7 @@ final class AppController {
     func collapseOtherWorkspaces() {
         let expanded = store.currentWorkspaceID.map { Set([$0]) } ?? []
         store.setWorkspacesExpanded(expanded)
-        rebuildSidebar()
+        rebuildSidebarKeepingKeyboard()
         syncSidebarSelection()
     }
 

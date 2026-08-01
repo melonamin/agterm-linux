@@ -4505,6 +4505,23 @@ def verify_chrome_focus_sidebar(env):
             "the marker typing expanded the collapsed workspace — the workspace.filter rebuild re-homed "
             "the keyboard on the disclosure instead of repairing it")
 
+        # A status hook can fire while the user is navigating the sidebar. Unlike workspace.focus/filter,
+        # this mutation does not change focus intentionally, so its rebuild must repair the add-session
+        # button it destroys and leave the terminal ready for the next keystroke.
+        ctx.repark_on_add_session("for the session.status arm")
+        control_json(env, "session", "status", "active", "--target", ctx.session_id, "--json")
+        wait_for(lambda: next((session.get("status") for session in ctx.sessions()
+                              if session["id"] == ctx.session_id), None) == "active",
+                 "session.status active did not update the target session")
+        owner = ctx.owner_after("control-status")
+        assert owner == ctx.session_owner, (
+            "typing after session.status rebuilt the sidebar did not reach the session terminal — the "
+            f"control arm destroyed the parked add-session button (marker read {owner!r})")
+        assert ctx.workspace().get("collapsed"), (
+            "the marker typing expanded the collapsed workspace — the session.status rebuild re-homed "
+            "the keyboard on the disclosure instead of repairing it")
+        control_json(env, "session", "status", "idle", "--target", ctx.session_id, "--json")
+
         # HIDING the sidebar with the keyboard parked inside it is `applySidebarVisibility()`'s repair
         # leg. The parked button is unmapped, not destroyed, so this is the unmapped-focus disjunct of
         # `refocusIfStranded()` — and nothing masks it: no popover, no toplevel reactivation.
@@ -4597,6 +4614,49 @@ def verify_chrome_focus_popovers(env):
         press_escape(ctx.process.pid)
         wait_for(lambda: actionable(ctx.app, "Next match (Enter)") is None,
                  "the search bar did not close after the popover-over-search step")
+
+        # A deliberate competing transfer supersedes the search owner captured by the picker. Quick
+        # invalidates that capture before its grab, so the picker's ordinary Escape dismissal cannot
+        # restore the entry behind the visible Quick card.
+        ctx.open_counted_query("for the competing-quick dismissal step")
+        ctx.open_session_picker("before the competing Quick transfer")
+        control_json(env, "quick", "show", "--json")
+        wait_for(lambda: ctx.tree().get("quickVisible"),
+                 "quick terminal did not open while the search picker was up")
+        press_escape(ctx.process.pid)
+        wait_for(lambda: ctx.picker_row() is None,
+                 "Escape did not dismiss the picker after Quick took focus")
+        owner = ctx.owner_after("search-picker-quick-dismiss")
+        assert owner == ctx.quick_owner, (
+            "dismissing a picker after Quick deliberately took focus restored the search entry behind "
+            f"the visible Quick card (marker read {owner!r})")
+        control_json(env, "quick", "hide", "--json")
+        wait_for(lambda: not ctx.tree().get("quickVisible"),
+                 "quick terminal did not hide after the competing-dismissal step")
+        ctx.close_search("after the competing-quick dismissal step")
+
+        # The row-activation repair consumes the same capture independently of `detachPopover`'s normal
+        # dismissal leg. Keep the selected session and search alive, activate its attention row after
+        # Quick takes focus, and prove the row handler also leaves the deliberate owner alone.
+        ctx.open_counted_query("for the competing-quick row-activation step")
+        ctx.open_attention_picker("before the competing Quick row activation")
+        control_json(env, "quick", "show", "--json")
+        wait_for(lambda: ctx.tree().get("quickVisible"),
+                 "quick terminal did not open while the attention picker was up")
+        row = wait_for(ctx.attention_row,
+                       "the attention picker never presented its row before Quick took focus")
+        activate(row)
+        wait_for(lambda: ctx.picker_row() is None,
+                 "activating the attention row did not dismiss the picker after Quick took focus")
+        owner = ctx.owner_after("search-picker-quick-activate")
+        assert owner == ctx.quick_owner, (
+            "activating a picker row after Quick deliberately took focus restored the search entry "
+            f"behind the visible Quick card (marker read {owner!r})")
+        control_json(env, "quick", "hide", "--json")
+        wait_for(lambda: not ctx.tree().get("quickVisible"),
+                 "quick terminal did not hide after the competing-activation step")
+        ctx.close_search("after the competing-quick row-activation step")
+        control_json(env, "session", "status", "idle", "--target", ctx.session_id, "--json")
 
         # A REPLACEMENT opener carries that capture across its own `refocus: false` dismissal, because
         # re-reading the entry there answers `false` — but the carry holds only while the OUTGOING popover
