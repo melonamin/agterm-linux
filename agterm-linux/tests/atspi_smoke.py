@@ -23,6 +23,11 @@ REPO = os.path.dirname(ROOT)
 BIN = os.environ.get("AGTERM_TEST_BIN", os.path.join(ROOT, ".build/debug/AgtermLinux"))
 CTL = os.environ.get("AGTERM_TEST_CTL", os.path.join(ROOT, ".build/debug/agtermctl-linux"))
 RESOURCE_ROOT = os.environ.get("AGTERM_RESOURCE_ROOT", os.path.join(REPO, "agterm/Resources"))
+# Stamped into the app-stderr log on every attach; `scripts/test-linux-ui.sh` owns the value and greps
+# for it verbatim. The literal below is only the standalone-dev-run fallback — see `app_stderr_sink`.
+APP_STDERR_ATTACHED = os.environ.get(
+    "AGTERM_UI_APP_STDERR_MARKER", "agterm-ui-smoke: app stderr sink attached"
+)
 
 
 def collect(node, role=None, name=None, out=None):
@@ -405,8 +410,38 @@ def right_click(node_provider, process_id, window_title=None):
     mouse_click(node_provider, process_id, window_title=window_title, button="right")
 
 
+def app_stderr_sink():
+    """Open the exact log the runner scans for GTK CSS parse errors, or DEVNULL when it named none.
+
+    GTK drops an unparseable CSS declaration SILENTLY — a `Theme parser error` line on the app's stderr
+    is the only signal anywhere that a rule in `installAppCSS` was rejected, and a rejected rule presents
+    as missing chrome, not as a test failure. A plain file (never the runner's pipe) keeps a leaked child
+    from holding the pipeline open.
+
+    The runner hands over BOTH the path (`AGTERM_UI_APP_STDERR`) and the marker
+    (`AGTERM_UI_APP_STDERR_MARKER`, stamped on every attach as `APP_STDERR_ATTACHED`) rather than either
+    side re-deriving them. That is what keeps the guard from failing OPEN: a filename or marker spelled
+    independently on the two sides would drift, turning the runner's `grep` into a permanent pass over an
+    empty log with nothing to notice.
+    """
+    path = os.environ.get("AGTERM_UI_APP_STDERR")
+    if not path:
+        return subprocess.DEVNULL
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    sink = open(path, "ab", buffering=0)
+    sink.write((APP_STDERR_ATTACHED + "\n").encode())
+    return sink
+
+
 def launch(env):
-    process = subprocess.Popen([BIN], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    sink = app_stderr_sink()
+    try:
+        process = subprocess.Popen([BIN], env=env, stdout=subprocess.DEVNULL, stderr=sink)
+    finally:
+        if sink is not subprocess.DEVNULL:
+            sink.close()
     app = wait_for(lambda: find_app(process.pid), "agterm app not present in the AT-SPI tree")
     if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
         subprocess.run(
@@ -1484,6 +1519,7 @@ def verify_surface_configuration_lifetimes(env):
     os.makedirs(overlay_cwd)
     command_marker = os.path.join(state, "command.marker")
     overlay_marker = os.path.join(state, "overlay.marker")
+    full_overlay_marker = os.path.join(state, "overlay-full.marker")
     restore_marker = os.path.join(state, "restore.marker")
     url_marker = os.path.join(state, "url.marker")
     url_callback_marker = os.path.join(state, "url-callback.marker")
@@ -1527,13 +1563,49 @@ def verify_surface_configuration_lifetimes(env):
         with open(command_marker, encoding="utf-8") as source:
             assert source.read().strip() == command_cwd
 
+        # --size-percent makes this the FLOATING overlay: a framed card added to the deck overlay and
+        # clipped to its rounded corners (GTK_OVERFLOW_HIDDEN in syncOverlay). --follow selects the
+        # target so that card is actually VISIBLE and therefore rendered — a hidden frame is skipped in
+        # layout, so without it the rounded clip over the GL texture node never reaches GSK and this
+        # exercises nothing beyond construction. --follow also makes `initial` (not the just-created
+        # `surface-command`) the SELECTED session, which is what the snapshot below persists and the
+        # restore leg re-launches into; the restore assertion is unaffected either way, because
+        # reconcile() realizes a surface for EVERY session in the tree, so the restored foreground
+        # command is delivered whether or not its session is the selected one. The assertions stay
+        # exactly as they were: the overlay's program must still run in its own cwd, whichever variant
+        # hosts it.
         control_json(
             env, "session", "overlay", "open", f"{runner} {overlay_marker}",
-            "--cwd", overlay_cwd, "--target", initial["id"], "--window", window_id, "--json",
+            "--cwd", overlay_cwd, "--size-percent", "60", "--follow",
+            "--target", initial["id"], "--window", window_id, "--json",
         )
         wait_for(lambda: os.path.exists(overlay_marker), "overlay command did not run")
         with open(overlay_marker, encoding="utf-8") as source:
             assert source.read().strip() == overlay_cwd
+
+        # The floating card is one of TWO overlay shapes, and this scenario is the suite's only
+        # `session overlay open`, so the un-sized DEFAULT shape has to run here as well or it has no
+        # coverage anywhere: it takes syncOverlay's other branch entirely — gtk_stack_add_named
+        # "overlay" / set_visible_child_name, and on teardown set_visible_child_name back plus
+        # gtk_stack_remove — none of which the framed branch touches. openOverlay refuses a second
+        # overlay while one is open, so wait out the card's teardown first; the tree's `overlay` flag is
+        # the read side of that close, and polling it (rather than sleeping) also proves the floating
+        # teardown ran. Waiting for the second close then carries the stack teardown too.
+        def overlay_open():
+            tree = window_tree(env, window_id)
+            node = next(item for workspace in tree["workspaces"] for item in workspace["sessions"]
+                        if item["id"] == initial["id"])
+            return bool(node.get("overlay"))
+
+        wait_for(lambda: not overlay_open(), "floating overlay stayed open after its command exited")
+        control_json(
+            env, "session", "overlay", "open", f"{runner} {full_overlay_marker}",
+            "--cwd", overlay_cwd, "--target", initial["id"], "--window", window_id, "--json",
+        )
+        wait_for(lambda: os.path.exists(full_overlay_marker), "full-pane overlay command did not run")
+        with open(full_overlay_marker, encoding="utf-8") as source:
+            assert source.read().strip() == overlay_cwd
+        wait_for(lambda: not overlay_open(), "full-pane overlay stayed open after its command exited")
     finally:
         stop(process)
 
