@@ -509,12 +509,13 @@ final class AppController {
                                                                          programVersion: LinuxAppMetadata.version),
                                    controller: self, role: .quick, reportsPaneState: false)
             q.onExit = { [weak self] in self?.closeQuick() }
-            // A floating card panel over the FULL window content: rounded + shadowed (Adwaita "card"),
-            // inset from the window edges (sidebar + deck visible around it), with a larger top inset to
-            // clear the title-bar header.
+            // A floating card panel over the FULL window content: rounded + shadowed by .agterm-quick
+            // (app priority, overriding Adwaita "card"), inset from the window edges (sidebar + deck
+            // visible around it), with a larger top inset to clear the title-bar header.
             let frame = OpaquePointer(gtk_frame_new(nil))
             gtk_widget_add_css_class(W(frame), "card")
-            gtk_widget_add_css_class(W(frame), "agterm-quick")   // opaque backing so it's not see-through
+            gtk_widget_add_css_class(W(frame), "agterm-quick")   // opaque backing + border, radius, shadow
+            gtk_widget_set_overflow(W(frame), GTK_OVERFLOW_HIDDEN)   // clip GL child to the rounded card; see LinuxQuickCardPolicy
             gtk_widget_set_halign(W(frame), GTK_ALIGN_FILL)
             gtk_widget_set_valign(W(frame), GTK_ALIGN_FILL)
             gtk_widget_set_margin_top(W(frame), 56)

@@ -148,6 +148,7 @@ extension AppController {
                     let frame = OpaquePointer(gtk_frame_new(nil))
                     gtk_widget_add_css_class(W(frame), "card")
                     gtk_widget_add_css_class(W(frame), "agterm-quick")
+                    gtk_widget_set_overflow(W(frame), GTK_OVERFLOW_HIDDEN)   // clip GL child to the rounded card; see LinuxQuickCardPolicy
                     gtk_widget_set_halign(W(frame), GTK_ALIGN_CENTER)
                     gtk_widget_set_valign(W(frame), GTK_ALIGN_CENTER)
                     let dw = gtk_widget_get_width(W(overlay)), dh = gtk_widget_get_height(W(overlay))

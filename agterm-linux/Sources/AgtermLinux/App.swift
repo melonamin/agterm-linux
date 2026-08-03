@@ -133,7 +133,7 @@ private let onShutdown: @MainActor @convention(c) (OpaquePointer?, gpointer?) ->
     .agterm-blink { animation: agterm-blink-pulse 1.2s ease-in-out infinite; }
     @keyframes agterm-blink-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
     window.agterm-translucent { background-color: transparent; }   /* terminal translucency: ghostty's alpha reaches the compositor */
-    .agterm-quick { background-color: #1e2228; }
+    \(LinuxQuickCardPolicy.cardCSS)
     .agterm-switcher { background-color: alpha(#1e2228, 0.96); padding: 10px; border-radius: 10px; border: 1px solid alpha(#ffffff, 0.12); }
     .agterm-switcher label { padding: 3px 0; opacity: 0.6; }
     .agterm-switcher label.agterm-switcher-current { opacity: 1; font-weight: bold; }
