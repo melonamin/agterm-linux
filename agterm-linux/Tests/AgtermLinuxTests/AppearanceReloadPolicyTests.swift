@@ -31,6 +31,23 @@ struct AppearanceReloadPolicyTests {
         #expect(!eligible)
     }
 
+    @Test("an ineligible reload still carries the settled side for live scheme synchronization")
+    func syncOffStillPlansLiveSchemeSynchronization() {
+        // Given
+        let context = AppearanceReloadContext(
+            followsSystemAppearance: false,
+            hasLightSlot: true,
+            hasDarkSlot: true,
+            currentSide: .dark
+        )
+
+        // When
+        let plan = AppearanceReloadPolicy().plan(for: context)
+
+        // Then
+        #expect(plan == AppearanceReconciliationPlan(side: .dark, requiresConfigReload: false))
+    }
+
     @Test("sync on with both slots accepts a side change")
     func syncOnIsEligible() {
         // Given

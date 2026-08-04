@@ -2,6 +2,15 @@ import CGtk
 import Foundation
 import agtermCore
 
+@MainActor func synchronizeLiveColorScheme(_ side: LinuxAppearanceSide) {
+    GhosttyApp.shared.applyColorScheme(side)
+    for controller in gWindows.values {
+        for surface in controller.configurableSurfaces {
+            surface.applyColorScheme(side)
+        }
+    }
+}
+
 @MainActor
 extension AppController {
     @discardableResult
@@ -15,12 +24,7 @@ extension AppController {
         guard let config = GhosttyApp.shared.buildConfig(extraLines: lines) else { return false }
         let chromeColors = GhosttyConfigTheme.colors(from: config)
         GhosttyApp.shared.currentThemeBackgroundHex = chromeColors.background
-        GhosttyApp.shared.applyColorScheme(side)
-        for controller in gWindows.values {
-            for surface in controller.configurableSurfaces {
-                surface.applyColorScheme(side)
-            }
-        }
+        synchronizeLiveColorScheme(side)
         GhosttyApp.shared.updateConfig(config)
         for controller in gWindows.values {
             for surface in controller.configurableSurfaces {

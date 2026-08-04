@@ -16,8 +16,19 @@ struct AppearanceReloadContext: Equatable {
     let currentSide: LinuxAppearanceSide
 }
 
+struct AppearanceReconciliationPlan: Equatable {
+    let side: LinuxAppearanceSide
+    let requiresConfigReload: Bool
+}
+
 struct AppearanceReloadPolicy {
     private var lastAppliedSide: LinuxAppearanceSide?
+
+    func plan(for context: AppearanceReloadContext) -> AppearanceReconciliationPlan {
+        AppearanceReconciliationPlan(
+            side: context.currentSide,
+            requiresConfigReload: isEligible(for: context))
+    }
 
     func isEligible(for context: AppearanceReloadContext) -> Bool {
         guard context.followsSystemAppearance,
