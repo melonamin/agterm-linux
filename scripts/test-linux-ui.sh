@@ -13,7 +13,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in dbus-run-session openbox xdotool xvfb-run "$PYTHON"; do
+for command in dbus-run-session dbus-send openbox xdotool xvfb-run "$PYTHON"; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "missing Linux UI test dependency: $command" >&2
     exit 1
@@ -59,6 +59,7 @@ unset WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE SWAYSOCK
 LOG="$ARTIFACT_DIR/atspi.log"
 XVFB_LOG="$ARTIFACT_DIR/xvfb.log"
 WM_LOG="$ARTIFACT_DIR/openbox.log"
+REGISTRY_LOG="$ARTIFACT_DIR/at-spi2-registryd.log"
 APP_LOG="$ARTIFACT_DIR/agterm-stderr.log"
 # Hand the smoke's launch() the exact path AND the exact marker instead of letting both sides derive
 # the same strings -- that drift is how a grep-based guard quietly stops guarding. Its
@@ -74,9 +75,51 @@ dbus-run-session -- \
     bash -c '
       openbox --sm-disable >"$1" 2>&1 &
       wm_pid=$!
-      trap "kill $wm_pid 2>/dev/null || true" EXIT
+      # The AT-SPI registry is normally D-Bus-activated on demand. Where the a11y bus is dbus-broker,
+      # activation is delegated to systemd, which is unreachable from the private bus dbus-run-session
+      # creates: the registry never starts and every app is absent from the accessible tree ("agterm app
+      # not present in the AT-SPI tree"). Start it ourselves; where on-demand activation already works
+      # this just wins the race, which is a no-op. The log is a diagnostic artifact, nothing waits on it.
+      registry_pid=""
+      for candidate in /usr/lib/at-spi2-registryd /usr/libexec/at-spi2-registryd \
+                       /usr/lib/at-spi2-core/at-spi2-registryd; do
+        if [[ -x "$candidate" ]]; then
+          "$candidate" >"$4" 2>&1 &
+          registry_pid=$!
+          break
+        fi
+      done
+      trap "kill $wm_pid $registry_pid 2>/dev/null || true" EXIT
+      if [[ -n "$registry_pid" ]]; then
+        registry_ready=""
+        for _ in $(seq 1 100); do
+          # Readiness is ownership of the well-known name, asked of D-Bus itself -- no log wording to
+          # drift. Ask BOTH buses in the same pass: the registry takes the name on the a11y bus when
+          # org.a11y.Bus hands one out, and on the session bus when it does not, so waiting on either
+          # leg alone burns the whole timeout while the other one already had the answer.
+          a11y_address="$(dbus-send --session --print-reply=literal --dest=org.a11y.Bus \
+            /org/a11y/bus org.a11y.Bus.GetAddress 2>/dev/null | tr -d "[:space:]")"
+          # --bus, not the legacy --address: the latter opens a peer-to-peer connection that never
+          # calls Hello(), so every method call on it comes back AccessDenied.
+          buses=("--session")
+          if [[ -n "$a11y_address" ]]; then buses=("--bus=$a11y_address" "--session"); fi
+          for bus in "${buses[@]}"; do
+            if dbus-send "$bus" --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+                 org.freedesktop.DBus.NameHasOwner string:org.a11y.atspi.Registry 2>/dev/null \
+                 | grep -q "boolean true"; then
+              registry_ready=1
+              break
+            fi
+          done
+          if [[ -n "$registry_ready" ]]; then break; fi
+          sleep 0.1
+        done
+        if [[ -z "$registry_ready" ]]; then
+          echo "WARN: at-spi2-registryd never took org.a11y.atspi.Registry (see $4); continuing anyway" >&2
+        fi
+      fi
       "$2" "$3"
-    ' _ "$WM_LOG" "$PYTHON" "$ROOT/agterm-linux/tests/atspi_smoke.py" 2>&1 | tee "$LOG"
+    ' _ "$WM_LOG" "$PYTHON" "$ROOT/agterm-linux/tests/atspi_smoke.py" "$REGISTRY_LOG" 2>&1 | tee "$LOG"
 status="${PIPESTATUS[0]}"
 set -e
 

@@ -8,6 +8,8 @@ agterm/Resources/terminfo
 # build artifacts
 build/
 .build/
+# AT-SPI smoke diagnostics (scripts/test-linux-ui.sh; CI uploads them from here)
+artifacts/
 agterm.xcodeproj/
 .swiftpm/
 
