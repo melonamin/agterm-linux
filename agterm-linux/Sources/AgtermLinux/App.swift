@@ -12,7 +12,6 @@ import agtermCore
 @main
 struct AgtermApp {
     static func main() {
-        GhosttyApp.shared.start()
         // AGTERM_APP_ID overrides the GApplication id so a dev/test instance registers separately on
         // the session bus and runs ALONGSIDE a deployed one (the Linux analogue of the macOS .debug
         // bundle id) instead of forwarding its launch to the running instance.
@@ -70,6 +69,8 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
     // Route every deferred main-actor job (MainTimer) through g_timeout_add BEFORE any store or
     // controller exists — see `agterm-linux/docs/main-loop.md`.
     installGLibMainTimer()
+    let appearanceSide = LinuxAppearanceSide(isDark: AppController.systemIsDark)
+    GhosttyApp.shared.start(appearanceSide: appearanceSide)
     // The notification click-to-reveal target: an `app.reveal` action carrying a session-id string.
     let revealAction = g_simple_action_new("reveal", g_variant_type_new("s"))
     connect(revealAction, "activate", unsafeBitCast(onRevealAction as @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
@@ -92,8 +93,7 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
     let toOpen = ids.isEmpty ? [gLibrary.windows.first?.id].compactMap { $0 } : ids
     for id in toOpen { openWindow(id) }
     if let controller = gWindows.values.first {
-        _ = controller.reloadConfigForAppearanceChange(
-            LinuxAppearanceSide(isDark: AppController.systemIsDark))
+        _ = controller.reloadConfigForAppearanceChange(appearanceSide)
     }
     #if DEBUG
     if let rawURL = ProcessInfo.processInfo.environment["AGTERM_ATSPI_OPEN_URL"], !rawURL.isEmpty {
@@ -229,15 +229,13 @@ private let colorSchemeChangeDebounceInterval: TimeInterval = 0.05
 
 private let onColorSchemeChanged: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, _, _ in
     MainActor.assumeIsolated {
-        guard gAppearanceReloadPolicy.isEligible(for: colorSchemeReloadContext()) else {
-            colorSchemeChangeDebouncer.cancel()
-            return
-        }
         colorSchemeChangeDebouncer.schedule(after: colorSchemeChangeDebounceInterval) {
             let context = colorSchemeReloadContext()
-            guard gAppearanceReloadPolicy.isEligible(for: context) else { return }
+            let plan = gAppearanceReloadPolicy.plan(for: context)
+            synchronizeLiveColorScheme(plan.side)
+            guard plan.requiresConfigReload else { return }
             guard let controller = gWindows.values.first,
-                  controller.reloadConfigForAppearanceChange(context.currentSide) else { return }
+                  controller.reloadConfigForAppearanceChange(plan.side) else { return }
             for ctl in gWindows.values { ctl.rebuildSettingsForColorSchemeChange() }
         }
     }

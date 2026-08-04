@@ -285,6 +285,22 @@ final class GhosttySurface: TerminalSurface {
     func applyConfig(_ config: ghostty_config_t) {
         guard let surface else { return }
         ghostty_surface_update_config(surface, config)
+        guard let clone = ghostty_config_clone(config) else { return }
+        ownedConfigs.forEach { ghostty_config_free($0) }
+        ownedConfigs = [clone]
+    }
+
+    func reapplyCurrentConfig() {
+        guard let surface else { return }
+        if let config = ownedConfigs.last {
+            ghostty_surface_update_config(surface, config)
+        } else {
+            GhosttyApp.shared.reapplyCurrentConfig(to: surface)
+        }
+    }
+
+    func reloadConfigFromHost() {
+        controller?.reloadConfig()
     }
 
     func applyWatermarkFromSession(windowOpacity: Double? = nil, settings: AppSettings? = nil) {

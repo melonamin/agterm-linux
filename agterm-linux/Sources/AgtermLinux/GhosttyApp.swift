@@ -32,6 +32,7 @@ final class GhosttyApp: @unchecked Sendable {
     private let tickLock = NSLock()
     private var tickScheduled = false
     private var resolvedResources: String?
+    private var currentConfig: ghostty_config_t?
 
     /// The current theme's colors as OSC escape sequences (OSC 11/10/4/…), fed to each surface at creation
     /// because the embedded OpenGL renderer doesn't adopt the config's default colors from the config file.
@@ -40,14 +41,14 @@ final class GhosttyApp: @unchecked Sendable {
     var currentThemeBackgroundHex: String?
     @MainActor private var appliedAppearanceSide: LinuxAppearanceSide?
 
-    func start() {
+    @MainActor func start(appearanceSide: LinuxAppearanceSide) {
         setGhosttyResourcesEnv()   // export GHOSTTY_RESOURCES_DIR before init + buildConfig read it
         ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
 
         // Persisted settings (font/size/theme/scroll) are layered on at launch so they survive
         // relaunch. Translucency is omitted: Linux has no window-level compositing yet.
         let saved = linuxSettingsStore().load()
-        let lines = AppController.ghosttyLines(for: saved, isDark: AppController.systemIsDark)
+        let lines = AppController.ghosttyLines(for: saved, isDark: appearanceSide.isDark)
         currentThemeOSC = AppSettings.themeOSC(from: lines)
         let cfg = buildConfig(extraLines: lines)
         if let cfg {
@@ -75,6 +76,7 @@ final class GhosttyApp: @unchecked Sendable {
         }
 
         app = ghostty_app_new(&rt, cfg)
+        replaceCurrentConfig(with: cfg)
         ghostty_config_free(cfg)
     }
 
@@ -83,6 +85,18 @@ final class GhosttyApp: @unchecked Sendable {
     func updateConfig(_ config: ghostty_config_t) {
         guard let app else { return }
         ghostty_app_update_config(app, config)
+        replaceCurrentConfig(with: config)
+    }
+
+    func reapplyCurrentConfig(to surface: ghostty_surface_t) {
+        guard let currentConfig else { return }
+        ghostty_surface_update_config(surface, currentConfig)
+    }
+
+    private func replaceCurrentConfig(with config: ghostty_config_t?) {
+        guard let config, let clone = ghostty_config_clone(config) else { return }
+        if let currentConfig { ghostty_config_free(currentConfig) }
+        currentConfig = clone
     }
 
     @MainActor func applyColorScheme(_ side: LinuxAppearanceSide) {
@@ -107,7 +121,13 @@ final class GhosttyApp: @unchecked Sendable {
         if let scoped = Self.scopedGhosttyConfigPath(), FileManager.default.fileExists(atPath: scoped) {
             scoped.withCString { ghostty_config_load_file(cfg, $0) }
         }
-        if !extraLines.isEmpty, let extra = Self.writeTempConf(extraLines) {
+        // Distinct empty themes keep libghostty's conditional state active while the following agterm
+        // lines supply one fixed palette. This updates OSC color-scheme reports without changing colors.
+        let appearanceStateLines = Self.writeAppearanceStateThemes().map {
+            ["theme = light:\($0.light),dark:\($0.dark)"]
+        } ?? []
+        let runtimeLines = appearanceStateLines + extraLines
+        if let extra = Self.writeTempConf(runtimeLines) {
             extra.withCString { ghostty_config_load_file(cfg, $0) }
         }
         // Expand any `config-file = <path>` includes across the loaded layers (matches macOS ordering:
@@ -148,6 +168,15 @@ final class GhosttyApp: @unchecked Sendable {
         let path = (dir as NSString).appendingPathComponent("agterm-ghostty-runtime.conf")
         try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
         return path
+    }
+
+    private static func writeAppearanceStateThemes() -> (light: String, dark: String)? {
+        let dir = ProcessInfo.processInfo.environment["XDG_RUNTIME_DIR"] ?? NSTemporaryDirectory()
+        let light = (dir as NSString).appendingPathComponent("agterm-ghostty-empty-light-theme")
+        let dark = (dir as NSString).appendingPathComponent("agterm-ghostty-empty-dark-theme")
+        guard (try? "".write(toFile: light, atomically: true, encoding: .utf8)) != nil,
+              (try? "".write(toFile: dark, atomically: true, encoding: .utf8)) != nil else { return nil }
+        return (light, dark)
     }
 
     /// Coalesce libghostty wakeups (fired off the main thread, faster than the
@@ -254,6 +283,14 @@ final class GhosttyApp: @unchecked Sendable {
                     value = r.progress < 0 ? -1 : Int(r.progress)
                 }
                 Self.wrapper(fromTarget: target)?.applyProgress(value)
+                return true
+            case GHOSTTY_ACTION_RELOAD_CONFIG:
+                guard let wrapper = Self.wrapper(fromTarget: target) else { return false }
+                if action.action.reload_config.soft {
+                    wrapper.reapplyCurrentConfig()
+                } else {
+                    wrapper.reloadConfigFromHost()
+                }
                 return true
             case GHOSTTY_ACTION_CONFIG_CHANGE:
                 // ghostty reloaded its config (e.g. an external edit it picked up) — re-tint the sidebar in
