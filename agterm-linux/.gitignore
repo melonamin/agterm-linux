@@ -1,6 +1,8 @@
 # build outputs
 .build/
-vendor/
+# A worktree symlinks `vendor` at the main checkout's copy, and a trailing slash never matches a symlink;
+# the leading slash anchors the rule to the top level so a nested `vendor` elsewhere stays visible.
+/vendor
 
 # python bytecode cache from the AT-SPI suite under tests/
 __pycache__/

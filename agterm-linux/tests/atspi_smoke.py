@@ -4918,6 +4918,7 @@ def main():
             "notification-reveal", "notification-focus", "session-pickers", "child-gdk-env",
             "child-gdk-env-inverted",
             "custom-command-failures", "surface-lifetimes", "surface-failures",
+            "background-overlay-grid",
             "sidebar-row-height",
             "sidebar-narrow-clipping",
             "sidebar-width-floor",
@@ -5006,6 +5007,12 @@ def main():
             verify_surface_configuration_lifetimes(env)
         elif scenario == "surface-failures":
             verify_surface_failure_diagnostics(env)
+        elif scenario == "background-overlay-grid":
+            # Function-local: this harness re-execs itself per scenario, so it runs as `__main__` and
+            # the sibling's `from atspi_smoke import …` loads a SECOND copy of this file; a module-scope
+            # import would re-enter that copy while it is still initializing.
+            from atspi_surface_grid import verify_background_overlay_grid
+            verify_background_overlay_grid(env)
         elif scenario == "sidebar-row-height":
             verify_sidebar_row_height_follows_font_size(env)
         elif scenario == "sidebar-narrow-clipping":

@@ -176,11 +176,12 @@ extension AppController {
                     gtk_widget_set_overflow(W(frame), GTK_OVERFLOW_HIDDEN)   // clip GL child to the rounded card; see LinuxQuickCardPolicy
                     gtk_widget_set_halign(W(frame), GTK_ALIGN_CENTER)
                     gtk_widget_set_valign(W(frame), GTK_ALIGN_CENTER)
-                    gtk_frame_set_child(cast(frame), W(ov.rootWidget))
+                    ov.sizeFallback = mountFloatingOverlayFrame(
+                        s, frame: frame, overlay: overlay, child: ov.rootWidget, fallbackPercent: pct)
                     gtk_overlay_add_overlay(overlay, W(frame))
+                    // Keep this AFTER `mountFloatingOverlayFrame` — hidden widgets do not measure.
                     gtk_widget_set_visible(W(frame), s.id == store.selectedSessionID ? 1 : 0)
                     floatingOverlayFrames[s.id] = frame
-                    updateFloatingOverlayFrame(s, frame: frame, overlay: overlay, fallbackPercent: pct)
                 } else {
                     "overlay".withCString { _ = gtk_stack_add_named(stack, W(ov.rootWidget), $0) }
                 }
@@ -213,16 +214,39 @@ extension AppController {
         }
     }
 
+    /// Measure an empty, visible GtkFrame, apply the current overlay geometry, mount its child, and return
+    /// the child's usable box. The ordering matters: a size request, hidden state, or mounted child would
+    /// contaminate the frame-only chrome measurement used by the pre-layout surface estimate.
+    private func mountFloatingOverlayFrame(
+        _ session: Session,
+        frame: OpaquePointer,
+        overlay: OpaquePointer,
+        child: OpaquePointer?,
+        fallbackPercent: Int
+    ) -> (width: Int32, height: Int32) {
+        var chromeWidth: Int32 = 0, chromeHeight: Int32 = 0
+        gtk_widget_measure(W(frame), GTK_ORIENTATION_HORIZONTAL, -1, &chromeWidth, nil, nil, nil)
+        gtk_widget_measure(W(frame), GTK_ORIENTATION_VERTICAL, -1, &chromeHeight, nil, nil, nil)
+        let request = updateFloatingOverlayFrame(
+            session, frame: frame, overlay: overlay, fallbackPercent: fallbackPercent)
+        gtk_frame_set_child(cast(frame), W(child))
+        return GhosttySurfaceGeometry.contentSize(
+            request: request, chrome: (width: chromeWidth, height: chromeHeight))
+    }
+
+    @discardableResult
     private func updateFloatingOverlayFrame(_ session: Session, frame: OpaquePointer,
-                                            overlay: OpaquePointer, fallbackPercent: Int) {
+                                            overlay: OpaquePointer,
+                                            fallbackPercent: Int) -> (width: Int32, height: Int32) {
         let width = gtk_widget_get_width(W(overlay))
         let height = gtk_widget_get_height(W(overlay))
         let widthPercent = Int32(session.overlaySizePercent ?? fallbackPercent)
         let heightPercent = Int32(session.hudHeightPercent ?? session.overlaySizePercent ?? fallbackPercent)
         let minimumWidth: Int32 = session.hudActive ? 1 : 240
         let minimumHeight: Int32 = session.hudActive ? 1 : 160
-        gtk_widget_set_size_request(W(frame), max(minimumWidth, width * widthPercent / 100),
-                                    max(minimumHeight, height * heightPercent / 100))
+        let request = (width: max(minimumWidth, width * widthPercent / 100),
+                       height: max(minimumHeight, height * heightPercent / 100))
+        gtk_widget_set_size_request(W(frame), request.width, request.height)
         let position = session.hudSpec?.position ?? .center
         let horizontal: GtkAlign
         switch position {
@@ -252,6 +276,7 @@ extension AppController {
             gtk_widget_set_focusable(
                 W(surface.glArea), Self.floatingOverlayFocusable(isHud: session.hudActive) ? 1 : 0)
         }
+        return request
     }
 
     static func floatingOverlayTargetable(isHud: Bool) -> Bool { !isHud }
@@ -280,6 +305,12 @@ extension AppController {
                   let percent = session.overlaySizePercent else { continue }
             updateFloatingOverlayFrame(session, frame: frame, overlay: deck, fallbackPercent: percent)
         }
+    }
+
+    /// The terminal deck's current allocation in logical GTK units, used when a child is realized before
+    /// its first layout pass and therefore has no allocation of its own yet.
+    func deckAllocationSize() -> (width: Int32, height: Int32) {
+        (width: gtk_widget_get_width(W(deck)), height: gtk_widget_get_height(W(deck)))
     }
 
     static func singleQuoted(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }

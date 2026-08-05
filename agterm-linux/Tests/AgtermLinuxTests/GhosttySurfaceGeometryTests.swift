@@ -6,10 +6,10 @@ struct GhosttySurfaceGeometryTests {
     @Test("GTK viewport dimensions convert to backing pixels")
     func viewportUsesContentScale() {
         #expect(GhosttySurfaceGeometry.initialBackingSize(
-            gtkWidth: 960, gtkHeight: 540, scaleFactor: 1
+            gtkWidth: 960, gtkHeight: 540, scaleFactor: 1, fallback: nil
         ) == .init(width: 960, height: 540))
         #expect(GhosttySurfaceGeometry.initialBackingSize(
-            gtkWidth: 960, gtkHeight: 540, scaleFactor: 2
+            gtkWidth: 960, gtkHeight: 540, scaleFactor: 2, fallback: nil
         ) == .init(width: 1_920, height: 1_080))
     }
 
@@ -30,10 +30,128 @@ struct GhosttySurfaceGeometryTests {
     @Test("non-positive viewport inputs clamp to one")
     func clampsNonPositiveDimensionsAndScale() {
         #expect(GhosttySurfaceGeometry.initialBackingSize(
-            gtkWidth: 0, gtkHeight: -12, scaleFactor: 0
+            gtkWidth: 0, gtkHeight: -12, scaleFactor: 0, fallback: nil
         ) == .init(width: 1, height: 1))
         #expect(GhosttySurfaceGeometry.resizedViewport(
             widthPixels: 0, heightPixels: -12
         ) == .init(width: 1, height: 1))
+    }
+
+    @Test("creation falls back when the widget has no allocation of its own")
+    func initialSizeUsesFallbackWhenUnallocated() {
+        #expect(GhosttySurfaceGeometry.initialBackingSize(
+            gtkWidth: 0, gtkHeight: 0, scaleFactor: 1, fallback: (width: 849, height: 644)
+        ) == .init(width: 849, height: 644))
+        #expect(GhosttySurfaceGeometry.initialBackingSize(
+            gtkWidth: 0, gtkHeight: 0, scaleFactor: 2, fallback: (width: 849, height: 644)
+        ) == .init(width: 1_698, height: 1_288))
+    }
+
+    @Test("creation prefers the widget's own allocation over the fallback")
+    func initialSizePrefersOwnAllocation() {
+        #expect(GhosttySurfaceGeometry.initialBackingSize(
+            gtkWidth: 960, gtkHeight: 540, scaleFactor: 1, fallback: (width: 100, height: 200)
+        ) == .init(width: 960, height: 540))
+        #expect(GhosttySurfaceGeometry.initialBackingSize(
+            gtkWidth: 960, gtkHeight: 540, scaleFactor: 2, fallback: (width: 100, height: 200)
+        ) == .init(width: 1_920, height: 1_080))
+    }
+
+    @Test("creation treats a half-allocated source as not credible")
+    func initialSizeRejectsPartialSources() {
+        #expect(GhosttySurfaceGeometry.initialBackingSize(
+            gtkWidth: 849, gtkHeight: 0, scaleFactor: 1, fallback: (width: 100, height: 200)
+        ) == .init(width: 100, height: 200))
+        #expect(GhosttySurfaceGeometry.initialBackingSize(
+            gtkWidth: 0, gtkHeight: 644, scaleFactor: 1, fallback: (width: 100, height: 200)
+        ) == .init(width: 100, height: 200))
+        #expect(GhosttySurfaceGeometry.initialBackingSize(
+            gtkWidth: -20, gtkHeight: -12, scaleFactor: 1, fallback: (width: 100, height: 200)
+        ) == .init(width: 100, height: 200))
+    }
+
+    @Test("creation still clamps to one when neither source is credible")
+    func initialSizeClampsWithoutACredibleSource() {
+        #expect(GhosttySurfaceGeometry.initialBackingSize(
+            gtkWidth: 0, gtkHeight: 0, scaleFactor: 1, fallback: (width: 0, height: 0)
+        ) == .init(width: 1, height: 1))
+        #expect(GhosttySurfaceGeometry.initialBackingSize(
+            gtkWidth: -4, gtkHeight: -12, scaleFactor: 1, fallback: (width: -8, height: -9)
+        ) == .init(width: 1, height: 1))
+        #expect(GhosttySurfaceGeometry.initialBackingSize(
+            gtkWidth: 0, gtkHeight: 0, scaleFactor: 1, fallback: (width: 100, height: 0)
+        ) == .init(width: 1, height: 1))
+        // The clamp is deliberately scale x scale, not a literal 1x1 — byte-identical to the historic
+        // `max(1, gtkWidth) * scale`. Scale 1 cannot observe that choice, so pin it at 2.
+        #expect(GhosttySurfaceGeometry.initialBackingSize(
+            gtkWidth: 0, gtkHeight: 0, scaleFactor: 2, fallback: nil
+        ) == .init(width: 2, height: 2))
+    }
+
+    @Test("a stored frame estimate subtracts the frame's measured chrome")
+    func contentSizeSubtractsChrome() {
+        // Harness-measured: a 60% floating overlay requests 654x414, and its `.card` chrome is 2px per axis.
+        let content = GhosttySurfaceGeometry.contentSize(
+            request: (width: 654, height: 414), chrome: (width: 2, height: 2))
+        #expect(content == (width: 652, height: 412))
+    }
+
+    @Test("an unresolved chrome measurement degrades to the raw request")
+    func contentSizeKeepsRequestWithoutChrome() {
+        #expect(GhosttySurfaceGeometry.contentSize(
+            request: (width: 849, height: 644), chrome: (width: 0, height: 0)
+        ) == (width: 849, height: 644))
+        #expect(GhosttySurfaceGeometry.contentSize(
+            request: (width: 849, height: 644), chrome: (width: -4, height: -4)
+        ) == (width: 849, height: 644))
+        #expect(GhosttySurfaceGeometry.contentSize(
+            request: (width: 849, height: 644), chrome: (width: 0, height: 2)
+        ) == (width: 849, height: 642))
+    }
+
+    @Test("a chrome that is not a minority of its box keeps the request, never a credible 1x1")
+    func contentSizeRefusesToCollapse() {
+        #expect(GhosttySurfaceGeometry.contentSize(
+            request: (width: 240, height: 160), chrome: (width: 239, height: 159)
+        ) == (width: 240, height: 160))
+        #expect(GhosttySurfaceGeometry.contentSize(
+            request: (width: 240, height: 160), chrome: (width: 240, height: 160)
+        ) == (width: 240, height: 160))
+        #expect(GhosttySurfaceGeometry.contentSize(
+            request: (width: 240, height: 160), chrome: (width: 900, height: 900)
+        ) == (width: 240, height: 160))
+        #expect(GhosttySurfaceGeometry.contentSize(
+            request: (width: 240, height: 160), chrome: (width: 120, height: 80)
+        ) == (width: 240, height: 160))
+        // One pixel inside the accepting side still subtracts — pins `>` rather than `>=`, so the
+        // 120x80 case above is a real boundary and not the whole upper half of the range.
+        #expect(GhosttySurfaceGeometry.contentSize(
+            request: (width: 240, height: 160), chrome: (width: 119, height: 79)
+        ) == (width: 121, height: 81))
+    }
+
+    @Test("a chrome whose subtraction would overflow keeps the request instead of trapping")
+    func contentSizeSurvivesOverflowingChrome() {
+        #expect(GhosttySurfaceGeometry.contentSize(
+            request: (width: 240, height: 160), chrome: (width: .min, height: .min)
+        ) == (width: 240, height: 160))
+        #expect(GhosttySurfaceGeometry.contentSize(
+            request: (width: .max, height: .max), chrome: (width: -1, height: .min)
+        ) == (width: .max, height: .max))
+        #expect(GhosttySurfaceGeometry.contentSize(
+            request: (width: 849, height: 644), chrome: (width: .min, height: 2)
+        ) == (width: 849, height: 642))
+        #expect(GhosttySurfaceGeometry.contentSize(
+            request: (width: .min, height: .min), chrome: (width: .max, height: 2)
+        ) == (width: .min, height: .min))
+    }
+
+    @Test("an absurd allocation saturates instead of wrapping")
+    func initialSizeSaturatesOnOverflow() {
+        // UInt32(clamping:) on the UInt64 product is what keeps a bogus allocation from wrapping to a
+        // small positive size, which would look like a plausible grid rather than an obvious failure.
+        #expect(GhosttySurfaceGeometry.initialBackingSize(
+            gtkWidth: .max, gtkHeight: .max, scaleFactor: 8, fallback: nil
+        ) == .init(width: .max, height: .max))
     }
 }

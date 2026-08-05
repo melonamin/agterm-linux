@@ -88,6 +88,10 @@ final class GhosttySurface: TerminalSurface {
         }
     }
 
+    /// A host-supplied size estimate (logical GTK units) for a surface whose GtkGLArea carries no
+    /// allocation of its own. Set ONLY by `syncOverlay`'s floating branch — see `pushSize`.
+    var sizeFallback: (width: Int32, height: Int32)?
+
     /// Set by the host: the shell process exited.
     var onExit: (() -> Void)?
     private var exitCodeFile: String?
@@ -295,12 +299,19 @@ final class GhosttySurface: TerminalSurface {
         creationErrorLabel = nil
     }
 
+    /// Size the surface at CREATION — the only path that reaches the fallback, since `createSurface()`
+    /// is guarded by `surface == nil` and every later size change goes through `resize(width:height:)`.
+    /// Precedence: the widget's own allocation, then the stored estimate, then the deck allocation, then
+    /// the clamp. Only the floating overlay needs a STORED estimate — its frame is
+    /// `gtk_widget_set_visible(0)` and never laid out at all while its session is backgrounded, while
+    /// every other surface is in layout and is corrected by the `GtkGLArea::resize` that follows.
     private func pushSize() {
         guard let surface else { return }
         let viewport = GhosttySurfaceGeometry.initialBackingSize(
             gtkWidth: gtk_widget_get_width(W(glArea)),
             gtkHeight: gtk_widget_get_height(W(glArea)),
-            scaleFactor: gtk_widget_get_scale_factor(W(glArea))
+            scaleFactor: gtk_widget_get_scale_factor(W(glArea)),
+            fallback: sizeFallback ?? controller?.deckAllocationSize()
         )
         ghostty_surface_set_size(surface, viewport.width, viewport.height)
     }

@@ -9,11 +9,53 @@ enum GhosttySurfaceGeometry {
         let y: Double
     }
 
-    static func initialBackingSize(gtkWidth: Int32, gtkHeight: Int32, scaleFactor: Int32) -> Size {
+    /// Size a surface is CREATED at: the widget's own allocation, else the caller's fallback, else the
+    /// historic clamp to one.
+    ///
+    /// A surface force-realized behind a hidden deck page reads `0x0` for itself because no layout pass
+    /// has run yet. The fallback carries the caller's best estimate in the same logical GTK units, so
+    /// the content scale applies to whichever source wins.
+    static func initialBackingSize(
+        gtkWidth: Int32,
+        gtkHeight: Int32,
+        scaleFactor: Int32,
+        fallback: (width: Int32, height: Int32)?
+    ) -> Size {
         let scale = UInt64(max(1, scaleFactor))
+        return credibleSize((width: gtkWidth, height: gtkHeight), scale: scale)
+            ?? credibleSize(fallback, scale: scale)
+            ?? Size(width: UInt32(clamping: scale), height: UInt32(clamping: scale))
+    }
+
+    /// The CHILD's usable box inside a chrome-bearing container: the size request minus the container's
+    /// own measured chrome, per AXIS, keeping the RAW REQUEST for an unusable axis. Not in tension with
+    /// `credibleSize`'s per-PAIR rule: this corrects ONE source in place, that one CHOOSES between two.
+    static func contentSize(
+        request: (width: Int32, height: Int32),
+        chrome: (width: Int32, height: Int32)
+    ) -> (width: Int32, height: Int32) {
+        (width: contentExtent(request: request.width, chrome: chrome.width),
+         height: contentExtent(request: request.height, chrome: chrome.height))
+    }
+
+    /// Both comparisons are ORDERED ahead of the subtraction, which is what keeps the function total:
+    /// `Int32` arithmetic TRAPS, and `0 < chrome < request` leaves nothing to overflow. An
+    /// untrustworthy measurement keeps the RAW REQUEST — a near-total subtraction would instead hand
+    /// back a CREDIBLE tiny pair that `initialBackingSize` prefers over the deck fallback, the one-cell
+    /// spawn this seam exists to prevent.
+    private static func contentExtent(request: Int32, chrome: Int32) -> Int32 {
+        guard chrome > 0, request > chrome else { return request }
+        let content = request - chrome
+        return content > chrome ? content : request
+    }
+
+    /// A size source counts only when BOTH dimensions are positive: taking one axis from the widget and
+    /// the other from the fallback would produce a geometry neither source had — hence ONE optional pair.
+    private static func credibleSize(_ size: (width: Int32, height: Int32)?, scale: UInt64) -> Size? {
+        guard let size, size.width > 0, size.height > 0 else { return nil }
         return Size(
-            width: UInt32(clamping: UInt64(max(1, gtkWidth)) * scale),
-            height: UInt32(clamping: UInt64(max(1, gtkHeight)) * scale)
+            width: UInt32(clamping: UInt64(size.width) * scale),
+            height: UInt32(clamping: UInt64(size.height) * scale)
         )
     }
 
