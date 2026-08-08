@@ -290,19 +290,6 @@ final class GhosttySurface: TerminalSurface {
         ownedConfigs = [clone]
     }
 
-    func reapplyCurrentConfig() {
-        guard let surface else { return }
-        if let config = ownedConfigs.last {
-            ghostty_surface_update_config(surface, config)
-        } else {
-            GhosttyApp.shared.reapplyCurrentConfig(to: surface)
-        }
-    }
-
-    func reloadConfigFromHost() {
-        controller?.reloadConfig()
-    }
-
     func applyWatermarkFromSession(windowOpacity: Double? = nil, settings: AppSettings? = nil) {
         // An explicit session.background set/clear owns the config overlay until a program emits OSC 11
         // again. Release the dedupe latch so re-emitting the same OSC color is not ignored.

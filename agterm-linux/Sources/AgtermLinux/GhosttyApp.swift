@@ -32,7 +32,6 @@ final class GhosttyApp: @unchecked Sendable {
     private let tickLock = NSLock()
     private var tickScheduled = false
     private var resolvedResources: String?
-    private var currentConfig: ghostty_config_t?
 
     /// The current theme's colors as OSC escape sequences (OSC 11/10/4/…), fed to each surface at creation
     /// because the embedded OpenGL renderer doesn't adopt the config's default colors from the config file.
@@ -76,7 +75,6 @@ final class GhosttyApp: @unchecked Sendable {
         }
 
         app = ghostty_app_new(&rt, cfg)
-        replaceCurrentConfig(with: cfg)
         ghostty_config_free(cfg)
     }
 
@@ -85,18 +83,6 @@ final class GhosttyApp: @unchecked Sendable {
     func updateConfig(_ config: ghostty_config_t) {
         guard let app else { return }
         ghostty_app_update_config(app, config)
-        replaceCurrentConfig(with: config)
-    }
-
-    func reapplyCurrentConfig(to surface: ghostty_surface_t) {
-        guard let currentConfig else { return }
-        ghostty_surface_update_config(surface, currentConfig)
-    }
-
-    private func replaceCurrentConfig(with config: ghostty_config_t?) {
-        guard let config, let clone = ghostty_config_clone(config) else { return }
-        if let currentConfig { ghostty_config_free(currentConfig) }
-        currentConfig = clone
     }
 
     @MainActor func applyColorScheme(_ side: LinuxAppearanceSide) {
@@ -285,11 +271,8 @@ final class GhosttyApp: @unchecked Sendable {
                 Self.wrapper(fromTarget: target)?.applyProgress(value)
                 return true
             case GHOSTTY_ACTION_RELOAD_CONFIG:
-                guard let wrapper = Self.wrapper(fromTarget: target) else { return false }
-                if action.action.reload_config.soft {
-                    wrapper.reapplyCurrentConfig()
-                } else {
-                    wrapper.reloadConfigFromHost()
+                _ = GhosttyReloadPolicy.handle(isSoft: action.action.reload_config.soft) {
+                    gWindows.values.first?.reloadConfig()
                 }
                 return true
             case GHOSTTY_ACTION_CONFIG_CHANGE:
