@@ -662,11 +662,11 @@ struct IntegrationServiceTests {
         var moveCount = 0
 
         #expect(throws: IntegrationServiceError.self) {
-            try IntegrationFilesystem.apply(operation) { from, to in
+            try IntegrationFilesystem.apply(operation, moveItem: { from, to in
                 moveCount += 1
                 if moveCount >= 2 { throw MoveFailure() }
                 try FileManager.default.moveItem(at: from, to: to)
-            }
+            })
         }
 
         let recovery = try FileManager.default.contentsOfDirectory(

@@ -168,10 +168,68 @@ enum IntegrationFilesystem {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
+    /// Recursively copy a bundled resource without ever preserving ownership.
+    ///
+    /// `FileManager.copyItem` applies the source's owner/group to each copied *directory* on Linux and
+    /// turns the resulting `EPERM` into a fatal Cocoa 513 error, so a system-wide install
+    /// (`/opt/agterm-linux`, root-owned) can never be copied into an unprivileged user's home: the
+    /// recursive copy dies at the first subdirectory with "You don't have permission." Directories are
+    /// therefore created by hand and only their `.posixPermissions` are applied — owner and group are
+    /// never read and never written, which is what Darwin's `copyItem` degrades to for an unprivileged
+    /// caller. (macOS is unaffected either way: its installers still use `copyItem` and were not
+    /// changed here.)
+    ///
+    /// Everything else (regular files, symlinks including dangling ones, exotic types) still goes
+    /// through per-item `copyItem`, which is ownership-safe: verified from a genuinely root-owned source
+    /// as an unprivileged user, a regular file keeps its mode and a symlink is recreated as a symlink
+    /// rather than resolved, both landing owned by the copying user. The bundled resource trees hold no
+    /// symlinks today, so that leg is defensive.
+    ///
+    /// `applyMode` is an injectable seam so tests can pin both the ownership invariant and the
+    /// mode-after-children ordering; production callers use the default. The mode is applied *after* the
+    /// children are copied so a read-only source directory mode cannot block its own population.
+    static func installCopy(
+        from source: URL,
+        to destination: URL,
+        applyMode: (NSNumber, String) throws -> Void = { mode, path in
+            try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: path)
+        }
+    ) throws {
+        let fm = FileManager.default
+        let attributes = try fm.attributesOfItem(atPath: source.path)
+        guard attributes[.type] as? FileAttributeType == .typeDirectory else {
+            try fm.copyItem(at: source, to: destination)
+            return
+        }
+        try fm.createDirectory(at: destination, withIntermediateDirectories: false)
+        // `contentsOfDirectory(atPath:)` has no `.skipsHiddenFiles` option, so dotfiles cannot be
+        // silently dropped the way the URL-returning overload could.
+        for child in try fm.contentsOfDirectory(atPath: source.path).sorted() {
+            try installCopy(from: source.appendingPathComponent(child),
+                            to: destination.appendingPathComponent(child),
+                            applyMode: applyMode)
+        }
+        guard let mode = attributes[.posixPermissions] as? NSNumber else {
+            // Unreachable for a successfully stat'ed path on Linux; failing loudly beats silently
+            // leaving the copy on the umask-derived `createDirectory` default.
+            throw IntegrationServiceError.invalidResource(
+                "The bundled resource directory reports no permissions: \(source.path)"
+            )
+        }
+        try applyMode(mode, destination.path)
+    }
+
+    /// `copyTree` is the injectable staging-copy seam, mirroring `moveItem`; the default routes both
+    /// staging copies through `installCopy` so neither arm can preserve source ownership. Both seams are
+    /// defaulted closures of the same type, so pass either one as a *labeled* argument — an unlabeled
+    /// trailing closure binds by declaration order, and the compiler warns about neither choice.
     static func apply(
         _ operation: IntegrationOperation,
         moveItem: (URL, URL) throws -> Void = { source, destination in
             try FileManager.default.moveItem(at: source, to: destination)
+        },
+        copyTree: (URL, URL) throws -> Void = { source, destination in
+            try IntegrationFilesystem.installCopy(from: source, to: destination)
         }
     ) throws -> IntegrationOperationResult {
         switch operation {
@@ -197,7 +255,7 @@ enum IntegrationFilesystem {
                 if itemExists(staged) { try? fm.removeItem(at: staged) }
                 if !preservePrevious, itemExists(previous) { try? fm.removeItem(at: previous) }
             }
-            try fm.copyItem(at: source, to: staged)
+            try copyTree(source, staged)
             if let bakedCLI { try bakeCLIPath(bakedCLI, in: staged) }
             let hadPrevious = itemExists(destination)
             if hadPrevious { try moveItem(destination, previous) }
@@ -269,7 +327,7 @@ enum IntegrationFilesystem {
                 if itemExists(staged) { try? fm.removeItem(at: staged) }
                 if !preservePrevious, itemExists(previous) { try? fm.removeItem(at: previous) }
             }
-            try fm.copyItem(at: source, to: staged)
+            try copyTree(source, staged)
             let hadPrevious = itemExists(target)
             if hadPrevious { try moveItem(target, previous) }
             do {
