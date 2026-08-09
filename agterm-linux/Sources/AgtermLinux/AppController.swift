@@ -282,6 +282,7 @@ final class AppController {
         let windowOverlay = OpaquePointer(gtk_overlay_new())
         self.deckOverlay = windowOverlay
         gtk_overlay_set_child(windowOverlay, W(split))
+        installQuickCardPlacement(on: windowOverlay)   // percent-sized quick card; see AppControllerCallbacks
         // An AdwToastOverlay wraps the content so the app can surface transient banners (keymap/config
         // parse diagnostics, command failures) without a modal — the GTK analogue of the macOS banner.
         let toast = OpaquePointer(adw_toast_overlay_new())
@@ -489,9 +490,9 @@ final class AppController {
         if let b = scratchToggleBtn { gtk_button_set_icon_name(cast(b), scratchOn ? "agterm-scratch-fill-symbolic" : "agterm-scratch-symbolic") }
     }
 
-    /// Show/hide the window-level quick terminal — a fixed-height drop-down panel above the deck running
-    /// a login shell, kept alive when hidden, recreated after its shell exits. The control `quick` arm
-    /// and Ctrl+` both drive it.
+    /// Show/hide the window-level quick terminal — a percent-sized card centered over the window content
+    /// below the header, running a login shell, kept alive when hidden, recreated after its shell exits.
+    /// The control `quick` arm and Ctrl+` both drive it.
     func setQuick(_ visible: Bool) {
         if !visible, terminalZoom.target == .quick { setTerminalZoom(.off, target: .quick) }
         if quickFrame == nil, visible, let overlay = deckOverlay {
@@ -502,18 +503,17 @@ final class AppController {
                                    controller: self, role: .quick, reportsPaneState: false)
             q.onExit = { [weak self] in self?.closeQuick() }
             // A floating card panel over the FULL window content: rounded + shadowed by .agterm-quick
-            // (app priority, overriding Adwaita "card"), inset from the window edges (sidebar + deck
-            // visible around it), with a larger top inset to clear the title-bar header.
+            // (app priority, overriding Adwaita "card"), sized as a PERCENTAGE of the window content below
+            // the header (sidebar + deck visible around it) by the deck overlay's get-child-position
+            // handler, which re-measures on every layout pass so the card tracks a live window resize and
+            // hidden-toolbar mode. FILL + no margins is load-bearing there: gtk_widget_size_allocate
+            // re-applies align and margins INSIDE the rectangle that handler returns.
             let frame = OpaquePointer(gtk_frame_new(nil))
             gtk_widget_add_css_class(W(frame), "card")
             gtk_widget_add_css_class(W(frame), "agterm-quick")   // opaque backing + border, radius, shadow
             gtk_widget_set_overflow(W(frame), GTK_OVERFLOW_HIDDEN)   // clip GL child to the rounded card; see LinuxQuickCardPolicy
             gtk_widget_set_halign(W(frame), GTK_ALIGN_FILL)
             gtk_widget_set_valign(W(frame), GTK_ALIGN_FILL)
-            gtk_widget_set_margin_top(W(frame), 56)
-            for m in [gtk_widget_set_margin_start, gtk_widget_set_margin_end, gtk_widget_set_margin_bottom] {
-                m(W(frame), 44)
-            }
             gtk_frame_set_child(cast(frame), W(q.glArea))
             quickFrame = frame
             quickSurface = q
