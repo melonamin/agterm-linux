@@ -511,19 +511,21 @@ extension AppController: ControlActions {
             guard !members.isEmpty else { return err("no recent sessions") }
         } else {
             let candidates = store.workspaces.flatMap { $0.sessions.map(\.id) }
-            var ids: [UUID] = []
-            var seen = Set<UUID>()
+            var resolved: [ResolvedDashboardTarget] = []
             var unresolved: [String] = []
             for target in targets {
-                if case .resolved(let id) = ControlResolve.resolve(target, candidates: candidates,
-                                                                   active: store.selectedSessionID) {
-                    if seen.insert(id).inserted { ids.append(id) }
-                } else {
+                guard let parsed = DashboardTarget(rawValue: target),
+                      case .resolved(let id) = ControlResolve.resolve(parsed.head, candidates: candidates,
+                                                                      active: store.selectedSessionID),
+                      let session = store.session(withID: id),
+                      parsed.pane != .split || session.hasSplit else {
                     unresolved.append(target)
+                    continue
                 }
+                resolved.append(ResolvedDashboardTarget(session: id, pane: parsed.pane))
             }
-            guard !ids.isEmpty else { return err("no dashboard sessions resolved") }
-            let expanded = store.dashboardMembers(for: ids, limit: DashboardLayout.maxCells)
+            let expanded = store.dashboardMembers(for: resolved, limit: DashboardLayout.maxCells)
+            guard !expanded.members.isEmpty else { return err("no dashboard sessions resolved") }
             members = expanded.members
             if !unresolved.isEmpty { notes.append("unresolved: \(unresolved.joined(separator: ", "))") }
             if expanded.dropped > 0 {
@@ -698,8 +700,7 @@ extension AppController: ControlActions {
         guard quickSurface != nil || quickVisible else { return err("quick terminal not open") }
         for _ in 0..<12 {
             while g_main_context_iteration(nil, 0) != 0 {}
-            if let quickSurface {
-                quickSurface.inject(text: text)
+            if let quickSurface, quickSurface.inject(text: text) {
                 return ok()
             }
             usleep(30_000)
@@ -731,6 +732,14 @@ extension AppController: ControlActions {
         switch resolveSessionResponse(target) {
         case .failure(let response): return response
         case .success(let id):
+            guard let session = store.session(withID: id) else { return err("session not found") }
+            switch options.pane {
+            case nil, "left": break
+            case "right" where !session.hasSplit: return err("session has no split pane")
+            case "scratch" where !session.scratchActive: return err("session has no scratch terminal")
+            case "right", "scratch": break
+            case .some(let pane): return err("invalid pane: \(pane)")
+            }
             if options.select {
                 selectSession(id, userInitiated: false)
                 reconcile()
@@ -743,8 +752,7 @@ extension AppController: ControlActions {
                 case "scratch": scratchSurfaces[id]
                 case .some: nil
                 }
-                if let surface {
-                    surface.inject(text: options.text)
+                if let surface, surface.inject(text: options.text) {
                     return ok(id)
                 }
                 usleep(30_000)
@@ -776,7 +784,7 @@ extension AppController: ControlActions {
         switch resolveSessionResponse(target) {
         case .failure(let response): return response
         case .success(let id):
-            guard let surface = focusedSurface(for: id) else {
+            guard let surface = focusedSurface(for: id), surface.isRealized else {
                 return err("session not realized")
             }
             surface.performBindingAction(action)
@@ -794,7 +802,14 @@ extension AppController: ControlActions {
                 return ok(id)
             }
             selectSession(id, userInitiated: false)
-            guard let owner = searchTargetSurface(for: id) else { return err("session not realized") }
+            reconcile(focusActive: false)
+            var owner = searchTargetSurface(for: id)
+            for _ in 0..<12 where owner?.isRealized != true {
+                while g_main_context_iteration(nil, 0) != 0 {}
+                usleep(30_000)
+                owner = searchTargetSurface(for: id)
+            }
+            guard let owner, owner.isRealized else { return err("session not realized") }
             searchSurface = owner
             owner.startSearch()
             let hasQuery = text.map { !$0.isEmpty } ?? false
@@ -828,6 +843,18 @@ extension AppController: ControlActions {
         switch resolveSessionResponse(target) {
         case .failure(let response): return response
         case .success(let id):
+            if let pane = options.pane {
+                switch store.openPaneOverlay(id, pane: pane, command: options.command, cwd: options.cwd,
+                                             wait: options.wait, backgroundColor: options.backgroundColor) {
+                case nil:
+                    if options.follow { selectSession(id, userInitiated: false) }
+                    reconcile()
+                    return ok(id)
+                case .unknownSession: return err("no such session")
+                case .alreadyOpen: return err(PaneOverlayError.alreadyOpen)
+                case .paneNotVisible: return err(PaneOverlayError.paneNotVisible)
+                }
+            }
             guard store.openOverlay(id, command: options.command, cwd: options.cwd, wait: options.wait,
                                     sizePercent: options.sizePercent,
                                     backgroundColor: options.backgroundColor) else {
@@ -839,11 +866,12 @@ extension AppController: ControlActions {
         }
     }
 
-    func closeSessionOverlay(_ target: String?, window: String?) -> ControlResponse {
+    func closeSessionOverlay(_ target: String?, window: String?, pane: OverlayPane?) -> ControlResponse {
         switch resolveSessionResponse(target) {
         case .failure(let response): return response
         case .success(let id):
-            guard store.closeOverlay(id) else { return err("no overlay") }
+            let closed = pane.map { store.closePaneOverlay(id, pane: $0) } ?? store.closeOverlay(id)
+            guard closed else { return err("no overlay") }
             reconcile()
             return ok(id)
         }
@@ -859,11 +887,17 @@ extension AppController: ControlActions {
         }
     }
 
-    func sessionOverlayResult(_ target: String?, window: String?) -> ControlResponse {
+    func sessionOverlayResult(_ target: String?, window: String?, pane: OverlayPane?) -> ControlResponse {
         switch resolveSessionResponse(target) {
         case .failure(let response): return response
         case .success(let id):
             guard let session = store.session(withID: id) else { return err("no such session") }
+            if let pane {
+                if session.paneOverlay(pane) != nil { return err(OverlayResultError.stillRunning) }
+                guard let code = session.paneOverlayExitCode(pane) else { return err(OverlayResultError.noResult) }
+                return ControlResponse(ok: true, result: ControlResult(id: id.uuidString, exitCode: code))
+            }
+            if session.hudActive { return err(OverlayHudError.noResult) }
             if session.overlayActive { return err(OverlayResultError.stillRunning) }
             guard let code = session.overlayExitCode else { return err(OverlayResultError.noResult) }
             return ControlResponse(ok: true, result: ControlResult(id: id.uuidString, exitCode: code))
@@ -905,6 +939,7 @@ extension AppController: ControlActions {
             for session in ctl.store.workspaces.flatMap(\.sessions) {
                 session.foregroundCommand = nil
                 session.splitForegroundCommand = nil
+                session.clearPendingForegroundCommands()
             }
         }
         gLibrary.saveAllOpen()

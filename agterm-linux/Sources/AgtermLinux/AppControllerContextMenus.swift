@@ -44,6 +44,9 @@ extension AppController {
         if targets.count == 1 {
             addContextButton(box, "Rename",
                              unsafeBitCast(onCtxRename as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
+            addContextButton(box, "Copy Name",
+                             unsafeBitCast(onCtxCopyName as @convention(c) (OpaquePointer?, gpointer?) -> Void,
+                                           to: GCallback.self))
             addContextButton(box, "Duplicate Session",
                              unsafeBitCast(onCtxDuplicate as @convention(c) (OpaquePointer?, gpointer?) -> Void,
                                            to: GCallback.self))
@@ -131,6 +134,12 @@ extension AppController {
         startRenameActive()
     }
 
+    func contextCopyName() {
+        guard let id = contextMenuSession, let name = store.session(withID: id)?.displayName else { return }
+        dismissContextMenu()
+        name.withCString { gdk_clipboard_set_text(gtk_widget_get_clipboard(W(window)), $0) }
+    }
+
     func contextDuplicate() {
         guard let id = contextMenuSession else { return }
         dismissContextMenu()
@@ -164,6 +173,7 @@ extension AppController {
                          unsafeBitCast(onCtxWorkspaceFocusMembership as @convention(c)
                             (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
         addContextButton(box, "Rename", unsafeBitCast(onCtxWorkspaceRename as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
+        addContextButton(box, "Copy Name", unsafeBitCast(onCtxWorkspaceCopyName as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
         if store.canRemoveWorkspace {
             addContextButton(box, "Delete Workspace", unsafeBitCast(onCtxWorkspaceDelete as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
         }
@@ -175,6 +185,13 @@ extension AppController {
         guard let id = contextMenuWorkspace else { return }
         dismissContextMenu()
         beginRename(id: id, isWorkspace: true)
+    }
+
+    func contextWorkspaceCopyName() {
+        guard let id = contextMenuWorkspace,
+              let name = store.workspaces.first(where: { $0.id == id })?.name else { return }
+        dismissContextMenu()
+        name.withCString { gdk_clipboard_set_text(gtk_widget_get_clipboard(W(window)), $0) }
     }
 
     func contextWorkspaceFocus() {

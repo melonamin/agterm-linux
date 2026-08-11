@@ -47,6 +47,14 @@ extension AppController {
         let page = preferencesPage("Interface", name: .interface, icon: "preferences-desktop-display-symbolic")
         addInterfaceGroup("Title Bar", section: .titleBar, settings: settings, to: page)
         addInterfaceGroup("Sidebar", section: .sidebar, settings: settings, to: page)
+        let behavior = preferencesGroup("Sidebar Behavior")
+        adw_preferences_group_add(
+            cast(behavior),
+            W(preferencesSwitch(
+                "Click a workspace row to expand or collapse",
+                active: settings.workspaceRowClickExpands ?? true,
+                handler: unsafeBitCast(onWorkspaceRowClickExpandsChanged, to: GCallback.self))))
+        adw_preferences_page_add(cast(page), cast(behavior))
         let windows = preferencesGroup("Multiple Windows")
         adw_preferences_group_add(
             cast(windows),
@@ -88,6 +96,14 @@ private let onAutoHideInactiveSidebarsChanged: @MainActor @convention(c)
     (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { row, _, _ in
         MainActor.assumeIsolated {
             controllerForWidget(row)?.setAutoHideInactiveSidebars(
+                adw_switch_row_get_active(row) != 0)
+        }
+    }
+
+private let onWorkspaceRowClickExpandsChanged: @MainActor @convention(c)
+    (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { row, _, _ in
+        MainActor.assumeIsolated {
+            controllerForWidget(row)?.setWorkspaceRowClickExpands(
                 adw_switch_row_get_active(row) != 0)
         }
     }

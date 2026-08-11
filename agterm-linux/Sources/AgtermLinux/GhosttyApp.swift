@@ -76,6 +76,15 @@ final class GhosttyApp: @unchecked Sendable {
         }
 
         app = ghostty_app_new(&rt, cfg)
+        // libghostty starts with a light conditional state. Re-side and re-apply the app config before
+        // any surface mounts; otherwise a dark launch rebuilds each surface from config files and drops
+        // host-only env vars, initial input, and command fields from its surface configuration.
+        if let app, let cfg {
+            ghostty_app_set_color_scheme(
+                app, appearanceSide.isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT)
+            ghostty_app_update_config(app, cfg)
+        }
+        appliedAppearanceSide = appearanceSide
         replaceCurrentConfig(with: cfg)
         ghostty_config_free(cfg)
     }

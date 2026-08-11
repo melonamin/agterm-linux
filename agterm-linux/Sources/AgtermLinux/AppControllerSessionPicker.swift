@@ -45,11 +45,13 @@ extension AppController {
         gtk_widget_set_parent(W(popover), W(anchor))
         gtk_popover_set_position(POPOVER(popover), GTK_POS_BOTTOM)
         gtk_widget_add_css_class(W(rows), "agterm-session-picker")
+        gtk_widget_add_css_class(W(rows), "agterm-interface-panel")
         for margin in [gtk_widget_set_margin_top, gtk_widget_set_margin_bottom,
                        gtk_widget_set_margin_start, gtk_widget_set_margin_end] {
             margin(W(rows), 6)
         }
-        gtk_widget_set_size_request(W(rows), 320, -1)
+        let metrics = InterfaceMetrics(fontSize: linuxSettingsStore().load().effectiveInterfaceFontSize)
+        gtk_widget_set_size_request(W(rows), Int32(metrics.scaled(320)), -1)
 
         for session in sessions {
             guard let button = op(gtk_button_new()), let row = op(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8)),

@@ -11,6 +11,7 @@ final class GhosttySurface: TerminalSurface {
     /// The GtkGLArea widget (stored as OpaquePointer; cast at GTK call sites).
     let glArea: OpaquePointer
     private(set) var surface: ghostty_surface_t?
+    var isRealized: Bool { surface != nil }
     /// The key controller + a GtkIMContext for composed input (dead-keys / compose / CJK): key events are
     /// filtered through the IM, which commits the composed text via the `commit` signal.
     private var keyController: OpaquePointer?
@@ -27,6 +28,8 @@ final class GhosttySurface: TerminalSurface {
     private let cwd: String
     /// Optional explicit command; nil runs the user's default login shell.
     private let command: String?
+    /// A fixed background owned by an overlay surface rather than the underlying session.
+    private let fixedBackgroundColor: String?
     /// Whether command surfaces should linger on ghostty's "press any key" prompt after exit.
     private let waitAfterCommand: Bool
     /// Scratch/overlay/quick terminals are transient covers; their OSC title/PWD must not overwrite the
@@ -81,12 +84,13 @@ final class GhosttySurface: TerminalSurface {
     init(sessionID: UUID, cwd: String, command: String? = nil, env: [String: String] = [:],
          controller: AppController? = nil, waitAfterCommand: Bool = false,
          role: LinuxSurfaceRole = .main, reportsPaneState: Bool = true,
-         fontSize: Double? = nil, initialInput: String? = nil) {
+         fontSize: Double? = nil, initialInput: String? = nil, backgroundColor: String? = nil) {
         self.sessionID = sessionID
         self.controller = controller
         self.role = role
         self.cwd = cwd
         self.command = command
+        fixedBackgroundColor = backgroundColor
         self.waitAfterCommand = waitAfterCommand
         self.reportsPaneState = reportsPaneState
         self.fontSize = fontSize
@@ -212,7 +216,7 @@ final class GhosttySurface: TerminalSurface {
         ghostty_surface_set_focus(surface, true)
         applyColorScheme(appearanceSide)   // report the system light/dark scheme (OSC color-scheme queries)
         feed(GhosttyApp.shared.currentThemeOSC)   // push theme colors the embedded GL renderer won't adopt from config
-        if controller?.store.session(withID: sessionID)?.backgroundWatermark != nil {
+        if fixedBackgroundColor != nil || controller?.store.session(withID: sessionID)?.backgroundWatermark != nil {
             applyWatermarkFromSession()
         }
     }
@@ -247,8 +251,9 @@ final class GhosttySurface: TerminalSurface {
     /// Inject text as keystrokes (the control channel's session.type): printable runs go
     /// as key-with-text, each newline as a Return keypress (keycode 36 = XKB Return). NOT
     /// ghostty_surface_text, whose bracketed-paste wrapping suppresses Enter.
-    func inject(text: String) {
-        guard let surface else { return }
+    @discardableResult
+    func inject(text: String) -> Bool {
+        guard let surface else { return false }
         // Split into printable runs + Return keys via the shared segmenter (one typing policy for both
         // platforms); send each run as text and each line break as a real Return key press.
         for segment in KeystrokeSegments.split(text) {
@@ -269,6 +274,7 @@ final class GhosttySurface: TerminalSurface {
                 _ = ghostty_surface_key(surface, ke)
             }
         }
+        return true
     }
 
     /// Feed raw bytes into the terminal as if read from the pty — used to push theme colors (OSC 11/10/4/…)
@@ -315,6 +321,8 @@ final class GhosttySurface: TerminalSurface {
         guard let surface else { return }
         let session = controller?.store.session(withID: sessionID)
         let watermark = oscBackgroundColorHex.map {
+            BackgroundWatermark(kind: .color, colorHex: $0)
+        } ?? fixedBackgroundColor.map {
             BackgroundWatermark(kind: .color, colorHex: $0)
         } ?? session?.backgroundWatermark
         guard force || watermark != nil || dashboardFontOverride != nil || session?.fontSize != nil else { return }

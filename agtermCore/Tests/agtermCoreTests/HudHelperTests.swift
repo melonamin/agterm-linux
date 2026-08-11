@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import agtermCore
 
+#if !os(Linux)
 // Tests the shipped panel painter `agterm/Resources/hud/hud.sh` by running it against a temp body file and
 // reading the escape stream it writes. It reaches the app target's resource on purpose: the script is the
 // rendering half of the agtermCore `HudLayout` model, and the three contracts (the header line, the
@@ -404,3 +405,4 @@ struct HudHelperTests {
         #expect(out.fileHandleForReading.readDataToEndOfFile().isEmpty)
     }
 }
+#endif

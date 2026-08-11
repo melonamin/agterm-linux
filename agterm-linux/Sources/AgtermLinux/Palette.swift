@@ -163,9 +163,11 @@ extension AppController {
         gtk_window_set_modal(WIN(win), 1)
         let title = attention ? "Go to Attention" : (sessions ? "Go to Session" : "Command Palette")
         title.withCString { gtk_window_set_title(WIN(win), $0) }
-        gtk_window_set_default_size(WIN(win), 480, 360)
+        let panelSize = interfacePanelSize(width: 480, height: 360)
+        gtk_window_set_default_size(WIN(win), panelSize.0, panelSize.1)
 
         let box = op(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0))
+        gtk_widget_add_css_class(W(box), "agterm-interface-panel")
         let entry = op(gtk_search_entry_new())
         connect(entry, "search-changed", unsafeBitCast(onPaletteSearch as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
         connect(entry, "activate", unsafeBitCast(onPaletteActivate as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))

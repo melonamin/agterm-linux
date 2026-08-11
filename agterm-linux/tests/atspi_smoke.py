@@ -787,6 +787,84 @@ def verify_upstream_control_parity(env):
         initial_tree = window_tree(env, window_id)
         initial_session = initial_tree["workspaces"][0]["sessions"][0]["id"]
 
+        # v0.22 Linux control adapters: prove the shared pane/HUD model reaches a realized GTK host and
+        # returns through the real socket. The HUD's short settle also proves its helper received the body
+        # file environment; without it the helper exits immediately and the tree drops `hud`.
+        control_json(
+            env, "session", "split", "on", "--target", initial_session,
+            "--window", window_id, "--json",
+        )
+
+        def parity_session():
+            return next(
+                session for workspace in window_tree(env, window_id)["workspaces"]
+                for session in workspace["sessions"] if session["id"] == initial_session
+            )
+
+        assert parity_session().get("hasSplit"), "tree did not report the realized split"
+        pane_open = raw_control_json(env, {
+            "cmd": "session.overlay.open", "target": initial_session,
+            "args": {"command": "sleep 5", "pane": "right", "window": window_id},
+        })
+        assert pane_open["ok"], f"right-pane overlay open failed: {pane_open}"
+        wait_for(
+            lambda: parity_session().get("paneOverlays") == ["right"],
+            "tree did not report the right-pane overlay",
+        )
+        pane_close = raw_control_json(env, {
+            "cmd": "session.overlay.close", "target": initial_session,
+            "args": {"pane": "right", "window": window_id},
+        })
+        assert pane_close["ok"], f"right-pane overlay close failed: {pane_close}"
+        wait_for(
+            lambda: not parity_session().get("paneOverlays"),
+            "right-pane overlay stayed open after close",
+        )
+        pane_exit = raw_control_json(env, {
+            "cmd": "session.overlay.open", "target": initial_session,
+            "args": {"command": "exit 7", "pane": "right", "window": window_id},
+        })
+        assert pane_exit["ok"], f"right-pane exit overlay failed: {pane_exit}"
+        wait_for(
+            lambda: not parity_session().get("paneOverlays"),
+            "exited right-pane overlay stayed in the tree",
+        )
+        pane_result = raw_control_json(env, {
+            "cmd": "session.overlay.result", "target": initial_session,
+            "args": {"pane": "right", "window": window_id},
+        })
+        assert pane_result["ok"] and pane_result["result"].get("exitCode") == 7, (
+            f"right-pane overlay result did not return exit 7: {pane_result}"
+        )
+
+        hud_open = raw_control_json(env, {
+            "cmd": "session.hud.open", "target": initial_session,
+            "args": {
+                "message": "Preparing", "detail": "Linux parity", "spinner": "bar",
+                "position": "top-right", "window": window_id,
+            },
+        })
+        assert hud_open["ok"], f"HUD open failed: {hud_open}"
+        wait_for(lambda: parity_session().get("hud", {}).get("message") == "Preparing",
+                 "tree did not report the live HUD")
+        time.sleep(0.3)
+        assert parity_session().get("hud", {}).get("message") == "Preparing", (
+            "HUD helper exited instead of remaining attached to its body file"
+        )
+        hud_update = raw_control_json(env, {
+            "cmd": "session.hud.update", "target": initial_session,
+            "args": {"message": "Ready", "textColor": "#00ff88", "window": window_id},
+        })
+        assert hud_update["ok"], f"HUD update failed: {hud_update}"
+        wait_for(lambda: parity_session().get("hud", {}).get("message") == "Ready",
+                 "tree did not report the HUD update")
+        hud_close = raw_control_json(env, {
+            "cmd": "session.hud.close", "target": initial_session,
+            "args": {"window": window_id},
+        })
+        assert hud_close["ok"], f"HUD close failed: {hud_close}"
+        wait_for(lambda: not parity_session().get("hud"), "HUD stayed open after close")
+
         bootstrap = raw_control_json(env, {"cmd": "events.read"})
         assert bootstrap["ok"], f"events.read bootstrap failed: {bootstrap}"
         anchor = bootstrap["result"]["events"]
@@ -873,7 +951,7 @@ def verify_upstream_control_parity(env):
             "restore override did not survive relaunch"
         )
         assert persisted_held.get("commandWait"), "command wait state did not survive relaunch"
-        print("OK: events, restore overrides, held commands, and workspace collapse round-trip")
+        print("OK: v0.22 pane overlays/HUD plus events, restore, held commands, and collapse round-trip")
     except AssertionError:
         describe_tree(app)
         raise

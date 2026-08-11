@@ -41,7 +41,7 @@ Code layout:
 
 ### Linux feature parity and platform differences
 
-The `linux-port` branch carries the upstream v0.19.0 terminal model and control protocol, including
+The `linux-port` branch carries the upstream v0.22.0 terminal model and control protocol, including
 split/scratch/overlay terminals, Quick terminal input and read-back, terminal zoom, fullscreen,
 recently closed sessions with grouped undo, light/dark themes, configurable toolbar and sidebar text,
 recent-session and attention popovers, agent status in the multi-session dashboard, stable pane status
@@ -429,12 +429,20 @@ The same recently-used history decides where you land when you close the session
 On macOS, voice-dictation tools can treat the on-screen terminal pane as an editable text area and insert
 text at the cursor. Inserts containing newlines, tabs, or other controls use bracketed paste so compatible
 programs receive them literally. The terminal grid is not mirrored as readable accessibility text, and a
-dictation tool that repeatedly sends its full revised transcript may concatenate drafts. Linux terminal
-accessibility is provided through the GTK/AT-SPI surface and is audited separately for platform parity.
+dictation tool that repeatedly sends its full revised transcript may concatenate drafts. On Linux, GTK
+exposes the app chrome to AT-SPI, but libghostty renders the terminal in a `GtkGLArea`, which is not an
+AT-SPI `EditableText` surface. Accessibility clients therefore cannot insert text directly into the Linux
+terminal grid. Use `agtermctl session type --stdin` for keyboard semantics, or the normal clipboard/paste
+path. Implementing editable terminal insertion would require a custom GTK accessible-text widget/provider;
+GTK does not supply that bridge for `GtkGLArea`.
 
 ## Settings
 
 On Linux, press **Ctrl+,** or choose **Preferences…** from the command palette.
+The interface font-size setting scales and clamps command palettes, control pickers, recent-session rows,
+and the session switcher to the available terminal area. GTK transient windows are centered by the
+Wayland/X11 window manager, so the Linux frontend cannot apply the macOS-only horizontal offset that
+centers a separate palette window over the terminal pane rather than over its parent window.
 Both routes remain available when the toolbar is hidden.
 The GTK Preferences dialog has **General**, **Appearance**, **Interface**, **Notifications**, **Agent Status**, **Key Mapping**, and **Integrations** pages.
 Common options use native controls and apply live: mouse behavior, new-session directories, command restoration, close behavior, font and light/dark themes, terminal opacity, toolbar mode, sidebar tint and text size, inactive-pane muting, notifications, status colors and desktop bell, and auto-follow behavior.

@@ -10,7 +10,6 @@ import Foundation
 /// fallback clipboard prompts, and the status-sound error-bell fallback.
 /// Per-window callbacks use ControllerWidgetContext or a source-owned weak context.
 @MainActor var gController: AppController?
-
 @MainActor
 final class AppController {
     let store: AppStore             // this window's tree (owned by the shared WindowLibrary)
@@ -51,13 +50,11 @@ final class AppController {
     var sessionPickerShowsAttention = false
     let sidebarBox: OpaquePointer    // GtkBox holding per-workspace sections
     var splitView: OpaquePointer!    // root GtkPaned (collapsible, resizable sidebar)
-
     // Command palette (Ctrl+Shift+P)
     var paletteWindow: OpaquePointer?
     var paletteList: OpaquePointer?
     var paletteAll = LinuxPaletteList()
     var paletteItems: [LinuxPaletteItem] = []
-
     // Native control picker (`agtermctl pick`), one pending request per window.
     let pickController = PickController()
     var controlPickWindow: OpaquePointer?
@@ -65,7 +62,6 @@ final class AppController {
     var controlPickEntry: OpaquePointer?
     var controlPickRows: [LinuxControlPickRow] = []
     var controlPickSuppressesAutoFollow = false
-
     // In-terminal search bar (Ctrl+Shift+F)
     var searchBar: OpaquePointer?
     var searchEntry: OpaquePointer?
@@ -75,7 +71,6 @@ final class AppController {
     var searchSurface: GhosttySurface?
     var searchTotal: Int?
     var searchSelected: Int?
-
     // Theme picker (live preview). The unpersisted preview override itself — `themePreviewSettings` and its
     // `previewTheme`/`applyTheme` setters — lives in `GhosttyConfigTheme.swift`, next to the resolvers that
     // read it.
@@ -100,8 +95,12 @@ final class AppController {
     var splitSurfaces: [UUID: GhosttySurface] = [:]   // second pane (when split)
     var scratchSurfaces: [UUID: GhosttySurface] = [:] // full-overlay scratch shell
     var overlaySurfaces: [UUID: GhosttySurface] = [:]  // ephemeral overlay terminal (runs a command)
+    var leftOverlaySurfaces: [UUID: GhosttySurface] = [:]
+    var rightOverlaySurfaces: [UUID: GhosttySurface] = [:]
     var floatingOverlayFrames: [UUID: OpaquePointer] = [:]  // overlay rendered as a floating sized panel
     var sessionPanes: [UUID: OpaquePointer] = [:]     // GtkPaned (main content) per session
+    var primaryPaneHosts: [UUID: OpaquePointer] = [:] // GtkOverlay holding primary + its pane cover
+    var splitPaneHosts: [UUID: OpaquePointer] = [:]   // GtkOverlay holding split + its pane cover
     var sessionStacks: [UUID: OpaquePointer] = [:]    // outer GtkStack (main <-> scratch), the deck page
     var rowSession: [OpaquePointer: UUID] = [:]
     var sidebarSelectionAnchor: UUID?
@@ -155,7 +154,6 @@ final class AppController {
     var pendingWorkspaceToggle: UUID?
     var pendingWorkspaceToggleSource: guint = 0
     var sessionProgress: [UUID: Int] = [:]            // per-session OSC 9;4 progress
-
     // Keymap dispatch state (see KeymapDispatch.swift): the parsed keymap.conf, the resolved built-in
     // chord -> action map (user override else Linux default), and the custom-command leader matcher.
     // Loaded at launch + rebuilt on reload. Internal (not private) so the KeymapDispatch extension reaches them.
@@ -164,12 +162,9 @@ final class AppController {
     var resolvedBuiltinChords: [Chord: BuiltinAction] = [:]
     var customCommandEngine = CustomCommandEngine(commands: [])   // matcher + id-lookup (shared, host-free)
     var leaderTimeout: guint = 0   // g_timeout source for the custom-command leader deadline (0 = none)
-
     static var homeCwd: String { ConfigPaths.defaultNewSessionCwd() }
-
     /// The main window, exposed to the palette extension (different file).
     var windowPointer: OpaquePointer { window }
-
     /// The primary surface for a session, exposed to the search extension (different file).
     func surface(for id: UUID?) -> GhosttySurface? { id.flatMap { surfaces[$0] } }
     init(app: OpaquePointer?, windowID: UUID, library: WindowLibrary,
@@ -277,6 +272,7 @@ final class AppController {
         let split = buildSidebarSplit(sidebar: sidebarToolbar, content: contentToolbar)
         applyToolbarMode()
         applySidebarFontSize()
+        applyInterfaceFontSize()
         // The whole split (sidebar + deck) sits under a GtkOverlay so the quick terminal can float over
         // the FULL window content (matching macOS), not just the deck.
         let windowOverlay = OpaquePointer(gtk_overlay_new())
@@ -452,9 +448,13 @@ final class AppController {
     /// split the session closes. `AppStore.closePrimaryPane` decides promote-vs-close.
     func closePrimaryPane(_ id: UUID) {
         // Capture the survivor (the split pane) before the store clears the session's split flags.
-        if dashboard.isOpen { closeDashboard(refocus: false) }; let survivor = splitSurfaces[id]
+        if dashboard.isOpen { dashboard.promoteSplitMember(session: id) }
+        let survivor = splitSurfaces[id]
+        let survivorHost = splitPaneHosts[id]
+        let survivorOverlay = rightOverlaySurfaces[id]
         store.closePrimaryPane(id)
-        guard store.session(withID: id) != nil, let survivor, let paned = sessionPanes[id] else {
+        guard store.session(withID: id) != nil, let survivor, let survivorHost,
+              let paned = sessionPanes[id] else {
             reconcile()   // no split → the store closed the session; reconcile drops its widgets
             return
         }
@@ -464,9 +464,13 @@ final class AppController {
         // Removing a child from a GtkPaned does NOT free the survivor's glArea, so its shell lives on.
         gtk_paned_set_start_child(paned, nil)
         gtk_paned_set_end_child(paned, nil)
-        gtk_paned_set_start_child(paned, W(survivor.glArea))
+        gtk_paned_set_start_child(paned, W(survivorHost))
         surfaces[id] = survivor
         splitSurfaces[id] = nil
+        primaryPaneHosts[id] = survivorHost
+        splitPaneHosts[id] = nil
+        leftOverlaySurfaces[id] = survivorOverlay
+        rightOverlaySurfaces[id] = nil
         let sid = id
         survivor.promoteToPrimary(onExit: { [weak self] in self?.closePrimaryPane(sid) })
         survivor.queueRender()
@@ -522,6 +526,7 @@ final class AppController {
         guard let frame = quickFrame else { return }
         quickVisible = visible
         gtk_widget_set_visible(W(frame), visible ? 1 : 0)
+        updateCoverDimming()
         if visible { quickSurface?.grabFocus() }
     }
 
@@ -534,6 +539,7 @@ final class AppController {
         quickFrame = nil
         quickSurface = nil
         quickVisible = false
+        updateCoverDimming()
     }
 
     func toggleFlagActive() {
@@ -571,6 +577,7 @@ final class AppController {
     }
 
     func scheduleWorkspaceToggle(_ data: gpointer?) {
+        guard linuxSettingsStore().load().workspaceRowClickExpands ?? true else { return }
         guard let data, let wsID = workspaceDiscButtons[OpaquePointer(data)] else { return }
         cancelPendingWorkspaceToggle()
         pendingWorkspaceToggle = wsID
@@ -726,7 +733,14 @@ final class AppController {
     }
 
     func toggleSplit() {
-        guard let id = store.selectedSessionID else { return }
+        guard let id = store.selectedSessionID, let session = store.session(withID: id),
+              !session.fullOverlayActive else { return }
+        if session.scratchActive {
+            store.toggleScratch(id)
+            reconcile(); updateToggleIcons()
+            surfaces[id]?.grabFocus()
+            return
+        }
         store.toggleSplit(id)
         reconcile()
         updateToggleIcons()
@@ -780,6 +794,7 @@ final class AppController {
         gtk_widget_set_halign(W(box), GTK_ALIGN_CENTER)
         gtk_widget_set_valign(W(box), GTK_ALIGN_CENTER)
         gtk_widget_add_css_class(W(box), "agterm-switcher")
+        gtk_widget_add_css_class(W(box), "agterm-interface-panel")
         for id in sessionSwitcher.ordered {
             guard let s = store.session(withID: id), let label = op(gtk_label_new(s.displayName)) else { continue }
             gtk_widget_set_margin_start(W(label), 18); gtk_widget_set_margin_end(W(label), 18)

@@ -69,6 +69,12 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
     // Route every deferred main-actor job (MainTimer) through g_timeout_add BEFORE any store or
     // controller exists — see `agterm-linux/docs/main-loop.md`.
     installGLibMainTimer()
+    let stateDirectory = linuxStateDirectory()
+    let settingsStore = linuxSettingsStore()
+    let currentSettings = settingsStore.load()
+    let welcomeDue = FirstRunWelcome.isDue(
+        welcomeShown: currentSettings.welcomeShown,
+        hasPriorState: FirstRunWelcome.hasPriorState(in: stateDirectory))
     let appearanceSide = LinuxAppearanceSide(isDark: AppController.systemIsDark)
     GhosttyApp.shared.start(appearanceSide: appearanceSide)
     // The notification click-to-reveal target: an `app.reveal` action carrying a session-id string.
@@ -94,6 +100,14 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
     for id in toOpen { openWindow(id) }
     if let controller = gWindows.values.first {
         _ = controller.reloadConfigForAppearanceChange(appearanceSide)
+    }
+    if welcomeDue,
+       ProcessInfo.processInfo.environment["AGTERM_ATSPI_OPEN_PREFERENCES"] == nil,
+       let id = toOpen.first, let controller = gWindows[id] {
+        var settings = currentSettings
+        settings.welcomeShown = true
+        try? settingsStore.save(settings)
+        controller.showFirstRunWelcome()
     }
     #if DEBUG
     if let rawURL = ProcessInfo.processInfo.environment["AGTERM_ATSPI_OPEN_URL"], !rawURL.isEmpty {

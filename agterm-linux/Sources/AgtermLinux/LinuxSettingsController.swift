@@ -119,6 +119,10 @@ extension AppController {
         if enabled { applyInactiveWindowSidebarHidingIfEnabled() }
     }
 
+    func setWorkspaceRowClickExpands(_ enabled: Bool) {
+        persist(\.workspaceRowClickExpands, enabled ? nil : false)
+    }
+
     func applyInactiveWindowSidebarHidingIfEnabled() {
         guard linuxSettingsStore().load().autoHideSidebarInactiveWindows == true else { return }
         library.applyInactiveWindowSidebarHiding()
@@ -304,6 +308,12 @@ extension AppController {
         }
     }
 
+    func setInterfaceFontSize(_ value: Double) {
+        let size = AppSettings.clampInterfaceFontSize(value)
+        persist(\.interfaceFontSize, size == AppSettings.defaultInterfaceFontSize ? nil : size)
+        for controller in gWindows.values { controller.applyInterfaceFontSize() }
+    }
+
     func setInactivePaneMute(_ value: Double) {
         let strength = Int(value)
         persist(\.inactivePaneMuteStrength,
@@ -392,6 +402,7 @@ extension AppController {
         settings.backgroundOpacity = nil
         settings.sidebarBackgroundShift = nil
         settings.sidebarFontSize = nil
+        settings.interfaceFontSize = nil
         settings.inactivePaneMuteStrength = nil
         try? linuxSettingsStore().save(settings)
         reloadConfig()
@@ -399,6 +410,7 @@ extension AppController {
             controller.applyToolbarMode()
             controller.applyWindowTranslucency()
             controller.applySidebarFontSize()
+            controller.applyInterfaceFontSize()
             controller.updateAllPaneDimming()
             controller.rebuildSidebar()
         }

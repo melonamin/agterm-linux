@@ -94,8 +94,8 @@ struct SocketClientTests {
         }
     }
 
-    // the server hangs up mid-request when it rejects an oversized line; without SO_NOSIGPIPE the
-    // client's next write raises the default-fatal SIGPIPE and the process dies with no output.
+    // the server hangs up mid-request when it rejects an oversized line; without SO_NOSIGPIPE on Darwin
+    // or MSG_NOSIGNAL on Linux, the client's next write raises fatal SIGPIPE and the process dies silently.
     @Test func writeToHungUpPeerThrowsInsteadOfDying() throws {
         let server = HangUpStubServer()
         try server.start()

@@ -34,6 +34,8 @@ extension AppController {
         case .session(let id, .split): return splitSurfaces[id]
         case .session(let id, .scratch): return scratchSurfaces[id]
         case .session(let id, .overlay): return overlaySurfaces[id]
+        case .session(let id, .overlayLeft): return leftOverlaySurfaces[id]
+        case .session(let id, .overlayRight): return rightOverlaySurfaces[id]
         }
     }
 
@@ -83,11 +85,11 @@ extension AppController {
             gtk_frame_set_child(cast(frame), nil)
             gtk_widget_set_visible(W(frame), 0)
         case .session(let id, .primary):
-            guard let paned = sessionPanes[id] else { g_object_unref(RAW(widget)); return false }
-            gtk_paned_set_start_child(paned, nil)
+            guard let host = primaryPaneHosts[id] else { g_object_unref(RAW(widget)); return false }
+            gtk_overlay_set_child(host, nil)
         case .session(let id, .split):
-            guard let paned = sessionPanes[id] else { g_object_unref(RAW(widget)); return false }
-            gtk_paned_set_end_child(paned, nil)
+            guard let host = splitPaneHosts[id] else { g_object_unref(RAW(widget)); return false }
+            gtk_overlay_set_child(host, nil)
         case .session(let id, .scratch), .session(let id, .overlay):
             guard let stack = sessionStacks[id] else { g_object_unref(RAW(widget)); return false }
             if let frame = floatingOverlayFrames[id], target == .session(id, .overlay) {
@@ -95,6 +97,12 @@ extension AppController {
             } else {
                 gtk_stack_remove(stack, W(widget))
             }
+        case .session(let id, .overlayLeft):
+            guard let host = primaryPaneHosts[id] else { g_object_unref(RAW(widget)); return false }
+            gtk_overlay_remove_overlay(host, W(widget))
+        case .session(let id, .overlayRight):
+            guard let host = splitPaneHosts[id] else { g_object_unref(RAW(widget)); return false }
+            gtk_overlay_remove_overlay(host, W(widget))
         }
         return true
     }
@@ -120,9 +128,9 @@ extension AppController {
                 gtk_widget_set_visible(W(frame), quickVisible ? 1 : 0)
             }
         case .session(let id, .primary):
-            if let paned = sessionPanes[id] { gtk_paned_set_start_child(paned, W(widget)) }
+            if let host = primaryPaneHosts[id] { gtk_overlay_set_child(host, W(widget)) }
         case .session(let id, .split):
-            if let paned = sessionPanes[id] { gtk_paned_set_end_child(paned, W(widget)) }
+            if let host = splitPaneHosts[id] { gtk_overlay_set_child(host, W(widget)) }
         case .session(let id, .scratch):
             if let stack = sessionStacks[id] {
                 "scratch".withCString { _ = gtk_stack_add_named(stack, W(widget), $0) }
@@ -133,6 +141,10 @@ extension AppController {
             } else if let stack = sessionStacks[id] {
                 "overlay".withCString { _ = gtk_stack_add_named(stack, W(widget), $0) }
             }
+        case .session(let id, .overlayLeft):
+            if let host = primaryPaneHosts[id] { gtk_overlay_add_overlay(host, W(widget)) }
+        case .session(let id, .overlayRight):
+            if let host = splitPaneHosts[id] { gtk_overlay_add_overlay(host, W(widget)) }
         }
     }
 }

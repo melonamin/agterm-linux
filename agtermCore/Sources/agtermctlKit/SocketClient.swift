@@ -67,9 +67,8 @@ struct SocketClient {
         guard fd >= 0 else { throw SocketClientError("socket() failed: \(String(cString: strerror(errno)))") }
 
         // a write after the server closes the connection (e.g. it rejected an oversized request) would
-        // raise the default-fatal SIGPIPE and kill the process with no output; SO_NOSIGPIPE turns it into
-        // a normal EPIPE write error, mirroring the server side of the socket. Darwin-only — Glibc has no
-        // SO_NOSIGPIPE.
+        // raise the default-fatal SIGPIPE and kill the process with no output. Darwin disables it per socket;
+        // Linux passes MSG_NOSIGNAL to each send in writeAll below.
         #if canImport(Darwin)
         var noSigPipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
@@ -104,7 +103,11 @@ struct SocketClient {
             var offset = 0
             let base = raw.bindMemory(to: UInt8.self).baseAddress!
             while offset < data.count {
+                #if canImport(Darwin)
                 let n = write(fd, base + offset, data.count - offset)
+                #elseif canImport(Glibc)
+                let n = Glibc.send(fd, base + offset, data.count - offset, Int32(MSG_NOSIGNAL))
+                #endif
                 if n <= 0 { throw SocketClientError("write failed: \(String(cString: strerror(errno)))") }
                 offset += n
             }

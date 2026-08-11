@@ -380,6 +380,10 @@ let onCtxRename: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void =
     MainActor.assumeIsolated { controllerForWidget(button)?.contextRename() }
 }
 
+let onCtxCopyName: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { button, _ in
+    MainActor.assumeIsolated { controllerForWidget(button)?.contextCopyName() }
+}
+
 let onCtxDuplicate: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { button, _ in
     MainActor.assumeIsolated { controllerForWidget(button)?.contextDuplicate() }
 }
@@ -427,6 +431,10 @@ let onCtxWorkspaceRename: @MainActor @convention(c) (OpaquePointer?, gpointer?) 
     MainActor.assumeIsolated { controllerForWidget(button)?.contextWorkspaceRename() }
 }
 
+let onCtxWorkspaceCopyName: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { button, _ in
+    MainActor.assumeIsolated { controllerForWidget(button)?.contextWorkspaceCopyName() }
+}
+
 let onCtxWorkspaceFocus: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { button, _ in
     MainActor.assumeIsolated { controllerForWidget(button)?.contextWorkspaceFocus() }
 }
@@ -441,6 +449,11 @@ let onCtxWorkspaceDelete: @MainActor @convention(c) (OpaquePointer?, gpointer?) 
 
 let onPanedPosition: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { paned, _, _ in
     MainActor.assumeIsolated { controllerForWidget(paned)?.capturePanedRatio(paned) }
+}
+
+let onPanedDoubleClick: @MainActor @convention(c) (OpaquePointer?, Int32, Double, Double, gpointer?) -> Void = { gesture, presses, x, _, _ in
+    guard presses == 2 else { return }
+    MainActor.assumeIsolated { controllerForEventController(gesture)?.resetSplitRatio(gesture, x: x) }
 }
 
 let restorePanedRatioTick: @MainActor @convention(c) (gpointer?) -> gboolean = { data in
