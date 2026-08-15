@@ -25,19 +25,23 @@ extension AppController {
         let chromeColors = GhosttyConfigTheme.colors(from: config)
         GhosttyApp.shared.currentThemeBackgroundHex = chromeColors.background
         synchronizeLiveColorScheme(side)
-        GhosttyApp.shared.updateConfig(config)
-        for controller in gWindows.values {
-            for surface in controller.configurableSurfaces {
-                surface.applyConfig(config)
-                if preserveSessionConfig {
+        // The app-level update is the single base application: pinned libghostty propagates it to
+        // every surface. Each surface then reasserts only its own overlay/zoom state.
+        let windowOpacity = settings.backgroundOpacity ?? 1
+        GhosttyConfigApplyPolicy.apply(
+            surfacesByWindow: gWindows.values.map { $0.configurableSurfaces },
+            preserveSessionConfig: preserveSessionConfig,
+            updateAppBaseConfig: { GhosttyApp.shared.updateConfig(config) },
+            reassertState: { surface, state in
+                switch state {
+                case .sessionOverlay:
                     surface.reapplySessionConfigIfNeeded(
-                        windowOpacity: settings.backgroundOpacity ?? 1, settings: settings)
-                } else {
+                        windowOpacity: windowOpacity, settings: settings)
+                case .watermarkOnly:
                     surface.reapplyWatermarkIfNeeded(
-                        windowOpacity: settings.backgroundOpacity ?? 1, settings: settings)
+                        windowOpacity: windowOpacity, settings: settings)
                 }
-            }
-        }
+            })
         ghostty_config_free(config)
 
         let osc = AppSettings.themeOSC(from: lines)

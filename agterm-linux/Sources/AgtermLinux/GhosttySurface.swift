@@ -303,15 +303,6 @@ final class GhosttySurface: TerminalSurface {
 
     // MARK: - In-terminal search (libghostty replies via the START/END/TOTAL/SELECTED actions)
 
-    /// Apply a rebuilt ghostty config to this live surface (theme change). The caller owns `config`.
-    func applyConfig(_ config: ghostty_config_t) {
-        guard let surface else { return }
-        ghostty_surface_update_config(surface, config)
-        guard let clone = ghostty_config_clone(config) else { return }
-        ownedConfigs.forEach { ghostty_config_free($0) }
-        ownedConfigs = [clone]
-    }
-
     func applyWatermarkFromSession(windowOpacity: Double? = nil, settings: AppSettings? = nil) {
         // An explicit session.background set/clear owns the config overlay until a program emits OSC 11
         // again. Release the dedupe latch so re-emitting the same OSC color is not ignored.
