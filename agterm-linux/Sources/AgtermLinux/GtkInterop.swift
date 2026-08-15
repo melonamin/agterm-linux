@@ -31,6 +31,25 @@ func connect(_ instance: OpaquePointer?, _ signal: String, _ handler: GCallback?
     signal.withCString { _ = g_signal_connect_data(RAW(instance), $0, handler, data, nil, GConnectFlags(rawValue: 0)) }
 }
 
+/// Open a URI with the desktop's default handler — the single seam for every such launch in the app.
+/// The context exists only to carry the GDK child-environment restore: with a NULL `GAppLaunchContext`
+/// GIO spawns the handler from agterm's own environ, handing a GTK browser or editor agterm's renderer
+/// constraints. A plain context (not `gdk_display_get_app_launch_context`) keeps the launch behaviour
+/// identical to the NULL call, plus the overrides.
+func launchDefaultHandler(forURI uri: String) {
+    guard !gdkEnvironment.childRestore.isEmpty, let context = g_app_launch_context_new() else {
+        uri.withCString { _ = g_app_info_launch_default_for_uri($0, nil, nil) }
+        return
+    }
+    for (name, value) in gdkEnvironment.childRestore {
+        name.withCString { cName in
+            value.withCString { cValue in g_app_launch_context_setenv(context, cName, cValue) }
+        }
+    }
+    uri.withCString { _ = g_app_info_launch_default_for_uri($0, context, nil) }
+    g_object_unref(context)
+}
+
 // GDK modifier bit masks (GdkModifierType).
 private let GDK_SHIFT: UInt32 = 1 << 0
 private let GDK_CONTROL: UInt32 = 1 << 2

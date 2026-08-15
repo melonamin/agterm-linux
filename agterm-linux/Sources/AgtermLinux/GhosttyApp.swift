@@ -339,7 +339,7 @@ final class GhosttyApp: @unchecked Sendable {
             try? uri.write(toFile: capturePath, atomically: true, encoding: .utf8)
         }
         #endif
-        uri.withCString { _ = g_app_info_launch_default_for_uri($0, nil, nil) }
+        launchDefaultHandler(forURI: uri)
     }
 
     // MARK: - Clipboard (GTK4 reads are async)

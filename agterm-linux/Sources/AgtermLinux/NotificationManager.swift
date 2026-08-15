@@ -49,6 +49,9 @@ enum NotificationManager {
         // `--` terminates option parsing so a title/body starting with `-` (these come from untrusted
         // OSC 9/777 sequences and the control socket) can't smuggle flags.
         proc.arguments = ["-a", "agterm", "--", title.isEmpty ? "agterm" : title, body]
+        // Inheritance minus agterm's own GDK overrides — harmless for a D-Bus client like notify-send,
+        // but this is a spawned child like any other and the rule has no exceptions to remember.
+        proc.environment = gdkEnvironment.restoringChildEnvironment(ProcessInfo.processInfo.environment)
         try? proc.run()
     }
 }

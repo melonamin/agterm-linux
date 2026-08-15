@@ -210,7 +210,8 @@ spans intact, and format long catalogs as lists.
 - `notifications.md`: OSC/control notifications, suppression, reveal, badges, status.
 - `ui-tests.md`: launch isolation including FB11763863, AppKit/XCUITest traps, cadence.
 - `libghostty.md`: surfaces, rendering, AppKit, theme, overlays, cursor.
-- `main-loop.md`: GTK/GLib deferred-work seam, main-thread hops, cancellation, and teardown.
+- `main-loop.md`: pre-GTK-init GDK environment assignments, GTK/GLib deferred-work seam, main-thread hops,
+  cancellation, and teardown.
 - `app-icon.md`: adaptive Icon Composer build.
 - `ci.md`: jobs, filters, coverage, badge.
 - `release.md`: local signing, notarization, release, Homebrew, changelog.

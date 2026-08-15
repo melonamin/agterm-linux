@@ -55,6 +55,14 @@ export GALLIUM_DRIVER=llvmpipe
 export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
 export XDG_SESSION_TYPE=x11
 unset WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE SWAYSOCK
+# The app must see GDK_DEBUG/GDK_DISABLE UNSET. LinuxGdkPolicy APPENDS to whatever the launching
+# environment already carries, so an ambient `GDK_DISABLE=gles-api,vulkan` (a plausible desktop override,
+# and the interim workaround this branch replaces) makes it assign nothing and hand that value to every
+# child verbatim -- documented behaviour, but it reds the child-gdk-env scenario on a correct build. With
+# both scrubbed the app always takes its assigning branch, which is the branch that scenario and the
+# `Unrecognized value` guard below are the checks on. GTK_DEBUG/GSK_DEBUG go with them because GDK's one
+# debug-var parser prints the same `Unrecognized value` line for all four.
+unset GDK_DISABLE GDK_DEBUG GTK_DEBUG GSK_DEBUG
 
 LOG="$ARTIFACT_DIR/atspi.log"
 XVFB_LOG="$ARTIFACT_DIR/xvfb.log"
@@ -131,6 +139,18 @@ if ! grep -qF "$AGTERM_UI_APP_STDERR_MARKER" "$APP_LOG" 2>/dev/null; then
   if [[ "$status" -eq 0 ]]; then status=1; fi
 fi
 
+# The app-stderr tripwires below all have the same shape: a pattern whose presence is the failure, a
+# message naming it, and the matching lines echoed for the reader. Writing each pattern once here is what
+# keeps the detecting grep and the printing grep from drifting apart -- a divergence whose failure mode is
+# a red build that explains nothing. `flags` carries the grep mode (-F or -E) the pattern needs.
+fail_on_log_pattern() {
+  local flags=$1 pattern=$2 message=$3
+  grep -q "$flags" -e "$pattern" "$APP_LOG" 2>/dev/null || return 0
+  echo "$message" >&2
+  grep "$flags" -e "$pattern" "$APP_LOG" >&2
+  if [[ "$status" -eq 0 ]]; then status=1; fi
+}
+
 # GTK reports a rejected CSS declaration ONLY here, then carries on drawing without it -- so a typo in
 # installAppCSS (or in any policy constant it interpolates) ships as silently missing chrome that every
 # unit test and every AT-SPI assertion still passes. This is the only validity check on the app's CSS.
@@ -144,11 +164,30 @@ fi
 # a NULL GFile, and a section with no file prints the literal `<data>`; a resource/file-loaded stylesheet
 # prints its display name instead. Verified against the real parser on GTK 4.22.4 and in the 4.14.0
 # sources (the CI runner's ubuntu-24.04 version) -- same format string, same `<data>` fallback.
-if grep -qE "Theme parser (error|warning): <data>" "$APP_LOG" 2>/dev/null; then
-  echo "GTK rejected app CSS; see $APP_LOG" >&2
-  grep -E "Theme parser (error|warning): <data>" "$APP_LOG" >&2
-  if [[ "$status" -eq 0 ]]; then status=1; fi
-fi
+fail_on_log_pattern -E "Theme parser (error|warning): <data>" "GTK rejected app CSS; see $APP_LOG"
+
+# A failed GL context is the terminal itself failing: GhosttySurface.realize() logs this line, returns
+# before createSurface(), and every pane shows the generic "needs OpenGL" overlay -- while the scenarios
+# that exercise sidebar, dashboard and window chrome can still pass, so the build stays green with a dead
+# terminal. Nothing else reads that line. It is also the tripwire for the pre-GTK-init ordering contract:
+# moving anything that opens a display above main()'s setenv block turns the GDK_DISABLE/GDK_DEBUG
+# assignment into a silent no-op, and on a GLES-preferring GDK the failure lands exactly here.
+fail_on_log_pattern -F "agterm: GtkGLArea failed to create a GL context" \
+  "the terminal GL context failed; see $APP_LOG"
+
+# GDK warns once about a token it does not recognize and then carries on, so a wrong spelling in
+# LinuxGdkPolicy ships as a silent no-op that every unit test still passes -- those pin which tokens the
+# policy CHOOSES, never that this GTK honours them. This runner is the only place the GDK_DEBUG (GTK
+# 4.14-4.15) branch ever executes, so it is also the only check on that spelling. The pattern is scoped to
+# the variable the message NAMES: one shared parser serves GDK_DEBUG, GDK_DISABLE, GTK_DEBUG and GSK_DEBUG
+# and prints `Unrecognized value "<token>". Try <VARIABLE>=help` for each, so an unscoped match would blame
+# LinuxGdkPolicy for a warning about someone else's variable. That format string is identical in the GTK
+# 4.14.0 sources (this runner's version, whose GDK_DEBUG key table also carries the
+# `gl-disable-gles`/`vulkan-disable` spellings the policy picks there) and in the installed 4.22.4, so
+# scoping it costs no coverage on either branch of the policy. Combined with the env scrub above, the app's
+# own assignment is the only writer of these two variables.
+fail_on_log_pattern -E 'Unrecognized value .*Try GDK_(DISABLE|DEBUG)=help' \
+  "GDK rejected a token agterm set; see $APP_LOG"
 
 if [[ "$status" -ne 0 ]]; then
   cp "$LOG" "$ARTIFACT_DIR/accessibility-tree.txt"

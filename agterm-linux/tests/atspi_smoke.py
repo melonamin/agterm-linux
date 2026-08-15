@@ -1421,6 +1421,70 @@ def verify_notification_reveal(env):
         stop(process)
 
 
+def verify_child_gdk_environment(env):
+    """A spawned shell must see the PRE-LAUNCH GDK environment, not agterm's own overrides.
+
+    agterm sets GDK_DISABLE/GDK_DEBUG on itself before GTK initializes; the restore merged in
+    GhosttySurface.init is the only thing keeping every child -- and any GTK app it launches -- from
+    inheriting agterm's renderer constraints. Reverting that one line leaves every unit test green, so
+    the wiring is pinned here instead.
+
+    Both variables are scrubbed from the app's environment before launch (see main(), and the same unset in
+    scripts/test-linux-ui.sh), which is what makes the expected readback exact rather than version-dependent
+    and keeps it honest on a desktop that exports the tokens itself. The policy appends to a value the
+    launching environment already carries, so an inherited `GDK_DISABLE=gles-api,vulkan` would make it
+    assign nothing and hand that value to children verbatim -- the documented contract, and indistinguishable
+    here from the leak this scenario exists to catch. Scrubbed, the app always takes its assigning branch:
+    the assigned variable comes back restored to the empty pre-launch value, and the variable this GTK's
+    branch never touched has no key at all -- either way the shell expands both to the empty string.
+    """
+    readback = os.path.join(env["AGTERM_STATE_DIR"], "gdk-child-env.txt")
+    command = (
+        'printf "gdk[%s][%s]end\\n" "$GDK_DISABLE" "$GDK_DEBUG" > '
+        f'"{readback}"\n'
+    )
+    process, app = launch(env)
+    try:
+        tree = control_json(env, "tree", "--json")["result"]["tree"]
+        session_id = tree["workspaces"][0]["sessions"][0]["id"]
+        window_id = next(item["id"] for item in window_list(env) if item["open"])
+
+        def captured():
+            if not os.path.exists(readback):
+                return None
+            with open(readback, encoding="utf-8", errors="replace") as source:
+                text = source.read()
+            return text if "end" in text else None
+
+        # Typing before the login shell reaches its prompt loses the line for good, and the prompt can be
+        # slow under software GL, so re-type until the file appears rather than betting on one sleep.
+        # wait_for() cannot express this: it polls a predicate, it cannot re-send the input between polls.
+        # The budget matches wait_for's own 12 s default, spent as 12 attempts one second apart.
+        retype_attempts, retype_interval = 12, 1.0
+        text = None
+        for _ in range(retype_attempts):
+            control_json(
+                env, "session", "type", command, "--target", session_id,
+                "--window", window_id, "--json",
+            )
+            time.sleep(retype_interval)
+            text = captured()
+            if text:
+                break
+        assert text, "the session shell never wrote its GDK environment back"
+        assert "gdk[][]end" in text, (
+            "spawned shell did not see the pre-launch GDK environment; both variables are scrubbed "
+            f"before launch, so both must come back empty: {text.strip()}"
+        )
+        assert process.poll() is None, "the child-environment check terminated the application"
+        print("OK: spawned shells see the pre-launch GDK environment, not agterm's overrides")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
 def verify_notification_focus_policy(env):
     with open(os.path.join(env["AGTERM_STATE_DIR"], "settings.json"), "w", encoding="utf-8") as target:
         json.dump({"notificationsEnabled": False}, target)
@@ -2819,7 +2883,7 @@ def main():
         for child_scenario in (
             "normal", "upstream-controls", "dashboard-modal", "context-menu",
             "split-exit", "window-ownership", "preferences-pages",
-            "notification-reveal", "notification-focus", "session-pickers",
+            "notification-reveal", "notification-focus", "session-pickers", "child-gdk-env",
             "custom-command-failures", "surface-lifetimes", "surface-failures",
             "sidebar-row-height",
             "sidebar-narrow-clipping",
@@ -2852,6 +2916,13 @@ def main():
         AGTERM_APP_ID=f"io.github.melonamin.agterm.atspi.{scenario.replace('-', '_')}",
         PATH="/usr/bin:/bin",
     )
+    # The app must take LinuxGdkPolicy's ASSIGNING branch: it appends to a value the launching environment
+    # already carries, so an inherited GDK_DISABLE=gles-api,vulkan would make it assign nothing and hand
+    # those tokens to every child verbatim -- correct per the policy's contract, and a failure of the
+    # child-gdk-env readback. scripts/test-linux-ui.sh unsets both as well; this keeps the scenario correct
+    # when the smoke is invoked directly, and every other scenario free of an ambient renderer override.
+    for gdk_variable in ("GDK_DISABLE", "GDK_DEBUG"):
+        env.pop(gdk_variable, None)
     if scenario in ("preferences-pages", "auto-follow"):
         # Page inspection and auto-follow need an already-mapped modal while another process owns focus.
         env["AGTERM_ATSPI_OPEN_PREFERENCES"] = "general"
@@ -2873,6 +2944,8 @@ def main():
             verify_notification_reveal(env)
         elif scenario == "notification-focus":
             verify_notification_focus_policy(env)
+        elif scenario == "child-gdk-env":
+            verify_child_gdk_environment(env)
         elif scenario == "notification-banner":
             verify_notification_banner_round_trip(env)
         elif scenario == "custom-command-failures":

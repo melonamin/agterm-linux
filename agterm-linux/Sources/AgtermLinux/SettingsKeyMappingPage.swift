@@ -84,9 +84,7 @@ extension AppController {
     }
 
     func openConfigDirectory() {
-        configDirectory().absoluteString.withCString {
-            _ = g_app_info_launch_default_for_uri($0, nil, nil)
-        }
+        launchDefaultHandler(forURI: configDirectory().absoluteString)
     }
 }
 

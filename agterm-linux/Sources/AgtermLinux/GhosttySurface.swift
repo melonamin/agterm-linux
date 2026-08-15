@@ -55,7 +55,10 @@ final class GhosttySurface: TerminalSurface {
     /// Optional text fed to the shell at startup (restore-running-command re-runs the captured argv);
     /// runs INSIDE the shell so its exit returns to a prompt (unlike `command`).
     private let initialInput: String?
-    /// `AGTERM_*` (and any other) env vars to inject into the spawned shell.
+    /// `AGTERM_*` (and any other) env vars to inject into the spawned shell, plus the pre-launch
+    /// GDK_DISABLE/GDK_DEBUG values `main()` overwrote — this init is the single choke point every
+    /// surface role (main, split, scratch, overlay, quick) goes through, so the restore is merged here
+    /// rather than at each construction site.
     private let env: [String: String]
     /// The last libghostty-requested pointer state. GTK may receive visibility, link-hover, and shape
     /// actions independently, so keep all three and re-apply their precedence instead of letting one
@@ -114,7 +117,7 @@ final class GhosttySurface: TerminalSurface {
         self.reportsPaneState = reportsPaneState
         self.fontSize = fontSize
         self.initialInput = initialInput
-        self.env = env
+        self.env = gdkEnvironment.childEnvironment(merging: env)
         rootWidget = OpaquePointer(gtk_overlay_new())
         glArea = OpaquePointer(gtk_gl_area_new())
         gtk_overlay_set_child(rootWidget, W(glArea))
@@ -188,15 +191,19 @@ final class GhosttySurface: TerminalSurface {
             return
         }
         gtk_gl_area_make_current(GLA(glArea))
-        guard gtk_gl_area_get_error(GLA(glArea)) == nil else {
-            reportGLContextFailure()
+        if let error = gtk_gl_area_get_error(GLA(glArea)) {
+            // The GError belongs to the GLArea (never freed here), and its message is the only place the
+            // real reason is named — the overlay stays generic, so this line is the diagnostic of record.
+            let message = error.pointee.message.map { String(cString: $0) }
+            reportGLContextFailure(message: message)
             return
         }
         createSurface()
     }
 
-    private func reportGLContextFailure() {
-        FileHandle.standardError.write(Data("agterm: GtkGLArea failed to create a GL context\n".utf8))
+    private func reportGLContextFailure(message: String? = nil) {
+        let line = LinuxGdkPolicy.glContextErrorLine(message: message)
+        FileHandle.standardError.write(Data((line + "\n").utf8))
         // Defer until window construction completes, but retain the surface's owner rather than
         // whichever window becomes frontmost before the main-loop hop runs.
         runOnMain { [weak controller] in MainActor.assumeIsolated { controller?.showGLError() } }

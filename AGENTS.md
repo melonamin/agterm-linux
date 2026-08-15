@@ -65,6 +65,15 @@ Use plain portable data types in shared code.
 For geometry or UI state, prefer simple Swift structs backed by `Double`/`Int` and convert at the platform
 boundary.
 
+## The GDK environment is set before GTK initializes
+
+Keep `LinuxGdkPolicy`'s GDK environment assignments the FIRST statements of `main()`.
+Nothing that initializes GTK or opens a display may be added above them, because GDK parses
+`GDK_DISABLE`/`GDK_DEBUG` exactly once while GTK initializes and an earlier display open turns the
+assignment into a silent no-op.
+A new site that spawns a child process or launches a desktop handler owes the matching pre-launch restore
+— see `agterm-linux/docs/main-loop.md`.
+
 ## Main-actor deferred work must go through the `MainTimer` seam
 
 GTK owns the Linux main thread through `g_application_run`, and the GLib main loop drains neither

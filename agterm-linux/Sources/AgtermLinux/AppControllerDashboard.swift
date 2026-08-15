@@ -127,9 +127,7 @@ extension AppController {
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
             return false
         }
-        URL(fileURLWithPath: path).absoluteString.withCString {
-            _ = g_app_info_launch_default_for_uri($0, nil, nil)
-        }
+        launchDefaultHandler(forURI: URL(fileURLWithPath: path).absoluteString)
         return true
     }
 

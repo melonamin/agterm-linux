@@ -52,6 +52,23 @@ struct LinuxCustomCommandProcessTests {
         #expect(LinuxCommandPath.bundledCLIDirectory?.hasPrefix("/") == true)
     }
 
+    /// The restore lives in `request`, not in `launch`'s default argument, so a caller that supplies its
+    /// own base environment cannot opt out of it. Driven off `gdkEnvironment` itself rather than a
+    /// literal, because which variable this GTK build assigns — and therefore restores — is a runtime
+    /// fact; the values are pinned from literals in `LinuxGdkPreLaunchEnvironmentTests`.
+    @Test("the request restores the pre-launch GDK environment over a caller's own base")
+    func requestRestoresGdkEnvironment() {
+        let poisoned = gdkEnvironment.childRestore.keys.reduce(into: [String: String]()) { base, name in
+            base[name] = "leaked-from-agterm"
+        }
+        let request = LinuxCustomCommandProcess.request(
+            command: CustomCommand(name: "noop", command: "true", shortcut: ""),
+            context: CommandContext(), baseEnvironment: poisoned)
+        for (name, restored) in gdkEnvironment.childRestore {
+            #expect(request.environment[name] == restored)
+        }
+    }
+
     @Test("empty cwd is omitted")
     func emptyCwd() {
         let command = CustomCommand(name: "noop", command: "true", shortcut: "")

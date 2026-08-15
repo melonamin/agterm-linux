@@ -12,6 +12,45 @@ paths:
 
 ## Main loop and deferred work (GTK/Linux port)
 
+- **Before the loop exists: the GDK environment assignments run as the FIRST statements of `main()`,
+  above any GTK/GDK call.**
+  `LinuxGdkPolicy` derives them from the linked GTK version and the pre-launch `GDK_DISABLE`/`GDK_DEBUG`
+  values, and `AgtermApp.main()` applies them with `setenv` before `adw_application_new`/`g_application_run`
+  — GDK parses both variables exactly once, while GTK initializes, and ignores them afterwards, so anything
+  that opens a display earlier silently turns the assignment into a no-op.
+  Both tokens are load-bearing.
+  libghostty's renderer is desktop-GL-only (the terminal's `GtkGLArea` pins itself to `GDK_GL_API_GL`), so
+  GDK's GLES API must be disabled pre-init: on GTK ≥ 4.16 GDK otherwise builds its own paint context with
+  the GLES API and the desktop-GL sibling context cannot be realized at all, leaving every surface on the
+  "failed to create a GL context" overlay.
+  GTK's Vulkan GSK renderer must be disabled with it, because Vulkan-GSK cannot import the desktop-GL
+  GLArea texture and falls back to a per-frame CPU readback of the window that is retained forever —
+  verified at ~400 MB/s under a sustained output flood on GTK 4.22.4, against flat RSS with the pair set.
+  Upstream ghostty's `setGtkEnv()` sets the same pair, and the spellings follow it across GTK's rename:
+  `GDK_DISABLE=gles-api,vulkan` on 4.16 and above, `GDK_DEBUG=gl-disable-gles,vulkan-disable` on 4.14–4.15,
+  nothing below.
+  A user's own value is appended to per token rather than clobbered, so a `GDK_DEBUG=frames` survives.
+  `gtk_get_major_version`/`gtk_get_minor_version` are the ONLY GTK calls allowed above the `setenv` loop:
+  each reports the linked library's own version number, initializing nothing and opening no display.
+  Children get the PRE-LAUNCH value of every variable the policy actually ASSIGNED handed back
+  (`PreLaunchEnvironment.childRestore`, derived from the assignments so the two cannot drift) — `""` for
+  one that was unset, which these parse-only variables treat exactly like being unset, and nothing at all
+  for the variable this GTK version's branch did not touch, so on 4.16+ a child sees a restored
+  `GDK_DISABLE` and no `GDK_DEBUG` key.
+  This mirrors upstream's `defaultTermioEnv` scrub — agterm's renderer constraints are agterm's, and a GTK
+  app launched out of agterm must never inherit them.
+  Every path that spawns a child owes that restore, and they use one of two helpers because the
+  precedence differs: a child environment built from scratch merges it UNDER the caller
+  (`childEnvironment(merging:)` at the `GhosttySurface` env choke point, which covers every surface
+  construction site at once), while a child environment COPIED from agterm's own already-mutated process
+  needs the restore to WIN (`restoringChildEnvironment(_:)` — the custom-command `/bin/sh -c` and
+  `notify-send`).
+  A desktop-handler launch has no environment dictionary of its own, so `launchDefaultHandler(forURI:)` is
+  the single seam for `g_app_info_launch_default_for_uri`: it applies the same pairs through a
+  `GAppLaunchContext`, because GIO otherwise spawns the handler from agterm's own environ.
+  A new child-spawning site owes one of those three, and a user who set the tokens themselves before
+  launch gets THEIR value back, tokens included — that is the restore working as specified, and the one
+  place the behaviour differs from upstream's unconditional removal.
 - **Deferred main-actor work goes through `agtermCore`'s `MainTimer` seam — never a dispatch or
   `Task.sleep` timer.**
   The Linux app hands its main thread to GTK (`g_application_run`), and the GLib main loop drains neither

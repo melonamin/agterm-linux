@@ -9,9 +9,28 @@ import agtermCore
 /// pointers; all are layout-compatible, so reinterpret the stored handle.
 @inline(__always) func cast<T>(_ p: OpaquePointer?) -> UnsafeMutablePointer<T>? { p.map { UnsafeMutablePointer($0) } }
 
+/// The one process-wide capture of the pre-launch GDK environment; every child-spawning path reads the
+/// restore back out through it. A global `let` is load-bearing, not incidental: Swift initializes it
+/// lazily on first read and never again, and that first read is in `main()` BEFORE its own `setenv`, so
+/// the capture cannot observe an environment agterm already mutated.
+let gdkEnvironment = LinuxGdkPolicy.PreLaunchEnvironment(
+    gtkMajor: Int(gtk_get_major_version()),
+    gtkMinor: Int(gtk_get_minor_version()),
+    environment: ProcessInfo.processInfo.environment)
+
 @main
 struct AgtermApp {
     static func main() {
+        // GDK parses these once, while GTK initializes, and ignores them afterwards — so this block stays
+        // the FIRST thing `main()` does, and any future GTK-init call (an `adw_init()`, say) goes BELOW
+        // it. Anything that opens a display above here turns the assignment into a silent no-op. The two
+        // version getters inside `gdkEnvironment` are the only GTK calls allowed above the `setenv`: they
+        // report the linked library's version, initializing nothing.
+        for assignment in gdkEnvironment.assignments {
+            let applied = setenv(assignment.name, assignment.value, 1) == 0
+            let line = LinuxGdkPolicy.assignmentLogLine(assignment, applied: applied)
+            FileHandle.standardError.write(Data((line + "\n").utf8))
+        }
         AppImageChildEnvironment.sanitizeCurrentProcess()
         // AGTERM_APP_ID overrides the GApplication id so a dev/test instance registers separately on
         // the session bus and runs ALONGSIDE a deployed one (the Linux analogue of the macOS .debug

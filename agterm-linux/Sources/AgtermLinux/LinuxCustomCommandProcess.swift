@@ -88,6 +88,11 @@ enum LinuxCustomCommandFailure: Sendable, Equatable {
 }
 
 enum LinuxCustomCommandProcess {
+    /// The environment-assembly choke point for custom commands, which is why the GDK restore is applied
+    /// here rather than at a caller or in a replaceable default argument. It must WIN over the assembled
+    /// environment (`restoringChildEnvironment`): the base is normally a copy of agterm's own already-
+    /// mutated process environment, so losing to the caller would hand the child the overrides straight
+    /// back.
     static func request(
         command: CustomCommand, context: CommandContext, baseEnvironment: [String: String]
     ) -> LinuxProcessLaunchRequest {
@@ -96,6 +101,7 @@ enum LinuxCustomCommandProcess {
         environment["PATH"] = LinuxCommandPath.widened(
             baseEnvironment["PATH"], bundledCLIDirectory: LinuxCommandPath.bundledCLIDirectory,
             homeDirectory: home)
+        environment = gdkEnvironment.restoringChildEnvironment(environment)
         return LinuxProcessLaunchRequest(
             executablePath: "/bin/sh",
             arguments: ["-c", context.expand(command.command)],

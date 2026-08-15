@@ -5,6 +5,17 @@ returns until the app quits.
 That loop is not the AppKit run loop upstream assumes, and the difference is invisible at compile time —
 code that defers work the macOS way builds fine, runs, and then silently does nothing.
 
+One thing must happen before that hand-off, so it sits as the first statements of `main()`:
+`LinuxGdkPolicy`'s `GDK_DISABLE`/`GDK_DEBUG` assignments go in with `setenv` before any GTK/GDK call,
+because GDK parses those variables exactly once while GTK initializes and ignores them afterwards.
+They turn off GDK's GLES API, because libghostty's renderer is desktop-GL-only and the GLArea's
+desktop-GL context is otherwise unrealizable on GTK ≥ 4.16, and GTK's Vulkan GSK renderer, which cannot
+import the desktop-GL GLArea texture and falls back to a per-frame CPU readback that is retained forever.
+Those overrides are agterm's own, so every path that spawns a child hands the pre-launch values back:
+session shells at the `GhosttySurface` env choke point, the custom-command `/bin/sh -c` and `notify-send`
+through `restoringChildEnvironment(_:)`, and desktop-handler launches through
+`launchDefaultHandler(forURI:)`.
+
 ## What the GLib loop drains
 
 | Mechanism | Drained under `g_application_run`? |
