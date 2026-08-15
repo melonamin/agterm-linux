@@ -28,7 +28,28 @@ struct LinuxCustomCommandProcessTests {
             #expect(request.environment["AGT_SELECTION"] == "selected")
             #expect(request.currentDirectoryPath == "/tmp/work")
             #expect(request.standardIO == .null)
+            #expect(request.environment["PATH"]?.contains("/.local/bin") == true)
         }
+    }
+
+    @Test("custom command PATH is Linux-native, bundled-first, stable, and deduplicated")
+    func commandPath() {
+        let path = LinuxCommandPath.widened(
+            "/custom/bin:/usr/bin:/custom/bin", bundledCLIDirectory: "/app/bin",
+            homeDirectory: "/home/test")
+        #expect(path.split(separator: ":").map(String.init) == [
+            "/app/bin", "/custom/bin", "/usr/bin", "/home/test/.local/bin",
+            "/usr/local/bin", "/bin", "/usr/local/sbin", "/usr/sbin", "/sbin"
+        ])
+        #expect(!path.contains("homebrew"))
+    }
+
+    @Test("bundled CLI directory requires the resolved absolute executable path")
+    func bundledCLIPath() {
+        #expect(LinuxCommandPath.resolvedExecutableDirectory("agterm-linux") == nil)
+        #expect(LinuxCommandPath.resolvedExecutableDirectory("/opt/agterm/bin/agterm-linux.bin")
+                == "/opt/agterm/bin")
+        #expect(LinuxCommandPath.bundledCLIDirectory?.hasPrefix("/") == true)
     }
 
     @Test("empty cwd is omitted")

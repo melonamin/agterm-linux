@@ -56,7 +56,6 @@ final class PaletteUITests: XCTestCase {
         XCTAssertTrue(poll { self.firstSessionName() == "zeta" })
         let first = try XCTUnwrap(firstSessionID())
 
-        // add a second session; it becomes selected.
         app.menuBars.menuBarItems["File"].click()
         app.menuItems["New Session"].click()
         XCTAssertTrue(poll { self.sessionCount() == 2 }, "a second session should be added")
@@ -68,17 +67,47 @@ final class PaletteUITests: XCTestCase {
         XCTAssertTrue(poll { self.selectedID() == first }, "Go to Session → zeta should select the first session")
     }
 
+    /// Pins the half of `paletteSearchKeys` a caller-supplied picker gives up: a built-in palette still
+    /// matches its "<workspace> · <detail>" subtitle, the only place the owning workspace is searchable.
+    func testSessionPaletteMatchesItsSubtitleNotOnlyTheLabel() throws {
+        renameActiveSession(to: "zeta")
+        XCTAssertTrue(poll { self.firstSessionName() == "zeta" })
+        let first = try XCTUnwrap(firstSessionID())
+
+        openPalette("Go to Session")
+        typeIntoPalette("workspace") // leads the subtitle, "workspace 1 · …", and is absent from the label
+
+        XCTAssertTrue(app.paletteRow(first).waitForExistence(timeout: 5),
+                      "a built-in palette row must survive a query that only its subtitle matches")
+    }
+
+    func testSessionPaletteListsAlphabeticallyOnAnEmptyQuery() throws {
+        renameActiveSession(to: "zulu")
+        XCTAssertTrue(poll { self.firstSessionName() == "zulu" })
+        addSession(named: "mike")
+        addSession(named: "yankee")
+        let ids = sessionIDs()
+        XCTAssertEqual(sessionNames(), ["zulu", "mike", "yankee"],
+                       "the three renamed sessions should persist in creation order")
+        XCTAssertEqual(ids.count, 3, "every persisted session should carry an id")
+        XCTAssertEqual(selectedID(), ids.last, "the last created session should be selected")
+
+        openPalette("Go to Session")
+        XCTAssertTrue(app.paletteRow(ids[1]).waitForExistence(timeout: 5), "every session should be listed")
+        app.typeKey(.return, modifierFlags: [])
+
+        XCTAssertTrue(poll { self.selectedID() == ids[1] },
+                      "an empty query must still sort a built-in palette A→Z, so Return runs mike, not zulu")
+    }
+
     func testThemePickerCommitsOnEnterAndRevertsOnEsc() throws {
-        // commit: open the picker, filter to a non-default theme, Enter persists it to settings.json
-        // (the live color change is a Metal-surface visual, verified manually; the persistence is the
-        // observable contract here). "Dracula" differs from the seeded agterm default, so it proves a change.
+        // the live recolor is a Metal-surface visual, so settings.json is the oracle; "Dracula" differs
+        // from the seeded agterm default, so persisting it proves a change.
         openThemePicker()
         typeIntoPalette("Dracula")
         app.typeKey(.return, modifierFlags: [])
         XCTAssertTrue(poll { self.settingsTheme() == "Dracula" }, "Enter on a theme should persist it to settings.json")
 
-        // revert: open again, filter to a different theme (which previews it live), Esc. The preview is
-        // never persisted, so settings.json keeps the previously committed theme.
         openThemePicker()
         typeIntoPalette("Nord")
         app.typeKey(.escape, modifierFlags: [])
@@ -87,16 +116,14 @@ final class PaletteUITests: XCTestCase {
     }
 
     func testThemePickerAutoFocusesFieldFromActionPaletteLauncher() throws {
-        // open the picker the way a keyboard user does: the action palette → "Select Theme…" → Enter.
-        // that path closes the action palette (whose close-restore re-grabs terminal focus) and opens the
-        // .themes picker a tick later; the picker must AUTO-FOCUS its field so typing filters it.
+        // the action-palette launcher closes that palette (whose close-restore re-grabs terminal focus)
+        // and opens the picker a tick later, so the picker has to auto-focus its own field.
         openPalette("Command Palette")
         typeIntoPalette("Select Theme") // clicking the ACTION-palette field is fine — not the focus under test
         app.typeKey(.return, modifierFlags: [])
 
-        // the picker is open; type WITHOUT clicking its field. If focus stayed on the terminal behind it
-        // (the bug), this text would reach the shell, the selection would stay on the current theme, and
-        // Enter would commit the wrong one — so the commit assertion is the focus oracle.
+        // typing WITHOUT clicking the field is the point: had focus stayed on the terminal behind it, the
+        // text would reach the shell and Enter would commit the unfiltered theme, so the commit is the oracle.
         XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5), "the theme picker field should appear")
         app.typeText("agterm")
         app.typeKey(.return, modifierFlags: [])
@@ -105,17 +132,15 @@ final class PaletteUITests: XCTestCase {
     }
 
     func testFreshLaunchAppliesAgtermDefaultThemeWithoutAnyChange() throws {
-        // a fresh install must apply the seeded agterm default at LAUNCH, not only after a settings change
-        // triggers a config rewrite. SettingsModel.init writes the ghostty config before GhosttyApp boots,
-        // so <stateDir>/ghostty-settings.conf carries the theme with NO interaction.
+        // SettingsModel.init writes the ghostty config before GhosttyApp boots, so the theme must be in
+        // <stateDir>/ghostty-settings.conf with NO interaction at all.
         XCTAssertTrue(poll { self.appliedGhosttyTheme()?.contains("agterm") == true },
                       "a fresh launch should write the agterm default into the live ghostty config")
     }
 
     func testThemePickerPreviewsTopMatchOnFilterWithoutNavigating() throws {
-        // typing to filter must preview the new top match live — even with no arrow navigation. The live
-        // preview writes the applied theme into <stateDir>/ghostty-settings.conf, so that file is the
-        // oracle (the Metal recolor itself isn't observable). No Enter, no arrows.
+        // the Metal recolor isn't observable, so the applied theme in <stateDir>/ghostty-settings.conf is
+        // the oracle. No Enter, no arrows.
         openThemePicker()
         typeIntoPalette("Hot Dog") // top match: the vivid "Hot Dog Stand" theme
         XCTAssertTrue(poll { self.appliedGhosttyTheme()?.contains("Hot Dog Stand") == true },
@@ -207,6 +232,16 @@ final class PaletteUITests: XCTestCase {
         field.typeText(text)
     }
 
+    /// Adds a session through File ▸ New Session and renames the (now selected) row.
+    private func addSession(named name: String) {
+        let before = sessionCount()
+        app.menuBars.menuBarItems["File"].click()
+        app.menuItems["New Session"].click()
+        XCTAssertTrue(poll { self.sessionCount() == before + 1 }, "New Session should add a session")
+        renameActiveSession(to: name)
+        XCTAssertTrue(poll { self.sessionNames().contains(name) }, "the new session should take the name \(name)")
+    }
+
     /// Renames the active session via File ▸ Rename Session (the menu-triggered inline edit).
     private func renameActiveSession(to name: String) {
         app.menuBars.menuBarItems["File"].click()
@@ -237,8 +272,11 @@ final class PaletteUITests: XCTestCase {
 
     private func workspaces() -> [[String: Any]] { snapshot()?["workspaces"] as? [[String: Any]] ?? [] }
     private func workspaceCount() -> Int { workspaces().count }
-    private func sessionCount() -> Int { workspaces().reduce(0) { $0 + (($1["sessions"] as? [[String: Any]])?.count ?? 0) } }
+    private func sessionCount() -> Int { sessions().count }
     private func selectedID() -> String? { snapshot()?["selectedSessionID"] as? String }
+    private func sessions() -> [[String: Any]] { workspaces().flatMap { ($0["sessions"] as? [[String: Any]]) ?? [] } }
+    private func sessionIDs() -> [String] { sessions().compactMap { $0["id"] as? String } }
+    private func sessionNames() -> [String] { sessions().compactMap { $0["customName"] as? String } }
     private func firstSession() -> [String: Any]? { (workspaces().first?["sessions"] as? [[String: Any]])?.first }
     private func firstSessionID() -> String? { firstSession()?["id"] as? String }
     private func firstSessionName() -> String? { firstSession()?["customName"] as? String }

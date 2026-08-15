@@ -21,23 +21,22 @@ struct DebouncerTests {
         var ran = 0
         debouncer.schedule(after: 100) { ran += 1 }
         debouncer.cancel()
-        debouncer.flush() // nothing pending after cancel
+        debouncer.flush()
         #expect(ran == 0)
     }
 
     @Test func flushWithNothingPendingIsNoOp() {
         let debouncer = Debouncer()
-        debouncer.flush() // must not crash or run anything
+        debouncer.flush()
         var ran = 0
         debouncer.schedule(after: 100) { ran += 1 }
         debouncer.flush()
-        debouncer.flush() // second flush has nothing pending
+        debouncer.flush()
         #expect(ran == 1)
     }
 
     @Test func scheduledActionFiresWhenTimerElapses() async {
-        // exercise the asyncAfter timer -> fire() path (the other tests use a 100s delay + flush, so the
-        // timer never runs); a short real delay lets the deferred dispatch fire on its own.
+        // the other tests use a 100s delay plus flush, so only here does the timer itself fire.
         let debouncer = Debouncer()
         await confirmation { confirmed in
             debouncer.schedule(after: 0.01) { confirmed() }
@@ -46,7 +45,6 @@ struct DebouncerTests {
     }
 
     @Test func reschedulingBeforeTimerFiresRunsOnlyLatestViaTimer() async {
-        // rescheduling cancels the prior pending work, so only the latest action fires through the timer.
         let debouncer = Debouncer()
         var first = 0
         await confirmation { confirmedLatest in
@@ -54,7 +52,7 @@ struct DebouncerTests {
             debouncer.schedule(after: 0.01) { confirmedLatest() }
             try? await Task.sleep(for: .milliseconds(200))
         }
-        #expect(first == 0) // the first action was cancelled by the reschedule, never fired
+        #expect(first == 0)
     }
 
     @Test func scheduleRoutesThroughInjectedTimerSeam() throws {
@@ -98,7 +96,7 @@ struct DebouncerTests {
         var ran = 0
         debouncer.schedule(after: 100) {
             ran += 1
-            debouncer.flush() // re-entrant: nothing pending now, must not run the action again
+            debouncer.flush()
         }
         debouncer.flush()
         #expect(ran == 1)

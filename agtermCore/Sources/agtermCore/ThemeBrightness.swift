@@ -1,5 +1,3 @@
-import Foundation
-
 /// Classifies a terminal theme's background as dark or light by perceived luminance.
 ///
 /// Used to pin AppKit-drawn chrome (the sidebar's disclosure triangle) to the terminal theme's

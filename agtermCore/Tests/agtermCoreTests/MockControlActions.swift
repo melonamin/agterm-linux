@@ -59,9 +59,12 @@ final class MockControlActions: ControlActions {
         case sessionSelectAll(target: String?, window: String?)
         case sessionSearch(target: String?, window: String?, text: String?, to: String?)
         case overlayOpen(target: String?, window: String?, ControlSessionOverlayOpenOptions)
-        case overlayClose(target: String?, window: String?)
+        case overlayClose(target: String?, window: String?, pane: OverlayPane?)
         case overlayResize(target: String?, window: String?, sizePercent: Int?)
-        case overlayResult(target: String?, window: String?)
+        case overlayResult(target: String?, window: String?, pane: OverlayPane?)
+        case hudOpen(target: String?, window: String?, HudSpec)
+        case hudUpdate(target: String?, window: String?, HudSpec)
+        case hudClose(target: String?, window: String?)
         case sessionBackground(target: String?, window: String?, ControlSessionBackgroundOptions)
         case sessionText(target: String?, window: String?, ControlSessionTextOptions)
         case windowNew(String?, minimized: Bool)
@@ -87,14 +90,11 @@ final class MockControlActions: ControlActions {
     var nextSessionNewResponse = ControlResponse(ok: true)
     var nextSessionDuplicateResponse = ControlResponse(ok: true)
     var nextWorkspaceFilterResponse = ControlResponse(ok: true)
-    /// The store the `workspace.filter` / `workspace.focus` arms drive when set (nil = record-only, the
-    /// default for every other dispatcher test). It lets a test run the REAL command path — the
-    /// dispatcher's parse plus the host-free `AppStore.applyWorkspaceFilter`/`applyFocusMode` the app-side
-    /// arms call — against a live `AppStore`, instead of asserting only on what was routed. The double
-    /// supplies ONLY the target resolution the real arm supplies, and only its id-spelling half: the
-    /// `active`/prefix sugar and the `window` selector need the app-side `ControlTargetResolver`, so a
-    /// test driving this store must address workspaces by full id and stay single-window. It must never
-    /// re-implement a mode's semantics, or the test would be exercising the double.
+    /// The store the `workspace.filter` / `workspace.focus` arms drive when set (nil = record-only), so a
+    /// test can run the real command path against a live `AppStore` instead of asserting on routing alone.
+    /// Only the id-spelling half of target resolution is supplied — `active`/prefix sugar and the `window`
+    /// selector need the app-side `ControlTargetResolver` — so a test driving this store must address
+    /// workspaces by full id and stay single-window, and must never re-implement a mode's semantics.
     var focusStore: AppStore?
 
     /// Target strings that reached a `focusStore`-backed arm but could not be resolved, so a "the store
@@ -123,6 +123,9 @@ final class MockControlActions: ControlActions {
     var nextOverlayCloseResponse = ControlResponse(ok: true)
     var nextOverlayResizeResponse = ControlResponse(ok: true)
     var nextOverlayResultResponse = ControlResponse(ok: true)
+    var nextHudOpenResponse = ControlResponse(ok: true)
+    var nextHudUpdateResponse = ControlResponse(ok: true)
+    var nextHudCloseResponse = ControlResponse(ok: true)
     var nextSessionBackgroundResponse = ControlResponse(ok: true)
     var nextSessionTextResponse = ControlResponse(ok: true)
     var nextSurfaceZoomResponse = ControlResponse(ok: true)
@@ -231,8 +234,7 @@ final class MockControlActions: ControlActions {
 
     func focusWorkspace(_ target: String?, window: String?, mode: ControlWorkspaceFocusMode) -> ControlResponse {
         calls.append(.workspaceFocus(target: target, window: window, mode))
-        // with a store supplied, stand in for the app-side arm: resolve the target (here just the id
-        // spelling) and hand the parsed mode to the SAME `applyFocusMode` the real arm calls.
+        // hands the parsed mode to the SAME `applyFocusMode` the real arm calls, never its own version.
         if let store = focusStore {
             if let id = UUID(uuidString: target ?? "") {
                 store.applyFocusMode(mode, to: id)
@@ -245,8 +247,6 @@ final class MockControlActions: ControlActions {
 
     func setWorkspaceFilter(window: String?, mode: ControlToggleMode) -> ControlResponse {
         calls.append(.workspaceFilter(window: window, mode))
-        // as above: the real arm resolves the window then calls `applyWorkspaceFilter`, so the double
-        // calls the same host-free helper rather than re-deriving the flag.
         if let store = focusStore { store.applyWorkspaceFilter(mode) }
         return nextWorkspaceFilterResponse
     }
@@ -414,8 +414,8 @@ final class MockControlActions: ControlActions {
         return nextOverlayOpenResponse
     }
 
-    func closeSessionOverlay(_ target: String?, window: String?) -> ControlResponse {
-        calls.append(.overlayClose(target: target, window: window))
+    func closeSessionOverlay(_ target: String?, window: String?, pane: OverlayPane?) -> ControlResponse {
+        calls.append(.overlayClose(target: target, window: window, pane: pane))
         return nextOverlayCloseResponse
     }
 
@@ -424,9 +424,24 @@ final class MockControlActions: ControlActions {
         return nextOverlayResizeResponse
     }
 
-    func sessionOverlayResult(_ target: String?, window: String?) -> ControlResponse {
-        calls.append(.overlayResult(target: target, window: window))
+    func sessionOverlayResult(_ target: String?, window: String?, pane: OverlayPane?) -> ControlResponse {
+        calls.append(.overlayResult(target: target, window: window, pane: pane))
         return nextOverlayResultResponse
+    }
+
+    func openHud(_ target: String?, window: String?, spec: HudSpec) -> ControlResponse {
+        calls.append(.hudOpen(target: target, window: window, spec))
+        return nextHudOpenResponse
+    }
+
+    func updateHud(_ target: String?, window: String?, spec: HudSpec) -> ControlResponse {
+        calls.append(.hudUpdate(target: target, window: window, spec))
+        return nextHudUpdateResponse
+    }
+
+    func closeHud(_ target: String?, window: String?) -> ControlResponse {
+        calls.append(.hudClose(target: target, window: window))
+        return nextHudCloseResponse
     }
 
     func setSessionBackground(_ target: String?, window: String?,

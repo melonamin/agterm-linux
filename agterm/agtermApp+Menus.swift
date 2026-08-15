@@ -3,20 +3,16 @@ import AppKit
 import SwiftUI
 
 extension agtermApp {
-    /// The active SwiftUI shortcut for a built-in action, driven by the keymap: the user override when
-    /// one is `map`ped, else the action's shipped default. `nil` only for a keyless action, which stays
-    /// keyless until the user maps a chord.
-    /// `keymap` is `@Observable`, but SwiftUI does not rebuild the menu when it changes — it defers to the
-    /// next app activation, so a reload leaves the live key equivalents stale until then.
-    /// ⌘W is asserted from AppKit instead, by `AppDelegate.applyCloseSessionChord`.
+    /// The active SwiftUI shortcut for a built-in action: the user's `map` override, else the shipped
+    /// default; nil only for a keyless action. `keymap` is `@Observable`, but SwiftUI defers its menu
+    /// rebuild to the next app activation, so a reload leaves live key equivalents stale until then — ⌘W is
+    /// asserted from AppKit instead, by `AppDelegate.applyCloseSessionChord`.
     private func shortcut(for action: BuiltinAction) -> KeyboardShortcut? {
         settingsModel.keymap.equivalent(for: action).map(Self.toShortcut)
     }
 
-    /// Map a host-free `Chord` to a SwiftUI `KeyboardShortcut`. The base key is a single printable
-    /// character (`Character`) or one of the named keys the grammar allows (`tab`/`space`/`return`/
-    /// `delete` and the four arrows); the modifiers map one-for-one. This is the menu-side mirror of the
-    /// runner's `NSEvent`→`Chord` mapping.
+    /// Map a host-free `Chord` to a SwiftUI `KeyboardShortcut` — the menu-side mirror of the runner's
+    /// `NSEvent`→`Chord` mapping. The base key is a printable `Character` or a named key; modifiers map 1:1.
     private static func toShortcut(_ chord: Chord) -> KeyboardShortcut {
         let key: KeyEquivalent
         switch chord.key {
@@ -38,6 +34,12 @@ extension agtermApp {
         return KeyboardShortcut(key, modifiers: modifiers)
     }
 
+    /// Whether `close_session` currently holds ⌘W, read live rather than off the deferred menu equivalent.
+    /// `AppDelegate.applyCloseSessionChord` splits the chord on the same condition.
+    private var closeSessionOwnsCommandW: Bool {
+        settingsModel.keymap.equivalent(for: .closeSession) == Chord(mods: [.command], key: "w")
+    }
+
     private func recentTitle(_ item: RecentClosedItem) -> String {
         guard let subtitle = item.subtitle, !subtitle.isEmpty else { return item.title }
         return "\(item.title) - \(subtitle)"
@@ -45,33 +47,26 @@ extension agtermApp {
 
     @CommandsBuilder
     var appCommands: some Commands {
-            // App menu: replace the default "About Agterm" with one that opens the standard
-            // panel enriched with a clickable repo link and, on release builds, the build commit.
             CommandGroup(replacing: .appInfo) {
                 Button("About Agterm") { showAboutPanel() }
             }
-            // Edit: drop SwiftUI's stock Undo/Redo. agterm registers no NSUndoManager, so they are dead for
-            // the terminal, and the ⌘Z they advertise is already owned by File ▸ Reopen Closed Item
-            // (`BuiltinAction.undoClose`), whose menu precedes Edit and wins the key-equivalent search — the
-            // Undo item could only ever be CLICKED, never invoked by its own shortcut. The one place AppKit
-            // enabled it was the sidebar's inline rename field (its field editor supplies an undo manager),
-            // too narrow to justify a permanently-greyed item that duplicates another menu's shortcut.
-            // The rest of the Edit menu stays stock: Cut/Copy/Paste/Delete/Select All share the `.pasteboard`
-            // group, and replacing that would take ⌘C/⌘V/⌘A away from the text fields that need them.
+            // drop SwiftUI's stock Undo/Redo: agterm registers no NSUndoManager, and the ⌘Z they advertise
+            // is owned by File ▸ Reopen Closed Item (`BuiltinAction.undoClose`), whose menu precedes Edit
+            // and wins the key-equivalent search — so Undo could only ever be CLICKED, and AppKit enabled it
+            // only in the sidebar's inline rename field (whose field editor supplies an undo manager). The
+            // rest stays stock: replacing the shared `.pasteboard` group takes ⌘C/⌘V/⌘A from text fields.
             CommandGroup(replacing: .undoRedo) {}
-            // File: replace the default "New" group with all of agterm's creation/management actions,
-            // grouped by entity into three sections — Window, then Workspace, then Session. The
-            // system Close / Close All commands stay below in their own group.
+            // File: replace the default "New" group with agterm's creation/management actions, grouped by
+            // entity into Window, Workspace, Session. System Close / Close All stay below in their own group.
             CommandGroup(replacing: .newItem) {
-                // While terminal zoom, the dashboard grid, OR the topmost native picker is up, the UI is modal
-                // (the AppActions gate already no-ops these). `.disabled` mirrors that gate so items read as
-                // unavailable instead of dead and key equivalents cannot mutate the covered deck.
+                // zoom, the dashboard grid, or a topmost native picker makes the UI modal (the AppActions
+                // gate already no-ops these); `.disabled` mirrors it so items read as unavailable instead
+                // of dead and key equivalents cannot mutate the covered deck.
                 let zoomed = actions.terminalZoomActive
                 let pickActive = actions.pickActive(for: library.activeWindowID)
                 let modalActive = zoomed || (actions.frontmostDashboard?.isOpen ?? false) || pickActive
-                // Window: create/open/rename/delete the top-level window bundles. Open Window lists
-                // the library with a checkmark on already-open ones (picking a closed one opens it,
-                // an open one raises it). Delete is disabled with one window left (keep-at-least-one).
+                // Window: Open Window lists the library with a checkmark on already-open ones (picking a
+                // closed one opens it, an open one raises it). Delete is disabled with one window left.
                 Button("New Window") { actions.newWindow() }
                     .keyboardShortcut(shortcut(for: .newWindow))
                     .disabled(modalActive)
@@ -109,8 +104,7 @@ extension agtermApp {
                     .disabled(library.activeStore?.canRemoveWorkspace != true || modalActive)
 
                 Divider()
-                // Session. Open Directory… opens a new session rooted at a chosen folder; Close
-                // Session is terminal-style ⌘W (closes the active session, or the window when none).
+                // Session.
                 Button("New Session") { actions.newSession() }
                     .keyboardShortcut(shortcut(for: .newSession))
                     .disabled(modalActive)
@@ -154,6 +148,18 @@ extension agtermApp {
                 Button("Reveal in Finder") { actions.revealActiveSessionInFinder() }
                     .disabled(!actions.canRevealActiveSessionInFinder)
                 Button("Close Session") {
+                    // an auxiliary key window — Settings, the About panel, an open/save panel — is not part of
+                    // any terminal deck, so ⌘W there keeps its standard meaning and closes THAT window. It can
+                    // only come from here: `applyCloseSessionChord` strips ⌘W off the stock File ▸ Close item
+                    // while close_session owns the chord, so without this rung the keystroke falls through to
+                    // the deck behind the panel and takes a session with it (issue #401). Same predicate as
+                    // `CustomCommandRunner`'s no-surface gate. A nil key window keeps the deck behavior.
+                    // Gated on close_session still holding ⌘W: rebound off it, the stock item takes the chord
+                    // back and an auxiliary window closes itself, so the new chord means only what it says.
+                    if closeSessionOwnsCommandW, let key = NSApp.keyWindow, !WindowRegistry.shared.contains(key) {
+                        key.performClose(nil)
+                        return
+                    }
                     // closeActiveSession dismisses any cover (quick terminal / overlay / scratch) or closes the
                     // active session; only when it handled nothing (no cover, no session) fall back to the window.
                     if !actions.closeActiveSession() { NSApp.keyWindow?.performClose(nil) }
@@ -165,27 +171,23 @@ extension agtermApp {
                     .keyboardShortcut(shortcut(for: .clearStatus))
                     .disabled(library.activeStore?.activeSession == nil || modalActive)
                 Divider()
-                // open keymap.conf in $EDITOR in a 95% overlay over the active session; it reloads on the
-                // editor exiting. Keyless, like Reload Keymap.
+                // open keymap.conf in $EDITOR in a 95% overlay over the active session; reloads when the
+                // editor exits. keyless, like Reload Keymap.
                 Button { actions.editKeymap() } label: { Label("Edit Keymap…", systemImage: "pencil") }
                     .disabled(modalActive)
-                // re-read keymap.conf and apply (menu shortcuts re-render, the runner + palette rebuild).
-                // Keyless — a future BuiltinAction could give it a default chord.
+                // re-read keymap.conf and apply — menu shortcuts, runner and palette rebuild. keyless.
                 Button { actions.reloadKeymap() } label: { Label("Reload Keymap", systemImage: "keyboard") }
-                // open the agterm-scoped ghostty.conf in $EDITOR in a 95% overlay; it reloads the config on
-                // the editor exiting. Keyless, like Edit Keymap.
+                // open the agterm-scoped ghostty.conf in $EDITOR in a 95% overlay; reloads on editor exit.
                 Button { actions.editGhosttyConfig() } label: { Label("Edit ghostty.conf…", systemImage: "slider.horizontal.3") }
                     .disabled(modalActive)
-                // re-read ghostty.conf and rebroadcast to every surface; warns with a banner on a
-                // malformed file. Keyless, like Reload Keymap.
+                // re-read ghostty.conf and rebroadcast to every surface; banner-warns on a malformed file.
                 Button { actions.reloadGhosttyConfig() } label: { Label("Reload Config", systemImage: "arrow.clockwise") }
             }
-            // View: font zoom (drives ghostty on the focused terminal), the status-bar toggle, and
-            // split / quick terminal / palettes. The menu reserves an icon column because the system
-            // "Enter Full Screen" item has an icon, so every custom item carries an SF Symbol too —
-            // otherwise they render as blank, indented slots.
+            // View: font zoom (on the focused terminal), the status-bar toggle, split / quick terminal /
+            // palettes. Every item needs an SF Symbol: one iconless item renders as a blank, indented slot
+            // beside the icon column its neighbours reserve.
             CommandGroup(after: .toolbar) {
-                // Mirror the File group's modal gate: zoom, dashboard, or the topmost native picker.
+                // the File group's modal gate, mirrored.
                 let zoomed = actions.terminalZoomActive
                 let pickActive = actions.pickActive(for: library.activeWindowID)
                 let modalActive = zoomed || (actions.frontmostDashboard?.isOpen ?? false) || pickActive
@@ -195,8 +197,8 @@ extension agtermApp {
                     .keyboardShortcut(shortcut(for: .decreaseFontSize))
                 Button { actions.resetFontSize() } label: { Label("Actual Size", systemImage: "textformat.size") }
                     .keyboardShortcut(shortcut(for: .resetFontSize))
-                // open the live-preview theme picker (the .themes palette). Keyless by default like Edit
-                // Keymap; rebindable via select_theme. The control half is theme.set / theme.list.
+                // open the live-preview theme picker (the .themes palette). keyless by default, rebindable
+                // via select_theme; the control half is theme.set / theme.list.
                 Button { actions.openThemePalette() } label: { Label("Select Theme…", systemImage: "paintpalette") }
                     .keyboardShortcut(shortcut(for: .selectTheme))
                     .disabled(modalActive)
@@ -207,17 +209,15 @@ extension agtermApp {
                 }
                 .keyboardShortcut(shortcut(for: .toggleSidebar))
                 .disabled(modalActive)
-                // expand every workspace / collapse all but the active one. plain (non-BuiltinAction)
-                // keyless items like Reload Keymap; disabled with no active store or in flagged mode
-                // (no workspace rows to expand/collapse). The control half is sidebar.expand/collapse.
+                // expand every workspace / collapse all but the active one. plain keyless items, disabled
+                // with no active store or in flagged mode (no workspace rows); control sidebar.expand/collapse.
                 let treeMode = library.activeStore?.sidebarMode == .tree
                 Button { actions.expandAllWorkspaces() } label: { Label("Expand Workspaces", systemImage: "chevron.down") }
                     .disabled(library.activeStore == nil || !treeMode || modalActive)
                 Button { actions.collapseOtherWorkspaces() } label: { Label("Collapse Workspaces", systemImage: "chevron.right") }
                     .disabled(library.activeStore == nil || !treeMode || modalActive)
-                // flip the sidebar between the workspace tree and the flat flagged working-set list.
-                // single 2-state item like the sidebar/scratch toggles; keyless by default (rebindable
-                // via toggle_flagged_view). The control half is sidebar.mode.
+                // flip the sidebar between the workspace tree and the flat flagged working-set list. one
+                // 2-state item, keyless by default (rebindable via toggle_flagged_view); control sidebar.mode.
                 let flaggedMode = library.activeStore?.sidebarMode == .flagged
                 // disabled (along with its shortcut) when there's nothing to show: tree mode + no flags.
                 // Enabled in flagged mode so it can always switch back to the tree.
@@ -236,8 +236,7 @@ extension agtermApp {
                 Button { actions.clearFlags() } label: { Label("Clear Flagged", systemImage: "flag.slash") }
                     .disabled(library.activeStore?.flaggedSessions.isEmpty ?? true || modalActive)
                 // collapse the tree to the current workspace's subtree (or unfocus when already focused).
-                // keyless by default (rebindable via focus_workspace). The control half is workspace.focus.
-                // the label tracks the toggle (Focus/Unfocus) like the workspace row's context-menu item.
+                // keyless, rebindable via focus_workspace; control workspace.focus. the label tracks the toggle.
                 let focusStore = library.activeStore
                 Button { actions.focusActiveWorkspace() } label: {
                     Label(focusStore?.isCurrentWorkspaceSoleFocus == true ? "Unfocus Workspace" : "Focus Workspace",
@@ -246,20 +245,17 @@ extension agtermApp {
                 .keyboardShortcut(shortcut(for: .focusWorkspace))
                 .disabled(focusStore?.currentWorkspaceID == nil || modalActive)
                 // the ADDITIVE sibling of Focus Workspace: mark the current workspace without dropping the
-                // other members, so a working set can be built from the menu. Plain (non-BuiltinAction)
-                // keyless item like Clear Focus below. The control half is workspace.focus add. Disabled
-                // once the current workspace is already marked — it would be a silent no-op (the row menu
-                // flips to "Remove from Focus" instead, which it can do because it has a clicked row).
-                // Membership is NOT gated on the sidebar mode here or in the palette (unlike Expand/Collapse
-                // Workspaces above), matching the focus siblings and the control modes.
+                // other members, so a working set can be built from the menu. plain keyless item; control
+                // workspace.focus add. disabled once the workspace is marked, where it would be a silent
+                // no-op (the row menu flips to "Remove from Focus", having a clicked row). membership is
+                // NOT gated on sidebar mode here or in the palette, matching its focus siblings.
                 Button { actions.addActiveWorkspaceToFocus() } label: {
                     Label("Add Workspace to Focus", systemImage: "square.grid.2x2")
                 }
                 .disabled(focusStore?.currentWorkspaceID == nil
                     || focusStore?.isCurrentWorkspaceFocusMember == true || modalActive)
-                // apply or suspend the filter without losing the marked set — the menu twin of the
-                // bottom-bar grid toggle, disabled in the same empty-set state (the store refuses to
-                // enable an empty set, so the item would be a no-op). The control half is workspace.filter.
+                // apply or suspend the filter without losing the marked set — the menu twin of the bottom-bar
+                // grid toggle, disabled on an empty set (the store refuses one); control workspace.filter.
                 Button { actions.toggleFocusFilter() } label: {
                     Label("Toggle Workspace Filter", systemImage: "square.grid.2x2")
                 }
@@ -280,8 +276,8 @@ extension agtermApp {
                 }
                 .keyboardShortcut(shortcut(for: .toggleScratch))
                 .disabled(library.activeStore?.activeSession == nil || modalActive)
-                // search the focused terminal's scrollback. data-driven shortcut (⌘F default) like the
-                // toggles above — no hardcoded literal; the bar's open/close toggle lives in onSearchStart.
+                // search the focused terminal's scrollback. data-driven shortcut (⌘F default), no hardcoded
+                // literal; the bar's open/close toggle lives in onSearchStart.
                 Button { actions.toggleSearch() } label: { Label("Find…", systemImage: "magnifyingglass") }
                     .keyboardShortcut(shortcut(for: .toggleSearch))
                     .disabled(library.activeStore?.activeSession == nil || modalActive)
@@ -291,19 +287,19 @@ extension agtermApp {
                 Button { actions.toggleTerminalZoom() } label: { Label("Toggle Terminal Zoom", systemImage: "arrow.up.left.and.arrow.down.right") }
                     .keyboardShortcut(shortcut(for: .toggleTerminalZoom))
                 Divider()
-                // native macOS full screen for the key window (⌃⌘F default, rebindable). Toggles: a second
-                // invocation exits. The green traffic-light button drives the same NSWindow.toggleFullScreen.
-                Button { actions.toggleFullscreen() } label: {
-                    Label("Toggle Full Screen", systemImage: "arrow.up.left.and.arrow.down.right")
-                }
-                .keyboardShortcut(shortcut(for: .toggleFullscreen))
+                // NO full screen item: AppKit appends its own "Enter Full Screen" (`toggleFullScreen:`,
+                // Globe+F) below this menu whenever it is displayed, and nothing suppresses it — removal
+                // before the injection is undone and afterwards changes only the model, since the menu is
+                // already snapshotted for display; `NSFullScreenMenuItemEverywhere` is ignored on macOS 26;
+                // and adopting the selector on an item of our own does not stop it either. An item here is
+                // therefore a visible duplicate. The rebindable `toggle_fullscreen` chord is matched in
+                // `CustomCommandRunner` instead, and the action palette still offers Toggle Full Screen.
             }
-            // a dedicated Navigate menu keeps the View menu scannable: moving the selection/focus between
-            // existing sessions and split panes lives here — the palettes that jump to a session/command,
-            // the spatial session stepping, and the pane focus. all drive the SAME AppActions the View items
-            // did; only their menu home changed (the control API / palette / keymap surfaces are untouched).
+            // a dedicated Navigate menu keeps the View menu scannable: selection/focus movement between
+            // sessions and split panes lives here, driving the SAME AppActions the View menu does, with the
+            // control API / palette / keymap surfaces untouched.
             CommandMenu("Navigate") {
-                // Mirror the File/View modal gate: zoom, dashboard, or the topmost native picker.
+                // the File/View modal gate, mirrored.
                 let zoomed = actions.terminalZoomActive
                 let pickActive = actions.pickActive(for: library.activeWindowID)
                 let modalActive = zoomed || (actions.frontmostDashboard?.isOpen ?? false) || pickActive
@@ -321,15 +317,14 @@ extension agtermApp {
                     .disabled(modalActive)
                 Button { actions.toggleDashboard() } label: { Label("Dashboard", systemImage: "rectangle.split.2x2") }
                     .keyboardShortcut(shortcut(for: .dashboard))
-                    // Do not disable merely because the dashboard itself is open: ⌘⇧D remains its close
-                    // escape hatch. Zoom and a topmost native picker still block the toggle.
+                    // not disabled when the dashboard itself is open: ⌘⇧D remains its close escape hatch.
+                    // zoom and a topmost native picker still block the toggle.
                     .disabled(zoomed || pickActive)
                 Divider()
-                // step between sessions in the sidebar's flattened order. Prev/Next ride ⌥⌘↑/↓ (NOT bare
-                // ⌘+arrows, which shadow text-field caret nav in the rename/palette/settings fields); ⌥⌘↑/↓
-                // sessions complements the ⌥⌘←/→ pane focus below (left/right = panes, up/down = sessions).
-                // First/Last get no key (menu + palette + control only). Real menu items so AppKit menu
-                // dispatch swallows the shortcut before libghostty — never leaked to the shell.
+                // step between sessions in the sidebar's flattened order. prev/next ride ⌥⌘↑/↓, NOT bare
+                // ⌘+arrows (which shadow text-field caret nav in rename/palette/settings fields), and
+                // complement the ⌥⌘←/→ pane focus below. first/last get no key. real menu items, so AppKit
+                // menu dispatch swallows the shortcut before libghostty and nothing leaks to the shell.
                 Button { actions.selectPreviousSession() } label: { Label("Previous Session", systemImage: "chevron.up") }
                     .keyboardShortcut(shortcut(for: .previousSession))
                     .disabled(library.activeStore?.activeSession == nil || modalActive)
@@ -363,7 +358,7 @@ extension agtermApp {
             }
             CommandGroup(replacing: .help) {
                 Button("Developer Documentation…") {
-                    if let url = URL(string: "https://github.com/umputun/agterm#scripting-agterm") {
+                    if let url = URL(string: "https://agterm.com/docs#agtermctl") {
                         NSWorkspace.shared.open(url)
                     }
                 }
@@ -374,9 +369,8 @@ extension agtermApp {
             }
     }
 
-    /// Opens the standard About panel, enriched with a clickable agterm.com link and — on release
-    /// builds, where `GIT_COMMIT` is baked into the bundle — the short build commit shown in the
-    /// version's parenthetical. Dev builds (no baked commit) fall back to the plain version.
+    /// Opens the standard About panel with a clickable agterm.com link and, on release builds where
+    /// `GIT_COMMIT` is baked into the bundle, the short commit in the version's parenthetical.
     private func showAboutPanel() {
         var options: [NSApplication.AboutPanelOptionKey: Any] = [:]
         let website = "https://agterm.com"

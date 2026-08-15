@@ -136,6 +136,7 @@ final class ControlServer: @unchecked Sendable {
              .sessionStatus, .sessionRestore, .sessionFlag, .sessionSeen, .sessionSplit, .sessionScratch, .sessionFocus,
              .sessionCopy, .sessionPaste, .sessionSelectAll, .sessionSearch,
              .sessionOverlayOpen, .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayResult,
+             .sessionHudOpen, .sessionHudUpdate, .sessionHudClose,
              .sessionBackground, .sessionResize, .sessionText, .notify,
              .fontInc, .fontDec, .fontReset:
             return routeOwningSession(req.target) ?? .controller(gController)

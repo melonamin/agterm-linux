@@ -5,17 +5,16 @@ import SwiftUI
 
 private let logger = Logger(subsystem: "com.umputun.agterm", category: "SettingsView")
 
-/// The Settings window (Cmd+,): six tabs — General (mouse, sessions, ghostty config),
-/// Appearance (font/theme + window translucency + pane dimming), Interface (per-element title-bar and
-/// sidebar chrome visibility), Notifications (banner / badge / attention toggles), Agent Status
-/// (the sidebar glyph colors and shapes + blocked sound + auto-follow), and Key Mapping (the config
-/// directory + keymap diagnostics + Reload).
+/// The Settings window (Cmd+,): six tabs — General (mouse, sessions, ghostty config), Appearance
+/// (font/theme + window translucency + mute), Interface (per-element title-bar and sidebar chrome
+/// visibility), Notifications (banner / badge / attention toggles), Agent Status (sidebar glyph colors and
+/// shapes + blocked sound + auto-follow), and Key Mapping (config directory + keymap diagnostics + Reload).
+/// Throughout, a control's binding maps its DEFAULT value back to nil so `settings.json` stays minimal.
 struct SettingsView: View {
     let model: SettingsModel
 
-    /// Identifies each tab. An explicit selection binding is what keeps the window opening on General:
-    /// without it, SwiftUI's Settings scene auto-persists the last tab to `selectedTabIndex` in user
-    /// defaults and restores it next launch, which we don't want for a settings window.
+    /// Identifies each tab. The explicit selection binding keeps the window opening on General: without it
+    /// SwiftUI's Settings scene persists the last tab to `selectedTabIndex` in defaults and restores it.
     private enum Tab: Hashable { case general, appearance, interface, notifications, agentStatus, keyMapping }
     @State private var selection: Tab = .general
 
@@ -40,10 +39,9 @@ struct SettingsView: View {
                 .tabItem { Label("Key Mapping", systemImage: "keyboard") }
                 .tag(Tab.keyMapping)
         }
-        .frame(width: 540, height: 590)
-        // keep macOS from saving/restoring the Settings window across launches. Otherwise a
-        // process-launch reopen (see agtermApp's FB11763863 workaround) resurrects a stale Settings
-        // window on whatever tab it was last on, which steals key focus from the real launch window.
+        .frame(width: 540, height: 640)
+        // without this a process-launch reopen (see agtermApp's FB11763863 workaround) resurrects a stale
+        // Settings window on its last tab, stealing key focus from the real launch window.
         .background(NonRestorableWindow())
     }
 }
@@ -63,8 +61,7 @@ private struct NonRestorableWindow: NSViewRepresentable {
     }
 }
 
-/// A terse one-line caption shown under a control. Kept short on purpose: only non-obvious controls
-/// carry one, so the tabs stay short enough to fit without scrolling.
+/// A terse one-line caption under a control; only non-obvious controls carry one, so tabs fit unscrolled.
 private struct SettingHint: View {
     let text: String
     init(_ text: String) { self.text = text }
@@ -75,9 +72,9 @@ private struct SettingHint: View {
     }
 }
 
-/// General tab: a Mouse section (scroll speed + right-click-pastes toggle), a Sessions section (the
-/// new-session directory picker + restore-running-commands toggle), and the inherit-global-ghostty-config
-/// toggle. The visual and notification settings live on their own tabs.
+/// General tab: Mouse (scroll speed, right-click-pastes, workspace-row click), Sessions (new-session
+/// directory, restore running commands) and the inherit-global-ghostty-config toggle; visual and
+/// notification settings have their own tabs.
 private struct GeneralSettingsView: View {
     let model: SettingsModel
 
@@ -94,6 +91,8 @@ private struct GeneralSettingsView: View {
                 }
                 Toggle("Right-click pastes", isOn: rightClickPaste)
                     .accessibilityIdentifier("settings-right-click-paste")
+                Toggle("Click a workspace row to expand or collapse", isOn: workspaceRowClickExpands)
+                    .accessibilityIdentifier("settings-workspace-row-click-expands")
             }
 
             Section("Sessions") {
@@ -135,64 +134,59 @@ private struct GeneralSettingsView: View {
         .padding()
     }
 
-    /// 1:1 with the toggle; nil (the default) reads as OFF, so on → true / off → nil keeps settings.json
-    /// minimal until the user opts in.
     private var restoreRunningCommand: Binding<Bool> {
         Binding(get: { model.settings.restoreRunningCommand ?? false },
                 set: { model.setRestoreRunningCommand($0 ? true : nil) })
     }
 
-    /// 1:1 with the toggle; nil (the default) reads as OFF, so on → true / off → nil keeps settings.json
-    /// minimal until the user opts into the close confirmation.
     private var confirmCloseSession: Binding<Bool> {
         Binding(get: { model.settings.confirmCloseSession ?? false },
                 set: { model.setConfirmCloseSession($0 ? true : nil) })
     }
 
-    /// nil (the default) reads as ON; turning it off stores false and makes GUI closes immediate.
+    /// Default ON; turning it off stores false and makes GUI closes immediate.
     private var closeGraceUndoEnabled: Binding<Bool> {
         Binding(get: { model.settings.closeGraceUndoEnabled ?? true },
                 set: { model.setCloseGraceUndoEnabled($0 ? nil : false) })
     }
 
-    /// 1:1 with the toggle; nil (the default) reads as OFF, so on → true / off → nil keeps settings.json
-    /// minimal until the user opts into inheriting the global ghostty config.
     private var inheritGlobalGhosttyConfig: Binding<Bool> {
         Binding(get: { model.settings.inheritGlobalGhosttyConfig ?? false },
                 set: { model.setInheritGlobalGhosttyConfig($0 ? true : nil) })
     }
 
-    /// 1:1 with the toggle; nil (the default) reads as ON, so off → false / on → nil keeps settings.json
-    /// minimal. Drives the ghostty `right-click-action` key (paste when on, ignore when off).
+    /// Default ON. Drives the ghostty `right-click-action` key (paste when on, ignore when off).
     private var rightClickPaste: Binding<Bool> {
         Binding(get: { model.settings.rightClickPaste ?? true },
                 set: { model.setRightClickPaste($0 ? nil : false) })
     }
 
-    /// nil (the default) reads as 3; stepping back to 3 stores nil so settings.json stays minimal. The
-    /// config always emits 3 either way, so the default speed is effective regardless.
+    /// Default ON; turning it off stores false and leaves only the disclosure triangle as the hit target.
+    private var workspaceRowClickExpands: Binding<Bool> {
+        Binding(get: { model.settings.workspaceRowClickExpands ?? true },
+                set: { model.setWorkspaceRowClickExpands($0 ? nil : false) })
+    }
+
+    /// Default 3. The config emits 3 either way, so the default speed is effective regardless.
     private var mouseScrollMultiplier: Binding<Double> {
         Binding(get: { model.settings.mouseScrollMultiplier ?? 3 },
                 set: { model.setMouseScrollMultiplier($0 == 3 ? nil : $0) })
     }
 
-    /// The custom directory to display, treating nil OR empty as "unset" (nil) to match
-    /// `resolveNewSessionCwd`, which falls back to home for both. So a blank value from a hand-edited
-    /// `settings.json` renders as "Not set" rather than a blank primary-styled path.
+    /// The directory to display, treating nil OR empty as "unset" to match `resolveNewSessionCwd` (home for
+    /// both), so a blank hand-edited `settings.json` value renders as "Not set", not a blank styled path.
     private var customDirectory: String? {
         let dir = model.settings.newSessionCustomDirectory
         return dir?.isEmpty == false ? dir : nil
     }
 
-    /// The new-session directory mode; nil (the default) reads as `.home`, and picking `.home` stores nil
-    /// so settings.json stays minimal. An unknown stored value also resolves to `.home`.
+    /// The new-session directory mode; nil (the default) or an unknown stored value resolves to `.home`.
     private var newSessionDirectory: Binding<AppSettings.NewSessionDirectory> {
         Binding(get: { AppSettings.NewSessionDirectory(rawValue: model.settings.newSessionDirectory ?? "") ?? .home },
                 set: { model.setNewSessionDirectory($0 == .home ? nil : $0.rawValue) })
     }
 
-    /// Pick the fixed directory for the `custom` new-session mode with the standard open panel
-    /// (directories only), then persist it.
+    /// Pick the `custom` new-session mode's fixed directory with the standard open panel (dirs only), persist.
     private func chooseCustomDirectory() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -206,9 +200,8 @@ private struct GeneralSettingsView: View {
     }
 }
 
-/// Appearance tab: a Terminal section (font family, default font size, theme) and a Window section
-/// (toolbar mode — Normal/Compact/Hidden, background opacity + blur, sidebar tint, sidebar font size,
-/// inactive-pane dimming). Each control persists and live-applies through `SettingsModel`.
+/// Appearance tab: Terminal (font family, size, theme) and Window (toolbar mode, background opacity + blur,
+/// sidebar tint + font size, pane/backdrop mute), each persisting and live-applying via `SettingsModel`.
 private struct AppearanceSettingsView: View {
     let model: SettingsModel
     private let themes = SettingsCatalog.themeNames()
@@ -229,9 +222,8 @@ private struct AppearanceSettingsView: View {
                 }
                 .accessibilityIdentifier("settings-font-size")
 
-                // the theme for the CURRENT appearance. While following, this edits the on-screen side
-                // (dark in dark mode, light in light mode); the "default ghostty" row is offered only
-                // when NOT following, since a dual conditional needs two named themes.
+                // the CURRENT appearance's theme; while following, the on-screen side. The "default ghostty"
+                // row shows only when NOT following — a dual conditional needs two named themes.
                 Picker("Theme", selection: themeForCurrentAppearance) {
                     if !following { Text("default ghostty").tag(String?.none) }
                     ForEach(themes, id: \.self) { Text($0).tag(String?.some($0)) }
@@ -241,8 +233,8 @@ private struct AppearanceSettingsView: View {
                 Toggle("Follow system appearance", isOn: followSystemAppearance)
                     .accessibilityIdentifier("settings-follow-appearance")
 
-                // revealed only when following: the theme for the OTHER appearance. ghostty resolves the
-                // active side at runtime, so no config rewrite happens on a light/dark flip.
+                // only while following: the OTHER appearance's theme. ghostty resolves the active side at
+                // runtime, so a light/dark flip rewrites no config.
                 if following {
                     Picker(GhosttyApp.currentIsDark() ? "Light theme" : "Dark theme", selection: alternateTheme) {
                         ForEach(themes, id: \.self) { Text($0).tag(String?.some($0)) }
@@ -296,12 +288,17 @@ private struct AppearanceSettingsView: View {
                 }
 
                 Stepper(value: sidebarFontSize, in: AppSettings.sidebarFontSizeRange, step: 1) {
-                    Text("Sidebar font size: \(Int(model.settings.sidebarFontSize ?? AppSettings.defaultSidebarFontSize))")
+                    Text("Sidebar font size: \(Int(model.settings.effectiveSidebarFontSize))")
                 }
                 .accessibilityIdentifier("settings-sidebar-font-size")
 
+                Stepper(value: interfaceFontSize, in: AppSettings.interfaceFontSizeRange, step: 1) {
+                    Text("Palette and switcher font size: \(Int(model.settings.effectiveInterfaceFontSize))")
+                }
+                .accessibilityIdentifier("settings-interface-font-size")
+
                 HStack {
-                    Text("Inactive pane mute")
+                    Text("Inactive pane and backdrop mute")
                     Slider(value: inactivePaneMuteStrength, in: 0 ... 10, step: 1)
                         .accessibilityIdentifier("settings-inactive-pane-mute")
                     Text("\(model.settings.inactivePaneMuteStrength ?? AppSettings.defaultInactivePaneMuteStrength)")
@@ -322,53 +319,52 @@ private struct AppearanceSettingsView: View {
         Binding(get: { model.settings.fontSize ?? 13 }, set: { model.setFontSize($0) })
     }
 
-    /// The sidebar row-text size; the default maps back to nil so `settings.json` stays minimal.
+    /// The sidebar row-text size.
     private var sidebarFontSize: Binding<Double> {
-        Binding(get: { model.settings.sidebarFontSize ?? AppSettings.defaultSidebarFontSize },
+        Binding(get: { model.settings.effectiveSidebarFontSize },
                 set: { model.setSidebarFontSize($0 == AppSettings.defaultSidebarFontSize ? nil : $0) })
+    }
+
+    /// The palette, picker and session-switcher text size.
+    private var interfaceFontSize: Binding<Double> {
+        Binding(get: { model.settings.effectiveInterfaceFontSize },
+                set: { model.setInterfaceFontSize($0 == AppSettings.defaultInterfaceFontSize ? nil : $0) })
     }
 
     /// Whether the terminal follows the macOS appearance — reveals the alternate picker.
     private var following: Bool { model.settings.followSystemAppearance == true }
 
-    /// Picker 1: the theme for the CURRENT appearance (dark slot while following in dark mode, else
-    /// `theme`). Drives `SettingsModel.setThemeForCurrentAppearance`.
+    /// Picker 1: the CURRENT appearance's theme — the dark slot while following in dark mode, else `theme`.
     private var themeForCurrentAppearance: Binding<String?> {
         Binding(get: { model.settings.activeTheme(isDark: GhosttyApp.currentIsDark()) },
                 set: { model.setThemeForCurrentAppearance($0) })
     }
 
-    /// Picker 2 (shown only while following): the OTHER appearance's theme — the light slot in dark mode,
-    /// the dark slot in light mode. Drives `SettingsModel.setAlternateTheme`.
+    /// Picker 2, only while following: the OTHER appearance's theme — light slot in dark mode, dark in light.
     private var alternateTheme: Binding<String?> {
         Binding(get: { GhosttyApp.currentIsDark() ? model.settings.theme : model.settings.darkTheme },
                 set: { model.setAlternateTheme($0) })
     }
 
-    /// The "Follow system appearance" toggle — seeds/collapses the two slots via
-    /// `SettingsModel.setFollowSystemAppearance`.
+    /// The "Follow system appearance" toggle — `setFollowSystemAppearance` seeds/collapses the two slots.
     private var followSystemAppearance: Binding<Bool> {
         Binding(get: { model.settings.followSystemAppearance == true },
                 set: { model.setFollowSystemAppearance($0) })
     }
 
-    /// 1.0 maps to nil (the opaque default) so settings.json stays minimal and the "unset = default"
-    /// convention matches the font/theme controls. The setter PREVIEWS live (apply without save) on
-    /// every drag tick and debounces the write; the slider's `onEditingChanged` flushes it on release.
+    /// PREVIEWS live (apply without save) per drag tick and debounces; `onEditingChanged` flushes on release.
     private var backgroundOpacity: Binding<Double> {
         Binding(get: { model.settings.backgroundOpacity ?? 1 },
                 set: { model.previewBackgroundOpacity($0 >= 1 ? nil : $0) })
     }
 
-    /// PREVIEWS live (apply without save) on every drag tick and debounces the write; the slider's
-    /// `onEditingChanged` flushes it on release.
+    /// Previews and flushes like `backgroundOpacity`.
     private var backgroundBlur: Binding<Double> {
         Binding(get: { Double(model.settings.backgroundBlur ?? 0) },
                 set: { model.previewBackgroundBlur($0 <= 0 ? nil : Int($0.rounded())) })
     }
 
-    /// neutral (5) maps to nil so settings.json stays minimal, matching the other appearance controls'
-    /// "unset = default" convention.
+    /// Neutral is 5.
     private var sidebarBackgroundShift: Binding<Double> {
         Binding(get: { Double(model.settings.sidebarBackgroundShift ?? AppSettings.defaultSidebarBackgroundShift) },
                 set: { value in
@@ -385,27 +381,23 @@ private struct AppearanceSettingsView: View {
         return offset < 0 ? "Lighter \(-offset)" : "Darker \(offset)"
     }
 
-    /// `.compact` (the default) maps back to nil so settings.json stays minimal, matching the other
-    /// appearance controls' "unset = default" convention; `.normal`/`.hidden` write an explicit mode.
+    /// `.compact` is the default; `.normal`/`.hidden` write an explicit mode.
     private var toolbarMode: Binding<ToolbarMode> {
         Binding(get: { model.settings.effectiveToolbarMode },
                 set: { model.setToolbarMode($0 == .compact ? nil : $0) })
     }
 
-    /// nil (the default) reads as `defaultInactivePaneMuteStrength`; sliding back to it stores nil so
-    /// settings.json stays minimal. The slider is integer-stepped, so the Double is rounded to an Int.
+    /// nil (the default) reads as `defaultInactivePaneMuteStrength`.
     private var inactivePaneMuteStrength: Binding<Double> {
         Binding(get: { Double(model.settings.inactivePaneMuteStrength ?? AppSettings.defaultInactivePaneMuteStrength) },
                 set: { let v = Int($0.rounded()); model.setInactivePaneMuteStrength(v == AppSettings.defaultInactivePaneMuteStrength ? nil : v) })
     }
 }
 
-/// Interface tab: per-element visibility of the window's title-bar and sidebar chrome, grouped by
-/// surface (Title Bar / Sidebar) and laid out two toggles per row so the tab keeps fitting the fixed
-/// 540×590 Settings window without scrolling as the element set grows. Every element is shown by default;
-/// a toggle off adds it to `AppSettings.hiddenInterfaceElements`. Each toggle live-applies through
-/// `SettingsModel`; the title-bar and footer elements re-gate in every open window via
-/// `.agtermAppearanceChanged`, while the hover-only workspace add-session "+" re-gates on its next hover.
+/// Interface tab: per-element title-bar and sidebar chrome visibility, grouped by surface, two toggles per
+/// row so the tab keeps fitting the fixed 540×640 window as the element set grows. Everything shows by
+/// default; a toggle off adds it to `AppSettings.hiddenInterfaceElements` and live-applies — title-bar and
+/// footer elements re-gate in open windows on `.agtermAppearanceChanged`, the add-session "+" on hover.
 private struct InterfaceSettingsView: View {
     let model: SettingsModel
 
@@ -422,17 +414,14 @@ private struct InterfaceSettingsView: View {
         .padding()
     }
 
-    /// Default-OFF binding: ON hides the sidebar on every non-frontmost window (writes true), OFF maps back
-    /// to nil to keep `settings.json` minimal — the default-off idiom shared with the other opt-in toggles.
+    /// Default OFF; ON hides the sidebar on every non-frontmost window.
     private var autoHideSidebarInactiveWindows: Binding<Bool> {
         Binding(get: { model.settings.autoHideSidebarInactiveWindows ?? false },
                 set: { model.setAutoHideSidebarInactiveWindows($0 ? true : nil) })
     }
 
-    /// A section whose toggles lay out TWO per row, so the tab keeps fitting the fixed Settings window
-    /// without scrolling as the `InterfaceElement` set grows. Each toggle fills half the row around a
-    /// centered `Divider`, so the two columns read as EVEN and visibly separated (each column's switch
-    /// trails at its own right edge); an odd final element pairs with an empty half.
+    /// A section whose toggles lay out TWO per row, each filling half the row around a centered `Divider` so
+    /// the columns read as EVEN and visibly separated; an odd final element pairs with an empty half.
     @ViewBuilder
     private func twoColumnSection(_ title: String, elements: [InterfaceElement]) -> some View {
         Section(title) {
@@ -450,8 +439,7 @@ private struct InterfaceSettingsView: View {
         }
     }
 
-    /// A show/hide toggle for one element: ON = visible (the default), so hiding it is the opt-in that
-    /// writes to `hiddenInterfaceElements`.
+    /// One element's show/hide toggle: ON = visible (the default), so hiding is the opt-in that writes.
     private func toggle(for element: InterfaceElement) -> some View {
         Toggle(element.displayName, isOn: binding(for: element))
             .accessibilityIdentifier("settings-interface-\(element.rawValue)")
@@ -463,10 +451,8 @@ private struct InterfaceSettingsView: View {
     }
 }
 
-/// Notifications tab: the banner / badge / attention-indicator toggles plus the Dock-bounce mode and
-/// notification-sound pickers, all default-driven through `SettingsModel`. The controls are independent —
-/// the badge count keeps tracking whether or not banners are shown, and a Dock bounce or a sound can
-/// fire whether or not banners are shown.
+/// Notifications tab: the banner / badge / attention-indicator toggles plus the Dock-bounce and sound
+/// pickers. All independent — the badge count keeps tracking and a bounce or sound can fire with banners off.
 private struct NotificationsSettingsView: View {
     let model: SettingsModel
 
@@ -502,29 +488,25 @@ private struct NotificationsSettingsView: View {
         .padding()
     }
 
-    /// 1:1 with the toggle; nil (the default) reads as on, so settings.json stays minimal until the
-    /// user turns banners off.
+    /// Default ON.
     private var notificationsEnabled: Binding<Bool> {
         Binding(get: { model.settings.notificationsEnabled ?? true },
                 set: { model.setNotificationsEnabled($0 ? nil : false) })
     }
 
-    /// 1:1 with the toggle; nil (the default) reads as on, so settings.json stays minimal until the
-    /// user hides the count badges.
+    /// Default ON.
     private var notificationBadgeEnabled: Binding<Bool> {
         Binding(get: { model.settings.notificationBadgeEnabled ?? true },
                 set: { model.setNotificationBadgeEnabled($0 ? nil : false) })
     }
 
-    /// Resolves nil (the default) to `.off`; selecting None maps back to nil so settings.json stays
-    /// minimal until the user picks a bounce mode. Mirrors the toolbar-mode picker binding.
+    /// Resolves nil (the default) to `.off`.
     private var dockBounce: Binding<DockBounce> {
         Binding(get: { model.settings.effectiveDockBounce },
                 set: { model.setDockBounce($0 == .off ? nil : $0) })
     }
 
-    // the system sound played when a notification is delivered; "None" maps to nil. Selecting a sound
-    // previews it so you hear the choice, the way macOS sound settings do.
+    // the sound played when a notification is delivered; selecting one previews it, like macOS sound settings
     private var notificationSound: Binding<String> {
         Binding(get: { model.settings.notificationSoundName ?? "None" },
                 set: { name in
@@ -534,25 +516,20 @@ private struct NotificationsSettingsView: View {
                 })
     }
 
-    /// 1:1 with the toggle; nil (the default) reads as OFF, so on → true / off → nil keeps settings.json
-    /// minimal until the user opts into the title-bar attention bell.
     private var attentionButtonEnabled: Binding<Bool> {
         Binding(get: { model.settings.attentionButtonEnabled ?? false },
                 set: { model.setAttentionButtonEnabled($0 ? true : nil) })
     }
 }
 
-/// Agent Status tab: a Colors and Shapes section (one row per state — active / blocked / completed —
-/// carrying that sidebar glyph's color well and silhouette picker side by side), a Sound section (the
-/// blocked sound), an Auto-follow section (the idle-timeout picker + stay-on-active toggle), and a
-/// trailing Reset that clears the colors, shapes and sound back to their defaults.
+/// Agent Status tab: Colors and Shapes (a row per state — active/blocked/completed — with that glyph's color
+/// well and shape picker), Sound, Auto-follow (idle timeout + stay-on-active), and a Reset clearing all three.
 private struct AgentStatusSettingsView: View {
     /// Gap between a glyph row's color well and its shape picker.
     private static let controlSpacing: CGFloat = 8
-    /// Column width every shape picker reserves. A menu button sizes to the glyph it currently shows and
-    /// the six silhouettes differ by a few points, so without a fixed column the color wells would jog
-    /// between rows. Snug enough that the reserved column reads as spacing rather than a hole, with room
-    /// above the widest silhouette's button.
+    /// Column width every shape picker reserves: a menu button sizes to the glyph it shows and the six
+    /// silhouettes differ by a few points, so without a fixed column the color wells jog between rows. Snug
+    /// enough to read as spacing, not a hole, with room above the widest silhouette's button.
     private static let shapePickerWidth: CGFloat = 80
 
     let model: SettingsModel
@@ -600,13 +577,11 @@ private struct AgentStatusSettingsView: View {
         .padding()
     }
 
-    /// One state's glyph row: the state name labels the row, and its color well and shape picker sit
-    /// together on the trailing side. Both controls hide their own labels so the state name is the row's
-    /// only visible label. The shape picker takes a fixed-width column so the three rows line up, and
-    /// draws its button at that column's TRAILING edge so the row ends flush with the tab's right margin
-    /// like every other section's control (the column's default center alignment left it floating
-    /// inboard). Both bindings and both accessibility identifiers are derived from the state argument, so
-    /// a row can never label one status while driving another's setting.
+    /// One state's glyph row: the state name labels it, with the color well and shape picker trailing, both
+    /// label-hidden so the state name is the row's only visible label. The shape picker draws at the TRAILING
+    /// edge of its fixed-width column so the row ends flush with the tab's right margin — the column's default
+    /// center alignment left it floating inboard. Both bindings and both accessibility ids derive from the
+    /// state argument, so a row cannot label one status while driving another's setting.
     private func glyphRow(_ status: AgentStatus) -> some View {
         let color = statusColor(for: status)
         let shape = statusShape(for: status)
@@ -624,8 +599,8 @@ private struct AgentStatusSettingsView: View {
         }
     }
 
-    // the ColorPicker binds to the resolved color (the user's hex or the system default); a pick stores
-    // the sRGB hex, and "Reset to defaults" clears the hex back to nil (the system color).
+    // binds to the resolved color (the user's hex or the system default); a pick stores the sRGB hex, and
+    // "Reset to defaults" clears it back to nil, the system color.
     private func statusColor(for status: AgentStatus) -> Binding<Color> {
         Binding(get: { Color(nsColor: NSColor(agtermHex: storedColorHex(for: status)) ?? Self.defaultColor(for: status)) },
                 set: { setColorHex(NSColor($0).agtermHexString, for: status) })
@@ -658,12 +633,9 @@ private struct AgentStatusSettingsView: View {
         }
     }
 
-    /// The option list one shape picker shows: one entry per `StatusShape`, built from `allCases` so the
-    /// picker can never drift from the enum. Each entry is the symbol ALONE — the silhouette is what is
-    /// being picked, and a name beside it only crowds the row — with the shape's name kept as its
-    /// accessibility label so VoiceOver still announces the choice. `tint` is that status's current glyph
-    /// color, so every option previews the real sidebar glyph; it comes from the row's color binding, so
-    /// picking a new color redraws the options in it.
+    /// The options one shape picker shows: one per `StatusShape` from `allCases`, so it cannot drift from the
+    /// enum. Each entry is the symbol ALONE (a name beside it crowds the row), with the shape name kept as its
+    /// accessibility label for VoiceOver; `tint` is the row's live glyph color, so a color change redraws them.
     @ViewBuilder
     private func shapeOptions(tint: NSColor) -> some View {
         ForEach(StatusShape.allCases, id: \.self) { shape in
@@ -673,10 +645,9 @@ private struct AgentStatusSettingsView: View {
         }
     }
 
-    /// One picker option's glyph, drawn the way the sidebar draws it: the shape's symbol at the sidebar
-    /// glyph's own point size, tinted with that status's current color. It is a NON-template `NSImage`
-    /// because a menu recolors a template symbol to its own text color, which would wash out the tint the
-    /// option is previewing.
+    /// One picker option's glyph, drawn like the sidebar's: the symbol at the sidebar glyph point size, tinted
+    /// with the status's current color. NON-template — a menu recolors a template symbol to its own text color
+    /// and would wash out the previewed tint.
     private static func shapeImage(_ shape: StatusShape, tint: NSColor) -> NSImage {
         let config = NSImage.SymbolConfiguration(pointSize: StatusIconView.glyphPointSize, weight: .regular)
             .applying(NSImage.SymbolConfiguration(paletteColors: [tint]))
@@ -690,8 +661,7 @@ private struct AgentStatusSettingsView: View {
         return image
     }
 
-    // the shape picker reads the resolved setting and writes the typed shape; the default plain circle
-    // maps back to nil so settings.json stays minimal (nil and `circle` render identically).
+    // the default plain circle maps back to nil; nil and `circle` render identically
     private func statusShape(for status: AgentStatus) -> Binding<StatusShape> {
         Binding(get: { model.settings.effectiveStatusShape(for: status) ?? .circle },
                 set: { setShape($0 == .circle ? nil : $0, for: status) })
@@ -706,8 +676,7 @@ private struct AgentStatusSettingsView: View {
         }
     }
 
-    // the system sound played when a session enters `blocked`; "None" maps to nil. Selecting a sound
-    // previews it so you hear the choice, the way macOS sound settings do.
+    // the sound played when a session enters `blocked`; selecting one previews it, like the notification sound
     private var blockedStatusSound: Binding<String> {
         Binding(get: { model.settings.blockedStatusSoundName ?? "None" },
                 set: { name in
@@ -717,33 +686,28 @@ private struct AgentStatusSettingsView: View {
                 })
     }
 
-    /// The auto-follow idle timeout; nil (the default) reads as `.off`, and picking `.off` stores nil so
-    /// settings.json stays minimal. An unknown stored value also resolves to `.off`.
+    /// The auto-follow idle timeout; nil (the default) or an unknown stored value resolves to `.off`.
     private var autoFollowAttention: Binding<AppSettings.AutoFollowAttention> {
         Binding(get: { AppSettings.AutoFollowAttention(tolerant: model.settings.autoFollowAttention) },
                 set: { model.setAutoFollowAttention($0 == .off ? nil : $0.rawValue) })
     }
 
-    /// Inverted view of the stored `autoFollowStayOnActive` so the toggle reads forward ("auto-follow away"
-    /// ON = do leave a running session) instead of a double negative. The stored default nil means "follow
-    /// away", so the toggle shows ON by default; opting to STAY (toggle OFF) stores `true`, and toggling back
-    /// to the follow-away default stores nil to keep settings.json minimal.
+    /// Inverted view of the stored `autoFollowStayOnActive` so the toggle reads forward — ON = do leave a
+    /// running session — instead of a double negative. The nil default means "follow away", so it shows ON.
     private var autoFollowAwayFromRunning: Binding<Bool> {
         Binding(get: { !(model.settings.autoFollowStayOnActive ?? false) },
                 set: { model.setAutoFollowStayOnActive($0 ? nil : true) })
     }
 }
 
-/// Key Mapping tab: the config directory holding `keymap.conf` (with a directory picker + "Use
-/// Default"), a read-only list of parse diagnostics, and a Reload button. The directory and Reload
-/// route through `SettingsModel`, which re-reads + re-parses the keymap and posts the change so the
-/// data-driven menu shortcuts, the custom-command runner, and the action palette all update.
+/// Key Mapping tab: the config directory holding `keymap.conf` (picker + "Use Default"), a read-only
+/// parse-diagnostics list, and Reload. Both route through `SettingsModel`, which re-reads and re-parses the
+/// keymap and posts the change, updating the menu shortcuts, custom-command runner and action palette.
 private struct KeyMappingSettingsView: View {
     let model: SettingsModel
 
-    /// The resolved config directory shown in the field: the explicit setting when set, else the
-    /// default location (`AGTERM_STATE_DIR/config` under test isolation, else `~/.config/agterm`),
-    /// matching `SettingsModel`'s own resolution.
+    /// The resolved config directory shown in the field: the explicit setting, else `AGTERM_STATE_DIR/config`
+    /// under test isolation, else `~/.config/agterm` — matching `SettingsModel`'s own resolution.
     private var configDirectoryPath: String {
         ConfigPaths.configDirectory(
             setting: model.settings.configDirectory,
@@ -802,14 +766,13 @@ private struct KeyMappingSettingsView: View {
         .padding()
     }
 
-    /// A diagnostic as one line: "line N: message". A whole-file/cross-section diagnostic (line 0)
-    /// drops the line number, showing just the message.
+    /// A diagnostic as one line, "line N: message"; a whole-file/cross-section one (line 0) shows the message.
     private func diagnosticLine(_ diagnostic: KeymapDiagnostic) -> String {
         diagnostic.line > 0 ? "line \(diagnostic.line): \(diagnostic.message)" : diagnostic.message
     }
 
-    /// The diagnostics exposed as one accessibility value (each line joined), so a UI test can read
-    /// the full content from the container without scrolling each row into view. "No issues." when empty.
+    /// The diagnostics joined into one accessibility value, so a UI test reads the full content from the
+    /// container without scrolling each row into view. "No issues." when empty.
     private var diagnosticsSummary: String {
         model.keymapDiagnostics.isEmpty ? "No issues." : model.keymapDiagnostics.map(diagnosticLine).joined(separator: " | ")
     }

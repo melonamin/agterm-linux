@@ -91,6 +91,7 @@ extension AppController {
         if w > 0, h > 0 { library.setGeometry(WindowGeometry.Size(width: Double(w), height: Double(h)), forWindow: windowID) }
         if linuxSettingsStore().load().restoreRunningCommand ?? false { captureForegroundCommands() }
         store.save()
+        store.discardHudBodies()
         quickSurface?.teardown()
         quickSurface = nil
         quickFrame = nil
@@ -98,6 +99,8 @@ extension AppController {
         for s in splitSurfaces.values { s.teardown() }
         for s in scratchSurfaces.values { s.teardown() }
         for s in overlaySurfaces.values { s.teardown() }
+        for s in leftOverlaySurfaces.values { s.teardown() }
+        for s in rightOverlaySurfaces.values { s.teardown() }
         library.closeWindow(windowID)
         gWindows[windowID] = nil
         if gController === self { gController = gWindows.values.first }

@@ -41,7 +41,7 @@ Code layout:
 
 ### Linux feature parity and platform differences
 
-The `linux-port` branch carries the upstream v0.19.0 terminal model and control protocol, including
+The `linux-port` branch carries the upstream v0.22.0 terminal model and control protocol, including
 split/scratch/overlay terminals, Quick terminal input and read-back, terminal zoom, fullscreen,
 recently closed sessions with grouped undo, light/dark themes, configurable toolbar and sidebar text,
 recent-session and attention popovers, agent status in the multi-session dashboard, stable pane status
@@ -370,6 +370,10 @@ grid), and Esc closes it.
 It is opened over the control channel with `agtermctl dashboard <ids…>` — or with `agtermctl dashboard --mru` to
 fill the grid from the window's most-recently-used sessions instead of naming ids — and closed with `--close` (or
 Enter/Esc).
+An id can carry a `:left` or `:right` suffix to include only that pane, matching the
+`dashboardMembers` read-back; bare ids still include every pane. Invalid suffixes reject the command,
+while a valid `:right` for a session without a split is reported as unresolved. If a watched right pane
+is promoted after the primary shell exits, the dashboard keeps watching it as the new left pane.
 The most-recently-used grid also has a built-in opener: **⌘⇧D** on macOS or **Ctrl+Shift+M** on Linux (or
 **Navigate ▸ Dashboard**, the command palette's **Dashboard**, or the title-bar grid button) toggles it, auto-sized,
 so the recent-sessions view is one keystroke away without a script.
@@ -387,7 +391,8 @@ The dashboard and terminal zoom are mutually exclusive.
 Sidebar session rows support Shift-click range selection and Cmd-click toggling on macOS or Ctrl-click toggling on Linux for batch work.
 Right-clicking inside a multi-selection keeps the batch for Flag/Unflag, Close, and Move to; right-clicking outside narrows to the clicked row.
 Dragging from a selected row moves the selected sessions as one ordered block.
-**Duplicate Session** — in a single session's context menu, right after Rename — opens a fresh session in the same workspace, right after that one, in its current directory (a plain new shell: only the directory carries over, nothing else about the session does).
+**Copy Name** — under Rename on a session or workspace row — puts that one row's name on the clipboard.
+**Duplicate Session** — in a single session's context menu, under Copy Name — opens a fresh session in the same workspace, right after that one, in its current directory (a plain new shell: only the directory carries over, nothing else about the session does).
 
 **File-manager integration.** In the tree view, drag folders from Finder on macOS or the desktop file manager on Linux onto a workspace or session row to open one session per folder there; drop on empty sidebar space to use the focused/current workspace.
 Drop on empty sidebar space to use the current workspace, or the focused one when the filter is applied to exactly one workspace (the only case where the tree shows a single unambiguous target).
@@ -418,11 +423,27 @@ A layout that cannot type the complete ASCII alphabet resolves every shortcut ke
 Terminal copy/paste/select-all also work on any layout: Ctrl+Shift+C, Ctrl+Shift+V, and Ctrl+Shift+A ship as bundled physical-key (`key_c`/`key_v`/`key_a`) defaults that match by keycode rather than the produced glyph, mirroring the upstream macOS defaults that use `super+key_*` for the same reason — a user only needs to add a `keybind` line in `<config dir>/ghostty.conf` to rebind them.
 Ctrl+Shift+Tab reverses an active Ctrl-Tab cycle, and the reserved Ctrl+Tab variants are consumed by the session switcher rather than sent to the terminal.
 
-The same recently-used history decides where you land when you close the session you are in: agterm returns you to the session you were most recently working in, not to whichever row happens to sit next to the one that closed. The pick stays inside the closing session's workspace, and in the flagged view stays within the flagged set, widening beyond the workspace only when the close leaves nothing there to return to; if no recent session qualifies, it falls back to the adjacent row in that workspace — to the adjacent flagged row in the flagged view, unless the close took the last flagged session, where the plain neighbor stands — and, when the closed session was the last one in its workspace, to the first session of another workspace.
+The same recently-used history decides where you land when you close the session you are in: agterm returns you to the session you were most recently working in, not to whichever row happens to sit next to the one that closed. The pick stays inside the closing session's workspace, inside the flagged set in flagged view, and inside marked workspaces while the workspace filter is applied. It widens beyond the workspace only when nothing remains there, and beyond the visible set only when that too is exhausted. If no recent session qualifies, it falls back to an adjacent visible row, or to the first session of another workspace when the closed session was the last in its own.
+
+## Accessibility
+
+On macOS, voice-dictation tools can treat the on-screen terminal pane as an editable text area and insert
+text at the cursor. Inserts containing newlines, tabs, or other controls use bracketed paste so compatible
+programs receive them literally. The terminal grid is not mirrored as readable accessibility text, and a
+dictation tool that repeatedly sends its full revised transcript may concatenate drafts. On Linux, GTK
+exposes the app chrome to AT-SPI, but libghostty renders the terminal in a `GtkGLArea`, which is not an
+AT-SPI `EditableText` surface. Accessibility clients therefore cannot insert text directly into the Linux
+terminal grid. Use `agtermctl session type --stdin` for keyboard semantics, or the normal clipboard/paste
+path. Implementing editable terminal insertion would require a custom GTK accessible-text widget/provider;
+GTK does not supply that bridge for `GtkGLArea`.
 
 ## Settings
 
 On Linux, press **Ctrl+,** or choose **Preferences…** from the command palette.
+The interface font-size setting scales and clamps command palettes, control pickers, recent-session rows,
+and the session switcher to the available terminal area. GTK transient windows are centered by the
+Wayland/X11 window manager, so the Linux frontend cannot apply the macOS-only horizontal offset that
+centers a separate palette window over the terminal pane rather than over its parent window.
 Both routes remain available when the toolbar is hidden.
 The GTK Preferences dialog has **General**, **Appearance**, **Interface**, **Notifications**, **Agent Status**, **Key Mapping**, and **Integrations** pages.
 Common options use native controls and apply live: mouse behavior, new-session directories, command restoration, close behavior, font and light/dark themes, terminal opacity, toolbar mode, sidebar tint and text size, inactive-pane muting, notifications, status colors and desktop bell, and auto-follow behavior.
@@ -457,7 +478,7 @@ To open a terminal at a directory without the CLI, run `agterm-linux <path>` on 
 agterm adds a session in that directory to the last-active window.
 The socket equivalent, and the way to place the session precisely, is `agtermctl session new --cwd <path>`.
 
-The sections below cover the common cases. All 71 commands, with every argument, return value, and error, are documented in the **[Command reference](https://agterm.com/commands)**.
+The sections below cover the common cases. All 74 commands, with every argument, return value, and error, are documented in the **[Command reference](https://agterm.com/commands)**.
 
 The macOS app bundles `agtermctl` inside `agterm.app`; upstream's **Help ▸ Install Command Line Tool…** action puts it on `PATH`.
 Linux package and portable-build behavior is described under [Optional integrations](#optional-integrations).

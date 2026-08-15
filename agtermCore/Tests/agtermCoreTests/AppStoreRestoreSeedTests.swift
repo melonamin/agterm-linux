@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import agtermCore
 
-// The `launchRestore` seeding gate: which rebuild paths arm a persisted `session.restore` override for
-// this launch by copying it into the transient pending slots the surface factories consume. Only an
-// app-bootstrap restore may; everything else defaults to arming nothing. Split out of AppStoreTests to
-// keep that file within the line budget.
+// The `launchRestore` seeding gate: which rebuild paths arm anything executable — a persisted
+// `session.restore` override (copied into the transient pending slots the surface factories consume)
+// or a captured `foregroundCommand`. Only an app-bootstrap restore may; everything else defaults to
+// arming nothing.
 @MainActor
 struct AppStoreRestoreSeedTests {
     private func snapshot(restore: String?, splitRestore: String?, isSplit: Bool) -> Snapshot {
@@ -28,10 +28,8 @@ struct AppStoreRestoreSeedTests {
     }
 
     @Test func bootstrapRestoreDropsAHiddenSplitsOverrideEntirely() {
-        // a split hidden at quit is not rebuilt, so makeSplitSurface never runs and its pin describes a
-        // pane that no longer exists. Nothing may be armed for it, and the PERSISTED pin is dropped too —
-        // otherwise `tree` reports a value `session.restore --pane right` cannot clear (no split), and a
-        // fresh ⌘D split shown at the next quit would inherit and run it.
+        // a split hidden at quit is not rebuilt, so its pin describes a pane that no longer exists:
+        // `tree` would report a value `--pane right` cannot clear, and a fresh split would inherit it.
         let store = makeStore()
         store.restore(from: snapshot(restore: "claude --resume abc", splitRestore: "tail -f /var/log/x",
                                      isSplit: false),
@@ -40,13 +38,11 @@ struct AppStoreRestoreSeedTests {
         #expect(session.pendingRestoreCommand == "claude --resume abc")
         #expect(session.pendingSplitRestoreCommand == nil)
         #expect(session.splitRestoreCommand == nil)
-        // the drop reaches persistence on the next save, so the orphan does not come back.
         #expect(store.snapshot().workspaces[0].sessions[0].splitRestoreCommand == nil)
     }
 
     @Test func rebuildDropsAHiddenSplitsOverrideOnEveryPath() {
-        // the drop is a property of the rebuild, not of bootstrap: Reopen Closed Item and a mid-process
-        // window reload rebuild the same split-less session and must not resurrect the orphan either.
+        // Reopen Closed Item and a mid-process window reload rebuild the same split-less session.
         let store = makeStore()
         let snap = SessionSnapshot(id: UUID(), customName: nil, cwd: "/a", isSplit: false,
                                    restoreCommand: "claude --resume abc", splitRestoreCommand: "tail -f")
@@ -55,8 +51,7 @@ struct AppStoreRestoreSeedTests {
     }
 
     @Test func bootstrapRestoreSeedsTheEmptyPinnedToNothingValue() {
-        // "" is a real override (a plain shell, suppressing the capture and initialCommand), so it must be
-        // armed like any other value rather than dropped as "no override".
+        // "" is a real override (a plain shell, suppressing the capture and initialCommand), not "none".
         let store = makeStore()
         store.restore(from: snapshot(restore: "", splitRestore: "", isSplit: true), launchRestore: true)
         let session = store.workspaces[0].sessions[0]
@@ -73,13 +68,11 @@ struct AppStoreRestoreSeedTests {
         let session = store.workspaces[0].sessions[0]
         #expect(session.pendingRestoreCommand == nil)
         #expect(session.pendingSplitRestoreCommand == nil)
-        // but the persisted values are still restored, so `tree` reads them back and the next launch fires.
         #expect(session.restoreCommand == "claude --resume abc")
         #expect(session.splitRestoreCommand == "tail -f /var/log/x")
     }
 
     @Test func sessionRebuildDefaultsToSeedingNeitherPane() {
-        // the default on session(from:) is the safe direction, so a caller added later arms nothing.
         let store = makeStore()
         let snap = SessionSnapshot(id: UUID(), customName: nil, cwd: "/a", isSplit: true,
                                    restoreCommand: "claude --resume abc", splitRestoreCommand: "tail -f")
@@ -97,6 +90,34 @@ struct AppStoreRestoreSeedTests {
         #expect(session.pendingRestoreCommand == nil)
         #expect(session.pendingSplitRestoreCommand == nil)
         #expect(session.restoreCommand == nil)
+    }
+
+    @Test func bootstrapRestoreCopiesCapturedForegroundCommands() {
+        let store = makeStore()
+        let snap = SessionSnapshot(id: UUID(), customName: nil, cwd: "/a", isSplit: true,
+                                   foregroundCommand: ["tee", "/tmp/m"], splitForegroundCommand: ["tail", "-f"])
+        let session = store.session(from: snap, launchRestore: true)
+        // the transient slots, never the persisted fields: `snapshot()` serializes those, so arming them
+        // would let a save before the surface spawns rewrite the argv the launch strip just removed.
+        #expect(session.pendingForegroundCommand == ["tee", "/tmp/m"])
+        #expect(session.pendingSplitForegroundCommand == ["tail", "-f"])
+        #expect(session.foregroundCommand == nil)
+        #expect(session.splitForegroundCommand == nil)
+    }
+
+    @Test func nonBootstrapRebuildDropsCapturedForegroundCommands() {
+        // the window-close capture persists a live foreground argv; a mid-process reopen (window.select /
+        // Open Window) or Reopen Closed Item rebuilds through here and must NOT carry it into the surface
+        // factory — that would re-execute the command with no quit/relaunch, against the documented
+        // clean-quit-only replay.
+        let store = makeStore()
+        let snap = SessionSnapshot(id: UUID(), customName: nil, cwd: "/a", isSplit: true,
+                                   foregroundCommand: ["tee", "/tmp/m"], splitForegroundCommand: ["tail", "-f"])
+        let session = store.session(from: snap)
+        #expect(session.foregroundCommand == nil)
+        #expect(session.splitForegroundCommand == nil)
+        #expect(session.pendingForegroundCommand == nil)
+        #expect(session.pendingSplitForegroundCommand == nil)
     }
 
     @Test func freshSessionHasNoOverrideState() {

@@ -10,7 +10,6 @@ import Foundation
 /// fallback clipboard prompts, and the status-sound error-bell fallback.
 /// Per-window callbacks use ControllerWidgetContext or a source-owned weak context.
 @MainActor var gController: AppController?
-
 @MainActor
 final class AppController {
     let store: AppStore             // this window's tree (owned by the shared WindowLibrary)
@@ -51,13 +50,11 @@ final class AppController {
     var sessionPickerShowsAttention = false
     let sidebarBox: OpaquePointer    // GtkBox holding per-workspace sections
     var splitView: OpaquePointer!    // root GtkPaned (collapsible, resizable sidebar)
-
     // Command palette (Ctrl+Shift+P)
     var paletteWindow: OpaquePointer?
     var paletteList: OpaquePointer?
     var paletteAll = LinuxPaletteList()
     var paletteItems: [LinuxPaletteItem] = []
-
     // Native control picker (`agtermctl pick`), one pending request per window.
     let pickController = PickController()
     var controlPickWindow: OpaquePointer?
@@ -65,7 +62,6 @@ final class AppController {
     var controlPickEntry: OpaquePointer?
     var controlPickRows: [LinuxControlPickRow] = []
     var controlPickSuppressesAutoFollow = false
-
     // In-terminal search bar (Ctrl+Shift+F)
     var searchBar: OpaquePointer?
     var searchEntry: OpaquePointer?
@@ -75,7 +71,6 @@ final class AppController {
     var searchSurface: GhosttySurface?
     var searchTotal: Int?
     var searchSelected: Int?
-
     // Theme picker (live preview). The unpersisted preview override itself — `themePreviewSettings` and its
     // `previewTheme`/`applyTheme` setters — lives in `GhosttyConfigTheme.swift`, next to the resolvers that
     // read it.
@@ -100,11 +95,15 @@ final class AppController {
     var splitSurfaces: [UUID: GhosttySurface] = [:]   // second pane (when split)
     var scratchSurfaces: [UUID: GhosttySurface] = [:] // full-overlay scratch shell
     var overlaySurfaces: [UUID: GhosttySurface] = [:]  // ephemeral overlay terminal (runs a command)
+    var leftOverlaySurfaces: [UUID: GhosttySurface] = [:]; var rightOverlaySurfaces: [UUID: GhosttySurface] = [:]
+    var leftOverlayWashes: [UUID: OpaquePointer] = [:]; var rightOverlayWashes: [UUID: OpaquePointer] = [:]
+    var leftOverlayWashProviders: [UUID: OpaquePointer] = [:]; var rightOverlayWashProviders: [UUID: OpaquePointer] = [:]
     var floatingOverlayFrames: [UUID: OpaquePointer] = [:]  // overlay rendered as a floating sized panel
     var sessionPanes: [UUID: OpaquePointer] = [:]     // GtkPaned (main content) per session
+    var primaryPaneHosts: [UUID: OpaquePointer] = [:] // GtkOverlay holding primary + its pane cover
+    var splitPaneHosts: [UUID: OpaquePointer] = [:]   // GtkOverlay holding split + its pane cover
     var sessionStacks: [UUID: OpaquePointer] = [:]    // outer GtkStack (main <-> scratch), the deck page
-    var rowSession: [OpaquePointer: UUID] = [:]
-    var sidebarSelectionAnchor: UUID?
+    var rowSession: [OpaquePointer: UUID] = [:]; var sidebarSelectionAnchor: UUID?
     var nameLabels: [OpaquePointer: (id: UUID, isWorkspace: Bool)] = [:]  // name label -> rename target (double-click)
     var workspaceDiscButtons: [OpaquePointer: UUID] = [:]  // disclosure button -> workspace (collapse toggle)
     // The session/workspace currently being inline-renamed (nil = none). One value instead of an
@@ -153,9 +152,9 @@ final class AppController {
     var sessionSwitcher = SessionSwitcherModel()                                  // Ctrl-Tab hold-to-cycle state
     var contextMenuPopover: OpaquePointer?            // the live row context-menu popover
     var pendingWorkspaceToggle: UUID?
-    var pendingWorkspaceToggleSource: guint = 0
+    var cancelPendingWorkspaceToggleTimer: (@MainActor () -> Void)?
     var sessionProgress: [UUID: Int] = [:]            // per-session OSC 9;4 progress
-
+    var lastHudGeometryDeckSize: (Int32, Int32)?
     // Keymap dispatch state (see KeymapDispatch.swift): the parsed keymap.conf, the resolved built-in
     // chord -> action map (user override else Linux default), and the custom-command leader matcher.
     // Loaded at launch + rebuilt on reload. Internal (not private) so the KeymapDispatch extension reaches them.
@@ -164,12 +163,9 @@ final class AppController {
     var resolvedBuiltinChords: [Chord: BuiltinAction] = [:]
     var customCommandEngine = CustomCommandEngine(commands: [])   // matcher + id-lookup (shared, host-free)
     var leaderTimeout: guint = 0   // g_timeout source for the custom-command leader deadline (0 = none)
-
     static var homeCwd: String { ConfigPaths.defaultNewSessionCwd() }
-
     /// The main window, exposed to the palette extension (different file).
     var windowPointer: OpaquePointer { window }
-
     /// The primary surface for a session, exposed to the search extension (different file).
     func surface(for id: UUID?) -> GhosttySurface? { id.flatMap { surfaces[$0] } }
     init(app: OpaquePointer?, windowID: UUID, library: WindowLibrary,
@@ -193,10 +189,9 @@ final class AppController {
             gtk_window_set_default_size(WIN(window), 1100, 700)
         }
         deck = makeTerminalDeck()
-        gtk_widget_set_hexpand(W(deck), 1)
-        gtk_widget_set_vexpand(W(deck), 1)
+        gtk_widget_set_hexpand(W(deck), 1); gtk_widget_set_vexpand(W(deck), 1)
         sidebarBox = OpaquePointer(gtk_box_new(GTK_ORIENTATION_VERTICAL, 2))
-        gtk_widget_set_vexpand(W(sidebarBox), 1); installSidebarDirectoryDropTarget()
+        gtk_widget_set_vexpand(W(sidebarBox), 1); installHudGeometryTracking(); installSidebarDirectoryDropTarget()
         // Sidebar header: regular GTK desktops keep left-side controls; Hyprland owns window actions.
         let sidebarHeader = OpaquePointer(adw_header_bar_new())
         self.sidebarHeader = sidebarHeader
@@ -277,11 +272,13 @@ final class AppController {
         let split = buildSidebarSplit(sidebar: sidebarToolbar, content: contentToolbar)
         applyToolbarMode()
         applySidebarFontSize()
+        applyInterfaceFontSize()
         // The whole split (sidebar + deck) sits under a GtkOverlay so the quick terminal can float over
         // the FULL window content (matching macOS), not just the deck.
         let windowOverlay = OpaquePointer(gtk_overlay_new())
         self.deckOverlay = windowOverlay
         gtk_overlay_set_child(windowOverlay, W(split))
+        installQuickCardPlacement(on: windowOverlay)   // percent-sized quick card; see AppControllerCallbacks
         // An AdwToastOverlay wraps the content so the app can surface transient banners (keymap/config
         // parse diagnostics, command failures) without a modal — the GTK analogue of the macOS banner.
         let toast = OpaquePointer(adw_toast_overlay_new())
@@ -403,7 +400,6 @@ final class AppController {
         store.closeSession(id)
         reconcile()
     }
-
     func requestCloseSession(_ id: UUID, closingCoversFirst: Bool = true) {
         if closingCoversFirst, id == store.selectedSessionID {
             if quickVisible {
@@ -420,6 +416,7 @@ final class AppController {
                 updateToggleIcons()
                 return
             }
+            if closeFocusedPaneOverlay(id) { return }
         }
         guard linuxSettingsStore().load().confirmCloseSession ?? false else {
             closeSessionFromGUI(id)
@@ -445,15 +442,20 @@ final class AppController {
         guard response == "close", let id = pendingCloseSession else { return }
         closeSessionFromGUI(id)
     }
-
     /// The primary pane's shell exited. Mirrors macOS: if a split pane is alive the session SURVIVES,
     /// promoted to that single pane (a primary exit must never destroy the live split shell); with no
     /// split the session closes. `AppStore.closePrimaryPane` decides promote-vs-close.
     func closePrimaryPane(_ id: UUID) {
         // Capture the survivor (the split pane) before the store clears the session's split flags.
-        if dashboard.isOpen { closeDashboard(refocus: false) }; let survivor = splitSurfaces[id]
+        if dashboard.isOpen { dashboard.promoteSplitMember(session: id) }
+        let survivor = splitSurfaces[id]
+        let survivorHost = splitPaneHosts[id]
+        let survivorOverlay = rightOverlaySurfaces[id]; let survivorWash = rightOverlayWashes[id]
+        let survivorWashProvider = rightOverlayWashProviders[id]
+        let zoomTarget = suspendTerminalZoomForPrimaryPanePromotion(id)
         store.closePrimaryPane(id)
-        guard store.session(withID: id) != nil, let survivor, let paned = sessionPanes[id] else {
+        guard store.session(withID: id) != nil, let survivor, let survivorHost,
+              let paned = sessionPanes[id] else {
             reconcile()   // no split → the store closed the session; reconcile drops its widgets
             return
         }
@@ -463,16 +465,21 @@ final class AppController {
         // Removing a child from a GtkPaned does NOT free the survivor's glArea, so its shell lives on.
         gtk_paned_set_start_child(paned, nil)
         gtk_paned_set_end_child(paned, nil)
-        gtk_paned_set_start_child(paned, W(survivor.glArea))
+        gtk_paned_set_start_child(paned, W(survivorHost))
         surfaces[id] = survivor
         splitSurfaces[id] = nil
+        primaryPaneHosts[id] = survivorHost
+        splitPaneHosts[id] = nil
+        leftOverlaySurfaces[id] = survivorOverlay; rightOverlaySurfaces[id] = nil
+        leftOverlayWashes[id] = survivorWash; rightOverlayWashes[id] = nil
+        leftOverlayWashProviders[id] = survivorWashProvider; rightOverlayWashProviders[id] = nil
         let sid = id
         survivor.promoteToPrimary(onExit: { [weak self] in self?.closePrimaryPane(sid) })
         survivor.queueRender()
         survivor.grabFocus()
         reconcile()
+        resumeTerminalZoomAfterPrimaryPanePromotion(zoomTarget)
     }
-
     func toggleSidebar() {
         store.toggleSidebarVisible()   // saving mutator, so the visibility survives relaunch
         applySidebarVisibility()
@@ -489,9 +496,9 @@ final class AppController {
         if let b = scratchToggleBtn { gtk_button_set_icon_name(cast(b), scratchOn ? "agterm-scratch-fill-symbolic" : "agterm-scratch-symbolic") }
     }
 
-    /// Show/hide the window-level quick terminal — a fixed-height drop-down panel above the deck running
-    /// a login shell, kept alive when hidden, recreated after its shell exits. The control `quick` arm
-    /// and Ctrl+` both drive it.
+    /// Show/hide the window-level quick terminal — a percent-sized card centered over the window content
+    /// below the header, running a login shell, kept alive when hidden, recreated after its shell exits.
+    /// The control `quick` arm and Ctrl+` both drive it.
     func setQuick(_ visible: Bool) {
         if !visible, terminalZoom.target == .quick { setTerminalZoom(.off, target: .quick) }
         if quickFrame == nil, visible, let overlay = deckOverlay {
@@ -502,18 +509,17 @@ final class AppController {
                                    controller: self, role: .quick, reportsPaneState: false)
             q.onExit = { [weak self] in self?.closeQuick() }
             // A floating card panel over the FULL window content: rounded + shadowed by .agterm-quick
-            // (app priority, overriding Adwaita "card"), inset from the window edges (sidebar + deck
-            // visible around it), with a larger top inset to clear the title-bar header.
+            // (app priority, overriding Adwaita "card"), sized as a PERCENTAGE of the window content below
+            // the header (sidebar + deck visible around it) by the deck overlay's get-child-position
+            // handler, which re-measures on every layout pass so the card tracks a live window resize and
+            // hidden-toolbar mode. FILL + no margins is load-bearing there: gtk_widget_size_allocate
+            // re-applies align and margins INSIDE the rectangle that handler returns.
             let frame = OpaquePointer(gtk_frame_new(nil))
             gtk_widget_add_css_class(W(frame), "card")
             gtk_widget_add_css_class(W(frame), "agterm-quick")   // opaque backing + border, radius, shadow
             gtk_widget_set_overflow(W(frame), GTK_OVERFLOW_HIDDEN)   // clip GL child to the rounded card; see LinuxQuickCardPolicy
             gtk_widget_set_halign(W(frame), GTK_ALIGN_FILL)
             gtk_widget_set_valign(W(frame), GTK_ALIGN_FILL)
-            gtk_widget_set_margin_top(W(frame), 56)
-            for m in [gtk_widget_set_margin_start, gtk_widget_set_margin_end, gtk_widget_set_margin_bottom] {
-                m(W(frame), 44)
-            }
             gtk_frame_set_child(cast(frame), W(q.glArea))
             quickFrame = frame
             quickSurface = q
@@ -522,6 +528,7 @@ final class AppController {
         guard let frame = quickFrame else { return }
         quickVisible = visible
         gtk_widget_set_visible(W(frame), visible ? 1 : 0)
+        updateAllPaneDimming()
         if visible { quickSurface?.grabFocus() }
     }
 
@@ -534,6 +541,7 @@ final class AppController {
         quickFrame = nil
         quickSurface = nil
         quickVisible = false
+        updateAllPaneDimming()
     }
 
     func toggleFlagActive() {
@@ -568,31 +576,6 @@ final class AppController {
         let isExpanded = store.workspaces.first(where: { $0.id == wsID })?.isExpanded ?? true
         store.setWorkspaceExpanded(wsID, expanded: !isExpanded)
         rebuildSidebar()
-    }
-
-    func scheduleWorkspaceToggle(_ data: gpointer?) {
-        guard let data, let wsID = workspaceDiscButtons[OpaquePointer(data)] else { return }
-        cancelPendingWorkspaceToggle()
-        pendingWorkspaceToggle = wsID
-        pendingWorkspaceToggleSource = g_timeout_add(300, onWorkspaceToggleTimeout, Unmanaged.passUnretained(self).toOpaque())
-    }
-
-    func cancelPendingWorkspaceToggle() {
-        if pendingWorkspaceToggleSource != 0 {
-            g_source_remove(pendingWorkspaceToggleSource)
-            pendingWorkspaceToggleSource = 0
-        }
-        pendingWorkspaceToggle = nil
-    }
-
-    func firePendingWorkspaceToggle() -> gboolean {
-        pendingWorkspaceToggleSource = 0
-        guard let wsID = pendingWorkspaceToggle else { return 0 }
-        pendingWorkspaceToggle = nil
-        let isExpanded = store.workspaces.first(where: { $0.id == wsID })?.isExpanded ?? true
-        store.setWorkspaceExpanded(wsID, expanded: !isExpanded)
-        rebuildSidebar()
-        return 0
     }
 
     /// Collapse every workspace except the active one to a header — the palette + `sidebar.collapse` arm.
@@ -678,7 +661,7 @@ final class AppController {
         renameEntry = nil
         resumeAutoFollow()
         rebuildAfterRename()
-        focusedSurface()?.grabFocus()
+        sessionFocusTarget()?.grabFocus()
     }
 
     /// A name label (session or workspace) when not renaming: a plain GtkLabel that selects on single
@@ -726,17 +709,24 @@ final class AppController {
     }
 
     func toggleSplit() {
-        guard let id = store.selectedSessionID else { return }
+        guard let id = store.selectedSessionID, let session = store.session(withID: id),
+              !session.fullOverlayActive else { return }
+        if session.scratchActive {
+            store.toggleScratch(id)
+            reconcile(); updateToggleIcons()
+            sessionFocusTarget(for: id)?.grabFocus()
+            return
+        }
         store.toggleSplit(id)
         reconcile()
         updateToggleIcons()
-        focusedSurface(for: id)?.grabFocus()
+        sessionFocusTarget(for: id)?.grabFocus()
     }
 
     func closeSplitPane(_ id: UUID) {
         store.closeSplitPane(id)
         reconcile()
-        surfaces[id]?.grabFocus()
+        sessionFocusTarget(for: id, wantSplit: false)?.grabFocus()
     }
 
     func toggleScratch() {
@@ -749,7 +739,7 @@ final class AppController {
     /// Move keyboard focus between the two split panes of the active session.
     func focusPane(left: Bool) {
         guard let id = store.selectedSessionID, store.session(withID: id)?.hasSplit == true else { return }
-        (left ? surfaces[id] : splitSurfaces[id])?.grabFocus()
+        sessionFocusTarget(for: id, wantSplit: !left)?.grabFocus()
     }
 
     /// Ctrl+Tab: jump to the most-recently-used OTHER session. Selecting re-pushes recency,
@@ -776,19 +766,20 @@ final class AppController {
     /// first) with the current one highlighted. A GtkOverlay child over the deck, rebuilt on each advance.
     private func showSwitcherOverlay() {
         hideSwitcherOverlay()
-        guard let overlay = deckOverlay, let box = op(gtk_box_new(GTK_ORIENTATION_VERTICAL, 2)) else { return }
-        gtk_widget_set_halign(W(box), GTK_ALIGN_CENTER)
-        gtk_widget_set_valign(W(box), GTK_ALIGN_CENTER)
+        guard let overlay = deckOverlay, let box = op(gtk_box_new(GTK_ORIENTATION_VERTICAL, 2)),
+              let scroller = sessionSwitcherScroller(containing: box) else { return }
         gtk_widget_add_css_class(W(box), "agterm-switcher")
+        gtk_widget_add_css_class(W(box), "agterm-interface-panel")
         for id in sessionSwitcher.ordered {
             guard let s = store.session(withID: id), let label = op(gtk_label_new(s.displayName)) else { continue }
             gtk_widget_set_margin_start(W(label), 18); gtk_widget_set_margin_end(W(label), 18)
             gtk_label_set_xalign(label, 0)
+            gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_END)
             if id == sessionSwitcher.current { gtk_widget_add_css_class(W(label), "agterm-switcher-current") }
             gtk_box_append(cast(box), W(label))
         }
-        switcherBox = box
-        gtk_overlay_add_overlay(overlay, W(box))
+        switcherBox = scroller
+        gtk_overlay_add_overlay(overlay, W(scroller))
     }
 
     private func hideSwitcherOverlay() {

@@ -21,6 +21,11 @@ struct agtermApp: App {
     @State private var appearanceObserver: SystemAppearanceObserver
     @State private var accessibilityObserver: SystemAccessibilityObserver
 
+    /// Whether this launch owes the user the first-run welcome. Decided in `init()`, because the first
+    /// launch writes its own window snapshot moments after the scene appears and that write would read back
+    /// as prior state.
+    private let welcomeDue: Bool
+
     /// The plain `WindowGroup`'s scene id, used by `openWindow(id:)` to spawn additional windows.
     private static let windowGroupID = "terminal"
 
@@ -28,49 +33,49 @@ struct agtermApp: App {
     private static let terminalProgramVersion =
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
 
-    /// Application-hosted XCTest loads the real app executable before test `setUp`. Its scheme supplies
-    /// isolated state/socket paths plus this sentinel before `init()` runs; the scene uses a shell-free
-    /// placeholder so hosted model/AppKit tests never mount terminal surfaces or start the control server.
+    /// Hosted XCTest loads the real executable before `setUp`, so its scheme sets isolated state/socket paths
+    /// plus this sentinel pre-`init()`; the scene then mounts a placeholder — no surfaces, no server.
     static var isHostedUnitTest: Bool {
         ProcessInfo.processInfo.environment["AGTERM_HOSTED_TESTS"] == "1"
     }
 
     init() {
+        let stateDirectory = ProcessInfo.processInfo.environment["AGTERM_STATE_DIR"]
+            .map { URL(fileURLWithPath: $0, isDirectory: true) } ?? PersistenceStore.defaultDirectory
+        // FIRST, before anything reads or writes the state directory: `WindowLibrary`'s bootstrap seeds a
+        // window and saves it, which a later read would see as evidence of an earlier launch.
+        let hadPriorState = FirstRunWelcome.hasPriorState(in: stateDirectory)
         let library = agtermApp.restoredLibrary()
         _library = State(initialValue: library)
         let actions = AppActions(library: library)
         _actions = State(initialValue: actions)
-        // settings persist alongside the workspace snapshot (same AGTERM_STATE_DIR override). Built
-        // before the control server so the server can drive `keymap.reload` on it (both depend only on
-        // the library, so this reorder is safe).
-        let settingsStore = ProcessInfo.processInfo.environment["AGTERM_STATE_DIR"]
-            .map { SettingsStore(directory: URL(fileURLWithPath: $0, isDirectory: true)) } ?? SettingsStore()
+        // settings persist alongside the workspace snapshot (same AGTERM_STATE_DIR override); built before the
+        // control server so it can drive `keymap.reload`, safe since both need only the library.
+        let settingsStore = SettingsStore(directory: stateDirectory)
         let settingsModel = SettingsModel(library: library, settingsStore: settingsStore)
         _settingsModel = State(initialValue: settingsModel)
+        welcomeDue = FirstRunWelcome.isDue(welcomeShown: settingsModel.settings.welcomeShown,
+                                           hasPriorState: hadPriorState)
         let controlServer = ControlServer(library: library, actions: actions, settingsModel: settingsModel)
         _controlServer = State(initialValue: controlServer)
         _sessionSwitcher = State(initialValue: SessionSwitcher(library: library, canSwitch: { actions.uiActionsEnabled }))
         _paneShortcuts = State(initialValue: PaneShortcuts(library: library, actions: actions))
         _undoCloseShortcut = State(initialValue: UndoCloseShortcut(actions: actions))
-        // the custom-command runner needs the keymap (settings) and the bound socket path (control
-        // server) for the `{AGT_SOCKET}` token; built last so both are available.
+        // built last: needs the keymap (settings) and the control server's bound socket path for `{AGT_SOCKET}`.
         _customCommandRunner = State(initialValue: CustomCommandRunner(
             library: library, settings: settingsModel,
             socketProvider: { controlServer.resolvedSocketPath }))
-        // follows the macOS light/dark appearance via an app-level KVO observer on
-        // NSApp.effectiveAppearance (see SystemAppearanceObserver). No dependencies; started in `.task`.
+        // follows macOS light/dark via KVO on NSApp.effectiveAppearance; dependency-free, started in `.task`.
         _appearanceObserver = State(initialValue: SystemAppearanceObserver())
-        // follows Reduce Motion / Reduce Transparency through NSWorkspace's accessibility display
-        // notification and fans live changes out to AppKit consumers. SwiftUI consumers use Environment.
+        // follows Reduce Motion / Reduce Transparency via NSWorkspace's accessibility-display notification,
+        // fanning live changes to AppKit consumers; SwiftUI ones use Environment.
         _accessibilityObserver = State(initialValue: SystemAccessibilityObserver())
     }
 
     var body: some Scene {
-        // a plain WindowGroup: it auto-opens one window at launch and one per `openWindow(id:)`.
-        // (A value-based `WindowGroup(for:)` does NOT auto-open at launch when SwiftUI window
-        // restoration is off, so it can't bootstrap the first window.) `WindowLibrary` is the single
-        // source of truth for the open-set: each appearing window claims the next open id from the
-        // library's claim queue (Task 0 dedup-by-id); a window beyond the open set dismisses itself.
+        // a plain WindowGroup auto-opens one window at launch plus one per `openWindow(id:)`; value-based
+        // `WindowGroup(for:)` can't bootstrap the first (no auto-open with SwiftUI restoration off). windows
+        // claim the next open id off `WindowLibrary`'s claim queue (dedup-by-id); one past the set dismisses itself.
         WindowGroup(id: Self.windowGroupID) {
             if Self.isHostedUnitTest {
                 Color.clear
@@ -85,15 +90,18 @@ struct agtermApp: App {
                         Self.makeSplitSurface(for: $0, store: $1,
                                               env: surfaceEnv(for: $0, pane: .right), library: library)
                     },
-                    makeOverlaySurface: { Self.makeOverlaySurface(for: $0, store: $1, env: surfaceEnv(for: $0)) },
+                    makeOverlaySurface: {
+                        Self.makeOverlaySurface(for: $0, store: $1, pane: $2, env: surfaceEnv(for: $0))
+                    },
                     makeScratchSurface: { session, store in
-                        // suppress the scratch's creation autoFocus when a full overlay OR this window's quick
-                        // terminal is already up — each renders above the scratch and owns focus.
+                        // suppress the scratch's creation autoFocus when a caller's program overlay or this
+                        // window's quick terminal is up — each renders above it and owns focus. A HUD renders
+                        // above it too but owns nothing, so it must not hold focus off a scratch just shown.
                         let qtVisible = library.windowID(forSession: session.id)
                             .flatMap { QuickTerminalRegistry.shared.controller(for: $0) }?.isVisible ?? false
                         return Self.makeScratchSurface(for: session, store: store,
                                                        env: surfaceEnv(for: session, pane: .scratch),
-                                                       suppressAutoFocus: session.overlayActive || qtVisible,
+                                                       suppressAutoFocus: session.programOverlayActive || qtVisible,
                                                        library: library)
                     },
                     quickTerminalEnv: { quickTerminalEnv(for: $0) },
@@ -104,89 +112,76 @@ struct agtermApp: App {
                     .frame(minWidth: 640, minHeight: 400)
                     .task {
                         appDelegate.library = library
-                        // give the action hub a window opener (the scene's `openWindow` is only reachable
-                        // here) so the cross-window reveal can reopen a banner-clicked closed window, and a
-                        // control-socket window.new/window.select can open one: raise it if it's already
-                        // on-screen, else claim its id + spawn a new window. Installed BEFORE the control
-                        // server starts so an early socket command never finds it nil (returns ok with no
-                        // window opened).
+                        // `openWindow` lives only in the scene: hand it to the action hub for cross-window
+                        // reveal and `window.new`/`window.select` (raise if on-screen, else claim + spawn).
+                        // MUST precede `controlServer.start()`, or an early command finds it nil: ok, no window.
                         actions.openWindow = { id in
                             if WindowRegistry.shared.raise(id) { return }
                             library.enqueueClaim(id)
                             openWindow(id: Self.windowGroupID)
                         }
-                        // start the control channel (idempotent) and hand the delegate a
-                        // reference so it can stop + unlink the socket on terminate.
+                        // start the control channel (idempotent); the delegate reference stops it + unlinks the
+                        // socket on terminate.
                         appDelegate.controlServer = controlServer
                         controlServer.start()
-                        // the quick terminal is per-window now: each WindowContentView owns its own
-                        // controller and binds its own cwdProvider to that window's active session.
-                        // install the Ctrl-Tab session-switcher key monitors (idempotent).
+                        // Ctrl-Tab session-switcher key monitors (idempotent).
                         sessionSwitcher.start()
-                        // install the Ctrl-1/Ctrl-2 direct pane-focus key monitor (idempotent).
+                        // Ctrl-1/Ctrl-2 direct pane-focus key monitor (idempotent).
                         paneShortcuts.start()
-                        // install the undo-close shortcut (idempotent); it passes through text fields so
-                        // native edit undo still wins there.
+                        // undo-close shortcut (idempotent); passes through text fields so native undo wins there.
                         undoCloseShortcut.start()
-                        // install the custom-command key monitor (idempotent); rebuilds its matcher from
-                        // the keymap on `.agtermKeymapChanged`. Hand the delegate a reference so it can
-                        // remove the monitor on terminate.
+                        // custom-command key monitor (idempotent): rebuilds its matcher from the keymap on
+                        // `.agtermKeymapChanged`, removed on terminate via the delegate reference.
                         appDelegate.customCommandRunner = customCommandRunner
                         appDelegate.settingsModel = settingsModel
-                        // hand the delegate the action hub and drain any folders an `open -a agterm /path`
-                        // queued before the window store resolved.
+                        // hand the delegate the action hub and drain folders `open -a agterm /path` queued
+                        // before the window store resolved.
                         appDelegate.actions = actions
                         appDelegate.drainPendingOpenDirectories()
                         customCommandRunner.start()
-                        // wire the keymap + runner into the action hub so the command palette can list the
-                        // custom commands and run them (both are built after `actions`, so they're set here
-                        // rather than in the init, mirroring the NotificationManager wiring below).
+                        // wire the keymap + runner into the action hub for the command palette's custom
+                        // commands; both are built after `actions`, so not in `init`.
                         actions.settingsModel = settingsModel
-                        // seed the auto-follow setting into every open window's store now that the model is
-                        // wired — deterministic regardless of the per-window resolveStore/onAppear ordering
-                        // (the resolveStore seed handles windows opened later). Idempotent.
+                        // seed auto-follow into every open store now the model is wired: idempotent and
+                        // order-independent of resolveStore/onAppear (later windows seed in resolveStore).
                         settingsModel.applyAutoFollowToAllWindows()
                         actions.customCommandRunner = customCommandRunner
                         // the action hub opens the .themes palette for the "Select Theme…" launcher + menu.
                         actions.palette = palette
-                        // register the notification delegate + request authorization (idempotent), and
-                        // hand it the action hub + library so a banner click can navigate to the firing
-                        // pane and the capture side can stamp the firing window id into the identity.
+                        // register the notification delegate + request authorization (idempotent); the hub +
+                        // library let a banner click reach the firing pane and stamp its window id in.
                         NotificationManager.shared.actions = actions
                         NotificationManager.shared.library = library
                         NotificationManager.shared.start()
-                        // drive the Dock icon's count badge (via UNUserNotifications) from the app-wide unseen
-                        // total (the same Session.unseenCount the sidebar pills track, summed across windows).
+                        // drive the Dock badge (via UNUserNotifications) from the app-wide unseen total — the
+                        // sidebar pills' Session.unseenCount summed across windows.
                         DockBadgeController.shared.library = library
                         DockBadgeController.shared.start()
-                        // surface keymap parse errors / conflicts loaded at SettingsModel init (too early to
-                        // post then — before notification registration above). Only on the launch window:
-                        // `hasReopened` is still false here for the first window's `.task` (reopenWindows()
-                        // below flips it), so subsequent windows don't repost the same banner.
+                        // keymap parse errors / conflicts from SettingsModel init — too early to post then,
+                        // before registration. launch window only: `hasReopened` is false until `reopenWindows()`.
                         if !library.hasReopened, !settingsModel.keymapDiagnostics.isEmpty {
                             NotificationManager.shared.notifyKeymapDiagnostics(count: settingsModel.keymapDiagnostics.count)
                         }
-                        // same for ghostty config diagnostics: GhosttyApp.loadConfig records them at boot
-                        // (applicationDidFinishLaunching, before notification registration), so surface them
-                        // here on the launch window only, the same `hasReopened` gate as the keymap banner.
+                        // same for ghostty config diagnostics, recorded at boot by GhosttyApp.loadConfig
+                        // (applicationDidFinishLaunching, before registration): same `hasReopened` gate.
                         if !library.hasReopened, GhosttyApp.shared.lastConfigDiagnosticsCount > 0 {
                             NotificationManager.shared.notifyConfigDiagnostics(count: GhosttyApp.shared.lastConfigDiagnosticsCount)
                         }
-                        // reopen every window that was open at quit. SwiftUI auto-opened one window
-                        // (this one) at launch, which claimed the launch id; open one more per remaining
-                        // open id. runs once (the .task fires per window) via the library latch.
+                        // runs once via the library latch — the .task fires per window.
                         reopenWindows()
                         appDelegate.scheduleRestoredWindowReconciliation(reason: "scene-task")
-                        // start following the macOS appearance last: `[.initial]` seeds the launch side once
-                        // the eager-deck surfaces exist (idempotent, so per-window `.task` re-entry is safe).
+                        // start appearance following last: `[.initial]` seeds the launch side once the
+                        // eager-deck surfaces exist; idempotent, so per-window `.task` re-entry is safe.
                         appearanceObserver.start()
-                        // Consumers read current accessibility values at first render; this handles live flips.
+                        // consumers read current accessibility values at first render; this handles live flips.
                         accessibilityObserver.start()
+                        // last: a modal here blocks the rest of the task, and the window behind it should be
+                        // fully wired before it opens. `presentOnce` latches, so the per-window .task is safe.
+                        if welcomeDue { WelcomeAlert.presentOnce(settingsModel: settingsModel) }
                     }
             }
         }
-        // chromeless: no system title bar (the traffic lights float over our custom titlebar row in
-        // ContentView), so there's no empty title-bar strip above our header.
+        // chromeless: traffic lights float over ContentView's custom titlebar row, so no empty strip above it.
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 900, height: 600)
         .windowResizability(.contentMinSize)
@@ -197,10 +192,8 @@ struct agtermApp: App {
         }
     }
 
-    /// Builds the app-global window library rooted at the state directory. The library's bootstrap
-    /// runs migration/recovery (legacy `workspaces.json` → one window, else seed) so the resulting
-    /// window set is always valid and non-empty. UI tests pass `AGTERM_STATE_DIR` to isolate persistence
-    /// in a temp dir so a run never touches the user's real state.
+    /// Builds the app-global window library at the state directory — `AGTERM_STATE_DIR`, a temp dir under UI test.
+    /// Bootstrap migrates/recovers (legacy `workspaces.json` → one window, else seed): always valid, non-empty.
     @MainActor
     private static func restoredLibrary() -> WindowLibrary {
         ProcessInfo.processInfo.environment["AGTERM_STATE_DIR"]
@@ -208,35 +201,30 @@ struct agtermApp: App {
             ?? WindowLibrary()
     }
 
-    /// Opens the additional windows that were open at quit. SwiftUI auto-opened one window at launch
-    /// (it claimed the launch id), so this opens one more per remaining open id. Runs once via the
-    /// library latch (`consumeReopen` seeds the claim queue and returns the extra-window count).
+    /// Opens the windows open at quit beyond the one SwiftUI auto-opened at launch (which claimed the launch
+    /// id). Runs once via the library latch: `consumeReopen` seeds the claim queue, returning the extra count.
     @MainActor
     private func reopenWindows() {
         let extra = library.consumeReopen()
         for _ in 0..<extra { openWindow(id: Self.windowGroupID) }
     }
 
-    /// Surface factory: creates a libghostty-backed view for the session, spawning
-    /// a login shell in the session's initial working directory. On shell exit the
-    /// view calls back to close the owning session in the store.
+    /// Surface factory: a libghostty-backed view for the session, spawning a login shell in its initial working
+    /// directory. On shell exit the view calls back to close the owning session in the store.
     @MainActor
     private static func makeSurface(for session: Session, store: AppStore, env: [String: String],
                                     library: WindowLibrary) -> GhosttySurfaceView {
-        // `initialCommand` (from `session.new --command`) runs as the surface's process instead of the
-        // login shell; on its exit the surface's onExit (below) closes the single session, like kitty.
-        // restore-running-command: `foregroundCommand` (a distinct child captured at quit) is consumed
-        // run-once here; the persisted `initialCommand` is the durable creation identity (re-emitted by every
-        // `snapshot()`). A command that exec-replaces the shell is invisible to libghostty's foreground pid
-        // (nil), so it is never captured and restores via the exec `command` path (preserving close-on-exit).
-        // The gate + precedence (fresh-always-runs, restored-honors-toggle, a captured foreground preempts
-        // `initialCommand` even when denylist-suppressed) is the host-free `CommandRestore.restorePlan`.
-        // A pinned override (`session.restore`) wins over BOTH the capture and `initialCommand`; it is read
-        // from the TRANSIENT pending slot (seeded only by an app-bootstrap restore), never from the sticky
-        // persisted field, and taking it clears it so a second surface for this pane runs a plain shell.
-        let hadForeground = session.foregroundCommand != nil
-        let restoreInput = Self.restoreInitialInput(session.foregroundCommand)
-        session.foregroundCommand = nil
+        // `initialCommand` (`session.new --command`) replaces the login shell and closes the session on its exit
+        // (like kitty); it is the durable creation identity, re-emitted by every `snapshot()`. `foregroundCommand`,
+        // a distinct child captured at quit, is consumed run-once; an exec-replacing command has a nil libghostty
+        // foreground pid, so it is never captured and restores via the exec `command` path, keeping close-on-exit.
+        // Precedence is host-free `CommandRestore.restorePlan`: fresh always runs, restored honors the toggle, a
+        // captured foreground preempts `initialCommand` even when denylist-suppressed. A `session.restore` override
+        // beats both, from the TRANSIENT pending slot (only an app-bootstrap restore seeds it) not the sticky
+        // persisted field; taking it clears it, so this pane's next surface is a plain shell.
+        let pendingForeground = session.takePendingForegroundCommand(pane: .left)
+        let hadForeground = pendingForeground != nil
+        let restoreInput = Self.restoreInitialInput(pendingForeground)
         let inputs = CommandRestore.RestoreInputs(wasRestored: session.wasRestored,
                                                   restoreEnabled: GhosttyApp.shared.restoreRunningCommand,
                                                   hadForeground: hadForeground, foregroundInput: restoreInput,
@@ -250,7 +238,7 @@ struct agtermApp: App {
         let sessionID = session.id
         view.onExit = { [weak view] in
             guard let view else { return }
-            Self.handlePaneExit(view, store: store, sessionID: sessionID)
+            Self.handlePaneExit(view, store: store, sessionID: sessionID, library: library)
         }
         view.onFocusChange = { focused in
             guard focused else { return }
@@ -259,8 +247,8 @@ struct agtermApp: App {
             store.clearUnseen(sessionID)
             NotificationManager.shared.clearDelivered(sessionID: sessionID)
         }
-        // the focus-free half of the clear above, for the zoom-hosted case where the focus report is
-        // suppressed but the refocused user is looking at exactly this surface.
+        // focus-free half of the clear above: zoom hosting suppresses the focus report though the refocused
+        // user is looking right at this surface.
         view.onClearUnseen = {
             store.clearUnseen(sessionID)
             NotificationManager.shared.clearDelivered(sessionID: sessionID)
@@ -272,37 +260,38 @@ struct agtermApp: App {
         return view
     }
 
-    /// Shell-exit handler shared by BOTH pane factories, dispatched on the surface's CURRENT role rather
-    /// than the factory that built it: a promoted split survivor (built by `makeSplitSurface`, then moved
-    /// into the main slot with `isSplitPane` cleared) must run `closePrimaryPane` on its own exit — else
-    /// a re-split followed by exiting the main pane fires the stale `closeSplitPane`, whose guard now
-    /// passes (both slots live) and tears down the fresh right pane, stranding the session on the dead
-    /// left one. Mirrors the role-aware `onFocusChange` so fresh and promoted panes route the same way.
+    /// Shell-exit handler for BOTH pane factories, dispatched on the surface's CURRENT role, not the factory that
+    /// built it (role-aware like `onFocusChange`): a promoted split survivor (main slot, `isSplitPane` cleared) must
+    /// run `closePrimaryPane`, or a re-split then a main-pane exit fires the stale `closeSplitPane` — its guard now
+    /// passes with both slots live — tearing down the fresh right pane, stranding the session on the dead left.
     @MainActor
-    private static func handlePaneExit(_ view: GhosttySurfaceView, store: AppStore, sessionID: UUID) {
+    private static func handlePaneExit(_ view: GhosttySurfaceView, store: AppStore, sessionID: UUID,
+                                       library: WindowLibrary) {
         if view.isSplitPane {
             store.closeSplitPane(sessionID)
         } else {
             store.closePrimaryPane(sessionID)
-            // a promoted survivor was built by makeSplitSurface (which omits onFontSizeChange); as the
-            // session's now-sole pane it should persist its own cmd +/- like a real primary, so adopt that
-            // wiring. no-op when the session closed instead (single pane) — `surface` is then nil.
+            // makeSplitSurface omits onFontSizeChange, but a promoted survivor is the sole pane and must persist
+            // its own cmd +/-. no-op when the session closed instead (`surface` nil).
             if let promoted = store.session(withID: sessionID)?.surface as? GhosttySurfaceView {
                 promoted.onFontSizeChange = { store.setFontSize(sessionID, $0) }
+                // the same "session survived ⇒ its split was promoted" test, for a dashboard holding this
+                // session by `<id>:right`. synchronous, so it lands before the reconcile onChange prunes the
+                // cell; this is the only place that can tell promotion from the split's own shell exiting.
+                library.windowID(for: store)
+                    .flatMap { DashboardControllerRegistry.shared.controller(for: $0) }?
+                    .promoteSplitMember(session: sessionID)
             }
         }
-        // focus the surviving (now maximized) pane; if the whole session closed instead, focus the session
-        // it reselected to. the collapse/switch re-hosts the target, so use the retry.
-        // resolve through `topmostSurface`, so a pane exiting under an overlay or scratch hands focus to
-        // the cover on top rather than to the pane it hides.
+        // focus the surviving (now maximized) pane, else the session reselected to; the collapse/switch re-hosts
+        // the target, hence the retry. `topmostSurface` prefers an overlay/scratch cover over the pane it hides.
         let target = store.session(withID: sessionID)?.topmostSurface ?? store.activeSession?.topmostSurface
         (target as? GhosttySurfaceView)?.focusAfterReparent()
     }
 
-    /// The `initial_input` for a restored pane: the captured foreground argv re-rendered as a shell
-    /// command line + newline, or nil when the restore-running-command flag is off or the command's
-    /// basename is in the user's `restore-denylist.conf` (→ plain shell). Host-free decisions live in
-    /// `CommandRestore`; the denylist is parsed at launch into `GhosttyApp.shared.restoreDenylist`.
+    /// The `initial_input` for a restored pane: the captured foreground argv re-rendered as a shell command
+    /// line + newline, or nil when the restore-running-command flag is off or the basename is in the user's
+    /// `restore-denylist.conf` (→ plain shell), parsed at launch into `GhosttyApp.shared.restoreDenylist`.
     @MainActor
     private static func restoreInitialInput(_ argv: [String]?) -> String? {
         guard GhosttyApp.shared.restoreRunningCommand, let argv,
@@ -310,14 +299,12 @@ struct agtermApp: App {
         return CommandRestore.shellQuotedLine(argv) + "\n"
     }
 
-    /// Wire the four `onSearch*` surface callbacks to the owning session's search fields, resolving the
-    /// session live via `sessionID`. START toggles: if the session's bar is already open it sends
-    /// `end_search` (the ⌘F-again close) and lets the resulting END do the clear; else it opens the bar
-    /// (`searchActive = true`, seeding any returned needle) and pins THIS surface as `searchSurface` (the
-    /// owner the bar's needle/navigate/close drive). END is the single clear point — it resets the fields,
-    /// clears the owner, hides the bar, and returns first responder to the session's visible terminal.
-    /// TOTAL/SELECTED carry the match count/index. Shared by both surface factories — so the GUI and the
-    /// control channel pin the owner the same way and can't drift.
+    /// Wires the four `onSearch*` callbacks to the owning session's search fields, resolved live via `sessionID`.
+    /// START toggles: with the bar open it sends `end_search` (the ⌘F-again close), letting the resulting END
+    /// clear; else it opens the bar (seeding any returned needle) and pins THIS surface as `searchSurface`, the
+    /// owner the bar's needle/navigate/close drive. END is the single clear point — fields, owner, bar, and first
+    /// responder back to the visible terminal. TOTAL/SELECTED carry the count/index; both factories share it, so
+    /// GUI and control pin the owner alike.
     @MainActor
     private static func wireSearchCallbacks(_ view: GhosttySurfaceView, store: AppStore, sessionID: UUID,
                                             library: WindowLibrary) {
@@ -325,10 +312,8 @@ struct agtermApp: App {
         view.onSearchStart = { [weak view] needle in
             guard let session = store.session(withID: sessionID) else { return }
             if session.searchActive {
-                // bar already open: ⌘F-again close — end search on the PINNED owner (the surface START
-                // first fired on), not the just-fired `view`, so a second ⌘F on the OTHER split pane closes
-                // the original owner rather than stranding it in libghostty search mode. the resulting END
-                // callback clears the fields and refocuses.
+                // ⌘F-again close: end search on the PINNED owner, not the just-fired `view`, so a second ⌘F on
+                // the OTHER split pane closes the original owner instead of stranding it in libghostty search.
                 (session.searchSurface as? GhosttySurfaceView)?.endSearch()
                 return
             }
@@ -343,25 +328,21 @@ struct agtermApp: App {
             session.searchTotal = nil
             session.searchSelected = nil
             session.searchSurface = nil
-            // return first responder to the terminal ONLY when this is still the selected session AND no
-            // covering surface is up: a `session.search --close --target <background>` closes a hidden,
-            // opacity-0 surface whose first responder would steal input from the visible session (hidden
-            // views CAN become first responder), and a cover owns focus itself. besides the in-deck
-            // overlay/scratch (caught by `topmostSurface`), the window-level quick terminal also covers the
-            // session — refocusing the hidden pane behind it would steal focus, so bail while it's up
-            // (it restores the session on its own hide). target the visible `topmostSurface` (overlay >
-            // scratch > active pane) and re-assert past the SwiftUI teardown via the bounded retry.
+            // refocus ONLY while this is still the selected session and no cover is up: `session.search --close
+            // --target <background>` would otherwise make a hidden, opacity-0 surface first responder and steal
+            // input from the visible session (hidden views CAN), and a cover owns focus. `topmostSurface` catches
+            // the in-deck overlay/scratch (overlay > scratch > active pane) but not the window-level quick
+            // terminal, so bail while that is up — it refocuses on hide; the retry outlasts the SwiftUI teardown.
             guard store.selectedSessionID == sessionID else { return }
             let windowID = library.windowID(forSession: sessionID)
             let quickTerminalVisible = windowID
                 .flatMap { QuickTerminalRegistry.shared.controller(for: $0) }?.isVisible ?? false
             guard !quickTerminalVisible else { return }
-            // terminal zoom owns focus above the whole deck, and zoom-enter itself ends an open search —
-            // this END lands a tick later, so refocusing the deck's topmost surface here would steal
-            // first responder back from the zoomed terminal (the zoom cover bails like the quick one).
+            // terminal zoom owns focus above the deck and zoom-enter ends an open search; this END lands a tick
+            // later, so refocusing would steal first responder back from the zoomed terminal.
             guard windowID.flatMap({ TerminalZoomRegistry.shared.controller(for: $0) })?.target == nil else { return }
-            // A control picker is the topmost modal. `session.search --to close` remains valid cleanup while
-            // one is pending, but its asynchronous END callback must not return focus behind the picker.
+            // a control picker is the topmost modal: `session.search --to close` stays valid cleanup while one
+            // is pending, but its async END must not return focus behind it.
             guard PickRegistry.shared.controller(for: windowID)?.pending == nil else { return }
             (session.topmostSurface as? GhosttySurfaceView)?.focusAfterReparent()
         }
@@ -369,15 +350,12 @@ struct agtermApp: App {
         view.onSearchSelected = { selected in store.session(withID: sessionID)?.searchSelected = selected }
     }
 
-    /// Wire the pane-scoped keystroke-clear: `keyDown` fires `onUserInputClearsStatus` unconditionally, and
-    /// this closure clears the status back to idle ONLY when the host-free `AgentIndicator.clearedBy(pane:isInterrupt:)`
-    /// says the keystroke's OWN pane owns the current status — so a block set from a background pane survives
-    /// foreground typing in another pane. The main/split panes resolve their pane from the surface's LIVE role
-    /// (`isSplitPane`) at keystroke time, NOT statically: a promoted split survivor (a split surface whose
-    /// `isSplitPane` was cleared) then clears as `.left`, matching its migrated status identity and `tree`
-    /// addressing — a statically-captured `.right` would keep clearing the wrong pane after promotion, and a
-    /// re-split would leave both panes `.right`-wired (mirrors the role-aware `onFocusChange`). The scratch pane
-    /// passes `fixedPane: .scratch` (never promoted, and it has no `view.session` to read a role from).
+    /// Wires the pane-scoped keystroke-clear: `keyDown` fires `onUserInputClearsStatus` unconditionally, and this
+    /// closure clears to idle only when host-free `AgentIndicator.clearedBy(pane:isInterrupt:)` says the keystroke's
+    /// OWN pane owns the status, so a block set from a background pane survives typing elsewhere. Main/split read
+    /// the LIVE `isSplitPane` at keystroke time, so a promoted survivor clears as `.left`, matching its migrated
+    /// status identity and `tree` addressing; a captured `.right` would clear the wrong pane and leave both panes
+    /// `.right`-wired after a re-split. The scratch passes `fixedPane: .scratch`: never promoted, no `view.session`.
     @MainActor
     private static func wireStatusClear(_ view: GhosttySurfaceView, store: AppStore, sessionID: UUID,
                                         fixedPane: StatusPane? = nil) {
@@ -389,25 +367,20 @@ struct agtermApp: App {
         }
     }
 
-    /// Split-pane surface factory: a second independent login shell in the session's current
-    /// directory. Wired to the session as `isSplitPane`, so its PWD/title reports go to
-    /// `session.splitCwd`/`splitTitle` (never clobbering the primary's), and on shell exit it closes
-    /// just the split (hide + teardown), not the whole session.
+    /// Split-pane surface factory: a second independent login shell in the session's current directory, wired as
+    /// `isSplitPane` so its PWD/title reports go to `session.splitCwd`/`splitTitle` and its shell exit closes
+    /// just the split (hide + teardown), not the session.
     @MainActor
     private static func makeSplitSurface(for session: Session, store: AppStore, env: [String: String],
                                          library: WindowLibrary) -> GhosttySurfaceView {
-        // seed the split's cwd from its persisted `initialSplitCwd` (so a restored split keeps its
-        // own directory, not the primary's), falling back to the session's effectiveCwd for a fresh
-        // split. Font size matches the primary; its own cmd +/- changes aren't persisted. It inherits
-        // the parent session's window/workspace/session ids in the env.
-        // restore-running-command: re-run the split pane's captured foreground command via initial_input
-        // (consumed run-once). Splits never carry an `initialCommand`, so no mutual-exclusion guard and no
-        // `restorePlan` — `restoreInput` alone decides. A pinned override (`session.restore`) wins over the
-        // capture; it comes from the TRANSIENT pending slot (seeded only by an app-bootstrap restore whose
-        // split was shown), never the sticky persisted field, and taking it clears it — this factory runs
-        // again when a split shell exits and the user opens a fresh ⌘D split, which must be a plain shell.
-        let capturedInput = Self.restoreInitialInput(session.splitForegroundCommand)
-        session.splitForegroundCommand = nil
+        // cwd is the persisted `initialSplitCwd` (a restored split keeps its own directory), else the session's
+        // effectiveCwd. Font size matches the primary; the split's own cmd +/- is not persisted. Env inherits the
+        // parent's window/workspace/session ids. The captured foreground command re-runs via initial_input
+        // (run-once); splits never carry an `initialCommand`, so there is no mutual-exclusion guard and no
+        // `restorePlan` — `restoreInput` alone decides. A `session.restore` override wins over the capture, from
+        // the TRANSIENT pending slot (seeded only by an app-bootstrap restore whose split was shown) not the
+        // sticky persisted field; taking it clears it, so a fresh ⌘D split after a split shell exits is a shell.
+        let capturedInput = Self.restoreInitialInput(session.takePendingForegroundCommand(pane: .right))
         let restoreInput = CommandRestore.restoreInput(restoreEnabled: GhosttyApp.shared.restoreRunningCommand,
                                                        restoreOverride: session.takePendingRestoreOverride(pane: .right),
                                                        capturedInput: capturedInput)
@@ -418,13 +391,12 @@ struct agtermApp: App {
         let sessionID = session.id
         view.onExit = { [weak view] in
             guard let view else { return }
-            Self.handlePaneExit(view, store: store, sessionID: sessionID)
+            Self.handlePaneExit(view, store: store, sessionID: sessionID, library: library)
         }
         view.onFocusChange = { [weak view] focused in
             guard focused else { return }
-            // a promoted survivor keeps this split-factory closure but has had `isSplitPane` cleared, so
-            // honor the view's CURRENT role: once it is the main pane it must NOT re-raise `splitFocused`
-            // (which would mask its migrated title and mis-route focus after a later re-split).
+            // a promoted survivor keeps this closure with `isSplitPane` cleared: as the main pane it must not
+            // re-raise `splitFocused`, which masks its migrated title and mis-routes focus after a re-split.
             store.session(withID: sessionID)?.splitFocused = view?.isSplitPane ?? false
             store.clearUnseen(sessionID)
             NotificationManager.shared.clearDelivered(sessionID: sessionID)
@@ -440,58 +412,103 @@ struct agtermApp: App {
         return view
     }
 
-    /// The fixed wrapper that runs the overlay command and records its exit status to a temp file.
-    /// stdout/stderr are NOT redirected (so a TUI renders normally); only the status is captured.
+    /// The fixed wrapper running the overlay command and recording its exit status to a temp file. stdout/stderr
+    /// are NOT redirected (so a TUI renders normally); only the status is captured.
     private static let overlayExitWrapper = "sh -c '\(OverlayCapture.shellLine)'"
 
-    /// Overlay-terminal surface factory: an ephemeral surface running the session's `overlayCommand`
-    /// as its process in `overlayCwd` (default the session's current dir). Like the split, it is NOT
-    /// wired to the session (no `view.session`), so its PWD reports don't clobber the session's
-    /// cwd. When the command exits, the surface's process-exit fires `onExit` → `closeOverlay`,
-    /// which tears the surface down and hides the overlay — so the program's exit makes it vanish.
+    /// Overlay-terminal surface factory: an ephemeral surface running the session's `overlayCommand` in
+    /// `overlayCwd` (default the session's current dir). NOT wired to the session (no `view.session`), so its
+    /// PWD reports don't clobber the session cwd; on exit `onExit` → `closeOverlay` tears it down and hides it.
+    ///
+    /// `pane` picks WHICH slot supplies the command/cwd/wait/color and receives the exit status: nil is the
+    /// session-wide overlay, `left`/`right` the pane-scoped one covering that split pane alone. The temp
+    /// exit-code file is minted per call, so two pane overlays open at once never share one.
+    ///
+    /// A HUD occupies the session-wide slot with the bundled helper as its command: it spawns NON-FOCUSING
+    /// and captures no exit status, since it is a message the app painted rather than a program the caller
+    /// ran. Its body file is the helper's only input, deleted with the surface like the exit-code file.
     @MainActor
-    private static func makeOverlaySurface(for session: Session, store: AppStore, env: [String: String]) -> GhosttySurfaceView {
+    private static func makeOverlaySurface(for session: Session, store: AppStore, pane: OverlayPane?,
+                                           env: [String: String]) -> GhosttySurfaceView {
         let sessionID = session.id
-        // wrap the command so its exit status lands in a per-surface temp file. No stdout/stderr
-        // redirect — the program renders in the overlay as usual.
+        let spec = Self.overlaySpec(for: session, pane: pane)
+        // the session-wide slot's occupant decides passivity; the body file is what that occupant needs
+        let isHud = pane == nil && session.hudActive
+        let hudFile = isHud ? session.hudFile : nil
         let codeFile = (NSTemporaryDirectory() as NSString).appendingPathComponent("agterm-ovl-\(UUID().uuidString).code")
         var overlayEnv = env
-        overlayEnv[OverlayCapture.cmdEnvKey] = session.overlayCommand ?? ""
+        overlayEnv[OverlayCapture.cmdEnvKey] = spec.command
         overlayEnv[OverlayCapture.codeEnvKey] = codeFile
-        let view = GhosttySurfaceView(workingDirectory: session.overlayCwd ?? session.effectiveCwd,
+        if let hudFile { overlayEnv[HudLayout.fileEnvKey] = hudFile }
+        let view = GhosttySurfaceView(workingDirectory: spec.cwd ?? session.effectiveCwd,
                                       fontSize: session.fontSize.map(Float.init), command: overlayExitWrapper,
-                                      waitAfterCommand: session.overlayWait, autoFocus: true, env: overlayEnv)
+                                      waitAfterCommand: spec.wait, autoFocus: !isHud, env: overlayEnv)
         view.overlayCodeFile = codeFile
-        // the overlay's own background color (session.overlay.open --background-color), applied to the
-        // surface in createSurface — the overlay is sessionless, so it can't read it off the session there.
-        view.overlayBackgroundColorHex = session.overlayBackgroundColor
-        // record the exit status on teardown (the surface always tears down through destroySurface), so
-        // it survives an explicit session.overlay.close that bypasses onExit. a session/window force-close
-        // removes the session first, so this no-ops there — but the result is unqueryable after that anyway.
-        view.onExitCodeCaptured = { store.recordOverlayExit(sessionID, code: $0) }
-        view.onExit = { store.closeOverlay(sessionID) }
-        // typing in the cover counts as user activity: reset the window's auto-follow idle timer so an
-        // idle fire can't change the underlying selection (vanishing the overlay) while you type in it.
-        // destroySurface nils this, breaking the store -> surface -> closure retain cycle.
+        view.hudBodyFile = hudFile
+        // the overlay's own background color (`session.overlay.open --background-color`), applied in
+        // createSurface — the overlay is sessionless, so it can't read it off the session there.
+        view.overlayBackgroundColorHex = spec.backgroundColor
+        // record the exit status on teardown (always via destroySurface), so it survives a `session.overlay.close`
+        // that bypasses onExit; a force-close removes the session first and no-ops here, where it is unqueryable.
+        //
+        // the pane arm's callbacks re-resolve their pane from the slot the surface CURRENTLY occupies, never
+        // the captured `pane`: `closePrimaryPane` MOVES a right-pane overlay into the left slot without
+        // rebuilding the view (`TerminalView.makeNSView` reuses a non-nil slot), so a captured `.right` would
+        // close nothing, record the status where `session.overlay.result --pane left` can't read it, and leave
+        // the promoted pane under a dead overlay forever. The captured value is the pre-realization fallback,
+        // for the window between the open and the slot holding this surface.
+        if let pane {
+            let livePane: @MainActor () -> OverlayPane = { [weak view] in
+                guard let view else { return pane }
+                return store.session(withID: sessionID)?.paneOverlayRole(of: view) ?? pane
+            }
+            view.onExitCodeCaptured = { store.recordPaneOverlayExit(sessionID, pane: livePane(), code: $0) }
+            view.onExit = { store.closePaneOverlay(sessionID, pane: livePane()) }
+            // a PANE overlay tracks its pane's focus like the pane itself does: clicking it moves
+            // `splitFocused`, so the deck's per-pane focus gate keeps it active instead of resigning first
+            // responder on the next update, and `focusedOverlayPane` (⌘W rung, search, `topmostSurface`)
+            // agrees with what the user sees.
+            view.onFocusChange = { focused in
+                guard focused else { return }
+                store.session(withID: sessionID)?.splitFocused = livePane() == .right
+            }
+        } else {
+            // a HUD records nothing: its "program" is the app's own painter, so an exit status would put a
+            // number `session.overlay.result` could report for a message nobody ran.
+            if !isHud {
+                view.onExitCodeCaptured = { store.recordOverlayExit(sessionID, code: $0) }
+            }
+            view.onExit = { store.closeOverlay(sessionID) }
+        }
+        // typing is user activity: resets the auto-follow idle timer so an idle fire can't change the selection
+        // (vanishing the overlay) mid-typing. destroySurface nils this, breaking the store->surface->closure cycle.
         view.onUserInput = { store.noteUserActivity() }
         return view
     }
 
-    /// Scratch-terminal surface factory: a third per-session shell, full-overlay rendered. Like the
-    /// overlay it is NOT operationally wired to the session (no `view.session`/`isSplitPane`), so its
-    /// PWD/title never clobber the session's sidebar name. It does retain a weak visual-config link so the
-    /// session watermark renders on it; unlike the overlay it is kept alive when hidden. Runs a plain
-    /// login shell, or `session.scratchCommand` when set (`session.scratch --command`) — RUN-ONCE: the
-    /// command is consumed here so a respawn after it exits is a plain shell. `autoFocus` grabs first
-    /// responder on show (winning the SwiftUI/AppKit responder race); on the shell's `exit`, `closeScratch`
-    /// hides + tears it down so the next show spawns fresh. Seeds from the session's current dir + env ids.
+    /// The four fields the overlay factory reads, from the session-wide slot (`pane == nil`) or that pane's
+    /// slot. `PaneOverlay` carries them for both kinds; the session-wide slot has no such value type and its
+    /// extra `overlaySizePercent` is geometry the factory never reads. The empty pane fallback is unreachable
+    /// — every mount site tests the same slot in the pass that reaches this factory — but keeps it total.
+    @MainActor
+    private static func overlaySpec(for session: Session, pane: OverlayPane?) -> PaneOverlay {
+        guard let pane else {
+            return PaneOverlay(command: session.overlayCommand ?? "", cwd: session.overlayCwd,
+                               backgroundColor: session.overlayBackgroundColor, wait: session.overlayWait)
+        }
+        return session.paneOverlay(pane) ?? PaneOverlay(command: "")
+    }
+
+    /// Scratch-terminal surface factory: a third per-session shell, full-overlay rendered. Like the overlay it is
+    /// NOT operationally wired to the session (no `view.session`/`isSplitPane`), so its PWD/title never clobber
+    /// the sidebar name, but it keeps a weak visual-config link for the watermark and — unlike the overlay —
+    /// stays alive when hidden. Runs a login shell, or `session.scratchCommand` (`session.scratch --command`)
+    /// RUN-ONCE. `autoFocus` grabs first responder on show (winning the SwiftUI/AppKit responder race); the
+    /// shell's `exit` runs `closeScratch`, hiding + tearing down so the next show is fresh.
     @MainActor
     private static func makeScratchSurface(for session: Session, store: AppStore, env: [String: String],
                                            suppressAutoFocus: Bool, library: WindowLibrary) -> GhosttySurfaceView {
-        // autoFocus on creation gives the first show reliable focus — but suppress it when another
-        // surface already owns focus above the scratch (a full overlay, or the window-level quick
-        // terminal), so a scratch created under one can't steal first responder. Re-shows are focused
-        // via the `scratchActive` onChange (which also defers to those covers).
+        // re-shows are focused via the `scratchActive` onChange (which also defers to those covers).
         // scratchCommand is run-once: read it for this spawn, then clear so a post-exit respawn is a shell.
         let command = session.scratchCommand
         session.scratchCommand = nil
@@ -503,25 +520,21 @@ struct agtermApp: App {
         let sessionID = session.id
         view.onExit = { store.closeScratch(sessionID) }
         Self.wireStatusClear(view, store: store, sessionID: sessionID, fixedPane: .scratch)
-        // typing in the scratch counts as user activity: reset the window's auto-follow idle timer so an
-        // idle fire can't change the underlying selection (hiding the per-session scratch) while you type
-        // in it. destroySurface nils this, breaking the store -> surface -> closure retain cycle.
+        // same idle-timer reset as the overlay: an idle auto-follow fire must not hide the scratch mid-typing.
         view.onUserInput = { store.noteUserActivity() }
-        // the scratch supports in-terminal search (⌘F), so wire the four onSearch* callbacks and mark it
-        // searchable — pinned to the same session, like the main/split panes. Unlike the overlay/quick
-        // terminal, the scratch behaves like a real pane (kept alive across hides), so a bar over it is safe.
+        // the scratch is searchable (⌘F), pinned to the same session as the panes: unlike the overlay/quick
+        // terminal it stays alive across hides, so a bar over it is safe.
         Self.wireSearchCallbacks(view, store: store, sessionID: sessionID, library: library)
         return view
     }
 
-    /// The environment a tree surface (main / split / overlay / scratch) exposes to its spawned shell: the
-    /// `AGTERM_*` session facts plus agterm's app identity (`TERM_PROGRAM`/`TERM_PROGRAM_VERSION`). The window
-    /// id comes from the open store that owns the session (split/overlay/scratch inherit it
-    /// via the same session); the workspace from the session's owning workspace; `AGTERM_SOCKET` is the path
-    /// `ControlServer` will bind (resolved at init, so a launch-window shell that materializes before
-    /// `start()` binds still sees it), honoring a test's `AGTERM_CONTROL_SOCKET` override. `pane` injects the
-    /// matching `AGTERM_PANE` (`left`=main, `right`=split, `scratch`) so the hook wrapper forwards `--pane`
-    /// and a status set from a background pane records which surface blocked; the overlay passes nil (no pane).
+    /// The environment a tree surface (main / split / overlay / scratch) exposes to its shell: the `AGTERM_*`
+    /// session facts plus agterm's identity (`TERM_PROGRAM`/`TERM_PROGRAM_VERSION`). The window id comes from the
+    /// open store owning the session (split/overlay/scratch inherit it), the workspace from the session's owner.
+    /// `AGTERM_SOCKET` is the path `ControlServer` will bind, resolved at init so a launch-window shell
+    /// materializing before `start()` still sees it, honoring a test's `AGTERM_CONTROL_SOCKET` override. `pane`
+    /// injects `AGTERM_PANE` (`left`=main, `right`=split, `scratch`) so the hook wrapper forwards `--pane` and a
+    /// background-pane status records which surface blocked; the overlay passes nil.
     @MainActor
     private func surfaceEnv(for session: Session, pane: StatusPane? = nil) -> [String: String] {
         var windowID: WindowInfo.ID?
@@ -532,9 +545,8 @@ struct agtermApp: App {
                 workspaceID = workspace.id
             }
         }
-        // a session-owned pane (main/split/scratch) gets a fresh stable token baked as AGTERM_PANE_ID so the
-        // agent-status hook can forward it as --pane-id and the status handler resolves the surface's LIVE
-        // slot rather than the baked role (#199); the overlay (pane == nil) needs none.
+        // a session-owned pane bakes a fresh stable AGTERM_PANE_ID, so the hook forwards --pane-id and the
+        // status handler resolves the surface's LIVE slot, not the baked role (#199); the overlay needs none.
         return SurfaceEnvironment.session(sessionID: session.id, windowID: windowID,
                                           workspaceID: workspaceID, socketPath: controlServer.resolvedSocketPath,
                                           programVersion: Self.terminalProgramVersion,

@@ -182,11 +182,11 @@ struct PiIntegrationTests {
         var moveCount = 0
 
         #expect(throws: MoveFailure.self) {
-            try IntegrationFilesystem.apply(operation) { from, to in
+            try IntegrationFilesystem.apply(operation, moveItem: { from, to in
                 moveCount += 1
                 if moveCount == 2 { throw MoveFailure() }
                 try FileManager.default.moveItem(at: from, to: to)
-            }
+            })
         }
 
         #expect(try String(contentsOf: destination, encoding: .utf8) == old)

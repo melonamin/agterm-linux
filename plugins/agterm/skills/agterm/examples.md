@@ -183,7 +183,8 @@ after/before placement, not `--to up|down|top|bottom`.
 
 ## Resize the split divider from a keybinding
 
-The divider is otherwise mouse-drag only — there is no built-in resize action, so bind keys to the CLI
+The divider is otherwise mouse-only — drag it, or double-click it for an even split. There is no built-in
+resize action for any other fraction, so bind keys to the CLI
 with `command "<name>" <chord> <shell…>` custom actions in `keymap.conf` (then `agtermctl keymap reload`):
 
 ```conf
@@ -234,6 +235,36 @@ Manual open + poll for status instead of `--block`:
 agtermctl session overlay open "make test" --target "$AGTERM_SESSION_ID"   # this session
 agtermctl session overlay result --json   # errors "still running" until it exits, then result.exitCode
 ```
+
+## Cover only your own pane, leaving the user's other pane usable
+
+`--pane left|right` scopes the overlay to ONE split pane instead of the whole session. Your shell
+already knows which pane it runs in, so pass `$AGTERM_PANE` and the overlay lands over YOUR pane while
+the user keeps working in the sibling one:
+
+```bash
+agtermctl session overlay open "revdiff HEAD~3" --target "$AGTERM_SESSION_ID" --pane "$AGTERM_PANE"
+```
+
+This works unchanged on a NON-split session, which reports `AGTERM_PANE=left`, so there is no need to
+check the split state first. Two cases still need care: `$AGTERM_PANE` is `scratch` in the scratch
+terminal, which `--pane` rejects as a usage error, and a shell in the LEFT pane of a session whose split
+is hidden with the RIGHT pane focused reports `left` while only the right pane is on screen, so the open
+is refused with `pane not visible`. Handle both by falling back to a session-wide overlay on error.
+Left and right are independent — both may be open at once, each with its
+own `--background-color` — and a pane overlay is always full-pane, so `--size-percent` is rejected with
+it. `--wait`, `--block`, `--cwd` and `--follow` behave exactly as they do for a session-wide overlay;
+`close` and `result` take the same `--pane`:
+
+```bash
+agtermctl session overlay result --target "$AGTERM_SESSION_ID" --pane "$AGTERM_PANE" --json
+agtermctl session overlay close --target "$AGTERM_SESSION_ID" --pane "$AGTERM_PANE"
+```
+
+Read the open panes back from `paneOverlays` in `tree --json`. Opening on a pane that is not on screen
+errors `pane not visible` — a shown split renders both panes, a hidden one only the focused pane, so the
+refused one is the pane without focus; hiding the split afterwards is fine, the program keeps running and
+reappears when the split comes back.
 
 ## Show an image inline
 
@@ -353,9 +384,25 @@ which switches the filter off as the set empties. Per-window and persisted; orth
 `sidebar mode`. While the filter is applied, `session go` navigation is scoped to the marked workspaces'
 sessions; suspending it restores stepping over all sessions.
 
-Every mode acts on `--target`, which defaults to `active` — the workspace of the SELECTED session, not
-whatever the previous line addressed. Focusing does not move the selection, so always name the workspace
-you mean.
+Every mode acts on `--target`, which defaults to `active` — the CURRENT workspace: one that holds the
+target because you created it in the foreground or ran `workspace select` on it while it was empty, else
+the selected session's, else the last. That is not whatever the previous line addressed, so always name
+the workspace you mean. Focusing another workspace hides a target-holding one and hands targeting back,
+so `active` here and `active` a line later can differ.
+
+**These commands MOVE the selection when they leave it invisible**, selecting the most recently used
+session still visible instead: `workspace focus on`, a narrowing `toggle`, a `workspace focus off` whose
+remaining members keep the filter applied, `workspace filter on`, both `sidebar mode` flips, and
+`session flag off` on the selected session while the flagged view is up with other flagged sessions left.
+Other commands do NOT: a plain `session new` or a `session select` of an unflagged session in FLAGGED
+mode makes it active while the flagged list renders no row for it.
+
+A view with NOTHING visible is the exception — nowhere to move to, so the selection stays. The same
+commands repair it, so `session flag on` into an empty flagged view and `workspace focus add` of a
+populated workspace while only empty ones are marked move the selection too. `session flag clear` never
+does, and neither does `session new --no-select`.
+
+Re-read `tree` after any command that changes what is visible, before using the default `active` target.
 
 ```bash
 agtermctl workspace focus on --target "$AGTERM_WORKSPACE_ID"  # zoom to this workspace
@@ -400,8 +447,8 @@ if [ "$was" = "true" ]; then agtermctl workspace filter on; fi
 
 ## Expand or collapse the sidebar tree
 
-Open every workspace at once, or collapse all but the active one (the workspace of the active session,
-which stays expanded and scrolled into view) to cut clutter. Defaults to the frontmost window; pass
+Open every workspace at once, or collapse all but the current one (the same resolution as
+`--target active`, which stays expanded and scrolled into view) to cut clutter. Defaults to the frontmost window; pass
 `--window` to target any open window. A no-op in flagged mode.
 
 ```bash
@@ -617,7 +664,8 @@ ratios, sidebar state, focus, or split/scratch visibility. Surface ids come from
 
 The dashboard shows several sessions' live output in one view-only grid — for watching several agents or
 builds at once. The cell unit is a session+pane: a non-split session is one cell, and a SPLIT session
-shows as TWO cells (its left/primary and right/split panes), capped at 9 cells total. No cell takes input:
+shows as TWO cells (its left/primary and right/split panes) unless the id names one with a `:left`/`:right`
+suffix, capped at 9 cells total. No cell takes input:
 the keyboard navigates a highlight (arrows), Enter jumps into the highlighted session AND focuses that
 exact pane then closes, Esc closes. Open it over the socket with explicit session ids, or with `--mru` to
 pull the window's most-recently-used sessions automatically. The most-recently-used grid also has a built-in
@@ -632,6 +680,19 @@ agtermctl dashboard "$a" "$b" "$c" --auto-size
 
 # no ids: fill the grid from the window's most-recently-used sessions (up to 9, fewer if fewer)
 agtermctl dashboard --mru --auto-size
+
+# name ONE pane of a split session with a :left/:right suffix, so the pane you don't want costs no cell.
+# a bare id still takes every pane, and the suffix works on any head (`active:left`, a unique prefix).
+agtermctl dashboard "$a:left" "$b:right" --auto-size
+
+# the payoff for an agent fleet: keep only the pane running the agent, whichever side it sits on.
+# `foreground`/`splitForeground` are argv ARRAYS (and null when the pane is at a bare prompt), so join
+# before matching — a bare `test` on them errors with "array cannot be matched".
+agtermctl dashboard --auto-size $(agtermctl tree --json | jq -r '
+  .result.tree.workspaces[].sessions[]
+  | if ((.foreground // []) | join(" ") | test("claude|codex")) then "\(.id):left"
+    elif ((.splitForeground // []) | join(" ") | test("claude|codex")) then "\(.id):right"
+    else empty end')
 
 # an absolute cell font in points instead of --auto-size (the two are mutually exclusive)
 agtermctl dashboard "$a" "$b" --font-size 12
@@ -689,6 +750,22 @@ jq -n '[
 ]' | agtermctl pick --prompt "Deploy target" --allow-custom
 ```
 
+Typing matches labels only, so consequence text in a subtitle cannot filter one row out and leave its riskier
+neighbour alone and preselected. An empty query keeps the order the items were supplied in, so the intended
+default can be listed first.
+
+With `--allow-custom` the item list may be empty, which is a rename prompt: `--query` seeds the current
+value and the answer comes back as a custom result. `pick` reads stdin unconditionally, so redirect it or
+the call blocks:
+
+```bash
+agtermctl pick --allow-custom --prompt "Rename to" --query "$current" < /dev/null |
+  jq -r 'select(.result == "custom") | .query'
+```
+
+The seeded value is offered as the custom row on open; without `--query` nothing is listed until the user
+types, since that row needs a nonblank query. Esc cancels.
+
 Open without blocking when another process owns the lifecycle. The picker id reads back from the target
 window's tree as `pickPending`; poll the same window, or cancel by exact id:
 
@@ -707,6 +784,49 @@ agtermctl pick cancel "$pick_id" --window "$AGTERM_WINDOW_ID"
 
 Add `--follow` to raise a background target window when the picker opens. Without it, the picker waits in
 that window without stealing focus.
+
+## Say what you are doing while the user waits
+
+`session hud` posts a passive panel over a session. The session keeps focus and stays typable under it, so
+it is safe to leave up while you compute something. Cover the gap before a picker, then take it down:
+
+```bash
+me="$AGTERM_SESSION_ID"
+
+agtermctl session hud "gathering options…" --spinner --detail "scanning branches" --target "$me"
+
+branches=$(git for-each-ref --format='%(refname:short)' refs/heads)
+
+agtermctl session hud update "ready" --detail "pick a branch" --target "$me"
+choice=$(printf '%s\n' "$branches" | agtermctl pick --prompt "Check out which branch?")
+
+agtermctl session hud close --target "$me"
+```
+
+`hud update` repaints in place, no re-spawn and no blink, and it replaces the whole spec: `--detail`,
+the spinner and `--text-color` are dropped unless repeated. `--spinner-style bar|braille|circle|blocks|dot` picks the look and
+turns the spinner on by itself (`dot` blinks instead of animating, for a panel up for minutes), and an
+update may switch style mid-flight; `--spinner-style none` stops it, which is also what a read-back's
+`none` echoes back to. `--position` anchors the panel to any of the nine
+`top-left|top-center|top-right|center-left|center|center-right|bottom-left|bottom-center|bottom-right`
+(default `center`), the same anchors `session background` takes, each off-center one keeping a fixed margin
+off that pane edge on its own — a corner is what keeps the panel clear of the text being read, and the bare
+`top`/`bottom` still work for the middle column. `--text-color #rrggbb` colors the text (an update can
+change it, unlike `--background-color`), and `--size-percent N` overrides the panel's WIDTH; its height
+always follows the message.
+
+Read it back from the session node, and note the panel does NOT set `overlay` — one slot, and whichever
+occupant holds it is the one that reports:
+
+```bash
+agtermctl tree --json | jq -r --arg s "$me" '
+  .result.tree.workspaces[].sessions[] | select(.id == $s) | .hud.message // "no hud"'
+```
+
+Nothing announces a HUD as an event, so poll `tree` when another process owns the lifecycle. The slot is
+shared with `session overlay open`, which means a second `hud` replaces the first, an `overlay open`
+replaces a HUD, and `overlay result` over one errors `no overlay result: the slot holds a hud`. A HUD over
+a RUNNING program is refused instead: a message is replaceable, a program is not.
 
 ## Navigate and manage windows
 

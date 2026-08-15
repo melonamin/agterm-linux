@@ -63,6 +63,7 @@ extension AppController {
         searchSurface?.endSearch()
         if sessionSwitcher.isActive { endSessionSwitch() }
         dashboard.open(members: members, fontMode: fontMode)
+        refreshPaneOverlayCoverage()
         suppressAutoFollow()
         showDashboardSourcePages()
         showActive(focus: false)
@@ -89,11 +90,12 @@ extension AppController {
         dashboardRuntime.statusIcons = [:]
         dashboardRuntime.clickContexts = []
         dashboard.close()
+        refreshPaneOverlayCoverage()
         resumeAutoFollow()
         restoreSessionTopPages()
         gtk_widget_set_can_target(W(splitView), 1)
         showActive()
-        if refocus { focusedSurface()?.grabFocus() }
+        if refocus { sessionFocusTarget()?.grabFocus() }
     }
 
     func selectDashboardMember(_ member: DashboardMember) {

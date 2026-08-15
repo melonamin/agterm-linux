@@ -28,6 +28,9 @@ echo "Building agterm-linux + agtermctl (Release)…"
 
 install -Dm755 "agterm-linux/.build/release/AgtermLinux" "$BIN_DIR/agterm-linux"
 install -Dm755 "agterm-linux/.build/release/agtermctl-linux" "$BIN_DIR/agtermctl"
+APP_RESOURCES="agterm-linux/.build/release/agterm-linux_AgtermLinux.resources"
+install -d "$BIN_DIR/agterm-linux_AgtermLinux.resources"
+cp -R "$APP_RESOURCES/." "$BIN_DIR/agterm-linux_AgtermLinux.resources/"
 
 # Install the vendored ghostty resources (shell-integration + sibling terminfo) so a session resolves
 # xterm-ghostty + gets shell-integration without a system ghostty package. The app's resolver checks

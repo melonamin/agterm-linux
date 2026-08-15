@@ -78,6 +78,64 @@ func installEmptyWindowKeyController(on window: OpaquePointer?) {
     gtk_widget_add_controller(W(window), keys)
 }
 
+/// `GtkOverlay::get-child-position` on the deck overlay: hands the quick-terminal card an EXPLICIT
+/// rectangle every layout pass, so it stays at `LinuxQuickCardPolicy.cardSizePercent`% of the window
+/// content below the header (macOS parity) and follows a live window resize, instead of the fixed pixel
+/// margins it used to carry. The math itself is host-free in `LinuxQuickCardPolicy.cardAllocation`.
+///
+/// Signal contract. `get-child-position` is declared `when="last"` with a BOOLEAN-HANDLED accumulator,
+/// and `connect()` (`GtkInterop.swift`) uses `g_signal_connect_data` with flags 0 — NOT `G_CONNECT_AFTER`.
+/// An AFTER connection would never run here: the class default returns TRUE for every child and the
+/// accumulator ends the emission at that point. Returning 0 (FALSE) falls through to GTK's default,
+/// alignment-based placement.
+///
+/// This handler answers ONLY for `quickFrame`. EVERY other `deckOverlay` child returns 0 and keeps its
+/// default placement: the per-session floating overlay frames (`AppControllerSurfaces.syncOverlay`), the
+/// zoom host (`AppControllerZoom`), the dashboard host (`AppControllerDashboard`), the Ctrl-Tab switcher
+/// box, and the GL-error label (both in `AppController`). The zoom case is load-bearing — zooming `.quick`
+/// HIDES `quickFrame` and adds a FILL/expand `zoomHost`, which must never be given the card rectangle.
+///
+/// Coordinates. GTK documents the returned allocation as relative to the overlay's MAIN child. Here that
+/// is the same as overlay coordinates, because the main child is the sidebar `GtkPaned` sitting at 0,0 at
+/// full size (the documented exception is a `GtkScrolledWindow` main child, which this is not).
+///
+/// The frame keeps `GTK_ALIGN_FILL` and zero margins on purpose (`AppController.setQuick`):
+/// `gtk_widget_size_allocate` re-applies align + margins INSIDE the rectangle returned here, so copying
+/// `syncOverlay`'s `GTK_ALIGN_CENTER` would collapse the card back to its natural size and silently defeat
+/// the explicit allocation.
+///
+/// Teardown is covered by the usual registry recovery: `controllerForWidget` resolves through `gWindows`,
+/// which `windowWillClose` has already left, so a late emission on a closing window falls through to the
+/// default placement instead of touching a freed controller. A nil `quickFrame` does the same; a HIDDEN
+/// one (the zoomed `.quick` case) is not laid out at all, so GTK never emits the signal for it.
+let onDeckOverlayChildPosition: @MainActor @convention(c)
+    (OpaquePointer?, OpaquePointer?, UnsafeMutablePointer<GdkRectangle>?, gpointer?) -> gboolean = { overlay, child, allocation, _ in
+        MainActor.assumeIsolated {
+            guard let overlay, let child, let allocation,
+                  let controller = controllerForWidget(overlay),
+                  let quick = controller.quickFrame, quick == child else { return 0 }
+            // Measure the header only while it is SHOWN: a hidden-but-previously-allocated GTK4 widget
+            // retains its last allocated height, so hidden-toolbar mode would otherwise inset the card by
+            // a strip that is not on screen. No header at all ⇒ 0. The policy cannot see visibility.
+            let headerHeight = controller.contentHeader.map { gtk_widget_get_visible(W($0)) != 0 ? gtk_widget_get_height(W($0)) : 0 } ?? 0
+            let card = LinuxQuickCardPolicy.cardAllocation(overlayWidth: gtk_widget_get_width(W(overlay)),
+                                                           overlayHeight: gtk_widget_get_height(W(overlay)),
+                                                           headerHeight: headerHeight)
+            // Assigned WHOLE: GTK passes an uninitialized stack rectangle, so a field-by-field fill that
+            // ever misses one yields garbage rather than a default.
+            allocation.pointee = GdkRectangle(x: card.x, y: card.y, width: card.width, height: card.height)
+            return 1
+        }
+}
+
+/// Install the quick-card placement handler on the deck overlay; the cast is long enough that it stays out
+/// of `AppController`, mirroring `installEmptyWindowKeyController` above.
+@MainActor
+func installQuickCardPlacement(on overlay: OpaquePointer?) {
+    connect(overlay, "get-child-position", unsafeBitCast(onDeckOverlayChildPosition as @convention(c)
+        (OpaquePointer?, OpaquePointer?, UnsafeMutablePointer<GdkRectangle>?, gpointer?) -> gboolean, to: GCallback.self))
+}
+
 let onQuitResponse: @MainActor @convention(c) (OpaquePointer?, UnsafePointer<CChar>?, gpointer?) -> Void = { dialog, response, _ in
     let id = response.map { String(cString: $0) } ?? "cancel"
     MainActor.assumeIsolated { controllerForWidget(dialog)?.confirmQuit(id) }
@@ -186,13 +244,6 @@ let onWorkspaceRowClick: @MainActor @convention(c) (OpaquePointer?, Int32, Doubl
             return
         }
         controller?.scheduleWorkspaceToggle(data)
-    }
-}
-
-let onWorkspaceToggleTimeout: @MainActor @convention(c) (gpointer?) -> gboolean = { data in
-    guard let data else { return 0 }
-    return MainActor.assumeIsolated {
-        Unmanaged<AppController>.fromOpaque(data).takeUnretainedValue().firePendingWorkspaceToggle()
     }
 }
 
@@ -322,6 +373,10 @@ let onCtxRename: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void =
     MainActor.assumeIsolated { controllerForWidget(button)?.contextRename() }
 }
 
+let onCtxCopyName: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { button, _ in
+    MainActor.assumeIsolated { controllerForWidget(button)?.contextCopyName() }
+}
+
 let onCtxDuplicate: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { button, _ in
     MainActor.assumeIsolated { controllerForWidget(button)?.contextDuplicate() }
 }
@@ -369,6 +424,10 @@ let onCtxWorkspaceRename: @MainActor @convention(c) (OpaquePointer?, gpointer?) 
     MainActor.assumeIsolated { controllerForWidget(button)?.contextWorkspaceRename() }
 }
 
+let onCtxWorkspaceCopyName: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { button, _ in
+    MainActor.assumeIsolated { controllerForWidget(button)?.contextWorkspaceCopyName() }
+}
+
 let onCtxWorkspaceFocus: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { button, _ in
     MainActor.assumeIsolated { controllerForWidget(button)?.contextWorkspaceFocus() }
 }
@@ -383,6 +442,16 @@ let onCtxWorkspaceDelete: @MainActor @convention(c) (OpaquePointer?, gpointer?) 
 
 let onPanedPosition: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { paned, _, _ in
     MainActor.assumeIsolated { controllerForWidget(paned)?.capturePanedRatio(paned) }
+}
+
+let onPanedDoubleClick: @MainActor @convention(c) (OpaquePointer?, Int32, Double, Double, gpointer?) -> Void = { gesture, presses, x, _, _ in
+    guard presses == 2 else { return }
+    MainActor.assumeIsolated { controllerForEventController(gesture)?.resetSplitRatio(gesture, x: x) }
+}
+
+let onDeckAllocationChanged:
+    @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { deck, _, _ in
+    MainActor.assumeIsolated { controllerForWidget(deck)?.refreshHudGeometryForDeckAllocation() }
 }
 
 let restorePanedRatioTick: @MainActor @convention(c) (gpointer?) -> gboolean = { data in

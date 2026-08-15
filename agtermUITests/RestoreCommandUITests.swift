@@ -12,6 +12,7 @@ final class RestoreCommandUITests: XCTestCase {
     private var marker: URL!
     private var splitMarker: URL!
     private var overrideMarker: URL!
+    private var envProbe: URL!
     private var socketPath: String!
 
     override func setUp() async throws {
@@ -22,11 +23,11 @@ final class RestoreCommandUITests: XCTestCase {
         marker = stateDir.appendingPathComponent("restore-marker")
         splitMarker = stateDir.appendingPathComponent("restore-split-marker")
         overrideMarker = stateDir.appendingPathComponent("restore-override-marker")
+        envProbe = stateDir.appendingPathComponent("env-probe")
         app = XCUIApplication()
         app.launchEnvironment["AGTERM_STATE_DIR"] = stateDir.path
         // short socket path in the runner's temp dir: under the ~104-byte sun_path limit AND inside the
-        // runner sandbox (the long per-test stateDir subdir + /tmp both fail); used to create a --command
-        // session over the control channel.
+        // runner sandbox (the long per-test stateDir subdir + /tmp both fail).
         socketPath = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("agtermr-\(UUID().uuidString.prefix(8)).sock")
         app.launchEnvironment["AGTERM_CONTROL_SOCKET"] = socketPath
@@ -43,13 +44,35 @@ final class RestoreCommandUITests: XCTestCase {
         app.launchForUITest()
         runTeeMarker()
 
-        // delete the marker, quit (applicationWillTerminate captures the foreground `tee`), relaunch.
         try FileManager.default.removeItem(at: marker)
         gracefulQuit()
         app.launchForUITest()
 
         XCTAssertTrue(poll { FileManager.default.fileExists(atPath: self.marker.path) },
                       "restore should re-run the captured foreground `tee` command and recreate the marker")
+    }
+
+    /// #260: on a DARK launch a conditional `theme = light:,dark:` made libghostty rebuild each surface's
+    /// config from the config files alone, dropping the injected `AGTERM_*` and agterm's `TERM_PROGRAM`
+    /// identity (and, on a restored pane, the replay). A fresh session made later was unaffected, which is
+    /// why this asserts on the RESTORED one.
+    func testDarkLaunchWithDualThemeKeepsRestoredPaneEnvironment() throws {
+        seedDualTheme()
+        app.launchEnvironment["AGTERM_UITEST_FORCE_APPEARANCE"] = "dark"
+        app.launchForUITest()
+        XCTAssertTrue(app.staticTexts["session-row"].firstMatch.waitForExistence(timeout: 20), "seeded session row")
+        gracefulQuit()
+
+        app.launchForUITest()
+        XCTAssertTrue(app.staticTexts["session-row"].firstMatch.waitForExistence(timeout: 20), "restored session row")
+        // the assertions below pass on a LIGHT launch too (no conditional mismatch, so no surface rebuild),
+        // so confirm the forced side actually took or the test proves nothing. The bare `debug.appearance`
+        // reads `lastAppliedIsDark`, which the dark launch's own seeding reload flips — debounced, so poll.
+        XCTAssertTrue(poll { self.appliedAppearance() == "dark" }, "the launch under test must be dark")
+        let probe = try XCTUnwrap(writeEnvProbe(), "the restored pane's shell should answer the env probe")
+        let fields = probe.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        XCTAssertEqual(fields.first, "agterm", "a restored pane must keep agterm's TERM_PROGRAM identity")
+        XCTAssertFalse(fields.last?.isEmpty ?? true, "a restored pane must keep its injected AGTERM_SESSION_ID")
     }
 
     func testRestoreOffDoesNotReRun() throws {
@@ -61,7 +84,6 @@ final class RestoreCommandUITests: XCTestCase {
         gracefulQuit()
         app.launchForUITest()
 
-        // flag off → nothing captured at quit → `tee` is not re-run → the marker stays gone.
         XCTAssertTrue(app.staticTexts["session-row"].firstMatch.waitForExistence(timeout: 20), "session restored")
         RunLoop.current.run(until: Date().addingTimeInterval(2)) // give any (incorrect) re-run a chance to fire
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path),
@@ -69,11 +91,9 @@ final class RestoreCommandUITests: XCTestCase {
     }
 
     func testRestoreReRunsShellScriptWrapper() throws {
-        // a shell RUNNING a command (argv0 a shell WITH a payload arg) must be captured, not skipped as an
-        // idle prompt. The real `cld` claude-code launcher is a `#!/bin/sh` wrapper whose foreground is
-        // `/bin/sh <script>`; this uses `sh -c 'tee …; true'` (a compound list, so sh stays the foreground
-        // with a payload arg) because the XCUITest runner can't drop an executable script the sandboxed app
-        // is allowed to run. Same isIdleShell path: a shell with a payload is captured.
+        // the real `cld` launcher is a `#!/bin/sh` wrapper whose foreground is `/bin/sh <script>`. This
+        // stands in with `sh -c 'tee …; true'` (a compound list keeps sh the foreground, with a payload
+        // arg) because the XCUITest runner cannot drop an executable script the sandboxed app may run.
         seedRestoreFlag(true)
         app.launchForUITest()
         XCTAssertTrue(app.staticTexts["session-row"].firstMatch.waitForExistence(timeout: 20), "seeded session row")
@@ -92,8 +112,7 @@ final class RestoreCommandUITests: XCTestCase {
     func testRestoreSkipsIdleShellPane() throws {
         seedRestoreFlag(true)
         app.launchForUITest()
-        // leave the pane at its prompt (no command run), then quit. Capture runs (flag on), but the idle
-        // login shell — argv0 `-/bin/zsh`, recognized by isKnownShell — must NOT be captured as a command.
+        // the idle login shell (argv0 `-/bin/zsh`) must not be captured even with the flag on
         XCTAssertTrue(app.staticTexts["session-row"].firstMatch.waitForExistence(timeout: 20), "seeded session")
         RunLoop.current.run(until: Date().addingTimeInterval(1))
         gracefulQuit()
@@ -101,10 +120,10 @@ final class RestoreCommandUITests: XCTestCase {
                       "an idle login-shell pane must not be captured as a foreground command, got \(capturedForegroundCommands())")
     }
 
-    // A `session.new --command` session persists its command and re-runs it via the EXEC path on restore
-    // when the feature is on — the command-session analogue of the foreground path. `tee <marker>` as the
-    // command exec-replaces the shell (so libghostty reports no foreground and NOTHING is captured), which
-    // proves the restore comes from the persisted `initialCommand`, not a captured foreground.
+    // the quit-time capture reads the pane's process-GROUP leader, which for a command session is unreadable
+    // setuid-root `login`, so NOTHING is captured and the re-run can only come from `initialCommand`. This
+    // does not pin that split on its own: were the capture to descend, it would type `tee <marker>` into the
+    // login shell, recreating the marker this asserts on.
     func testRestoreReRunsCommandSession() throws {
         seedRestoreFlag(true)
         app.launchForUITest()
@@ -132,7 +151,6 @@ final class RestoreCommandUITests: XCTestCase {
         try FileManager.default.removeItem(at: marker)
         gracefulQuit()
         app.launchForUITest()
-        // flag off → a restored --command session comes back a plain shell → tee is not re-run → marker gone.
         XCTAssertTrue(app.staticTexts["session-row"].firstMatch.waitForExistence(timeout: 20), "session restored")
         RunLoop.current.run(until: Date().addingTimeInterval(2)) // give any (incorrect) re-run a chance to fire
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path),
@@ -141,9 +159,8 @@ final class RestoreCommandUITests: XCTestCase {
 
     // MARK: - session.restore override
 
-    // A pinned override wins over the pane's captured foreground command. BOTH markers are deleted before
-    // quitting, so the proof is two-sided: the override's marker reappears and the captured command's does
-    // not (testRestoreReRunsForegroundCommand proves the capture would otherwise re-run).
+    // BOTH markers are deleted before quitting, so the proof is two-sided: the override's marker reappears
+    // and the captured command's does not (testRestoreReRunsForegroundCommand proves it would otherwise).
     func testRestoreOverrideBeatsCapturedCommand() throws {
         seedRestoreFlag(true)
         app.launchForUITest()
@@ -161,9 +178,8 @@ final class RestoreCommandUITests: XCTestCase {
                        "the captured foreground command must not run when an override is pinned")
     }
 
-    // Stickiness: the override is consumed from a TRANSIENT payload, never off the persisted field, so it
-    // fires again on the NEXT launch with no re-pinning. A single relaunch cannot prove this — it passes
-    // even against an implementation that nils the persisted field on consume — so this runs two.
+    // one relaunch cannot prove stickiness — it passes even against an implementation that nils the
+    // persisted field on consume — so this runs two.
     func testRestoreOverrideStaysPinnedAcrossTwoRelaunches() throws {
         seedRestoreFlag(true)
         app.launchForUITest()
@@ -174,8 +190,7 @@ final class RestoreCommandUITests: XCTestCase {
         XCTAssertTrue(poll { FileManager.default.fileExists(atPath: self.overrideMarker.path) },
                       "the pinned override should fire on the first relaunch")
 
-        // relaunch AGAIN without re-pinning. `touch` exits, leaving an idle shell, so the quit captures
-        // nothing — only the sticky persisted override can recreate the marker.
+        // `touch` exits, so this quit captures nothing — only the sticky override can recreate the marker
         try FileManager.default.removeItem(at: overrideMarker)
         gracefulQuit()
         XCTAssertTrue(capturedForegroundCommands().isEmpty,
@@ -185,8 +200,6 @@ final class RestoreCommandUITests: XCTestCase {
                       "the override must fire again on the second relaunch — it is sticky, not consumed")
     }
 
-    // `--none` pins the pane to nothing: the captured foreground command is suppressed and the pane comes
-    // back a plain shell.
     func testRestoreOverrideNonePinsPlainShell() throws {
         seedRestoreFlag(true)
         app.launchForUITest()
@@ -203,7 +216,6 @@ final class RestoreCommandUITests: XCTestCase {
                        "a pane pinned to nothing must restore a plain shell, not the captured command")
     }
 
-    // `--clear` drops the override, so the pane goes back to restoring its captured foreground command.
     func testRestoreOverrideClearRestoresCapture() throws {
         seedRestoreFlag(true)
         app.launchForUITest()
@@ -222,8 +234,7 @@ final class RestoreCommandUITests: XCTestCase {
                        "a cleared override must not run")
     }
 
-    // The override obeys the global restore-running-command setting: with it off the pane is a plain
-    // shell, and the response says so up front (a hook author would otherwise see a silent no-op).
+    // the response says the setting is off up front; a hook author would otherwise see a silent no-op.
     func testRestoreOverrideDoesNotFireWithRestoreOff() throws {
         seedRestoreFlag(false)
         app.launchForUITest()
@@ -240,9 +251,8 @@ final class RestoreCommandUITests: XCTestCase {
                        "with the restore setting off, a pinned override must not run")
     }
 
-    // The split pane has its own override slot and its own restore path (`makeSplitSurface` bypasses
-    // `restorePlan` entirely). With a SHOWN split, the right pane's override must beat the right pane's
-    // capture while the MAIN pane, which has neither an override nor a change, still restores its own.
+    // the split pane has its own override slot and its own restore path — `makeSplitSurface` bypasses
+    // `restorePlan` entirely. The main pane, pinned to nothing, still restores its own capture.
     func testRestoreOverrideOnSplitPane() throws {
         seedRestoreFlag(true)
         app.launchForUITest()
@@ -268,10 +278,9 @@ final class RestoreCommandUITests: XCTestCase {
                       "the main pane is unaffected: its own captured command still restores")
     }
 
-    // A split HIDDEN at quit is not rebuilt, so its override describes a pane that no longer exists: it is
-    // dropped on the restore (`tree` stops reporting it), nothing is armed for it, and a fresh ⌘D split is
-    // a plain shell. The SECOND relaunch is what proves the drop: quitting with that fresh split SHOWN
-    // would otherwise re-arm the stale pin into an unrelated pane's shell.
+    // a split HIDDEN at quit is not rebuilt, so its override describes a pane that no longer exists. The
+    // SECOND relaunch is what proves the drop: quitting with the fresh split SHOWN would otherwise re-arm
+    // the stale pin into an unrelated pane's shell.
     func testRestoreOverrideHiddenSplitDoesNotFireOnFreshSplit() throws {
         seedRestoreFlag(true)
         app.launchForUITest()
@@ -289,14 +298,11 @@ final class RestoreCommandUITests: XCTestCase {
         XCTAssertNil(try firstSessionNode()["splitRestoreCommand"],
                      "the split is gone, so its override is dropped rather than left unclearable on `tree`")
 
-        // ⌘D opens a FRESH split, which must be a plain shell.
         openFreshSplit()
         RunLoop.current.run(until: Date().addingTimeInterval(3)) // give any (incorrect) fire a chance
         XCTAssertFalse(FileManager.default.fileExists(atPath: overrideMarker.path),
                        "a split opened mid-session must be a plain shell — the pinned override must not fire")
 
-        // quit with the FRESH split SHOWN and relaunch: that split IS rebuilt, so a stale pin surviving
-        // the first restore would arm here and type a dead pane's command into an unrelated shell.
         gracefulQuit()
         app.launchForUITest()
         XCTAssertTrue(app.staticTexts["session-row"].firstMatch.waitForExistence(timeout: 30), "session restored")
@@ -306,9 +312,8 @@ final class RestoreCommandUITests: XCTestCase {
         XCTAssertNil(try firstSessionNode()["splitRestoreCommand"], "and it must still read back as unpinned")
     }
 
-    // The split pane's DEFAULT path: with no override pinned, the right pane restores its own captured
-    // foreground command. `makeSplitSurface` bypasses `restorePlan` and decides with `restoreInput` alone,
-    // so the nil-override branch needs its own guard — the override tests all exercise the other one.
+    // `makeSplitSurface` decides with `restoreInput` alone, so the nil-override branch needs its own
+    // guard — the override tests all exercise the other one.
     func testSplitPaneRestoresCapturedCommandWithoutOverride() throws {
         seedRestoreFlag(true)
         app.launchForUITest()
@@ -326,9 +331,91 @@ final class RestoreCommandUITests: XCTestCase {
                       "with no override pinned, the split pane re-runs its captured foreground command")
     }
 
-    // Reopening a CLOSED WINDOW mid-process reloads its store through the same `restore(from:)` the
-    // bootstrap uses, but must NOT arm anything: overrides fire on an app launch only. Arming here would
-    // execute every sticky override the moment a user closes and reopens a window.
+    // pins #369: the close path tears surfaces down before `applicationWillTerminate`, so the quit-time
+    // capture alone finds none and saves nulls over every running command.
+    func testWindowCloseExitCapturesRunningCommand() throws {
+        seedRestoreFlag(true)
+        app.launchForUITest()
+        runTeeMarker()
+
+        try FileManager.default.removeItem(at: marker)
+        let windowID = try firstWindowID()
+        XCTAssertEqual(try sendCommand(#"{"cmd":"window.close","target":"\#(windowID)"}"#)["ok"] as? Bool,
+                       true, "closing the last window begins the auto-quit exit")
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 15),
+                      "the app must auto-quit after its last window closes — relaunching over a hung exit would fake the capture")
+        app.launchForUITest()
+
+        XCTAssertTrue(poll { FileManager.default.fileExists(atPath: self.marker.path) },
+                      "a close-the-window exit must capture the running `tee` and re-run it on relaunch")
+    }
+
+    // the willClose capture is scoped to the app-exit close, so closing a NON-last window persists no
+    // capture at all — and a mid-process reopen comes back a plain shell (replay is clean-exit →
+    // next-launch only). The override variant below can't catch this: it pins an idle pane, so nothing
+    // is captured.
+    func testWindowCloseCapturedCommandDoesNotReplayOnMidRunReopen() throws {
+        seedRestoreFlag(true)
+        app.launchForUITest()
+        runTeeMarker()
+        let windowID = try firstWindowID()
+
+        XCTAssertEqual(try sendCommand(#"{"cmd":"window.new"}"#)["ok"] as? Bool, true,
+                       "a second window keeps the app alive while the first is closed")
+        XCTAssertEqual(try sendCommand(#"{"cmd":"window.close","target":"\#(windowID)"}"#)["ok"] as? Bool, true,
+                       "closing the tee-running window while another stays open is NOT the app exit")
+        XCTAssertTrue(capturedForegroundCommands().isEmpty,
+                      "a non-last-window close must persist no capture — its stale argv could replay via the launch fallback: \(capturedForegroundCommands())")
+        try FileManager.default.removeItem(at: marker)
+        XCTAssertEqual(try sendCommand(#"{"cmd":"window.select","target":"\#(windowID)"}"#)["ok"] as? Bool, true,
+                       "selecting the closed window reopens it in the same run")
+
+        // `session-row` is app-scoped and window 2 already shows one, so waiting for the FIRST match
+        // would resolve instantly against the wrong window — wait for both windows' rows instead.
+        XCTAssertTrue(poll { self.app.staticTexts.matching(identifier: "session-row").count >= 2 },
+                      "both windows' session rows present after the reopen")
+        RunLoop.current.run(until: Date().addingTimeInterval(3)) // give any (incorrect) replay a chance to fire
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path),
+                       "a mid-run window reopen must come back a plain shell — the captured `tee` must not re-run")
+    }
+
+    // the all-closed exit: window 1's command is running when the window is closed mid-session (no
+    // capture — not the exit), the exit is closing window 2 (captured), and the relaunch must replay
+    // ONLY window 2's command. Guards two failure modes at once: window 1's stale state replaying, and
+    // the reopen fallback opening windows.first (the oldest entry) instead of the pinned exit window,
+    // which would silently drop window 2's replay.
+    func testAllClosedExitReplaysOnlyTheExitWindowsCapture() throws {
+        seedRestoreFlag(true)
+        app.launchForUITest()
+        runTeeMarker()
+        let window1 = try firstWindowID()
+
+        XCTAssertEqual(try sendCommand(#"{"cmd":"window.new"}"#)["ok"] as? Bool, true, "second window opens")
+        XCTAssertTrue(poll { self.app.staticTexts.matching(identifier: "session-row").count >= 2 },
+                      "window 2's seeded session row appears")
+        XCTAssertTrue(try typeIntoPane("tee \(splitMarker.path)\n", pane: "left", file: splitMarker),
+                      "window 2's `tee` should create its marker (active session is window 2's)")
+
+        XCTAssertEqual(try sendCommand(#"{"cmd":"window.close","target":"\#(window1)"}"#)["ok"] as? Bool, true,
+                       "closing window 1 mid-session is not the exit")
+        try FileManager.default.removeItem(at: marker)
+        try FileManager.default.removeItem(at: splitMarker)
+
+        let window2 = try onlyOpenWindowID()
+        XCTAssertEqual(try sendCommand(#"{"cmd":"window.close","target":"\#(window2)"}"#)["ok"] as? Bool, true,
+                       "closing window 2 is the app exit")
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 15), "the app auto-quits after its last window closes")
+        app.launchForUITest()
+
+        XCTAssertTrue(poll { FileManager.default.fileExists(atPath: self.splitMarker.path) },
+                      "the exit window's captured command must replay on relaunch")
+        RunLoop.current.run(until: Date().addingTimeInterval(2)) // give any (incorrect) replay a chance
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path),
+                       "the mid-session-closed window's command must not replay")
+    }
+
+    // a window reopen reloads its store through the same `restore(from:)` the bootstrap uses, but must NOT
+    // arm: that would execute every sticky override the moment a user closes and reopens a window.
     func testWindowReopenDoesNotArmTheOverride() throws {
         seedRestoreFlag(true)
         app.launchForUITest()
@@ -345,14 +432,12 @@ final class RestoreCommandUITests: XCTestCase {
         assertOverrideHasNotFired("a mid-process window reopen is not a launch restore, so nothing may fire")
     }
 
-    // `setRestoreCommand` persists eagerly, so a hook's write survives a force quit. `terminate()` is
-    // SIGKILL — no `applicationWillTerminate`, so neither the capture nor the quit-flush runs, and only
-    // that immediate `save()` can carry the override to the next launch.
+    // `terminate()` is SIGKILL — no `applicationWillTerminate`, so neither the capture nor the quit-flush
+    // runs, and only `setRestoreCommand`'s eager `save()` can carry the override to the next launch.
     func testRestoreOverrideSurvivesForceQuit() throws {
         seedRestoreFlag(true)
         app.launchForUITest()
         try pinRestore(mode: "set", command: touchLine(overrideMarker))
-        // without this the test cannot tell a restore-time fire from an immediate one at pin time.
         assertOverrideHasNotFired("the pin must not run in the live session")
 
         app.terminate()
@@ -413,6 +498,17 @@ final class RestoreCommandUITests: XCTestCase {
         return false
     }
 
+    /// The id of the single window `window.list` reports OPEN — after other windows were closed,
+    /// `firstWindowID` would return the closed first entry instead.
+    private func onlyOpenWindowID() throws -> String {
+        let response = try sendCommand(#"{"cmd":"window.list"}"#)
+        let result = try XCTUnwrap(response["result"] as? [String: Any], "window.list should carry a result")
+        let windows = try XCTUnwrap(result["windows"] as? [[String: Any]], "result should list windows")
+        let open = windows.filter { $0["open"] as? Bool == true }
+        XCTAssertEqual(open.count, 1, "exactly one open window expected: \(windows)")
+        return try XCTUnwrap(open.first?["id"] as? String)
+    }
+
     /// The id of the only open window, for the close/reopen round trip.
     private func firstWindowID() throws -> String {
         let response = try sendCommand(#"{"cmd":"window.list"}"#)
@@ -462,12 +558,42 @@ final class RestoreCommandUITests: XCTestCase {
         try? Data(json.utf8).write(to: stateDir.appendingPathComponent("settings.json"))
     }
 
+    /// Seed both theme slots + following, which makes `ghosttyConfigLines()` emit the CONDITIONAL
+    /// `theme = light:,dark:` — the config shape that triggers the surface-config rebuild.
+    private func seedDualTheme() {
+        let json = #"{"restoreRunningCommand":true,"theme":"Builtin Light","darkTheme":"agterm","#
+            + #""followSystemAppearance":true}"#
+        try? Data(json.utf8).write(to: stateDir.appendingPathComponent("settings.json"))
+    }
+
+    /// The side the app last applied, from the XCUITest-only bare `debug.appearance`, nil when unreadable.
+    private func appliedAppearance() -> String? {
+        guard let response = try? sendCommand(#"{"cmd":"debug.appearance"}"#) else { return nil }
+        return (response["result"] as? [String: Any])?["text"] as? String
+    }
+
+    /// Type a probe writing the focused shell's agterm identity + session id into `envProbe`, retried like
+    /// `runTeeMarker` because a freshly realized surface's shell may not be reading yet. Polls the CONTENT
+    /// the caller asserts on, not the path: `> file` truncates before `printf` writes, so an existence poll
+    /// can return an empty file — and on a retry it would return the previous attempt's file instantly.
+    private func writeEnvProbe() -> String? {
+        for attempt in 0..<3 {
+            try? FileManager.default.removeItem(at: envProbe)
+            RunLoop.current.run(until: Date().addingTimeInterval(1))
+            if attempt > 0 { app.typeKey("u", modifierFlags: .control) }
+            app.typeText("printf '%s|%s' \"$TERM_PROGRAM\" \"$AGTERM_SESSION_ID\" > \(envProbe.path)\n")
+            if poll({ (try? String(contentsOf: self.envProbe, encoding: .utf8))?.contains("|") == true },
+                    timeout: 6) {
+                return try? String(contentsOf: envProbe, encoding: .utf8)
+            }
+        }
+        return nil
+    }
+
     /// Type `tee <marker>` into the focused terminal and confirm it created the marker (so it is the live
     /// foreground process — `tee` opens its output file on start, then blocks reading the terminal).
-    /// The injection is RETRIED (the `typeUntilMarker` idiom): a freshly realized surface's shell may not
-    /// be reading yet when the first keystrokes land — a slow launch under full-class load drops them and
-    /// leaves the pane at its prompt with nothing to capture. ⌃U clears the line editor before a retry so
-    /// a half-typed line can't concatenate into a bogus path.
+    /// The injection is RETRIED: a freshly realized surface's shell may not be reading yet when the first
+    /// keystrokes land. ⌃U clears the line editor first so a half-typed line can't build a bogus path.
     private func runTeeMarker() {
         XCTAssertTrue(app.staticTexts["session-row"].firstMatch.waitForExistence(timeout: 20), "seeded session row")
         for attempt in 0..<3 {

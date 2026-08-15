@@ -18,6 +18,14 @@ enum LinuxSurfaceRole: Sendable, Equatable {
         }
     }
 
+    func notificationPane(liveOverlayPane: OverlayPane?) -> PaneRole? {
+        switch liveOverlayPane {
+        case .left: .main
+        case .right: .split
+        case nil: notificationPane
+        }
+    }
+
     var statusPane: StatusPane? {
         switch self {
         case .main: .left
