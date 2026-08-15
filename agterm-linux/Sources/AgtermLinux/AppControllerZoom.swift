@@ -66,7 +66,7 @@ extension AppController {
     }
 
     private func hostZoomedSurface(_ target: TerminalZoomTarget) -> Bool {
-        guard let surface = surface(for: target), detach(surface.glArea, from: target),
+        guard let surface = surface(for: target), detach(surface.rootWidget, from: target),
               let deckOverlay else { return false }
         let host = OpaquePointer(adw_toolbar_view_new())
         let header = OpaquePointer(adw_header_bar_new())
@@ -89,7 +89,7 @@ extension AppController {
         connect(exit, "clicked", unsafeBitCast(onTerminalZoomExit, to: GCallback.self))
         adw_header_bar_pack_end(header, W(exit))
         adw_toolbar_view_add_top_bar(host, W(header))
-        adw_toolbar_view_set_content(host, W(surface.glArea))
+        adw_toolbar_view_set_content(host, W(surface.rootWidget))
         if linuxSettingsStore().load().effectiveToolbarMode == .hidden {
             gtk_widget_set_visible(W(header), 0)
         }
@@ -99,7 +99,7 @@ extension AppController {
         zoomTitleLabel = titleLabel
         surface.grabFocus()
         surface.refresh()
-        g_object_unref(RAW(surface.glArea))
+        g_object_unref(RAW(surface.rootWidget))
         return true
     }
 
@@ -135,14 +135,14 @@ extension AppController {
 
     private func restoreZoomedSurface(_ target: TerminalZoomTarget) {
         guard let surface = surface(for: target), let host = zoomHost, let deckOverlay else { return }
-        _ = g_object_ref(RAW(surface.glArea))
+        _ = g_object_ref(RAW(surface.rootWidget))
         adw_toolbar_view_set_content(host, nil)
         gtk_overlay_remove_overlay(deckOverlay, W(host))
         zoomHost = nil
         zoomHeader = nil
         zoomTitleLabel = nil
-        reattach(surface.glArea, to: target)
-        g_object_unref(RAW(surface.glArea))
+        reattach(surface.rootWidget, to: target)
+        g_object_unref(RAW(surface.rootWidget))
         surface.refresh()
     }
 

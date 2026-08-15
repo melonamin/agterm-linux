@@ -1731,6 +1731,81 @@ def verify_surface_configuration_lifetimes(env):
         stop(process)
 
 
+def verify_surface_failure_diagnostics(env):
+    """Injected creation and GL-context failures select local and display-wide presentation."""
+    failure_env = dict(env, AGTERM_ATSPI_SURFACE_FAILURE="creation:quick")
+    process, app = launch(failure_env)
+    try:
+        window_id = next(item["id"] for item in window_list(failure_env) if item["open"])
+        initial_tree = window_tree(failure_env, window_id)
+        session_id = initial_tree["workspaces"][0]["sessions"][0]["id"]
+
+        control_json(failure_env, "quick", "show", "--json")
+        wait_for(
+            lambda: named_prefix(app, "Quick terminal failed to start."),
+            "generic quick-surface failure did not expose its role-local diagnostic",
+        )
+        assert not named_prefix(app, "Terminal rendering needs OpenGL."), (
+            "generic surface failure incorrectly used the display-wide GL diagnostic"
+        )
+
+        marker = "healthy-sibling-visible"
+        typed = control_json(
+            failure_env, "session", "type", f"printf '{marker}\\n'\n",
+            "--target", session_id, "--window", window_id, "--json",
+        )
+        assert typed["ok"], f"healthy sibling rejected terminal input: {typed}"
+
+        def healthy_sibling_text():
+            try:
+                response = control_json(
+                    failure_env, "session", "text", "--lines", "10",
+                    "--target", session_id, "--window", window_id, "--json",
+                )
+                return marker in response.get("result", {}).get("text", "")
+            except (subprocess.CalledProcessError, KeyError, TypeError):
+                return False
+
+        wait_for(
+            healthy_sibling_text,
+            "healthy main terminal stopped rendering/read-back after the quick surface failed",
+        )
+        control_json(failure_env, "quick", "hide", "--json")
+        wait_for(
+            lambda: not named_prefix(app, "Quick terminal failed to start."),
+            "role-local failure diagnostic remained visible after its quick host was hidden",
+        )
+        control_json(failure_env, "quick", "show", "--json")
+        wait_for(
+            lambda: named_prefix(app, "Quick terminal failed to start."),
+            "role-local failure diagnostic did not return with its retained quick host",
+        )
+        print("OK: generic failure stays role-local and leaves a healthy sibling usable")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+    gl_env = dict(env, AGTERM_ATSPI_SURFACE_FAILURE="gl-context:quick")
+    process, app = launch(gl_env)
+    try:
+        control_json(gl_env, "quick", "show", "--json")
+        wait_for(
+            lambda: named_prefix(app, "Terminal rendering needs OpenGL."),
+            "injected GtkGLArea context failure did not use the display-wide diagnostic",
+        )
+        assert not named_prefix(app, "Quick terminal failed to start."), (
+            "proven GL context failure incorrectly used a generic role-local diagnostic"
+        )
+        print("OK: proven GL context failure keeps the display-wide diagnostic")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
 def verify_sidebar_row_height_follows_font_size(env):
     """Sidebar rows must follow the sidebar font size instead of Adwaita's 36px navigation-sidebar pin."""
     settings_path = os.path.join(env["AGTERM_STATE_DIR"], "settings.json")
@@ -2668,7 +2743,8 @@ def main():
             "normal", "upstream-controls", "dashboard-modal", "context-menu",
             "window-ownership", "preferences-pages",
             "notification-reveal", "notification-focus", "session-pickers",
-            "custom-command-failures", "surface-lifetimes", "sidebar-row-height",
+            "custom-command-failures", "surface-lifetimes", "surface-failures",
+            "sidebar-row-height",
             "sidebar-narrow-clipping",
             "sidebar-width-floor",
             "auto-follow", "hidden-toolbar",
@@ -2724,6 +2800,8 @@ def main():
             verify_custom_command_failures(env)
         elif scenario == "surface-lifetimes":
             verify_surface_configuration_lifetimes(env)
+        elif scenario == "surface-failures":
+            verify_surface_failure_diagnostics(env)
         elif scenario == "sidebar-row-height":
             verify_sidebar_row_height_follows_font_size(env)
         elif scenario == "sidebar-narrow-clipping":

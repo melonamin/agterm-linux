@@ -519,7 +519,7 @@ final class AppController {
             gtk_widget_set_overflow(W(frame), GTK_OVERFLOW_HIDDEN)   // clip GL child to the rounded card; see LinuxQuickCardPolicy
             gtk_widget_set_halign(W(frame), GTK_ALIGN_FILL)
             gtk_widget_set_valign(W(frame), GTK_ALIGN_FILL)
-            gtk_frame_set_child(cast(frame), W(q.glArea))
+            gtk_frame_set_child(cast(frame), W(q.rootWidget))
             quickFrame = frame
             quickSurface = q
             gtk_overlay_add_overlay(overlay, W(frame))
@@ -790,14 +790,10 @@ final class AppController {
     /// Show a persistent, centered message when the GtkGLArea can't create a GL context (VM/headless/
     /// llvmpipe-less/Wayland-no-GL) — the terminal can't render, so explain it instead of a blank pane.
     func showGLError() {
-        showSurfaceError("Terminal rendering needs OpenGL.\n\nNo GL context is available — check your GPU drivers, " +
-                         "or enable 3D acceleration if you're running in a VM.")
-    }
-
-    /// Added once over the deck; a surface failure is display-wide so a single message suffices.
-    func showSurfaceError(_ msg: String) {
         guard let overlay = deckOverlay, glErrorLabel == nil else { return }
-        guard let label = op(gtk_label_new(msg)) else { return }
+        let presentation = LinuxSurfaceFailurePresentation.resolve(.glContext, role: .main)
+        guard presentation.scope == .displayWide,
+              let label = op(gtk_label_new(presentation.message)) else { return }
         gtk_label_set_justify(label, GTK_JUSTIFY_CENTER)
         gtk_label_set_wrap(label, 1)
         gtk_widget_set_halign(W(label), GTK_ALIGN_CENTER)

@@ -176,7 +176,7 @@ private let onShutdown: @MainActor @convention(c) (OpaquePointer?, gpointer?) ->
     .agterm-switcher { background-color: alpha(#1e2228, 0.96); padding: 10px; border-radius: 10px; border: 1px solid alpha(#ffffff, 0.12); }
     .agterm-switcher label { padding: 3px 0; opacity: 0.6; }
     .agterm-switcher label.agterm-switcher-current { opacity: 1; font-weight: bold; }
-    .agterm-gl-error { color: #ffffff; background-color: alpha(#1e2228, 0.96); padding: 24px; border-radius: 10px; border: 1px solid alpha(#e5a50a, 0.5); }
+    .agterm-gl-error, .agterm-surface-error { color: #ffffff; background-color: alpha(#1e2228, 0.96); padding: 24px; border-radius: 10px; border: 1px solid alpha(#e5a50a, 0.5); }
     .agterm-dashboard { background-color: @window_bg_color; }
     .agterm-modal-header { border-bottom: 1px solid alpha(@window_fg_color, 0.12); }
     .agterm-dashboard-cell { border: 2px solid alpha(@window_fg_color, 0.16); border-radius: 10px; background-color: @view_bg_color; }

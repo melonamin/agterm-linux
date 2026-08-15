@@ -201,7 +201,7 @@ extension AppController {
             gtk_widget_set_hexpand(W(frame), 1)
             gtk_widget_set_vexpand(W(frame), 1)
             let cell = OpaquePointer(gtk_overlay_new())
-            let paintable = gtk_widget_paintable_new(W(surface.glArea))
+            let paintable = gtk_widget_paintable_new(W(surface.rootWidget))
             let picture = OpaquePointer(gtk_picture_new_for_paintable(paintable))
             gtk_picture_set_can_shrink(picture, 1)
             gtk_picture_set_content_fit(picture, GTK_CONTENT_FIT_FILL)

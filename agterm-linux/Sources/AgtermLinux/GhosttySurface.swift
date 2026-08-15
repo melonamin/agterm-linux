@@ -16,6 +16,9 @@ enum LinuxOverlayExitCapture {
 
 @MainActor
 final class GhosttySurface: TerminalSurface {
+    /// Stable surface-local host. The GtkGLArea stays its child while the host is reparented for terminal
+    /// zoom and overlays; a creation failure adds its diagnostic here and cannot cover sibling surfaces.
+    let rootWidget: OpaquePointer
     /// The GtkGLArea widget (stored as OpaquePointer; cast at GTK call sites).
     let glArea: OpaquePointer
     private(set) var surface: ghostty_surface_t?
@@ -24,6 +27,7 @@ final class GhosttySurface: TerminalSurface {
     /// filtered through the IM, which commits the composed text via the `commit` signal.
     private var keyController: OpaquePointer?
     private var imContext: OpaquePointer?
+    private var creationErrorLabel: OpaquePointer?
 
     /// The owning session's id (so the host can route close/title back to the model).
     let sessionID: UUID
@@ -111,7 +115,11 @@ final class GhosttySurface: TerminalSurface {
         self.fontSize = fontSize
         self.initialInput = initialInput
         self.env = env
+        rootWidget = OpaquePointer(gtk_overlay_new())
         glArea = OpaquePointer(gtk_gl_area_new())
+        gtk_overlay_set_child(rootWidget, W(glArea))
+        gtk_widget_set_hexpand(W(rootWidget), 1)
+        gtk_widget_set_vexpand(W(rootWidget), 1)
         gtk_gl_area_set_allowed_apis(GLA(glArea), GDK_GL_API_GL)
         gtk_gl_area_set_has_depth_buffer(GLA(glArea), 0)
         gtk_widget_set_hexpand(W(glArea), 1)
@@ -175,15 +183,23 @@ final class GhosttySurface: TerminalSurface {
     // MARK: - Lifecycle
 
     func realize() {
+        if LinuxSurfaceFailureInjection.failure(for: role) == .glContext {
+            reportGLContextFailure()
+            return
+        }
         gtk_gl_area_make_current(GLA(glArea))
         guard gtk_gl_area_get_error(GLA(glArea)) == nil else {
-            FileHandle.standardError.write(Data("agterm: GtkGLArea failed to create a GL context\n".utf8))
-            // Defer until window construction completes, but retain the surface's owner rather than
-            // whichever window becomes frontmost before the main-loop hop runs.
-            runOnMain { [weak controller] in MainActor.assumeIsolated { controller?.showGLError() } }
+            reportGLContextFailure()
             return
         }
         createSurface()
+    }
+
+    private func reportGLContextFailure() {
+        FileHandle.standardError.write(Data("agterm: GtkGLArea failed to create a GL context\n".utf8))
+        // Defer until window construction completes, but retain the surface's owner rather than
+        // whichever window becomes frontmost before the main-loop hop runs.
+        runOnMain { [weak controller] in MainActor.assumeIsolated { controller?.showGLError() } }
     }
 
     func realizeWidgetIfNeeded() {
@@ -211,6 +227,7 @@ final class GhosttySurface: TerminalSurface {
             workingDirectory: cwd, command: command, initialInput: initialInput, environment: env
         ) else {
             FileHandle.standardError.write(Data("agterm: could not allocate libghostty surface configuration\n".utf8))
+            showCreationFailure()
             return
         }
         configurationStorage = storage
@@ -220,21 +237,22 @@ final class GhosttySurface: TerminalSurface {
         }
         let appearanceSide = LinuxAppearanceSide(isDark: AppController.systemIsDark)
         GhosttyApp.shared.applyColorScheme(appearanceSide)
-        surface = ghostty_surface_new(app, &cfg)
+        if LinuxSurfaceFailureInjection.failure(for: role) == .creation {
+            surface = nil
+        } else {
+            surface = ghostty_surface_new(app, &cfg)
+        }
         guard let surface else {
-            // libghostty logs the cause, but lib builds compile stderr logging off, so without this
-            // the pane is blank with no diagnostic anywhere. The cause is not knowable from here, so
-            // name the common one without asserting it.
+            // libghostty exposes no error value here and may reject one surface for fonts, renderer,
+            // config, terminal initialization, or allocation. Keep the diagnostic on this exact host;
+            // only GtkGLArea's proven context error is display-wide.
             FileHandle.standardError.write(Data("agterm: libghostty rejected the surface\n".utf8))
-            runOnMain { [weak controller] in MainActor.assumeIsolated {
-                controller?.showSurfaceError("Terminal failed to start.\n\nlibghostty could not create the " +
-                                             "surface. The usual cause is OpenGL older than 4.3 — check your " +
-                                             "GPU drivers, or enable 3D acceleration if you're running in a VM.")
-            } }
+            showCreationFailure()
             storage.release()
             configurationStorage = nil
             return
         }
+        clearCreationFailure()
         ghostty_surface_set_content_scale(surface, Double(scale), Double(scale))
         pushSize()
         ghostty_surface_set_focus(surface, true)
@@ -244,6 +262,30 @@ final class GhosttySurface: TerminalSurface {
                 || usesSessionWatermark && controller?.store.session(withID: sessionID)?.backgroundWatermark != nil {
             applyWatermarkFromSession()
         }
+    }
+
+    private func showCreationFailure() {
+        let presentation = LinuxSurfaceFailurePresentation.resolve(.creation, role: role)
+        guard presentation.scope == .surfaceLocal else { return }
+        if let label = creationErrorLabel {
+            gtk_label_set_text(label, presentation.message)
+            return
+        }
+        guard let label = op(gtk_label_new(presentation.message)) else { return }
+        gtk_label_set_justify(label, GTK_JUSTIFY_CENTER)
+        gtk_label_set_wrap(label, 1)
+        gtk_widget_set_halign(W(label), GTK_ALIGN_CENTER)
+        gtk_widget_set_valign(W(label), GTK_ALIGN_CENTER)
+        gtk_widget_set_can_target(W(label), 0)
+        gtk_widget_add_css_class(W(label), "agterm-surface-error")
+        creationErrorLabel = label
+        gtk_overlay_add_overlay(rootWidget, W(label))
+    }
+
+    private func clearCreationFailure() {
+        guard let label = creationErrorLabel else { return }
+        gtk_overlay_remove_overlay(rootWidget, W(label))
+        creationErrorLabel = nil
     }
 
     private func pushSize() {

@@ -84,7 +84,7 @@ extension AppController {
         s.surface = surf
         surfaces[s.id] = surf
         let paneHost = OpaquePointer(gtk_overlay_new())
-        gtk_overlay_set_child(paneHost, W(surf.glArea))
+        gtk_overlay_set_child(paneHost, W(surf.rootWidget))
         primaryPaneHosts[s.id] = paneHost
         gtk_paned_set_start_child(paned, W(paneHost))
         "main".withCString { _ = gtk_stack_add_named(stack, W(paned), $0) }
@@ -114,13 +114,13 @@ extension AppController {
                 sc.onExit = { [weak self] in self?.closeScratch(sid) }
                 s.scratchSurface = sc
                 scratchSurfaces[s.id] = sc
-                "scratch".withCString { _ = gtk_stack_add_named(stack, W(sc.glArea), $0) }
+                "scratch".withCString { _ = gtk_stack_add_named(stack, W(sc.rootWidget), $0) }
             }
             "scratch".withCString { gtk_stack_set_visible_child_name(stack, $0) }
         } else {
             "main".withCString { gtk_stack_set_visible_child_name(stack, $0) }
             if let sc = scratchSurfaces[s.id], s.scratchSurface == nil {
-                gtk_stack_remove(stack, W(sc.glArea))
+                gtk_stack_remove(stack, W(sc.rootWidget))
                 scratchSurfaces[s.id] = nil
             }
         }
@@ -134,7 +134,7 @@ extension AppController {
                 gtk_overlay_remove_overlay(deck, W(frame))
                 floatingOverlayFrames[s.id] = nil
             } else {
-                gtk_stack_remove(stack, W(cached.glArea))
+                gtk_stack_remove(stack, W(cached.rootWidget))
             }
             overlaySurfaces[s.id] = nil
         }
@@ -176,13 +176,13 @@ extension AppController {
                     gtk_widget_set_overflow(W(frame), GTK_OVERFLOW_HIDDEN)   // clip GL child to the rounded card; see LinuxQuickCardPolicy
                     gtk_widget_set_halign(W(frame), GTK_ALIGN_CENTER)
                     gtk_widget_set_valign(W(frame), GTK_ALIGN_CENTER)
-                    gtk_frame_set_child(cast(frame), W(ov.glArea))
+                    gtk_frame_set_child(cast(frame), W(ov.rootWidget))
                     gtk_overlay_add_overlay(overlay, W(frame))
                     gtk_widget_set_visible(W(frame), s.id == store.selectedSessionID ? 1 : 0)
                     floatingOverlayFrames[s.id] = frame
                     updateFloatingOverlayFrame(s, frame: frame, overlay: overlay, fallbackPercent: pct)
                 } else {
-                    "overlay".withCString { _ = gtk_stack_add_named(stack, W(ov.glArea), $0) }
+                    "overlay".withCString { _ = gtk_stack_add_named(stack, W(ov.rootWidget), $0) }
                 }
                 ov.realizeWidgetIfNeeded()
             }
@@ -205,7 +205,7 @@ extension AppController {
                 floatingOverlayFrames[s.id] = nil
             } else {
                 (s.scratchActive ? "scratch" : "main").withCString { gtk_stack_set_visible_child_name(stack, $0) }
-                gtk_stack_remove(stack, W(ov.glArea))
+                gtk_stack_remove(stack, W(ov.rootWidget))
             }
             overlaySurfaces[s.id] = nil
         }
@@ -246,7 +246,7 @@ extension AppController {
         gtk_widget_set_can_target(W(frame), targetable ? 1 : 0)
         gtk_widget_set_focusable(W(frame), 0)
         if let surface = overlaySurfaces[session.id] {
-            gtk_widget_set_can_target(W(surface.glArea), targetable ? 1 : 0)
+            gtk_widget_set_can_target(W(surface.rootWidget), targetable ? 1 : 0)
             gtk_widget_set_focusable(
                 W(surface.glArea), Self.floatingOverlayFocusable(isHud: session.hudActive) ? 1 : 0)
         }
@@ -411,7 +411,7 @@ extension AppController {
             s.splitSurface = split
             splitSurfaces[s.id] = split
             let paneHost = OpaquePointer(gtk_overlay_new())
-            gtk_overlay_set_child(paneHost, W(split.glArea))
+            gtk_overlay_set_child(paneHost, W(split.rootWidget))
             splitPaneHosts[s.id] = paneHost
             gtk_paned_set_end_child(paned, W(paneHost))
         }
@@ -768,8 +768,8 @@ extension AppController {
         let opacities = Self.paneSurfaceOpacities(
             isSplit: s.isSplit, splitFocused: s.splitFocused,
             dimmed: dimmed, backdropActive: backdropActive)
-        if let main = surfaces[s.id] { gtk_widget_set_opacity(W(main.glArea), opacities.left) }
-        if let split = splitSurfaces[s.id] { gtk_widget_set_opacity(W(split.glArea), opacities.right) }
+        if let main = surfaces[s.id] { gtk_widget_set_opacity(W(main.rootWidget), opacities.left) }
+        if let split = splitSurfaces[s.id] { gtk_widget_set_opacity(W(split.rootWidget), opacities.right) }
         if let wash = leftOverlayWashes[s.id] {
             updatePaneOverlayWashColor(s, pane: .left)
             gtk_widget_set_opacity(W(wash), Self.paneOverlayWashOpacity(
