@@ -170,6 +170,8 @@ Ctrl+Shift+Tab reverses the active Ctrl-Tab session cycle; Ctrl+Tab with additio
 
 The reason is that ghostty's own copy/paste binds match the produced character: on a Russian layout the physical V key yields `м`, so the built-in `super+v` bind never fires. The bundled agterm defaults add physical-key binds (`super+key_c`, `super+key_v`) that match by position instead.
 
+On Linux the bundled defaults bind the terminal-convention chord the same way — `ctrl+shift+key_c`, `ctrl+shift+key_v`, and `ctrl+shift+key_a` — because bare Ctrl+C is SIGINT there. They match by physical position regardless of the produced glyph, so Ctrl+Shift+C/V/A keep working after switching to Russian, Greek, Hebrew, Arabic, or Thai.
+
 Those binds always consume the key, even when there is nothing to act on: ⌘C with no selection does nothing at all, rather than reaching the running program. That is deliberate. The Edit menu disables Copy without a selection and Paste without pasteable content — on every layout — so those presses fall to the terminal's own bind, and a bind that declined them would let the chord through to key encoding. A plain shell shows nothing either way, but under the kitty keyboard protocol, which Claude Code and other TUIs turn on, the program receives the chord as a key report and renders it as text — a stray `с` or `^[[1089;9u` in the prompt. If you rebind copy or paste yourself, do not add ghostty's `performable:` prefix for the same reason.
 
 The same distinction lets you remap any shortcut for your layout:
@@ -184,6 +186,17 @@ keybind = super+key_c=unbind
 keybind = super+key_v=unbind
 keybind = super+c=copy_to_clipboard
 keybind = super+v=paste_from_clipboard
+```
+
+On Linux the same remap unbinds the `ctrl+shift+key_*` defaults instead. C, V, and A are three separate binds, so freeing and rebinding each one takes its own line:
+
+```
+keybind = ctrl+shift+key_c=unbind
+keybind = ctrl+shift+key_v=unbind
+keybind = ctrl+shift+key_a=unbind
+keybind = ctrl+shift+c=copy_to_clipboard
+keybind = ctrl+shift+v=paste_from_clipboard
+keybind = ctrl+shift+a=select_all
 ```
 
 Reload with **File ▸ Reload Config** or `agtermctl config reload`. The keybind syntax is at <https://ghostty.org/docs/config/keybind/reference>.
