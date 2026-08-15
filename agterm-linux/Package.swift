@@ -32,6 +32,7 @@ let package = Package(
                 "LinuxIntegrations",
                 .product(name: "agtermCore", package: "agtermCore"),
             ],
+            resources: [.copy("Resources/hud")],
             swiftSettings: [ .unsafeFlags(["-Xcc", "-I\(vendor)/include"]) ],
             linkerSettings: [ .unsafeFlags([
                 "-L\(vendor)/lib", "-lghostty", "-lepoxy",

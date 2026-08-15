@@ -51,6 +51,7 @@ targets:
           - "Resources/ghostty"
           - "Resources/terminfo"
           - "Resources/agent-status"
+          - "Resources/hud"
           # committed SOURCE for agterm's own bundled theme(s); setup.sh stages it
           # into Resources/ghostty/themes (above), so the source dir itself must not
           # be pulled into the project tree or the app bundle.
@@ -78,6 +79,12 @@ targets:
       # Lands at Contents/Resources/agent-status — the installer copies it from
       # there to ~/.config/agterm/agent-status.
       - path: agterm/Resources/agent-status
+        type: folder
+        buildPhase: resources
+      # The session.hud panel painter. Folder reference (not the default "group") so hud.sh keeps its
+      # exec bit. Lands at Contents/Resources/hud — ControlServer.helperCommand() resolves it there and
+      # shell-escapes it into the overlay command.
+      - path: agterm/Resources/hud
         type: folder
         buildPhase: resources
       # Agent skill package (SKILL.md + reference.md + examples.md + troubleshooting.md + scripts).
@@ -141,9 +148,12 @@ targets:
           # can't be clobbered by Xcode's own final code-sign, which also adds the required timestamp).
           codesign --force --options runtime --sign - "$dest"
           # re-seal the whole app: this phase can run AFTER Xcode's own code-sign on incremental
-          # builds, so adding the helper would otherwise break the seal. --deep re-signs every nested
-          # Mach-O too (the Debug agterm.debug.dylib, the helper).
-          codesign --force --deep --options runtime --entitlements "$SRCROOT/agterm/agterm.entitlements" --sign - "$CODESIGNING_FOLDER_PATH"
+          # builds, so adding the helper would otherwise break the seal. --deep because a clean
+          # build can reach here before Xcode has signed agterm.debug.dylib. Entitlements come in a
+          # SECOND pass instead: --deep applies them to every nested binary, and agtermctl is a
+          # standalone CLI on the user's PATH, not a library.
+          codesign --force --deep --options runtime --sign - "$CODESIGNING_FOLDER_PATH"
+          codesign --force --options runtime --entitlements "$SRCROOT/agterm/agterm.entitlements" --sign - "$CODESIGNING_FOLDER_PATH"
     dependencies:
       - framework: GhosttyKit.xcframework
         embed: false

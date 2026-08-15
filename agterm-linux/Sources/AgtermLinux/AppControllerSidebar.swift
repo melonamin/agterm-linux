@@ -5,6 +5,35 @@ import agtermCore
 @MainActor
 extension AppController {
     static var sidebarFontProvider: OpaquePointer?
+    static var interfaceFontProvider: OpaquePointer?
+
+    func scheduleWorkspaceToggle(_ data: gpointer?) {
+        guard Self.workspaceRowToggleEnabled(linuxSettingsStore().load().workspaceRowClickExpands),
+              let data, let workspaceID = workspaceDiscButtons[OpaquePointer(data)] else { return }
+        cancelPendingWorkspaceToggle()
+        pendingWorkspaceToggle = workspaceID
+        cancelPendingWorkspaceToggleTimer = MainTimer.schedule(after: 0.3) { [weak self] in
+            self?.firePendingWorkspaceToggle()
+        }
+    }
+
+    func cancelPendingWorkspaceToggle() {
+        cancelPendingWorkspaceToggleTimer?()
+        cancelPendingWorkspaceToggleTimer = nil
+        pendingWorkspaceToggle = nil
+    }
+
+    func firePendingWorkspaceToggle() {
+        cancelPendingWorkspaceToggleTimer = nil
+        guard let workspaceID = pendingWorkspaceToggle else { return }
+        pendingWorkspaceToggle = nil
+        guard Self.workspaceRowToggleEnabled(linuxSettingsStore().load().workspaceRowClickExpands) else { return }
+        let isExpanded = store.workspaces.first(where: { $0.id == workspaceID })?.isExpanded ?? true
+        store.setWorkspaceExpanded(workspaceID, expanded: !isExpanded)
+        rebuildSidebar()
+    }
+
+    static func workspaceRowToggleEnabled(_ setting: Bool?) -> Bool { setting ?? true }
 
     func newSession(in workspaceID: UUID) {
         noteUserActivity()
@@ -51,6 +80,44 @@ extension AppController {
         if let provider = Self.sidebarFontProvider {
             css.withCString { gtk_css_provider_load_from_string(cast(provider), $0) }
         }
+    }
+
+    func applyInterfaceFontSize() {
+        guard let display = gdk_display_get_default() else { return }
+        let metrics = InterfaceMetrics(fontSize: linuxSettingsStore().load().effectiveInterfaceFontSize)
+        let css = """
+        .agterm-interface-panel, .agterm-interface-panel entry, .agterm-interface-panel label {
+            font-size: \(metrics.base)pt;
+        }
+        .agterm-interface-panel .dim-label, .agterm-interface-panel .agterm-palette-badge {
+            font-size: \(metrics.secondary)pt;
+        }
+        """
+        if Self.interfaceFontProvider == nil {
+            let provider = OpaquePointer(gtk_css_provider_new())
+            Self.interfaceFontProvider = provider
+            gtk_style_context_add_provider_for_display(display, provider, 651)
+        }
+        if let provider = Self.interfaceFontProvider {
+            css.withCString { gtk_css_provider_load_from_string(cast(provider), $0) }
+        }
+    }
+
+    func interfacePanelWidth(_ width: Double) -> Int32 {
+        let metrics = InterfaceMetrics(fontSize: linuxSettingsStore().load().effectiveInterfaceFontSize)
+        let windowWidth = Double(max(1, gtk_widget_get_width(W(window))))
+        let sidebarInset = store.sidebarVisible ? Double(max(0, gtk_widget_get_width(W(sidebarBox)))) : 0
+        let fittedWidth = metrics.fittedPanelWidth(
+            idealAtDefault: width, windowWidth: windowWidth, terminalAreaInset: sidebarInset)
+        return Int32(fittedWidth)
+    }
+
+    func interfacePanelSize(width: Double, height: Double) -> (Int32, Int32) {
+        let metrics = InterfaceMetrics(fontSize: linuxSettingsStore().load().effectiveInterfaceFontSize)
+        let windowHeight = Double(max(1, gtk_widget_get_height(W(window))))
+        let fittedHeight = min(metrics.scaled(height), metrics.fittedPanelHeight(
+            windowHeight: windowHeight, topFraction: 0))
+        return (interfacePanelWidth(width), Int32(fittedHeight))
     }
 
     /// Whether a sidebar row interaction is live: an inline rename, or an open context menu.

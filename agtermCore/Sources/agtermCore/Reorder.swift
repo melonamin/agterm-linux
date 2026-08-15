@@ -1,5 +1,3 @@
-import Foundation
-
 /// ReorderDirection is a relative one-step reorder used by the control API/CLI (`--to`),
 /// mirroring `session.go --to next|prev|first|last`. No wraparound.
 public enum ReorderDirection: String, Sendable {

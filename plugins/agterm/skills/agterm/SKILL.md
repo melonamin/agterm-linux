@@ -4,8 +4,9 @@ description: >
   Drive agterm, a native desktop terminal app (macOS upstream or the GTK Linux port), programmatically via its agtermctl CLI and a local
   control socket. Use when running inside an agterm session and asked to control the terminal:
   create, rename, close, select, or reorder sessions and workspaces; split panes; toggle the
-  per-session scratch terminal; open or close overlay terminals and read their exit status; display
-  the native fuzzy picker with caller-supplied choices and poll or cancel it; display
+  per-session scratch terminal; open or close overlay terminals and read their exit status; post a
+  passive HUD message panel over a session while the user keeps typing;
+  display the native fuzzy picker with caller-supplied choices and poll or cancel it; display
   an image inline via a bundled helper script; type
   into a session, copy its selection, or search its scrollback; post desktop notifications; manage windows (new, list,
   select, close, resize, move); change font size; or reload and edit the keymap and the agterm-scoped
@@ -17,7 +18,8 @@ description: >
 when_to_use: >
   Trigger on: agterm, agtermctl, agterm control socket, session.new, session.close, session.type,
   session.split, session.scratch, session.focus, session.resize, surface.zoom, dashboard, pick, pick.open, pick.result, pick.cancel, native picker, session.go, session.copy, session.paste, session.selectall, session.text, session.search, session.status,
-  session.flag, session.seen, session.reveal, session.duplicate, session.background, session.overlay, workspace.new, workspace.select, workspace.move, workspace.focus, workspace.filter, window.new, window.list,
+  session.flag, session.seen, session.reveal, session.duplicate, session.background, session.overlay,
+  session.hud, hud panel, show a message over a session, workspace.new, workspace.select, workspace.move, workspace.focus, workspace.filter, window.new, window.list,
   window.select, window.resize, window.move, window.zoom, window.fullscreen, window.minimize, quick terminal, sidebar, sidebar.mode, sidebar.expand, sidebar.collapse, flagged, notify, font.inc, keymap.reload, keymap.list, config.reload,
   theme.set, theme.list, events, events.read, event subscription, select theme, edit keymap, show an image, display an image inline, show-image,
   AGTERM_SESSION_ID, AGTERM_SOCKET, and asks to drive or script agterm. Also: troubleshoot agterm,
@@ -86,15 +88,18 @@ A **window** is the top level: a named bundle rendered in its own on-screen nati
 holds a tree of **workspaces**, each holding **sessions**. A session has a primary shell and can also
 have: a **split** pane (a second shell side by side), a **scratch** terminal (a third full-coverage
 shell, toggled like the split), and an ephemeral **overlay** (runs one program on top, then vanishes).
-Separately, each window has one **quick terminal** (a scratch overlay at 90% of the window, not part
-of the tree).
+An overlay covers the whole session, or with `--pane left|right` exactly one split pane, leaving the
+sibling pane visible and usable. The same session-wide slot also holds a **HUD** (`session hud`), a small
+passive panel carrying a message instead of a program: the session keeps focus and stays typable under it.
+One slot, so a session shows either a HUD or a program overlay, never both. Separately, each window has one
+**quick terminal** (a scratch overlay at 90% of the window, not part of the tree).
 
 Inspect the live tree any time with `agtermctl tree --json` (workspaces → sessions, each with
-`id`, `name`, `cwd`, `title`, `active`, `split`, `overlay`, `scratch`, `status`, `background`, `surfaces`). `title` is the raw OSC
+`id`, `name`, `cwd`, `title`, `active`, `split`, `overlay`, `hud`, `scratch`, `status`, `background`, `surfaces`). `title` is the raw OSC
 terminal title (e.g. a remote host over SSH), omitted when none was reported — read it when a
 session's local `cwd` is stale because it's connected to a remote. `surfaces[].id` is the
-control address for `surface zoom` (`left`, `right`, `scratch`, or `overlay`), including
-hidden-but-alive split/scratch surfaces. The tree object also carries five
+control address for `surface zoom` (`left`, `right`, `scratch`, `overlay`, `overlay-left`, or
+`overlay-right`), including hidden-but-alive split/scratch surfaces. The tree object also carries five
 read-only top-level fields: `idleMs` (ms since the last user input in the window), `autoFollowMs`
 (the Auto-follow timeout in ms, omitted when Disabled), `sidebarVisible` (whether the window's
 sidebar is currently shown — the read side of the write-only `sidebar` command), `sidebarMode`
@@ -148,7 +153,7 @@ prompt concatenates with yours, and the program starts on the merged line. (`--n
 focus, but the newline and shared-buffer hazards of `type`-as-launcher remain — `--command` is still the
 rule.) After `--command`, confirm in `tree --json` that the new node's `foreground` shows your program running, not a bare shell prompt.
 
-## Command summary (71 commands)
+## Command summary (74 commands)
 
 Run `agtermctl <area> <cmd> --help` for exact flags. Full detail in **reference.md**; recipes in
 **examples.md**.
@@ -170,7 +175,20 @@ seen` — omitted when zero), `commandWait` (whether a `--command` session was c
 hold open after the command exits — the read side of `session new --wait`, omitted for a plain or
 non-holding session), `overlaySizePercent` (an open overlay's floating-panel percent 1–100,
 omitted for a full-pane overlay or no overlay so gate on `overlay` first; the read side of `overlay
-resize` for a record-then-restore zoom), `splitRatio` (the left-pane divider fraction 0.05–0.95 of a
+resize` for a record-then-restore zoom), `paneOverlays` (the panes covered by their own overlay —
+`["left"]`, `["right"]` or `["left","right"]`, omitted when neither is; the read side of `overlay open
+--pane`, independent of the session-wide `overlay` flag),
+`hud` (the message panel occupying the session-wide slot — `{message, detail?, spinner, backgroundColor?,
+textColor?, sizePercent?, heightPercent?, position}`, the two percents being the panel's width and height
+shares — omitted when none is up; the read side of `session hud`. `position` and `spinner`
+always report the EFFECTIVE value, `center` and a static panel's `none` included, so a caller who omitted
+them never has to know the defaults; `spinner` names the STYLE, so `none` is what a caller echoes back to
+turn one off. While a HUD is up the node's `overlay` reads `false` and `overlaySizePercent` is omitted, so a
+poll for "is a program covering this session" cannot mistake a message for one; HUD state is poll-only,
+no event announces it),
+`hasSplit` (whether a second pane exists at all, shown or hidden; omitted when there is none — read this
+rather than `split`, which is false for a split hidden with ⌘D even though its pane is still alive),
+`splitRatio` (the left-pane divider fraction 0.05–0.95 of a
 session that has a split — shown or hidden; omitted when there's no split or the ratio was never set (at
 the default 0.5) —
 the read side of `session resize`, record it to restore the exact divider), `splitFocused`
@@ -265,8 +283,9 @@ omitted when expanded).
   --command` (respawns the scratch if one is open). Target your own session with
   `--target "$AGTERM_SESSION_ID"` (see Addressing).
 - `focus [left|right|other]` — move focus between split panes.
-- `resize --split-ratio R | --grow-left D | --grow-right D` — move the split divider (no GUI/keymap
-  equivalent — bind it via a `command "agtermctl session resize …"` custom action). `--split-ratio` sets
+- `resize --split-ratio R | --grow-left D | --grow-right D` — move the split divider (the GUI only drags
+  it, or double-clicks it for an even split; bind any other fraction via a
+  `command "agtermctl session resize …"` custom action). `--split-ratio` sets
   the absolute left-pane fraction (0..1, clamped to 0.05..0.95); `--grow-left`/`--grow-right` nudge it by
   a fraction. Prints the applied (clamped) fraction.
 - `status <idle|active|completed|blocked> [--blink] [--auto-reset] [--sound NAME] [--color #rrggbb] [--shape SHAPE] [--pane left|right|scratch] [--pane-id TOKEN]` — set the sidebar agent glyph (`--sound default` or a system sound name plays a one-shot sound; `--color` tints the glyph for this call only, reverting on the next status set without it; `--shape` (`circle`, `square`, `triangle`, `diamond`, `capsule`, `star`) picks its silhouette for this call only and reverts the same way, read back as the tree `statusShape` field; `--pane` records which pane set it — `left`=main, `right`=split, `scratch` — so foreground typing in another pane won't clear it and any user-initiated GUI selection (auto-follow, attention-nav ⌃⌥↑/↓, plain session nav, the command palettes, a Dock-menu session, a sidebar row click) reveals that pane when the status needs attention (`blocked`/`completed`); `active` preserves the existing pane selection; the pane reads back as the tree `statusPane` field; the socket `session go next-attention` only steps the selection, it does not itself reveal the pane; `--pane-id` is the hook-forwarded stable surface token (`$AGTERM_PANE_ID`) that resolves the pane's live slot and overrides a stale `--pane` after a promote + re-split — scripts set `--pane` directly and leave `--pane-id` to the hook).
@@ -295,12 +314,21 @@ omitted when expanded).
   terminal background color. Per session; survives restart. `--opacity` 0.0–1.0. (An image/text watermark
   renders the pane opaque, overriding window translucency, so it shows; a `color` takes no opacity and
   honors the Settings window translucency instead.)
-- `overlay open <command> [--cwd DIR] [--wait] [--block] [--size-percent N] [--background-color #rrggbb] [--follow]` ·
+- `overlay open <command> [--cwd DIR] [--wait] [--block] [--size-percent N] [--background-color #rrggbb] [--follow] [--pane left|right]` ·
   `overlay resize (--size-percent N | --full)` ·
-  `overlay close` ·
-  `overlay result` — run a program on top of a session; `--block` waits and exits with its status.
+  `overlay close [--pane left|right]` ·
+  `overlay result [--pane left|right]` — run a program on top of a session; `--block` waits and exits
+  with its status.
   `overlay resize` changes an ALREADY-OPEN overlay: `--size-percent N` (1-100) makes it a floating panel,
   `--full` switches it back to the full-pane overlay; the program keeps running (no re-spawn).
+  `--pane left|right` scopes the overlay to ONE split pane instead of the whole session, leaving the
+  sibling pane live and interactive; left and right are independent and may both be open at once. A pane
+  overlay is ALWAYS full-pane, so `--pane` cannot combine with `--size-percent` and `overlay resize`
+  takes no `--pane`. Everything else is identical to the session-wide overlay. A non-split session
+  accepts `--pane left` (it reports `AGTERM_PANE=left`), so you can pass `--pane "$AGTERM_PANE"` without checking
+  the split state; a pane that is not currently rendered is refused with `pane not visible` — a SHOWN
+  split renders both panes, a HIDDEN one renders only the FOCUSED pane, so the refused one is the pane
+  that does not have focus.
   Target with `--target "$AGTERM_SESSION_ID"` for YOUR session (default `active` is the user's selection).
   **By default `overlay open` does NOT switch the user** — full and floating (`--size-percent`) both open
   on `--target` and run their program in the background; the panel appears when the user visits that
@@ -310,6 +338,38 @@ omitted when expanded).
   `--background-color` gives the overlay pane its own solid color, independent of the session's. An
   overlay is a real terminal (pty), which is also how you **display an image inline** — via the bundled
   `scripts/show-image.sh` (see below).
+- `hud [open] <message> [--detail T] [--spinner] [--spinner-style S] [--position P] [--background-color #rrggbb] [--text-color #rrggbb] [--size-percent N]` ·
+  `hud update <message> [--detail T] [--spinner] [--spinner-style S] [--position P] [--text-color #rrggbb] [--size-percent N]` ·
+  `hud close` — post a small **passive** panel over the session saying what you are doing
+  ("gathering options…"). Unlike an overlay it takes no input and steals nothing: the session keeps first
+  responder, the user keeps typing, and the terminal behind it is neither dimmed nor click-blocked. Use it
+  for the seconds an agent needs before it can show something (computing picker items, waiting on a slow
+  command), then take it down. `open` is the default subcommand, so `hud "…"` posts; a message that is
+  literally `update` or `close` needs the explicit `hud open` verb. `--detail` adds a dim second line,
+  `--spinner` animates a glyph in the default `bar` style and `--spinner-style bar|braille|circle|blocks|dot`
+  picks another, turning the spinner on by itself (`dot` blinks instead of animating, for a panel up for
+  minutes; an update may switch style in place). `--spinner-style none` is accepted and leaves the panel
+  static, so the `none` a read-back reports round-trips. `--position` anchors it to any of the nine
+  `top-left|top-center|top-right|center-left|center|center-right|bottom-left|bottom-center|bottom-right`
+  (default `center`), the same set `session background` takes; every anchor off center holds a fixed margin
+  off that pane edge automatically, so a corner keeps the panel out of the text the user is reading. The
+  bare `top`/`bottom` are still accepted for `top-center`/`bottom-center`, and the read-back reports the
+  canonical anchor. The panel is sized from the message on both axes —
+  width from the longest line, height from the number of them — so a title and a subtitle give a wide, short
+  panel, not a square one. `--size-percent N` (1-100) overrides the WIDTH only, bounded to 10-80% of the
+  pane, since a message must never cover the session it is about, so a requested 100 reads back as 80. The
+  height always follows the message. `--text-color` colors the panel's TEXT and `--background-color` its
+  backing, independently. `hud update` repaints in place with no re-spawn and no blink,
+  and REPLACES the whole spec — repeat `--detail`/`--spinner`/`--text-color` to keep them, since an omitted
+  one drops. It takes no `--background-color`: the surface reads that once at creation, so only a fresh
+  `hud` changes it and `tree` keeps reporting the creation color across updates, while the text color rides
+  the panel's body file and an update recolors it in place. Message and detail are capped at 256 characters and reject control characters, newline included.
+  It occupies the SAME slot as `overlay open`, so: a second `hud` replaces the first, `overlay open`
+  replaces a HUD (a running program is never replaced), `overlay close` and ⌘W take a HUD down,
+  `overlay result` refuses with `no overlay result: the slot holds a hud`, `overlay resize --size-percent`
+  works on it while `--full` is refused (`a hud is always floating: pass --size-percent, not --full`),
+  and `surface zoom` will not address it. `hud update`/`hud close` with none up answer `no hud`. Read it
+  back from the tree node's `hud` object; nothing announces it as an event, so poll `tree`.
 
 **window** — `new [name] [--minimized]` · `list` · `select <id>` · `close <id>` · `rename <id> <name>` ·
 `delete <id>` · `resize <id> --width W --height H` · `move <id> --x X --y Y [--display N]` ·
@@ -319,7 +379,7 @@ omitted when expanded).
 `toggle`, the id may be omitted so `window minimize on` targets the active window; errors on a full-screen
 window; read back as `minimized` on `window list`).
 
-**surface** — `zoom [show|hide|toggle] [--target surface:<session-id>:left|right|scratch|overlay|quick] [--window W]`
+**surface** — `zoom [show|hide|toggle] [--target surface:<session-id>:left|right|scratch|overlay|overlay-left|overlay-right|quick] [--window W]`
 — zoom a terminal surface to fill the window (sidebar hidden; a slim title-bar strip with an exit
 button remains). Omit `--target` to use the active surface;
 copy an explicit surface id from `tree --json` to address a hidden split/scratch or a background
@@ -330,7 +390,12 @@ enters/exits only this zoom mode, not macOS window zoom.
 showing the named sessions' live panes; `dashboard --mru [--font-size N | --auto-size] [--window W]`
 opens the window's most-recently-used sessions instead of naming ids; `dashboard --close [--window W]`
 closes it. The cell unit is a session+pane: a non-split session is one cell, and a SPLIT session shows as
-TWO cells (its left/primary pane and its right/split pane). View-only: no cell takes input — the keyboard
+TWO cells (its left/primary pane and its right/split pane) — unless the id carries a `:left`/`:right` pane
+suffix (`dashboard <a>:left <b>:right`), which places THAT PANE ALONE; the suffix is the same form
+`dashboardMembers` reports, composes with `active` and prefixes, and accepts only `left`/`right` (any other
+suffix fails the command, while `:right` on a session with no split parses but names no pane, so it joins
+the `unresolved` note — and errors `no dashboard sessions resolved` if nothing else resolved, leaving any
+open grid untouched). Cells are deduped by session+pane. View-only: no cell takes input — the keyboard
 drives it (arrows move the highlight, Enter jumps into the highlighted session AND focuses that exact pane
 then closes, Esc closes). `--font-size N` sets an absolute cell font in points; `--auto-size` sizes cells
 relative to the Settings default font, shrinking as the grid grows (the two are mutually exclusive; a
@@ -349,10 +414,14 @@ entry
 TOGGLE the frontmost window's MRU dashboard auto-sized (identical to `dashboard --mru --auto-size`); no new
 control command, the socket `dashboard` command is unchanged.
 
-**pick**: `pick [--prompt TEXT] [--allow-custom] [--follow] [--window W] [--no-block]` reads choices
-from stdin and opens the target window's native fuzzy picker. Supply nonblank lines (each line is both
-the id and label) or a JSON array of `{id,label,subtitle?}` items. The default blocks until the user
-chooses or cancels and prints the bare JSON result. `--no-block` prints the picker id instead;
+**pick**: `pick [--prompt TEXT] [--query TEXT] [--allow-custom] [--follow] [--window W] [--no-block]` reads
+choices from stdin and opens the target window's native fuzzy picker. Supply nonblank lines (each line is
+both the id and label) or a JSON array of `{id,label,subtitle?}` items; typing matches labels only, and an
+empty query keeps the supplied order, so the caller's first item is the one Return runs. `--query` prefills
+the field and filters on open, which re-ranks and drops that order. An empty item list is accepted only with
+`--allow-custom`, giving a plain text prompt; stdin is read either way, so an itemless call needs
+`< /dev/null` or it blocks. The default blocks until the user chooses or cancels and prints the bare JSON
+result. `--no-block` prints the picker id instead;
 `pick result ID [--window W]` reads it later, and `pick cancel ID [--window W]` cancels it.
 Only one picker may be pending per window. It opens without raising a background target unless
 `--follow` is set. Read the live picker id from the tree's top-level `pickPending` field.

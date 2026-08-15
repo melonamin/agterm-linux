@@ -1,12 +1,10 @@
 import agtermCore
 import AppKit
 
-/// Blends the window title bar with the terminal, mirroring macterm's `WindowAppearance`
-/// (which in turn mirrors Ghostty's transparent-titlebar path). The trick that makes it
-/// seamless: besides a transparent titlebar + `fullSizeContentView` + a window background
-/// matching the terminal, AppKit's private `NSTitlebarView` paints its own material layer
-/// that draws a visible band/seam at the titlebar height. Clearing that layer lets the
-/// window background (and the full-size content below it) show through continuously.
+/// Blends the window title bar with the terminal, mirroring macterm's `WindowAppearance` (itself mirroring
+/// Ghostty's transparent-titlebar path). Besides a transparent titlebar + `fullSizeContentView` + a
+/// terminal-matching window background, AppKit's private `NSTitlebarView` paints its own material layer
+/// drawing a visible band at the titlebar height; clearing it lets the window background show through.
 @MainActor
 enum WindowAppearance {
     /// The window-chrome inputs composited at the AppKit level, read from the shared `GhosttyApp`
@@ -17,18 +15,16 @@ enum WindowAppearance {
         var toolbarMode: ToolbarMode = .compact
     }
 
-    /// Apply the blend to `window` using `background` (the terminal background color) and the given
-    /// `chrome` inputs. Idempotent; safe to re-apply on attach and on every window/title/appearance
-    /// update — AppKit rebuilds the titlebar subviews (and re-asserts a default toolbar style) on
-    /// key/main/fullscreen transitions, so re-applying is required to keep the seam gone and the
-    /// chosen toolbar style stuck.
+    /// Apply the blend to `window` using `background` (the terminal background color) and the `chrome`
+    /// inputs. Idempotent, and re-applying on attach and on every window/title/appearance update is
+    /// REQUIRED: AppKit rebuilds the titlebar subviews and re-asserts a default toolbar style on
+    /// key/main/fullscreen transitions, bringing the seam back and unsticking the chosen toolbar style.
     ///
-    /// At full opacity the window is opaque with a solid background (the original behavior). Below
-    /// full opacity the window goes non-opaque and its background carries the alpha: the renderer is
-    /// pinned transparent (see `AppSettings.ghosttyConfigLines`) and the chrome paints nothing, so
-    /// the whole interior reads as one continuous translucent surface, optionally blurred. When macOS
-    /// Reduce Transparency is enabled, the saved chrome inputs stay unchanged but the effective
-    /// presentation is temporarily opaque and unblurred; disabling it restores those inputs.
+    /// At full opacity the window is opaque with a solid background; below it the window goes non-opaque
+    /// and its background carries the alpha — the renderer is pinned transparent
+    /// (`AppSettings.ghosttyConfigLines`) and the chrome paints nothing, so the interior reads as one
+    /// continuous translucent, optionally blurred surface. macOS Reduce Transparency leaves the saved
+    /// chrome inputs unchanged and presents opaque and unblurred until it is turned off.
     static func sync(window: NSWindow, background: NSColor, chrome: Chrome) {
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
@@ -37,18 +33,15 @@ enum WindowAppearance {
         window.titleVisibility = .hidden
         window.styleMask.insert(.fullSizeContentView)
 
-        // hidden toolbar mode drops the three traffic-light buttons for a full-bleed terminal; every
-        // other mode restores them. Skipped in fullscreen so entering/exiting fullscreen (which re-runs
-        // this sync) leaves AppKit's own auto-showing title bar buttons intact, like the translucency below.
+        // hidden toolbar mode drops the three traffic-light buttons for a full-bleed terminal, every other
+        // mode restores them. skipped in fullscreen so AppKit's own auto-showing buttons stay intact.
         let hideButtons = chrome.toolbarMode == .hidden && !window.styleMask.contains(.fullScreen)
         for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             window.standardWindowButton(button)?.isHidden = hideButtons
         }
 
-        // Native fullscreen draws its own opaque background and the chrome shows through any
-        // transparency, so force opaque while fullscreened. Reduce Transparency is an effective
-        // runtime override: preserve the requested opacity/blur, but present an opaque, unblurred
-        // window until the system setting is turned off.
+        // native fullscreen draws its own opaque background and the chrome shows through any transparency,
+        // so force opaque there; Reduce Transparency forces the same without touching the saved inputs.
         let reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
         let transparent = chrome.opacity < 1
             && !window.styleMask.contains(.fullScreen)
@@ -63,42 +56,34 @@ enum WindowAppearance {
             setWindowBackgroundBlur(window, radius: 0) // clear any blur applied while translucent
         }
 
-        // keep the sidebar see-through so the window background shows through it (the lighter/darker
-        // tint is layered in SwiftUI, not here). on macOS 26 the NavigationSplitView sidebar is a Liquid
-        // Glass container wrapping the sidebar content: `NSGlassEffectView.tintColor` is an INPUT to the
-        // glass material, not an
-        // opaque fill — so AppKit re-cooks it markedly lighter/frostier when the window resigns key,
-        // and there is no `NSVisualEffectView.state = .active` equivalent on `NSGlassEffectView` to
-        // pin it. To keep the sidebar a constant color across key/non-key (only visible once there are
-        // multiple windows), stop letting the glass be the background: clear it so the window background
-        // shows through (the sidebar tint is layered in SwiftUI — see `syncSidebarBackground`).
+        // keep the sidebar see-through (the lighter/darker tint is layered in SwiftUI, not here). on macOS
+        // 26 the NavigationSplitView sidebar is a Liquid Glass container: `NSGlassEffectView.tintColor` is
+        // an INPUT to the material, not an opaque fill, so AppKit re-cooks it markedly lighter/frostier when
+        // the window resigns key, and there is no `NSVisualEffectView.state = .active` equivalent to pin it.
+        // clearing the glass keeps the color constant across key/non-key — visible only with multiple windows.
         syncSidebarBackground(in: window)
 
-        // the title/terminal separator is drawn in the detail pane (ContentView), so it
-        // ends at the sidebar edge rather than spanning the full titlebar width.
+        // the title/terminal separator is SwiftUI's (`WindowContentView.titlebarHairline`), drawn full width
+        // by both columns and omitted in hidden mode. Nothing below draws it.
         guard let container = titlebarContainer(in: window) else { return }
         if let titlebarView = container.firstDescendant(withClassName: "NSTitlebarView") {
             titlebarView.wantsLayer = true
             titlebarView.layer?.backgroundColor = NSColor.clear.cgColor
         }
-        // always hide the OS titlebar background: our custom titlebar row is the chrome. At full
-        // opacity, or when .hiddenTitleBar doesn't hold (the XCUITest reopen path), it would otherwise
-        // paint a dark strip above the header.
+        // always hide the OS titlebar background — our custom row is the chrome. At full opacity, or when
+        // .hiddenTitleBar doesn't hold (the XCUITest reopen path), it paints a dark strip above the header.
         container.firstDescendant(withClassName: "NSTitlebarBackgroundView")?.isHidden = true
-        // hidden toolbar mode also has to suppress `_NSTitlebarDecorationView` — a separate full-width
-        // titlebar-height sibling of NSTitlebarView that paints a vibrancy material band (macOS 26).
-        // In tall/compact modes the custom row covers it; in hidden mode (traffic lights gone, row
-        // collapsed to the 3px drag strip) it is left exposed as a textured band over the full-bleed
-        // terminal. Hidden only in hidden mode so tall/compact keep AppKit's normal titlebar rendering.
+        // hidden mode must also suppress `_NSTitlebarDecorationView` — a full-width titlebar-height sibling
+        // of NSTitlebarView painting a vibrancy material band (macOS 26). tall/compact cover it with the
+        // custom row; hidden mode (traffic lights gone, row collapsed to the 3px drag strip) leaves it bare.
         container.firstDescendant(withClassName: "_NSTitlebarDecorationView")?.isHidden = hideButtons
     }
 
-    /// Keeps the sidebar see-through so the window background shows through it — the opaque terminal
-    /// color at full opacity, or the translucent tinted background + blur below it. The user's
-    /// lighter/darker sidebar shift is layered in SwiftUI (a wash behind the transparent outline, see
-    /// `WindowContentView.sidebarTintWash`) so it composes with the translucency instead of fighting it
-    /// and covers the whole column (tree + bottom bar) uniformly. On macOS 26 the Liquid Glass container
-    /// that could wrap the sidebar is cleared too (defensive — the custom split no longer creates one).
+    /// Keeps the sidebar see-through — opaque terminal color at full opacity, translucent tinted background
+    /// + blur below it. The user's lighter/darker shift is layered in SwiftUI (a wash behind the transparent
+    /// outline, `WindowContentView.sidebarTintWash`) so it composes with the translucency and covers tree +
+    /// bottom bar uniformly. The macOS 26 Liquid Glass container is cleared too (defensive — the custom
+    /// split no longer creates one).
     private static func syncSidebarBackground(in window: NSWindow) {
         guard let scroll = sidebarScroll(in: window) else { return }
         if #available(macOS 26.0, *), let glass = sidebarGlass(containing: scroll) {
@@ -124,8 +109,7 @@ enum WindowAppearance {
     }
 
     /// The first `NSGlassEffectView` ancestor of the sidebar scroll view (the
-    /// `NSContainerConcentricGlassEffectView` that `NavigationSplitView` wraps the sidebar in on
-    /// macOS 26).
+    /// `NSContainerConcentricGlassEffectView` `NavigationSplitView` wraps the sidebar in on macOS 26).
     @available(macOS 26.0, *)
     private static func sidebarGlass(containing scroll: NSScrollView) -> NSGlassEffectView? {
         var node: NSView? = scroll.superview
@@ -136,15 +120,13 @@ enum WindowAppearance {
         return nil
     }
 
-    /// Forces any nested legacy `NSVisualEffectView` to render its active material regardless of
-    /// window key state — defensive insurance for the sidebar subtree.
+    /// Forces any nested legacy `NSVisualEffectView` to its active material regardless of window key state.
     private static func forceVisualEffectsActive(in view: NSView) {
         if let effect = view as? NSVisualEffectView { effect.state = .active }
         for subview in view.subviews { forceVisualEffectsActive(in: subview) }
     }
 
-    /// The `NSTitlebarContainerView` for `window` — a descendant of the window's root
-    /// theme frame (the superview chain above the content view).
+    /// The `NSTitlebarContainerView` for `window`, found from the window's root theme frame.
     private static func titlebarContainer(in window: NSWindow) -> NSView? {
         guard let contentView = window.contentView else { return nil }
         var root: NSView = contentView
@@ -156,10 +138,10 @@ enum WindowAppearance {
 
 // MARK: - Private CGS background-blur SPI
 
-// `CGSSetWindowBackgroundBlurRadius` is the private CoreGraphics call every macOS terminal
-// (Terminal.app, iTerm, Ghostty) uses to blur the content behind a translucent window. Undocumented
-// but long-stable; libghostty calls the same symbol. Resolved once via dlsym; a missing symbol
-// degrades to a no-op (no blur) rather than crashing. Adapted from thdxg/macterm (MIT).
+// `CGSSetWindowBackgroundBlurRadius` is the private CoreGraphics call every macOS terminal (Terminal.app,
+// iTerm, Ghostty, libghostty) uses to blur the content behind a translucent window — undocumented but
+// long-stable. resolved once via dlsym; a missing symbol degrades to a no-op (no blur), not a crash.
+// Adapted from thdxg/macterm (MIT).
 private let cgsDefaultConnection: (@convention(c) () -> Int32)? = {
     guard let sym = dlsym(dlopen(nil, RTLD_NOW), "CGSDefaultConnectionForThread") else { return nil }
     return unsafeBitCast(sym, to: (@convention(c) () -> Int32).self)
@@ -177,8 +159,8 @@ private func setWindowBackgroundBlur(_ window: NSWindow, radius: Int) {
 }
 
 extension NSView {
-    /// Depth-first search for the first descendant whose runtime class name matches.
-    /// Used to reach AppKit's private titlebar views by class name.
+    /// Depth-first search for the first descendant whose runtime class name matches — the only way to reach
+    /// AppKit's private titlebar views.
     func firstDescendant(withClassName className: String) -> NSView? {
         for subview in subviews {
             if String(describing: type(of: subview)) == className { return subview }
@@ -188,7 +170,6 @@ extension NSView {
     }
 
     /// Depth-first search for the first descendant (or self) carrying the given identifier.
-    /// Used to locate the tagged sidebar scroll view so its enclosing glass can be reached.
     func firstDescendant(withIdentifier identifier: String) -> NSView? {
         if self.identifier?.rawValue == identifier { return self }
         for subview in subviews {

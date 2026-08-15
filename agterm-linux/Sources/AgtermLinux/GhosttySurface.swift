@@ -6,11 +6,20 @@ import CGtk
 import agtermCore
 import Foundation
 
+enum LinuxOverlayExitCapture {
+    static func consume(_ file: String) -> Int? {
+        defer { try? FileManager.default.removeItem(atPath: file) }
+        guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { return nil }
+        return OverlayCapture.parseExitCode(text)
+    }
+}
+
 @MainActor
 final class GhosttySurface: TerminalSurface {
     /// The GtkGLArea widget (stored as OpaquePointer; cast at GTK call sites).
     let glArea: OpaquePointer
     private(set) var surface: ghostty_surface_t?
+    var isRealized: Bool { surface != nil }
     /// The key controller + a GtkIMContext for composed input (dead-keys / compose / CJK): key events are
     /// filtered through the IM, which commits the composed text via the `commit` signal.
     private var keyController: OpaquePointer?
@@ -27,6 +36,10 @@ final class GhosttySurface: TerminalSurface {
     private let cwd: String
     /// Optional explicit command; nil runs the user's default login shell.
     private let command: String?
+    /// A fixed background owned by an overlay surface rather than the underlying session.
+    private let fixedBackgroundColor: String?
+    /// Program overlays use the theme default unless they explicitly own a color.
+    private let usesSessionWatermark: Bool
     /// Whether command surfaces should linger on ghostty's "press any key" prompt after exit.
     private let waitAfterCommand: Bool
     /// Scratch/overlay/quick terminals are transient covers; their OSC title/PWD must not overwrite the
@@ -70,23 +83,29 @@ final class GhosttySurface: TerminalSurface {
 
     /// Set by the host: the shell process exited.
     var onExit: (() -> Void)?
+    private var exitCodeFile: String?
+    private var onExitCodeCaptured: ((Int) -> Void)?
     private var didHandleProcessExit = false
 
     isolated deinit {
         if let surface { ghostty_surface_free(surface) }
         ownedConfigs.forEach { ghostty_config_free($0) }
         configurationStorage?.release()
+        if let exitCodeFile { try? FileManager.default.removeItem(atPath: exitCodeFile) }
     }
 
     init(sessionID: UUID, cwd: String, command: String? = nil, env: [String: String] = [:],
          controller: AppController? = nil, waitAfterCommand: Bool = false,
          role: LinuxSurfaceRole = .main, reportsPaneState: Bool = true,
-         fontSize: Double? = nil, initialInput: String? = nil) {
+         fontSize: Double? = nil, initialInput: String? = nil, backgroundColor: String? = nil,
+         usesSessionWatermark: Bool = true) {
         self.sessionID = sessionID
         self.controller = controller
         self.role = role
         self.cwd = cwd
         self.command = command
+        fixedBackgroundColor = backgroundColor
+        self.usesSessionWatermark = usesSessionWatermark
         self.waitAfterCommand = waitAfterCommand
         self.reportsPaneState = reportsPaneState
         self.fontSize = fontSize
@@ -212,7 +231,8 @@ final class GhosttySurface: TerminalSurface {
         ghostty_surface_set_focus(surface, true)
         applyColorScheme(appearanceSide)   // report the system light/dark scheme (OSC color-scheme queries)
         feed(GhosttyApp.shared.currentThemeOSC)   // push theme colors the embedded GL renderer won't adopt from config
-        if controller?.store.session(withID: sessionID)?.backgroundWatermark != nil {
+        if fixedBackgroundColor != nil
+                || usesSessionWatermark && controller?.store.session(withID: sessionID)?.backgroundWatermark != nil {
             applyWatermarkFromSession()
         }
     }
@@ -247,8 +267,9 @@ final class GhosttySurface: TerminalSurface {
     /// Inject text as keystrokes (the control channel's session.type): printable runs go
     /// as key-with-text, each newline as a Return keypress (keycode 36 = XKB Return). NOT
     /// ghostty_surface_text, whose bracketed-paste wrapping suppresses Enter.
-    func inject(text: String) {
-        guard let surface else { return }
+    @discardableResult
+    func inject(text: String) -> Bool {
+        guard let surface else { return false }
         // Split into printable runs + Return keys via the shared segmenter (one typing policy for both
         // platforms); send each run as text and each line break as a real Return key press.
         for segment in KeystrokeSegments.split(text) {
@@ -269,6 +290,7 @@ final class GhosttySurface: TerminalSurface {
                 _ = ghostty_surface_key(surface, ke)
             }
         }
+        return true
     }
 
     /// Feed raw bytes into the terminal as if read from the pty — used to push theme colors (OSC 11/10/4/…)
@@ -303,7 +325,9 @@ final class GhosttySurface: TerminalSurface {
         let session = controller?.store.session(withID: sessionID)
         let watermark = oscBackgroundColorHex.map {
             BackgroundWatermark(kind: .color, colorHex: $0)
-        } ?? session?.backgroundWatermark
+        } ?? fixedBackgroundColor.map {
+            BackgroundWatermark(kind: .color, colorHex: $0)
+        } ?? (usesSessionWatermark ? session?.backgroundWatermark : nil)
         guard force || watermark != nil || dashboardFontOverride != nil || session?.fontSize != nil else { return }
         let resolvedImagePath = session.flatMap {
             WatermarkRenderer.materialize(watermark, sessionID: $0.id)
@@ -324,7 +348,9 @@ final class GhosttySurface: TerminalSurface {
 
     func reapplyWatermarkIfNeeded(windowOpacity: Double? = nil, settings: AppSettings? = nil) {
         guard oscBackgroundColorHex != nil
-                || controller?.store.session(withID: sessionID)?.backgroundWatermark != nil else { return }
+                || fixedBackgroundColor != nil
+                || usesSessionWatermark
+                    && controller?.store.session(withID: sessionID)?.backgroundWatermark != nil else { return }
         reapplyBackgroundOverlay(windowOpacity: windowOpacity, settings: settings)
     }
 
@@ -339,8 +365,11 @@ final class GhosttySurface: TerminalSurface {
     /// retained/re-applied per surface across config reloads.
     func applyOSCBackground(red: UInt8, green: UInt8, blue: UInt8) {
         let hex = String(format: "#%02X%02X%02X", red, green, blue)
-        let sessionColor = controller?.store.session(withID: sessionID)?.backgroundWatermark
-            .flatMap { $0.kind == .color ? $0.colorHex : nil }
+        let inheritedColor = usesSessionWatermark
+            ? controller?.store.session(withID: sessionID)?.backgroundWatermark
+                .flatMap { $0.kind == .color ? $0.colorHex : nil }
+            : nil
+        let sessionColor = fixedBackgroundColor ?? inheritedColor
         let baseline = OSCBackgroundPolicy.baseline(
             oscOverlayActive: oscBackgroundColorHex != nil,
             surfaceBackground: sessionColor,
@@ -660,9 +689,25 @@ final class GhosttySurface: TerminalSurface {
     func handleProcessExit() {
         guard !didHandleProcessExit else { return }
         didHandleProcessExit = true
+        finishExitCodeCapture()
         let exit = onExit
         onExit = nil
         exit?()
+    }
+
+    func captureExitCode(from file: String, onCapture: @escaping (Int) -> Void) {
+        exitCodeFile = file
+        onExitCodeCaptured = onCapture
+    }
+
+    private func finishExitCodeCapture() {
+        guard let file = exitCodeFile else { return }
+        defer {
+            exitCodeFile = nil
+            onExitCodeCaptured = nil
+        }
+        guard let code = LinuxOverlayExitCapture.consume(file) else { return }
+        onExitCodeCaptured?(code)
     }
 
     var shouldCloseOnChildExitAction: Bool { command != nil && !waitAfterCommand }
@@ -677,7 +722,9 @@ final class GhosttySurface: TerminalSurface {
     }
 
     func terminalNotificationOrigin() -> LinuxTerminalNotificationOrigin? {
-        guard let controller, let pane = role.notificationPane else { return nil }
+        guard let controller else { return nil }
+        let liveOverlayPane = controller.store.session(withID: sessionID)?.paneOverlayRole(of: self)
+        guard let pane = role.notificationPane(liveOverlayPane: liveOverlayPane) else { return nil }
         let appActive = gtk_window_is_active(WIN(controller.windowPointer)) != 0
         let firingIsFocused = appActive
             && gtk_widget_get_mapped(W(glArea)) != 0
@@ -706,10 +753,12 @@ final class GhosttySurface: TerminalSurface {
     // MARK: - TerminalSurface
 
     func teardown() {
+        onExit = nil
         if let surface {
             ghostty_surface_free(surface)
             self.surface = nil
         }
+        finishExitCodeCapture()
         ownedConfigs.forEach { ghostty_config_free($0) }
         ownedConfigs = []
         configurationStorage?.release()
@@ -764,7 +813,9 @@ private let surfaceFocusEnter: @MainActor @convention(c) (OpaquePointer?, gpoint
         surface.setFocus(true)
         surface.imFocus(true)
         // Tell the controller which pane took focus so a split session's displayName/title/cwd track it.
-        surface.controller?.surfaceDidFocus(surface.sessionID, isSplit: surface.isSplitPane)
+        let livePane = surface.controller?.store.session(withID: surface.sessionID)?.paneOverlayRole(of: surface)
+        surface.controller?.surfaceDidFocus(
+            surface.sessionID, isSplit: livePane == .right || surface.isSplitPane)
     }
 }
 private let surfaceFocusLeave: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { _, data in

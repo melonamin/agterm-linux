@@ -19,6 +19,38 @@ final class SessionPickerRowContext {
 
 @MainActor
 extension AppController {
+    func sessionSwitcherScroller(containing rows: OpaquePointer) -> OpaquePointer? {
+        guard let scroller = op(gtk_scrolled_window_new()) else { return nil }
+        let metrics = InterfaceMetrics(fontSize: linuxSettingsStore().load().effectiveInterfaceFontSize)
+        let windowHeight = Double(max(1, gtk_widget_get_height(W(window))))
+        let maxHeight = Int32(metrics.fittedPanelHeight(windowHeight: windowHeight, topFraction: 0))
+        let deckWidth = Double(max(1, gtk_widget_get_width(W(deck))))
+        let width = Int32(metrics.fittedPanelWidth(
+            idealAtDefault: 460, windowWidth: deckWidth, terminalAreaInset: 0))
+        gtk_widget_set_halign(W(scroller), GTK_ALIGN_CENTER)
+        gtk_widget_set_valign(W(scroller), GTK_ALIGN_CENTER)
+        gtk_scrolled_window_set_policy(scroller, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
+        gtk_scrolled_window_set_max_content_height(scroller, maxHeight)
+        gtk_scrolled_window_set_propagate_natural_height(scroller, 1)
+        gtk_scrolled_window_set_min_content_width(scroller, width)
+        gtk_scrolled_window_set_max_content_width(scroller, width)
+        gtk_scrolled_window_set_propagate_natural_width(scroller, 1)
+        gtk_scrolled_window_set_child(scroller, W(rows))
+        return scroller
+    }
+
+    func sessionPickerScroller(containing rows: OpaquePointer) -> OpaquePointer? {
+        guard let scroller = op(gtk_scrolled_window_new()) else { return nil }
+        let metrics = InterfaceMetrics(fontSize: linuxSettingsStore().load().effectiveInterfaceFontSize)
+        let windowHeight = Double(max(1, gtk_widget_get_height(W(window))))
+        let maxHeight = Int32(metrics.fittedPanelHeight(windowHeight: windowHeight, topFraction: 0.12))
+        gtk_scrolled_window_set_policy(scroller, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
+        gtk_scrolled_window_set_max_content_height(scroller, maxHeight)
+        gtk_scrolled_window_set_propagate_natural_height(scroller, 1)
+        gtk_scrolled_window_set_child(scroller, W(rows))
+        return scroller
+    }
+
     /// Open the mouse-accessible twin of the Ctrl-Tab MRU switcher or attention palette.
     /// These are interactive-only popovers, so no control-socket command is meaningful.
     func showSessionPicker(attention: Bool, anchor: OpaquePointer?) {
@@ -45,11 +77,12 @@ extension AppController {
         gtk_widget_set_parent(W(popover), W(anchor))
         gtk_popover_set_position(POPOVER(popover), GTK_POS_BOTTOM)
         gtk_widget_add_css_class(W(rows), "agterm-session-picker")
+        gtk_widget_add_css_class(W(rows), "agterm-interface-panel")
         for margin in [gtk_widget_set_margin_top, gtk_widget_set_margin_bottom,
                        gtk_widget_set_margin_start, gtk_widget_set_margin_end] {
             margin(W(rows), 6)
         }
-        gtk_widget_set_size_request(W(rows), 320, -1)
+        gtk_widget_set_size_request(W(rows), interfacePanelWidth(320), -1)
 
         for session in sessions {
             guard let button = op(gtk_button_new()), let row = op(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8)),
@@ -94,10 +127,14 @@ extension AppController {
             gtk_box_append(cast(rows), W(button))
         }
 
+        guard let scroller = sessionPickerScroller(containing: rows) else {
+            dismissSessionPicker()
+            return
+        }
         connect(popover, "closed", unsafeBitCast(onSessionPickerClosed as @convention(c)
             (OpaquePointer?, gpointer?) -> Void, to: GCallback.self),
             Unmanaged.passUnretained(self).toOpaque())
-        gtk_popover_set_child(POPOVER(popover), W(rows))
+        gtk_popover_set_child(POPOVER(popover), W(scroller))
         gtk_popover_popup(POPOVER(popover))
     }
 
@@ -118,7 +155,7 @@ extension AppController {
         if attention {
             handleAutoFollow(id, statusPane: statusPane)
         } else {
-            focusedSurface(for: id)?.grabFocus()
+            sessionFocusTarget(for: id)?.grabFocus()
         }
     }
 

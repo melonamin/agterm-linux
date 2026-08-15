@@ -28,7 +28,14 @@ extension AppController {
                 return ok(id)
             }   // close needs no counter
             selectSession(id, userInitiated: false)
-            guard let owner = searchTargetSurface(for: id) else { return err("session not realized") }
+            reconcile(focusActive: false)
+            var owner = searchTargetSurface(for: id)
+            for _ in 0..<12 where owner?.isRealized != true {
+                while g_main_context_iteration(nil, 0) != 0 {}
+                usleep(30_000)
+                owner = searchTargetSurface(for: id)
+            }
+            guard let owner, owner.isRealized else { return err("session not realized") }
             searchSurface = owner
             owner.startSearch()   // action fires inline -> search bar is shown synchronously
             let hasQuery = req.args?.text.map { !$0.isEmpty } ?? false
@@ -238,15 +245,25 @@ extension AppController {
         return s.splitFocused ? (splitSurfaces[id] ?? surfaces[id]) : surfaces[id]
     }
 
+    func sessionFocusTarget(for id: UUID, wantSplit: Bool? = nil) -> GhosttySurface? {
+        guard let session = store.session(withID: id) else { return nil }
+        return session.focusTarget(wantSplit: wantSplit ?? session.splitFocused) as? GhosttySurface
+    }
+
+    func sessionFocusTarget() -> GhosttySurface? {
+        store.selectedSessionID.flatMap { sessionFocusTarget(for: $0) }
+    }
+
     func searchTargetSurface(for id: UUID) -> GhosttySurface? {
         guard let s = store.session(withID: id) else { return nil }
-        if s.overlayActive, let overlay = overlaySurfaces[id] { return overlay }
-        if s.scratchActive, let scratch = scratchSurfaces[id] { return scratch }
+        if s.scratchActive, !s.programOverlayActive, let scratch = scratchSurfaces[id] { return scratch }
+        if s.focusedOverlayPane != nil || s.fullOverlayActive { return nil }
         return focusedSurface(for: id)
     }
 
     var configurableSurfaces: [GhosttySurface] {
         Array(surfaces.values) + Array(splitSurfaces.values) + Array(scratchSurfaces.values)
-            + Array(overlaySurfaces.values) + (quickSurface.map { [$0] } ?? [])
+            + Array(overlaySurfaces.values) + Array(leftOverlaySurfaces.values)
+            + Array(rightOverlaySurfaces.values) + (quickSurface.map { [$0] } ?? [])
     }
 }

@@ -19,8 +19,8 @@ You are inside agterm (`AGTERM_ENABLED=1`). Use:
   key equivalents the menu bar is actually dispatching. If the action's `chord` looks right but no `menu`
   entry carries it (or a different item does), the keymap is fine and the menu is the problem: SwiftUI
   rebuilds the menu only on the next app activation, so switch to another app and back, then relaunch if it
-  persists. Exception: `undo_close` (⌘Z) is delivered by a key monitor rather than a menu item, so it never
-  appears under `menu` and its absence there means nothing.
+  persists. Exceptions: `undo_close` (⌘Z) and `toggle_fullscreen` (⌃⌘F) are delivered by a key monitor
+  rather than a menu item, so they never appear under `menu` and their absence there means nothing.
 - **Ghostty settings** - `agtermctl config reload` re-reads the ghostty config and prints the diagnostic
   count (`0` = clean). The count covers every config source, not just `ghostty.conf` (libghostty does not
   record which file a diagnostic came from), so check the Console log for the offending line. `ghostty.conf`
@@ -88,8 +88,12 @@ agterm's bundled ghostty defaults are the **fallback**, binding all three to the
 (`super+key_c`/`super+key_v`/`super+key_a`), matched by keycode regardless of the character the layout
 prints. They fire whenever the menu equivalent does not: on a Russian/Greek/etc. layout the physical C key
 yields `с`, so the menu's ⌘C never matches and the keycode bind runs instead; likewise a ⌘C with no
-selection leaves the menu item disabled, so the key falls through (and ghostty's `performable:` prefix makes
-it a no-op). This is why copy, paste, and select-all all keep working on a non-Latin layout. (ghostty's own
+selection, or a ⌘V with nothing pasteable, leaves the menu item disabled and reaches the bind on ANY
+layout. The three binds deliberately omit ghostty's `performable:` prefix so they always consume the key,
+and one that cannot act simply does nothing. With that prefix the unperformed press fell through to key
+encoding — invisible under legacy encoding, which drops ⌘ chords on macOS, but the kitty keyboard protocol
+reports them and the program renders a stray `^[[…u` as text. This is why copy, paste, and select-all all
+keep working on a non-Latin layout. (ghostty's own
 `super+c`/`super+v`/`super+a` match the produced CHARACTER, so alone they would miss there — `super+key_a`
 in particular exists because without it ⌘A would silently do nothing on a Cyrillic layout.)
 
@@ -137,6 +141,16 @@ To separate "never posted" from "posted but not shown": `tree --json` shows a ri
 target session whenever the command reached the notification path, and the log above records both the
 posted and the suppressed case under the `NotificationManager` category.
 
+### "a tool cannot get a macOS permission"
+
+Programs run in a session request Automation, Camera, Contacts, Calendars, Reminders, Photos, Location,
+Bluetooth, local network and speech recognition THROUGH agterm: macOS treats agterm as the responsible app,
+so the prompt names agterm and the answer is recorded against agterm, not the tool. One grant then covers
+every program in every session with no further prompt, and a dismissed prompt is never re-offered
+(`osascript` keeps returning "Not authorized to send Apple events"). The user changes the answer in
+System Settings ▸ Privacy & Security under the matching service, e.g. Automation ▸ agterm. This is macOS
+policy, not an agterm bug: do not file it.
+
 ### "The agent-status glyph does not update"
 
 Install the hooks from Help ▸ Install Agent Status Hooks…. For shell-integrated agents, start a fresh shell
@@ -173,6 +187,18 @@ mishandles it. agterm emits correct paired focus-in/focus-out and is already mac
 refocus click is not forwarded into the pty), so the terminal is not at fault. Tracked as
 anthropics/claude-code#72188 (mouse-click variant #72273). Workaround: answer before switching away, or
 `Esc` the stuck prompt and let it re-ask.
+
+### "⌘-hover does not underline links inside tmux or vim"
+
+By design, NOT a bug. Do not file an agterm issue for it. libghostty detects links only while the
+foreground program has mouse reporting OFF, so a program that captures the mouse takes link handling with
+it: ⌘-hover stops underlining, the pointer stays a text bar, and ⌘-click opens nothing, all four together
+and only inside that program. Ghostty.app behaves the same. It is per-program, not per-category:
+`tmux` with `mouse on` and stock `vim` (`defaults.vim` sets `mouse=a`) suppress it, while an agent CLI
+that never enables mouse reporting keeps links working. Workaround: hold shift too (⌘⇧-hover, ⌘⇧-click).
+A program can claim shift via `XTSHIFTESCAPE`, so `mouse-shift-capture = never` in
+`~/.config/agterm/ghostty.conf` makes shift always win; `mouse-reporting = false` there turns reporting
+off for every program, trading in-program mouse support for always-on selection and links.
 
 ## Reporting: decide bug vs unsupported FIRST
 

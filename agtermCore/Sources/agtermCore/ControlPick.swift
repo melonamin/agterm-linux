@@ -1,5 +1,3 @@
-import Foundation
-
 /// One caller-provided choice displayed by the native picker.
 public struct ControlPickItem: Codable, Sendable, Equatable {
     public static let maxItems = 1_000

@@ -30,6 +30,8 @@ struct LinuxControlDispatcher {
                 .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayResult,
                 .sessionBackground, .sessionText:
             return dispatchSessionSurfaceCommand(request)
+        case .sessionHudOpen, .sessionHudUpdate, .sessionHudClose:
+            return dispatchHudCommand(request)
         case .sessionType, .quickType, .quickText:
             return nil
         case .workspaceNew, .workspaceSelect, .workspaceRename, .workspaceDelete,
@@ -383,6 +385,14 @@ struct LinuxControlDispatcher {
             if let color = request.args?.color, !WatermarkConfig.isValidColorHex(color) {
                 return ControlResponse(ok: false, error: "invalid color: \(color) (#rrggbb)")
             }
+            let pane: OverlayPane?
+            switch parseOverlayPane(request.args?.pane) {
+            case .rejected(let response): return response
+            case .pane(let parsed): pane = parsed
+            }
+            if pane != nil, request.args?.sizePercent != nil {
+                return ControlResponse(ok: false, error: PaneOverlayError.sizePercentConflict)
+            }
             return actions.openSessionOverlay(request.target, window: request.args?.window,
                                               options: ControlSessionOverlayOpenOptions(
                                                 command: command,
@@ -390,15 +400,41 @@ struct LinuxControlDispatcher {
                                                 wait: request.args?.wait ?? false,
                                                 sizePercent: request.args?.sizePercent,
                                                 backgroundColor: request.args?.color,
-                                                follow: request.args?.follow ?? false
+                                                follow: request.args?.follow ?? false,
+                                                pane: pane
                                               ))
         case .sessionOverlayClose:
-            return actions.closeSessionOverlay(request.target, window: request.args?.window)
+            switch parseOverlayPane(request.args?.pane) {
+            case .rejected(let response): return response
+            case .pane(let pane):
+                return actions.closeSessionOverlay(request.target, window: request.args?.window, pane: pane)
+            }
         case .sessionOverlayResize:
+            if request.args?.pane != nil {
+                return ControlResponse(ok: false, error: PaneOverlayError.resizeUnsupported)
+            }
+            let wantsFull = request.args?.full == true
+            let percent = request.args?.sizePercent
+            if wantsFull, percent != nil {
+                return ControlResponse(ok: false,
+                                       error: "session.overlay.resize: --full is mutually exclusive with --size-percent")
+            }
+            if !wantsFull, percent == nil {
+                return ControlResponse(ok: false,
+                                       error: "session.overlay.resize requires --size-percent or --full")
+            }
+            if let percent, !(1...100).contains(percent) {
+                return ControlResponse(ok: false,
+                                       error: "session.overlay.resize: --size-percent must be 1...100")
+            }
             return actions.resizeSessionOverlay(request.target, window: request.args?.window,
-                                                sizePercent: request.args?.sizePercent)
+                                                sizePercent: wantsFull ? nil : percent)
         case .sessionOverlayResult:
-            return actions.sessionOverlayResult(request.target, window: request.args?.window)
+            switch parseOverlayPane(request.args?.pane) {
+            case .rejected(let response): return response
+            case .pane(let pane):
+                return actions.sessionOverlayResult(request.target, window: request.args?.window, pane: pane)
+            }
         case .sessionBackground:
             return dispatchSessionBackground(request)
         case .sessionText:
@@ -406,6 +442,92 @@ struct LinuxControlDispatcher {
         default:
             preconditionFailure("unexpected session surface command: \(request.cmd.rawValue)")
         }
+    }
+
+    private enum OverlayPaneParse {
+        case pane(OverlayPane?)
+        case rejected(ControlResponse)
+    }
+
+    private func parseOverlayPane(_ raw: String?) -> OverlayPaneParse {
+        guard let raw else { return .pane(nil) }
+        guard let pane = OverlayPane(controlName: raw) else {
+            return .rejected(ControlResponse(ok: false, error: PaneOverlayError.invalidPane))
+        }
+        return .pane(pane)
+    }
+
+    private func dispatchHudCommand(_ request: ControlRequest) -> ControlResponse {
+        if request.cmd == .sessionHudClose {
+            return actions.closeHud(request.target, window: request.args?.window)
+        }
+        let spec: HudSpec
+        switch parseHudSpec(request) {
+        case .rejected(let response): return response
+        case .spec(let parsed): spec = parsed
+        }
+        if request.cmd == .sessionHudOpen {
+            return actions.openHud(request.target, window: request.args?.window, spec: spec)
+        }
+        return actions.updateHud(request.target, window: request.args?.window, spec: spec)
+    }
+
+    private enum HudSpecParse {
+        case spec(HudSpec)
+        case rejected(ControlResponse)
+    }
+
+    private func parseHudSpec(_ request: ControlRequest) -> HudSpecParse {
+        let args = request.args
+        guard let message = args?.message, !message.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return .rejected(ControlResponse(ok: false, error: "\(request.cmd.rawValue) requires a message"))
+        }
+        guard !containsControlCharacters(message), !containsControlCharacters(args?.detail ?? "") else {
+            return .rejected(ControlResponse(ok: false, error: "hud text must not contain control characters"))
+        }
+        guard hudTextLength(message) <= HudSpec.maxTextLength else {
+            return .rejected(ControlResponse(
+                ok: false, error: "hud message too long (max \(HudSpec.maxTextLength) characters)"))
+        }
+        guard hudTextLength(args?.detail ?? "") <= HudSpec.maxTextLength else {
+            return .rejected(ControlResponse(
+                ok: false, error: "hud detail too long (max \(HudSpec.maxTextLength) characters)"))
+        }
+        if let color = args?.color, !WatermarkConfig.isValidColorHex(color) {
+            return .rejected(ControlResponse(ok: false, error: "invalid color: \(color) (#rrggbb)"))
+        }
+        if let textColor = args?.textColor, !WatermarkConfig.isValidColorHex(textColor) {
+            return .rejected(ControlResponse(ok: false, error: "invalid text color: \(textColor) (#rrggbb)"))
+        }
+        if let percent = args?.sizePercent, !(1...100).contains(percent) {
+            return .rejected(ControlResponse(
+                ok: false, error: "\(request.cmd.rawValue): --size-percent must be 1...100"))
+        }
+        let position: HudPosition
+        if let raw = args?.position {
+            guard let parsed = HudPosition.parse(raw) else {
+                return .rejected(ControlResponse(
+                    ok: false, error: "invalid position: \(raw) (\(HudPosition.acceptedNamesList))"))
+            }
+            position = parsed
+        } else {
+            position = .defaultPosition
+        }
+        var spinner: HudSpinner?
+        if let raw = args?.spinner, raw != HudSpinner.noneName {
+            guard let parsed = HudSpinner(rawValue: raw) else {
+                return .rejected(ControlResponse(
+                    ok: false, error: "invalid spinner: \(raw) (\(HudSpinner.acceptedNamesList))"))
+            }
+            spinner = parsed
+        }
+        return .spec(HudSpec(message: message, detail: args?.detail, spinner: spinner,
+                             backgroundColor: args?.color, textColor: args?.textColor,
+                             sizePercent: args?.sizePercent, position: position))
+    }
+
+    private func hudTextLength(_ text: String) -> Int {
+        text.precomposedStringWithCanonicalMapping.unicodeScalars.count
     }
 
     private func dispatchAppCommand(_ request: ControlRequest) -> ControlResponse {
@@ -592,6 +714,11 @@ struct LinuxControlDispatcher {
         }
         guard !targets.isEmpty else {
             return ControlResponse(ok: false, error: "dashboard requires at least one session id")
+        }
+        if let malformed = targets.first(where: { DashboardTarget(rawValue: $0) == nil }) {
+            return ControlResponse(
+                ok: false,
+                error: "dashboard: invalid session id '\(malformed)' — use <id>, <id>:left, or <id>:right")
         }
         return actions.setDashboard(targets: targets, window: args?.window, close: false,
                                     fontMode: mode, mru: false)

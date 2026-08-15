@@ -68,17 +68,18 @@ final class MenuUITests: XCTestCase {
         app.typeKey(.escape, modifierFlags: [])
     }
 
-    // agterm ships its OWN rebindable "Toggle Full Screen" (⌃⌘F) View item so full screen is drivable from
-    // the keymap / palette / control channel. AppKit would otherwise ALSO auto-add its native "Enter Full
-    // Screen" (Globe+F) item — a duplicate. AppDelegate strips the native one, so the View menu must show
-    // agterm's item and NOT the native "Enter Full Screen".
+    // AppKit's injected item must be the only one — agterm ships none, because nothing suppresses the
+    // injection. Match on TITLE, not by identifier: the subscript form never matched the injected item,
+    // which is why the assertion this replaces passed while the duplicate was on screen.
     func testViewMenuHasSingleFullScreenItem() throws {
         XCTAssertTrue(app.staticTexts["session-row"].firstMatch.waitForExistence(timeout: 20), "seeded session should exist")
         app.menuBars.menuBarItems["View"].click()
-        let toggle = app.menuItems["Toggle Full Screen"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 5), "View menu should offer agterm's Toggle Full Screen")
-        XCTAssertFalse(app.menuItems["Enter Full Screen"].exists,
-                       "AppKit's native Enter Full Screen item should be stripped so there's no duplicate")
+        XCTAssertTrue(app.menuItems["Toggle Terminal Zoom"].waitForExistence(timeout: 5), "View menu should be open")
+        // scoped to the View menu: the Window menu carries a system full screen item of its own.
+        let viewMenu = app.menuBars.menuBarItems["View"].menus.firstMatch
+        let fullScreen = viewMenu.menuItems.matching(NSPredicate(format: "title ENDSWITH %@", "Full Screen"))
+        let titles = fullScreen.allElementsBoundByIndex.map(\.title)
+        XCTAssertEqual(fullScreen.count, 1, "the View menu should carry one full screen item, got \(titles)")
         app.typeKey(.escape, modifierFlags: [])
     }
 

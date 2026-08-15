@@ -13,6 +13,38 @@ struct LinuxProcessLaunchRequest: Sendable, Equatable {
     let standardIO: LinuxProcessStandardIO
 }
 
+enum LinuxCommandPath {
+    private static let systemDefault = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
+
+    static var bundledCLIDirectory: String? {
+        let executable = try? FileManager.default.destinationOfSymbolicLink(atPath: "/proc/self/exe")
+        return resolvedExecutableDirectory(executable)
+    }
+
+    static func resolvedExecutableDirectory(_ executable: String?) -> String? {
+        guard let executable, executable.hasPrefix("/") else { return nil }
+        return URL(fileURLWithPath: executable).standardizedFileURL.deletingLastPathComponent().path
+    }
+
+    static func widened(
+        _ path: String?, bundledCLIDirectory: String?, homeDirectory: String
+    ) -> String {
+        var result: [String] = []
+        var seen = Set<String>()
+        func add(_ entry: String) {
+            guard !entry.isEmpty, seen.insert(entry).inserted else { return }
+            result.append(entry)
+        }
+        bundledCLIDirectory.map(add)
+        let base = path.flatMap { $0.isEmpty ? nil : $0 } ?? systemDefault
+        base
+            .split(separator: ":", omittingEmptySubsequences: true).forEach { add(String($0)) }
+        add((homeDirectory as NSString).appendingPathComponent(".local/bin"))
+        systemDefault.split(separator: ":").forEach { add(String($0)) }
+        return result.joined(separator: ":")
+    }
+}
+
 protocol LinuxProcessLaunching: Sendable {
     func launch(
         _ request: LinuxProcessLaunchRequest,
@@ -59,10 +91,15 @@ enum LinuxCustomCommandProcess {
     static func request(
         command: CustomCommand, context: CommandContext, baseEnvironment: [String: String]
     ) -> LinuxProcessLaunchRequest {
-        LinuxProcessLaunchRequest(
+        var environment = baseEnvironment.merging(context.environment()) { _, commandValue in commandValue }
+        let home = baseEnvironment["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
+        environment["PATH"] = LinuxCommandPath.widened(
+            baseEnvironment["PATH"], bundledCLIDirectory: LinuxCommandPath.bundledCLIDirectory,
+            homeDirectory: home)
+        return LinuxProcessLaunchRequest(
             executablePath: "/bin/sh",
             arguments: ["-c", context.expand(command.command)],
-            environment: baseEnvironment.merging(context.environment()) { _, commandValue in commandValue },
+            environment: environment,
             currentDirectoryPath: context.sessionPWD.isEmpty ? nil : context.sessionPWD,
             standardIO: .null)
     }

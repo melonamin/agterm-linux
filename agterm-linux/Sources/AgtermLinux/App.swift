@@ -69,6 +69,12 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
     // Route every deferred main-actor job (MainTimer) through g_timeout_add BEFORE any store or
     // controller exists — see `agterm-linux/docs/main-loop.md`.
     installGLibMainTimer()
+    let stateDirectory = linuxStateDirectory()
+    let settingsStore = linuxSettingsStore()
+    let currentSettings = settingsStore.load()
+    let welcomeDue = FirstRunWelcome.isDue(
+        welcomeShown: currentSettings.welcomeShown,
+        hasPriorState: FirstRunWelcome.hasPriorState(in: stateDirectory))
     let appearanceSide = LinuxAppearanceSide(isDark: AppController.systemIsDark)
     GhosttyApp.shared.start(appearanceSide: appearanceSide)
     // The notification click-to-reveal target: an `app.reveal` action carrying a session-id string.
@@ -94,6 +100,15 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
     for id in toOpen { openWindow(id) }
     if let controller = gWindows.values.first {
         _ = controller.reloadConfigForAppearanceChange(appearanceSide)
+    }
+    if welcomeDue,
+       ProcessInfo.processInfo.environment["AGTERM_ATSPI_SCENARIO"] == nil,
+       ProcessInfo.processInfo.environment["AGTERM_ATSPI_OPEN_PREFERENCES"] == nil,
+       let id = toOpen.first, let controller = gWindows[id] {
+        var settings = currentSettings
+        settings.welcomeShown = true
+        try? settingsStore.save(settings)
+        controller.showFirstRunWelcome()
     }
     #if DEBUG
     if let rawURL = ProcessInfo.processInfo.environment["AGTERM_ATSPI_OPEN_URL"], !rawURL.isEmpty {
@@ -281,19 +296,19 @@ private let onRevealAction: @MainActor @convention(c) (OpaquePointer?, OpaquePoi
     guard let focus = LinuxNotificationRevealFocus.resolve(
         pane: pane, sessionExists: session != nil,
         hasSplit: session?.hasSplit ?? false,
-        coverActive: (session?.overlayActive ?? false) || (session?.scratchActive ?? false)
+        coverActive: (session?.programOverlayActive ?? false) || (session?.scratchActive ?? false)
     ), let session else { return }
     let wantSplit = focus == .split
     session.splitFocused = wantSplit
     gtk_window_present(WIN(controller.windowPointer))
     controller.selectSession(id)
     if focus == .overlay,
-       let cover = session.overlayActive ? controller.overlaySurfaces[id] : controller.scratchSurfaces[id] {
+       let cover = session.programOverlayActive ? controller.overlaySurfaces[id] : controller.scratchSurfaces[id] {
         cover.grabFocus()
     } else if session.hasSplit {
         controller.focusPane(left: !wantSplit)
     } else {
-        controller.surfaces[id]?.grabFocus()
+        controller.sessionFocusTarget(for: id, wantSplit: false)?.grabFocus()
     }
 }
 

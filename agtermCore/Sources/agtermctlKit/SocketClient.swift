@@ -26,11 +26,20 @@ struct SocketClient {
 
     /// Connect, send `request` as one newline-terminated JSON line, read the response line, decode it.
     func send(_ request: ControlRequest) throws -> ControlResponse {
+        var data = try JSONEncoder().encode(request)
+        // the server rejects a request line over the shared cap (newline excluded, matching this count)
+        // and closes the connection; check before writing so the caller gets this error instead of a
+        // write failure against the closing peer.
+        guard data.count <= ControlWire.maxRequestLineBytes else {
+            throw SocketClientError(
+                "request too large (\(data.count) bytes, cap \(ControlWire.maxRequestLineBytes)) — "
+                    + "split the input into smaller requests")
+        }
+        data.append(UInt8(ascii: "\n"))
+
         let fd = try connect()
         defer { close(fd) }
 
-        var data = try JSONEncoder().encode(request)
-        data.append(UInt8(ascii: "\n"))
         try Self.writeAll(fd, data)
 
         guard let line = Self.readLine(fd) else {
@@ -56,6 +65,14 @@ struct SocketClient {
         let fd = socket(AF_UNIX, Int32(SOCK_STREAM.rawValue), 0)
         #endif
         guard fd >= 0 else { throw SocketClientError("socket() failed: \(String(cString: strerror(errno)))") }
+
+        // a write after the server closes the connection (e.g. it rejected an oversized request) would
+        // raise the default-fatal SIGPIPE and kill the process with no output. Darwin disables it per socket;
+        // Linux passes MSG_NOSIGNAL to each send in writeAll below.
+        #if canImport(Darwin)
+        var noSigPipe: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+        #endif
 
         addr.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = path.utf8CString
@@ -86,7 +103,11 @@ struct SocketClient {
             var offset = 0
             let base = raw.bindMemory(to: UInt8.self).baseAddress!
             while offset < data.count {
+                #if canImport(Darwin)
                 let n = write(fd, base + offset, data.count - offset)
+                #elseif canImport(Glibc)
+                let n = Glibc.send(fd, base + offset, data.count - offset, Int32(MSG_NOSIGNAL))
+                #endif
                 if n <= 0 { throw SocketClientError("write failed: \(String(cString: strerror(errno)))") }
                 offset += n
             }
@@ -198,10 +219,10 @@ struct SocketClient {
         return "ok"
     }
 
-    /// Render the `theme.list` payload as one theme name per line, the active theme(s) marked with `* `
-    /// and a leading "default ghostty" entry for the no-theme (ghostty built-in) case (no trailing newline).
-    /// When `sync` is on, both the light and dark themes are marked and a header notes the appearance pair;
-    /// otherwise the single `current` theme is marked.
+    /// Render the `theme.list` payload as one theme name per line (no trailing newline), the active
+    /// theme(s) marked `* `, with a leading "default ghostty" entry for the no-theme (ghostty built-in)
+    /// case. With `sync` on, both the light and dark themes are marked under a header naming the
+    /// appearance pair; otherwise the single `current` theme is marked.
     static func formatThemes(_ themes: [String], current: String?, sync: Bool = false,
                              light: String? = nil, dark: String? = nil) -> String {
         let active: (String?) -> Bool = sync ? { $0 != nil && ($0 == light || $0 == dark) } : { $0 == current }
@@ -214,11 +235,10 @@ struct SocketClient {
 
     /// Render the `keymap.list` payload as sections: the resolved built-ins, then custom commands, parse
     /// diagnostics, and the live menu key equivalents (no trailing newline). An overridden built-in is
-    /// marked `*`, and a keyless one prints `-` rather than being dropped, so the listing is the full
-    /// action set.
+    /// marked `*`, a keyless one prints `-` rather than being dropped, so the listing is the full action set.
     ///
     /// The menu section is the point of the command: comparing it against the actions above is what shows
-    /// a chord the keymap resolved but the menu is not carrying. Menu items are printed in menu-bar order.
+    /// a chord the keymap resolved but the menu is not carrying. Menu items print in menu-bar order.
     static func formatKeymap(_ keymap: ControlKeymap) -> String {
         var lines = ["keymap: \(keymap.path)", "", "actions:"]
         let width = keymap.actions.map(\.action.count).max() ?? 0
@@ -268,7 +288,10 @@ struct SocketClient {
             lines.append("\(mark) \(workspace.name)  [\(workspace.id)]")
             for session in workspace.sessions {
                 let smark = session.active ? "*" : " "
-                let tags = (session.split ? " (split)" : "") + (session.overlay ? " (overlay)" : "")
+                // a hidden split still owns a live pane, so it needs a tag of its own: without one it
+                // reads exactly like a session that has no split at all.
+                let splitTag = session.split ? " (split)" : (session.hasSplit == true ? " (split hidden)" : "")
+                let tags = splitTag + (session.overlay ? " (overlay)" : "")
                     + (session.scratch ? " (scratch)" : "")
                 let titleSuffix = session.title.map { "  title: \($0)" } ?? ""
                 lines.append("  \(smark) \(session.name)\(tags)  [\(session.id)]  \(session.cwd)\(titleSuffix)")

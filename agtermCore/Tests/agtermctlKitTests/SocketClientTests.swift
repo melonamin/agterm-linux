@@ -9,9 +9,8 @@ import Testing
 import agtermCore
 @testable import agtermctlKit
 
-// serialized: runSucceedsOnOkResponse and runThrowsExitCodeFailureOnErrorResponse both redirect the
-// process-global STDOUT_FILENO via captureStdout, so running them in parallel races on stdout (one
-// test's output lands in the other's pipe). serial execution keeps the redirect exclusive.
+// serialized: the stdout-capturing tests redirect the process-global STDOUT_FILENO, so in parallel
+// one test's output lands in the other's pipe.
 @Suite(.serialized)
 struct SocketClientTests {
     @Test func consecutiveEventReadsUseIndependentOneShotConnections() throws {
@@ -43,7 +42,6 @@ struct SocketClientTests {
 
         #expect(response.ok)
         #expect(response.result?.id == "9f3c")
-        // the server echoed the request it received — confirm the client wrote it correctly.
         #expect(server.received?.cmd == .sessionSelect)
         #expect(server.received?.target == "active")
     }
@@ -61,8 +59,7 @@ struct SocketClientTests {
         #expect(response.error == "cannot delete last workspace")
     }
 
-    /// A `session.text --all` response can exceed the old 1 MiB cap (full scrollback). A >1 MiB text
-    /// payload must round-trip intact, not fail with "no response".
+    // a `session.text --all` payload exceeds the old 1 MiB read cap; it must round-trip, not fail.
     @Test func roundTripLargeResponse() throws {
         let big = String(repeating: "scrollback line\n", count: 200_000) // ~3 MiB, well over 1 MiB
         let server = StubServer(response: ControlResponse(ok: true, result: ControlResult(text: big)))
@@ -79,6 +76,42 @@ struct SocketClientTests {
     @Test func connectFailureToMissingSocketThrows() {
         let client = SocketClient(path: NSTemporaryDirectory() + "agterm-missing-\(UUID().uuidString.prefix(8)).sock")
         #expect(throws: SocketClientError.self) { try client.send(ControlRequest(cmd: .tree)) }
+    }
+
+    @Test func oversizedRequestFailsBeforeConnecting() {
+        let missing = NSTemporaryDirectory() + "agterm-missing-\(UUID().uuidString.prefix(8)).sock"
+        let big = String(repeating: "x", count: ControlWire.maxRequestLineBytes + 1)
+        let client = SocketClient(path: missing)
+
+        do {
+            _ = try client.send(ControlRequest(cmd: .sessionType, target: "active", args: ControlArgs(text: big)))
+            Issue.record("expected an oversized request to fail")
+        } catch let error as SocketClientError {
+            // the size check must fire before connect: a connect error would say "is agterm running?"
+            #expect(error.description.hasPrefix("request too large"))
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
+    // the server hangs up mid-request when it rejects an oversized line; without SO_NOSIGPIPE on Darwin
+    // or MSG_NOSIGNAL on Linux, the client's next write raises fatal SIGPIPE and the process dies silently.
+    @Test func writeToHungUpPeerThrowsInsteadOfDying() throws {
+        let server = HangUpStubServer()
+        try server.start()
+        defer { server.stop() }
+        // under the request cap but far over the socket buffer, so writeAll is mid-write when the close lands
+        let payload = String(repeating: "x", count: 900_000)
+        let client = SocketClient(path: server.path)
+
+        do {
+            _ = try client.send(ControlRequest(cmd: .sessionType, target: "active", args: ControlArgs(text: payload)))
+            Issue.record("expected the write to a hung-up peer to fail")
+        } catch let error as SocketClientError {
+            #expect(error.description.hasPrefix("write failed"))
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
     }
 
     @Test func socketPathLimitMatchesPlatformCapacity() {
@@ -106,7 +139,6 @@ struct SocketClientTests {
         }
     }
 
-    /// A create command's `run()` returns without throwing on `{"ok":true}` and prints the new id.
     @Test func formatsKeymapWithEveryActionAndTheLiveMenu() {
         let keymap = Keymap(builtinOverrides: [.closeSession: Chord(mods: [.command], key: "e")], commands: [])
         let payload = ControlKeymap.project(
@@ -126,8 +158,7 @@ struct SocketClientTests {
         for action in BuiltinAction.allCases { #expect(out.contains(action.rawValue)) }
     }
 
-    // line 0 is the whole-file / cross-section sentinel, not a real line. The GUI already drops the
-    // number for it (SettingsView.diagnosticLine), so the CLI must not send a reader hunting for line 0.
+    // line 0 is the whole-file sentinel, not a real line (SettingsView.diagnosticLine drops it too).
     @Test func formatsKeymapDroppingTheLineNumberForWholeFileDiagnostics() {
         let payload = ControlKeymap.project(
             keymap: Keymap(builtinOverrides: [:], commands: []),
@@ -143,8 +174,7 @@ struct SocketClientTests {
         #expect(out.contains("line 7: unknown action"), "a real line number is still shown")
     }
 
-    // a disabled item's chord is inert, and the default (non-JSON) output is the documented human
-    // workflow — leaving the flag out of the rendering drops the one fact that explains a dead binding.
+    // a disabled item's chord is inert, so the marker is the one fact that explains a dead binding.
     @Test func formatsKeymapMarkingDisabledMenuItems() {
         let payload = ControlKeymap.project(
             keymap: Keymap(builtinOverrides: [:], commands: []), diagnostics: [], path: "/tmp/keymap.conf",
@@ -191,7 +221,6 @@ struct SocketClientTests {
         #expect(printed == "9f3c\n")
     }
 
-    /// A non-create command suppresses the id echo (prints `ok`) even when the response carries an id.
     @Test func runQuietsIdForNonCreateCommand() throws {
         let server = StubServer(response: ControlResponse(ok: true, result: ControlResult(id: "9f3c")))
         try server.start()
@@ -217,7 +246,6 @@ struct SocketClientTests {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
-    /// `RequestCommand.run()` throws `ExitCode.failure` on a `{"ok":false}` response.
     @Test func runThrowsExitCodeFailureOnErrorResponse() throws {
         let server = StubServer(response: ControlResponse(ok: false, error: "boom"))
         try server.start()
@@ -227,8 +255,7 @@ struct SocketClientTests {
         #expect(throws: ExitCode.failure) { try command.run() }
     }
 
-    // the --block path: open → poll session.overlay.result (retry while still running) → exit with the
-    // captured status. drives the real run() against a scripted multi-connection server.
+    // drives the real run() against a scripted multi-connection server: open, poll, exit with the status.
     @Test func blockPollsResultThenExitsWithStatus() throws {
         let script = OverlayResultScript(stillRunningTimes: 1,
                                          finalResult: ControlResponse(ok: true, result: ControlResult(id: "abc", exitCode: 7)))
@@ -257,7 +284,6 @@ struct SocketClientTests {
         #expect(throws: ExitCode.failure) { try command.run() }
     }
 
-    // a failed open short-circuits --block before any poll.
     @Test func blockFailsWhenOpenFails() throws {
         let server = ScriptedStubServer { req in
             req.cmd == .sessionOverlayOpen
@@ -652,13 +678,11 @@ struct SocketClientTests {
     }
 
     @Test func formatResponseRatio() {
-        // session.resize echoes the applied (clamped) left-pane fraction as a bare 3-decimal number.
         let response = ControlResponse(ok: true, result: ControlResult(id: "9f3c", ratio: 0.85))
         #expect(SocketClient.formatResponse(response, json: false) == "0.850")
     }
 
     @Test func formatResponseErrorFallback() {
-        // an error response with no message falls back to a generic line.
         #expect(SocketClient.formatResponse(ControlResponse(ok: false), json: false) == "error: unknown error")
     }
 
@@ -678,8 +702,17 @@ struct SocketClientTests {
         let lines = out.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         #expect(lines.count == 2)
         #expect(lines[0] == "* work  [w1]")
-        // active session (*), the (split) suffix, id and cwd columns.
         #expect(lines[1] == "  * shell (split)  [s1]  /tmp")
+    }
+
+    @Test func formatTreeTagsHiddenSplit() {
+        let session = ControlSessionNode(id: "s1", name: "shell", cwd: "/tmp", active: true, split: false,
+                                         hasSplit: true)
+        let workspace = ControlWorkspaceNode(id: "w1", name: "work", active: true, sessions: [session])
+        let tree = ControlTree(workspaces: [workspace])
+        let out = SocketClient.formatResponse(ControlResponse(ok: true, result: ControlResult(tree: tree)), json: false)
+        let lines = out.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        #expect(lines[1] == "  * shell (split hidden)  [s1]  /tmp")
     }
 
     @Test func formatTreeShowsScratchTag() {
@@ -707,8 +740,7 @@ struct SocketClientTests {
             ControlWindowNode(id: "w1", name: "work", open: true, active: true),
             ControlWindowNode(id: "w2", name: "personal", open: true, active: false),
             ControlWindowNode(id: "w3", name: "archive", open: false, active: false),
-            // a closed-but-active window (frontmost id pointing at a window not yet loaded) still
-            // renders the [active] tag without [open].
+            // a closed-but-active window (a frontmost id not yet loaded) renders [active] without [open].
             ControlWindowNode(id: "w4", name: "pending", open: false, active: true),
         ]
         let out = SocketClient.formatResponse(ControlResponse(ok: true, result: ControlResult(windows: windows)), json: false)
@@ -722,8 +754,7 @@ struct SocketClientTests {
 
     @Test func formatResponseEmptyWindows() {
         let out = SocketClient.formatResponse(ControlResponse(ok: true, result: ControlResult(windows: [])), json: false)
-        // an empty window list renders an empty string (no per-window lines), not the bare ok line —
-        // a present-but-empty `windows` payload still takes the windows branch.
+        // a present-but-empty `windows` payload still takes the windows branch, so it renders empty.
         #expect(out == "")
     }
 
@@ -749,7 +780,6 @@ struct SocketClientTests {
     }
 
     @Test func formatResponseThemesMarksBothSyncedSides() {
-        // when syncing, both the light and dark themes are marked and a header notes the pair.
         let response = ControlResponse(ok: true, result: ControlResult(
             theme: nil, themes: ["agterm", "Builtin Light", "Nord"], sync: true, light: "Builtin Light", dark: "agterm"))
         let out = SocketClient.formatResponse(response, json: false)
@@ -758,7 +788,7 @@ struct SocketClientTests {
         #expect(lines.contains("* agterm"))
         #expect(lines.contains("* Builtin Light"))
         #expect(lines.contains("  Nord"))
-        #expect(lines.contains("  default ghostty")) // unmarked while syncing
+        #expect(lines.contains("  default ghostty"))
     }
 }
 
@@ -836,7 +866,6 @@ private final class StubServer: @unchecked Sendable {
         guard conn >= 0 else { return }
         defer { close(conn) }
 
-        // read one request line.
         var buffer = Data()
         var byte: UInt8 = 0
         while true {
@@ -847,7 +876,6 @@ private final class StubServer: @unchecked Sendable {
         }
         received = try? JSONDecoder().decode(ControlRequest.self, from: buffer)
 
-        // write the canned response.
         guard var data = try? JSONEncoder().encode(canned) else { return }
         data.append(UInt8(ascii: "\n"))
         data.withUnsafeBytes { raw in
@@ -866,6 +894,62 @@ private final class StubServer: @unchecked Sendable {
         lock.lock(); stopped = true; lock.unlock()
         wakeAccept(path)                        // unblock a pending accept() so the loop observes `stopped`
         _ = finished.wait(timeout: .now() + 2)  // join the accept loop before freeing the fd
+        close(listenFD); listenFD = -1
+        unlink(path)
+    }
+}
+
+/// A server that accepts one connection and closes it immediately without reading the request — the
+/// shape of the real server rejecting an oversized line. A client mid-write on that connection gets
+/// EPIPE, which is the SIGPIPE hazard `SO_NOSIGPIPE` exists to defuse.
+private final class HangUpStubServer: @unchecked Sendable {
+    let path: String
+    private var listenFD: Int32 = -1
+    private let queue = DispatchQueue(label: "hangup.stub.server")
+    private let finished = DispatchSemaphore(value: 0)
+
+    init() {
+        self.path = NSTemporaryDirectory() + "agterm-hangup-\(UUID().uuidString.prefix(8)).sock"
+    }
+
+    func start() throws {
+        let fd = systemSocket()
+        guard fd >= 0 else { throw SocketClientError("stub socket() failed") }
+        unlink(path)
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = path.utf8CString
+        withUnsafeMutablePointer(to: &addr.sun_path) { dst in
+            dst.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { buf in
+                pathBytes.withUnsafeBufferPointer { src in buf.update(from: src.baseAddress!, count: src.count) }
+            }
+        }
+        let bound = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                bind(fd, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard bound == 0 else {
+            close(fd)
+            throw SocketClientError("stub bind failed: \(String(cString: strerror(errno)))")
+        }
+        guard listen(fd, 1) == 0 else {
+            close(fd)
+            throw SocketClientError("stub listen failed")
+        }
+        listenFD = fd
+        queue.async { [self] in
+            let conn = systemAccept(fd)
+            if conn >= 0 { close(conn) }
+            finished.signal()
+        }
+    }
+
+    func stop() {
+        guard listenFD >= 0 else { unlink(path); return }
+        wakeAccept(path)                        // unblock a still-pending accept() so it can finish
+        _ = finished.wait(timeout: .now() + 2)  // join the accept before freeing the fd
         close(listenFD); listenFD = -1
         unlink(path)
     }

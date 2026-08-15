@@ -43,9 +43,9 @@ struct PendingWorkspaceClose {
     let workspace: Workspace
     let workspaceIndex: Int
     let selectedSessionID: UUID?
-    /// Whether the closed workspace was in the sidebar focus set — captured so the undo can put it back
-    /// INTO the set. The filter FLAG is deliberately not captured: it is current window state, restored by
-    /// nothing (see `AppStore.markFocusMember`).
+    /// Whether the closed workspace was in the sidebar focus set, captured so the undo can put it back INTO
+    /// the set. The filter FLAG deliberately is not: it is current window state, restored by nothing (see
+    /// `AppStore.markFocusMember`).
     let focusMember: Bool
 }
 
@@ -61,9 +61,9 @@ extension AppStore {
         let wasActive = selectedSessionID == sessionID
         let session = workspaces[location.workspaceIndex].sessions.remove(at: location.sessionIndex)
         emitSessionClosed(session, workspace: workspace.id)
-        // undo reinserts THIS object, so an override payload armed at bootstrap and never consumed would
-        // survive the round trip and fire when the restored session's surface is built. Drop it here; the
-        // persisted pin is untouched and still fires on the next launch.
+        // undo reinserts THIS object, so an override armed at bootstrap and never consumed would survive the
+        // round trip and fire when the restored surface is built. drop it; the persisted pin is untouched
+        // and still fires on the next launch.
         session.clearPendingRestoreOverrides()
         let closeID = UUID()
         let close = PendingSessionClose(
@@ -170,6 +170,7 @@ extension AppStore {
     public func softRemoveWorkspace(_ workspaceID: UUID, grace: TimeInterval = AppStore.pendingCloseGraceInterval) -> Bool {
         guard canRemoveWorkspace, let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return false }
         let visibleWorkspace = workspaces.remove(at: index)
+        forgetFreshWorkspace(workspaceID)
         for session in visibleWorkspace.sessions { emitSessionClosed(session, workspace: visibleWorkspace.id) }
         if visibleWorkspace.sessions.isEmpty { scheduleTreeChanged() }
         let folded = foldingPendingCloses(of: visibleWorkspace)
@@ -177,15 +178,13 @@ extension AppStore {
         for session in workspace.sessions { session.clearPendingRestoreOverrides() } // same undo hazard
         let removingActive = selectedSessionID.map { id in workspace.sessions.contains { $0.id == id } } ?? false
         let restoringSelection = removingActive ? selectedSessionID : nil
-        // the live set has already lost the membership whenever a superseded record holds it: that record's
-        // own close dropped it, and the session undo that rebuilt this workspace as a shell does not
-        // re-mark. So the absorbed record's flag is the only surviving copy and must win here.
+        // a superseded record's membership is already gone from the live set — its own close dropped it and
+        // the session undo that rebuilt this workspace as a shell does not re-mark — so its flag is the only
+        // surviving copy and must win here.
         let focusMember = focusedWorkspaceIDs.contains(workspaceID) || folded.focusMember
         dropFocusMember(workspaceID)
         if removingActive {
-            let fallbackIndex = min(index, workspaces.count - 1)
-            selectedSessionID = workspaces[fallbackIndex].sessions.first?.id
-                ?? workspaces.first(where: { !$0.sessions.isEmpty })?.sessions.first?.id
+            selectedSessionID = workspaceRemovalTarget(at: index)
             replaceSidebarSelection(with: selectedSessionID)
             disableFocusIfSelectionOutsideSet(selectedSessionID)
             recordRecency()
@@ -286,14 +285,13 @@ extension AppStore {
 
     /// Absorb any pending close of the same workspace into the copy being closed now, dropping the
     /// superseded record. Undoing a session close rebuilds a missing workspace as a shell, so closing that
-    /// shell while the earlier record still waits out its grace would leave two pending records sharing a
-    /// workspace id. Both key one Open Recent entry by that id (`RecentClosedStore.record` dedupes on it),
-    /// so the newer snapshot would evict the older one and its sessions would survive nowhere once both
-    /// records finalize. The copy closed now is the newer state, so its name, expansion and session order
-    /// lead; the superseded record's sessions follow. Its focus MEMBERSHIP is reported back alongside, ORed
-    /// across every absorbed record, because the rebuilt shell carries none: the caller ORs it into its own
-    /// capture, so the newer record — and the Open Recent entry it overwrites — still knows the workspace
-    /// was a set member.
+    /// shell during the earlier record's grace would leave two pending records sharing a workspace id — and
+    /// both key one Open Recent entry by it (`RecentClosedStore.record` dedupes on it), so the newer
+    /// snapshot would evict the older and its sessions would survive nowhere once both finalize. The copy
+    /// closed now is the newer state, so its name, expansion and session order lead and the superseded
+    /// record's sessions follow. Focus MEMBERSHIP is reported back ORed across every absorbed record,
+    /// because the rebuilt shell carries none; the caller ORs it into its own capture, so the newer record —
+    /// and the Open Recent entry it overwrites — still knows the workspace was a set member.
     private func foldingPendingCloses(of workspace: Workspace) -> (workspace: Workspace, focusMember: Bool) {
         var folded = workspace
         var focusMember = false
@@ -328,9 +326,8 @@ extension AppStore {
     }
 
     /// A workspace to stand in for one a restore needs but the tree no longer holds. Prefer the newest
-    /// description of it: a pending close of that same workspace carries its live name and expansion state,
-    /// and once those finalize an Open Recent snapshot still does. `name` is the caller's older copy, used
-    /// only when neither describes the workspace.
+    /// description: a pending close of that same workspace carries its live name and expansion state, and
+    /// once those finalize an Open Recent snapshot still does. `name` is the caller's older copy, a last resort.
     func rebuiltWorkspaceShell(id: UUID, name: String) -> Workspace {
         for closeID in pendingCloseOrder.reversed() {
             guard case .workspace(let close)? = pendingCloseRecords[closeID], close.workspace.id == id else { continue }
@@ -353,6 +350,12 @@ extension AppStore {
         }
         let insertAt = max(0, min(close.sessionIndex, workspaces[workspaceIndex].sessions.count))
         workspaces[workspaceIndex].sessions.insert(close.session, at: insertAt)
+        // the deck's `dropUnrealizedPaneOverlays` watchers are unmounted while the session sits outside the
+        // tree, and `.onChange` does not fire on the remount, so the last host of a pane overlay can go away
+        // unobserved: the zoom layer clears a target whose session it can no longer resolve, and a stillborn
+        // slot that target was sparing comes back marked open with no surface and no program. Reconcile the
+        // SAME object being reinserted; a snapshot rebuild (`session(from:)`) carries no pane overlays.
+        close.session.dropUnrealizedPaneOverlays()
         emitSessionCreated(close.session, workspace: close.workspaceID)
     }
 
@@ -377,28 +380,32 @@ extension AppStore {
     }
 
     private func restorePendingWorkspace(_ close: PendingWorkspaceClose) {
-        // an undone session close, or an Open Recent restore, rebuilds a missing workspace by id as a
-        // shell holding just that session. merge into the shell instead of inserting a second workspace
-        // sharing its id: every id-keyed lookup resolves the first match, so a duplicate would strand the
-        // other copy's sessions. the shell was seeded from this record, and anything the user changed on
-        // it since is newer, so its name and expansion state stand. the shell also keeps its slot, so
-        // `workspaceIndex` and this record's session order are not honored. the filter is defensive: a
-        // session held by this record cannot already be live elsewhere.
+        // an undone session close, or an Open Recent restore, rebuilds a missing workspace by id as a shell
+        // holding just that session. merge into the shell rather than inserting a second workspace sharing
+        // its id: every id-keyed lookup resolves the first match, so a duplicate strands the other copy's
+        // sessions. the shell was seeded from this record and anything changed on it since is newer, so its
+        // name and expansion state stand, and it keeps its slot — `workspaceIndex` and this record's session
+        // order are not honored. the filter is defensive: a session held here cannot already be live elsewhere.
         if let existing = workspaces.firstIndex(where: { $0.id == close.workspace.id }) {
             let live = Set(workspaces.flatMap(\.sessions).map(\.id))
             let restored = close.workspace.sessions.filter { !live.contains($0.id) }
             workspaces[existing].sessions.append(contentsOf: restored)
-            for session in restored { emitSessionCreated(session, workspace: workspaces[existing].id) }
+            for session in restored {
+                session.dropUnrealizedPaneOverlays() // reinserted live objects, as in `restorePendingSession`
+                emitSessionCreated(session, workspace: workspaces[existing].id)
+            }
         } else {
             let insertAt = max(0, min(close.workspaceIndex, workspaces.count))
             workspaces.insert(close.workspace, at: insertAt)
-            for session in close.workspace.sessions { emitSessionCreated(session, workspace: close.workspace.id) }
+            for session in close.workspace.sessions {
+                session.dropUnrealizedPaneOverlays() // as above
+                emitSessionCreated(session, workspace: close.workspace.id)
+            }
             if close.workspace.sessions.isEmpty { scheduleTreeChanged() }
         }
-        // put the workspace back into the focus set BEFORE the reselect below, so a restored member is
-        // already inside the set when `disableFocusIfSelectionOutsideSet` runs. It also has to happen
-        // ahead of the `guard` — an EMPTY workspace returns there, and skipping the re-mark would leave
-        // its row filtered out, making the undo look like a no-op.
+        // re-mark BEFORE the reselect below, so a restored member is inside the set when
+        // `disableFocusIfSelectionOutsideSet` runs, and ahead of the `guard` — an EMPTY workspace returns
+        // there, and skipping the re-mark would leave its row filtered out, making the undo look a no-op.
         if close.focusMember { markFocusMember(close.workspace.id) }
         guard let target = close.selectedSessionID ?? close.workspace.sessions.first?.id else { return }
         selectedSessionID = target
@@ -411,7 +418,9 @@ extension AppStore {
         session.surface?.teardown()
         session.splitSurface?.teardown()
         session.overlaySurface?.teardown()
+        session.teardownPaneOverlays()
         session.scratchSurface?.teardown()
+        session.discardHudBody() // a HUD whose surface never realized has no teardown to delete its body file
         WatermarkStorage.removeRenderedText(sessionID: session.id)
         removeFromRecency(session.id)
     }

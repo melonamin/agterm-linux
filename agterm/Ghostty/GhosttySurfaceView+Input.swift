@@ -13,10 +13,8 @@ extension GhosttySurfaceView {
         dropText(from: sender) != nil ? .copy : []
     }
 
-    /// Insert the dropped file's path (shell-escaped, space-joined for multiple) or text at the cursor as a
-    /// bracketed paste — the same no-auto-submit behavior as ⌘V, so a multi-line drop lands as literal text
-    /// instead of executing each line. Deferred to the next runloop tick so the drag session fully unwinds
-    /// before the terminal buffer is mutated.
+    /// Insert the dropped path (shell-escaped, space-joined) or text at the cursor as a bracketed paste, so
+    /// a multi-line drop is literal text, not executed lines. Deferred a tick so the drag session unwinds.
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         guard let text = dropText(from: sender) else { return false }
         DispatchQueue.main.async { [weak self] in self?.insertPasted(text: text) }
@@ -24,15 +22,14 @@ extension GhosttySurfaceView {
     }
 
     /// The text a drop would insert, via the shared `GhosttyCallbacks.pasteboardText` reader; nil when the
-    /// drag carries nothing usable (e.g. an internal sidebar row drag).
+    /// drag carries nothing usable.
     private func dropText(from sender: any NSDraggingInfo) -> String? {
         GhosttyCallbacks.pasteboardText(sender.draggingPasteboard)
     }
 
     // MARK: - Keyboard
 
-    /// Reduce an `NSEvent` to the host-free `InterruptKeystroke` classifier — Escape or a bare Ctrl-C
-    /// clears a stale `active` glyph. The classification (and its negatives) is unit-tested in `agtermCore`.
+    /// Reduce an `NSEvent` to the host-free `InterruptKeystroke` classifier — Escape or a bare Ctrl-C.
     private func isInterruptKeystroke(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         var modifiers: KeyModifiers = []
@@ -50,20 +47,16 @@ extension GhosttySurfaceView {
             super.keyDown(with: event)
             return
         }
-        // every keystroke is user activity: reset the window's auto-follow idle timer UNCONDITIONALLY (not
-        // gated on the status-clear below), else ordinary typing in an idle session wouldn't keep the idle
-        // timer alive and the user would be yanked to a blocked session mid-type.
+        // every keystroke is user activity: reset the auto-follow idle timer UNCONDITIONALLY, not gated on
+        // the status-clear below, else typing in an idle session yanks the user to a blocked one mid-type.
         onUserInput?()
-        // a keystroke in a session flagged for your attention clears the glyph to idle: blocked/completed
-        // on ANY key (you've engaged with the prompt / finished result), active ONLY on an interrupt
-        // keystroke — Escape or Ctrl-C — so ordinary typing while the agent works doesn't wipe the
-        // "working" glyph, but cancelling a pending prompt does. Claude Code treats Ctrl-C like Esc for
-        // dismissing a prompt, yet neither fires a hook, and a pending prompt can still read active when
-        // you cancel (the blocked notification lands seconds later), so this keystroke clear is the only
-        // signal that drops the stale glyph. fire it UNCONDITIONALLY with the isInterrupt flag — the
-        // factory's closure owns the pane-scoped decision (AgentIndicator.clearedBy), so the scratch
-        // (which has no view.session) self-clears too, and a background pane's block survives foreground
-        // typing.
+        // a keystroke clears an attention glyph to idle: blocked/completed on ANY key, active ONLY on an
+        // interrupt (Escape or Ctrl-C), so typing while the agent works keeps the "working" glyph but
+        // cancelling a pending prompt drops it. Claude Code treats Ctrl-C like Esc for dismissing a prompt,
+        // yet neither fires a hook and a cancelled prompt can still read active (its blocked notification
+        // lands seconds later), so this is the only signal that drops the stale glyph. fire UNCONDITIONALLY
+        // with the isInterrupt flag: the pane-scoped decision belongs to AgentIndicator.clearedBy, so the
+        // scratch (no view.session) self-clears too and a background pane's block survives foreground typing.
         onUserInputClearsStatus?(isInterruptKeystroke(event))
         let action: ghostty_input_action_e = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -148,10 +141,8 @@ extension GhosttySurfaceView {
         return NSPoint(x: local.x, y: bounds.height - local.y)
     }
 
-    /// Push the pointer position from `event` to libghostty and remember it in `lastReportedMousePoint`.
-    /// Every handler that reports a position routes through here so `scrollWheel` can tell when the position
-    /// is already current and skip a redundant `mouse_pos` (which a mouse-reporting TUI would otherwise turn
-    /// into a per-packet synthetic motion report).
+    /// Push the pointer position to libghostty and remember it in `lastReportedMousePoint`. Every
+    /// position-reporting handler routes through here so `scrollWheel` can skip a redundant `mouse_pos`.
     private func reportMousePos(from event: NSEvent) {
         guard let surface else { return }
         let pt = mousePoint(from: event)
@@ -173,10 +164,9 @@ extension GhosttySurfaceView {
         _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, mods(event))
     }
 
-    // forward right- and middle-button press/release to libghostty so its mouse bindings fire (e.g.
-    // `right-click-action = paste`). mirrors the left handlers — `mouse_pos` before `mouse_button` — but
-    // does NOT grab focus (a right/middle click on macOS doesn't move first responder). agterm has no
-    // terminal context menu, so the return value is discarded like the left handler.
+    // forward right-/middle-button press/release so libghostty's mouse bindings fire (right-click-action),
+    // in the left handlers' `mouse_pos`-then-`mouse_button` order minus the focus grab — these buttons
+    // don't move first responder. no terminal context menu, so the return value is discarded.
     override func rightMouseDown(with event: NSEvent) {
         guard let surface else { return }
         reportMousePos(from: event)
@@ -207,31 +197,29 @@ extension GhosttySurfaceView {
     override func rightMouseDragged(with event: NSEvent) { mouseMoved(with: event) }
     override func otherMouseDragged(with event: NSEvent) { mouseMoved(with: event) }
 
-    /// Re-assert the libghostty-requested cursor on every move. `cursorUpdate` only fires on tracking-area
-    /// entry (not per intra-area move), and SwiftUI — which owns the cursor for the hosted view — can reset
-    /// it on any move, so without this the pointing hand would revert to the arrow while moving along a link.
-    /// Gated on `deckVisible`: only the on-screen pane sets the process-global cursor, so a background deck
-    /// surface never paints its shape over the visible terminal (issue #225).
+    /// Re-assert the libghostty-requested cursor on every move: `cursorUpdate` fires only on tracking-area
+    /// entry, and SwiftUI (which owns the hosted view's cursor) can reset it on any move, so without this
+    /// the pointing hand reverts to the arrow along a link. Gated on `deckVisible` so a background deck
+    /// surface never paints its shape over the visible terminal via the process-global cursor (issue #225),
+    /// and on `ownsPointer` so it stops at the chrome drawn over this pane (issue #324). The position report
+    /// stays ungated — libghostty tracks the pointer across the whole surface either way.
     override func mouseMoved(with event: NSEvent) {
         reportMousePos(from: event)
-        guard deckVisible else { return }
+        guard deckVisible, ownsPointer(at: event.locationInWindow) else { return }
         Self.nsCursor(for: mouseShape).set()
     }
 
-    /// The pointer entered the surface: restore libghostty's mouse position from the current point, undoing
-    /// `mouseExited`'s `-1, -1` reset so hovered-link and cursor-shape state are correct on re-entry.
-    /// (`scrollWheel` also syncs `mouse_pos` when stale, so the first post-re-entry scroll no longer depends
-    /// on this — but the restore still matters for hover/link state before any move.)
+    /// Restore libghostty's mouse position on entry, undoing `mouseExited`'s `-1, -1` reset so hovered-link
+    /// and cursor-shape state are right on re-entry — `scrollWheel`'s sync misses hover before any move.
     override func mouseEntered(with event: NSEvent) {
         pointerInside = true
         reportMousePos(from: event)
     }
 
-    /// The pointer left the surface. Report negative coordinates so libghostty clears any hovered-link
-    /// state — it drops `over_link`, reverts the mouse shape, and re-renders without the underline (see its
-    /// `cursorPosCallback`). Without this a ⌘-hovered link stays highlighted after the mouse leaves the
-    /// terminal (into the sidebar, another window, or off the edge) until ⌘ is released. Skipped mid-drag
-    /// (a button is down) so a selection/drag that crosses the edge isn't reported at `-1, -1`.
+    /// Report negative coordinates on exit so libghostty's `cursorPosCallback` clears hovered-link state
+    /// (drops `over_link`, reverts the mouse shape, re-renders without the underline); without this a
+    /// ⌘-hovered link stays highlighted after the mouse leaves the terminal until ⌘ is released. Skipped
+    /// mid-drag (a button down) so a selection crossing the edge isn't reported at `-1, -1`.
     override func mouseExited(with event: NSEvent) {
         guard let surface, NSEvent.pressedMouseButtons == 0 else { return }
         pointerInside = false
@@ -241,15 +229,13 @@ extension GhosttySurfaceView {
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
-        // sync libghostty's mouse position before scrolling, but ONLY when it's stale: mouse_scroll reports
-        // at the last-known cell, and reactivating the window with no mouse move — cmd-tab/keyboard, or
-        // scrolling to reactivate with the pointer already inside — delivers no mouseDown/mouseEntered, so
-        // the position stays stale or -1,-1 (from mouseExited) and the first scroll inside a mouse-reporting
-        // TUI (Claude Code, vim, less) reports at the wrong cell until you nudge the mouse. gating on
-        // lastReportedMousePoint means an already-synced (normal) scroll doesn't re-push the same cell every
-        // packet — which in an any-motion + sgr-pixel TUI would emit a synthetic motion report per packet.
-        // (a LEFT click reactivation is already covered by mouseDown via acceptsFirstMouse; this handles the
-        // no-click paths.)
+        // sync the mouse position before scrolling, but ONLY when stale: mouse_scroll reports at the
+        // last-known cell, and a no-move reactivation (cmd-tab/keyboard, or scrolling with the pointer
+        // already inside) delivers no mouseDown/mouseEntered, so the position stays stale or -1,-1 (from
+        // mouseExited) and the first scroll in a mouse-reporting TUI hits the wrong cell. gating on
+        // lastReportedMousePoint stops an already-synced scroll re-pushing the same cell per packet, which
+        // an any-motion + sgr-pixel TUI turns into a synthetic motion report per packet. a LEFT-click
+        // reactivation is already covered by mouseDown via acceptsFirstMouse.
         let pt = mousePoint(from: event)
         if pt != lastReportedMousePoint {
             ghostty_surface_mouse_pos(surface, pt.x, pt.y, mods(event))
@@ -321,9 +307,8 @@ extension GhosttySurfaceView {
         return text
     }
 
-    /// Builds a synthetic NSEvent whose modifier flags reflect libghostty's
-    /// translation policy — with macos-option-as-alt on, Option is stripped so
-    /// `characters(byApplyingModifiers:)` returns the unshifted char.
+    /// Builds a synthetic NSEvent whose modifier flags reflect libghostty's translation policy — with
+    /// macos-option-as-alt on, Option is stripped so `characters(byApplyingModifiers:)` gives the unshifted char.
     private func translatedEvent(for event: NSEvent) -> NSEvent {
         guard let surface else { return event }
         let originalMods = mods(event)
@@ -354,9 +339,8 @@ extension GhosttySurfaceView {
     }
 
     private func unshiftedCodepoint(from event: NSEvent) -> UInt32 {
-        // characters(byApplyingModifiers:) is valid only for key up/down events; on a FlagsChanged
-        // (bare modifier) event it raises an AppKit assertion. A modifier press carries no codepoint,
-        // so report 0 for any non-key event.
+        // characters(byApplyingModifiers:) is valid only for key up/down; on a FlagsChanged (bare modifier)
+        // event it raises an AppKit assertion. a modifier press carries no codepoint, so report 0 there.
         guard event.type == .keyDown || event.type == .keyUp,
               let chars = event.characters(byApplyingModifiers: []),
               let scalar = chars.unicodeScalars.first
@@ -369,9 +353,14 @@ extension GhosttySurfaceView {
 
 extension GhosttySurfaceView: @preconcurrency NSTextInputClient {
     func insertText(_ string: Any, replacementRange _: NSRange) {
+        // the AX path commits our copy of a live composition and THEN tears the IME session down; an input
+        // method that finalizes on that teardown would re-send the same characters here. See
+        // `commitOrDiscardComposition` — the flag is set only for that one synchronous call.
+        guard !committingComposition else { return }
         let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
         guard !text.isEmpty else { return }
         _markedRange = NSRange(location: NSNotFound, length: 0)
+        _markedText = ""
         if let surface { ghostty_surface_preedit(surface, nil, 0) }
         if currentKeyEvent != nil {
             keyTextAccumulator.append(text)
@@ -385,23 +374,76 @@ extension GhosttySurfaceView: @preconcurrency NSTextInputClient {
         }
     }
 
+    /// Units matter twice here, and `text.count` (grapheme clusters) is wrong for both.
+    /// `ghostty_surface_preedit` takes a BYTE length over the UTF-8 buffer `withCString` hands it — the same
+    /// contract `insertPasted` honors with `text.utf8.count` — so a 3-character `にほん` reported as 3 had
+    /// libghostty render the first 3 BYTES, i.e. one truncated character, for every CJK/emoji/combining
+    /// composition. `NSRange`, meanwhile, is UTF-16 over the string AppKit sees, so `markedRange()` owes
+    /// `utf16.count`.
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange _: NSRange) {
         guard let surface else { return }
         let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
-        _markedRange = text.isEmpty ? NSRange(location: NSNotFound, length: 0) : NSRange(location: 0, length: text.count)
+        _markedRange = text.isEmpty
+            ? NSRange(location: NSNotFound, length: 0)
+            : NSRange(location: 0, length: text.utf16.count)
+        _markedText = text
         _selectedRange = selectedRange
-        text.withCString { ghostty_surface_preedit(surface, $0, UInt(text.count)) }
+        text.withCString { ghostty_surface_preedit(surface, $0, UInt(text.utf8.count)) }
     }
 
     func unmarkText() {
         guard let surface else { return }
         _markedRange = NSRange(location: NSNotFound, length: 0)
+        _markedText = ""
         ghostty_surface_preedit(surface, nil, 0)
     }
 
     func selectedRange() -> NSRange { _selectedRange }
     func markedRange() -> NSRange { _markedRange }
     func hasMarkedText() -> Bool { _markedRange.location != NSNotFound }
+
+    /// End any in-flight IME composition before a PROGRAMMATIC insert — by COMMITTING it, not throwing it
+    /// away. Lives here, beside the `_markedText`/`_markedRange` state it operates on, because every
+    /// programmatic writer owes it: the AX dictation insert, a file/text drop (`insertPasted`) and
+    /// `session.type` (`inject`). Left alone, the composition survives the insert and re-commits on the
+    /// next keystroke, landing the user's half-typed word after whatever was inserted.
+    ///
+    /// The composition is text the user has already typed. `discardMarkedText()` alone abandons the
+    /// conversion session without committing, so a CJK user mid-word when an insert arrives lost those
+    /// characters outright. AppKit's own behaviour when a field gives up an active composition (a click
+    /// away, a focus change) is to commit it, so that is what this does: send our copy of the marked string
+    /// through the ordinary `insertText` path first, THEN `discardMarkedText()` so the input context drops
+    /// its now-committed session and cannot re-commit the same characters. Exactly once, either way.
+    ///
+    /// The copy is needed because libghostty owns the preedit for rendering and hands nothing back, and
+    /// `attributedSubstring(forProposedRange:)` returns nil — `_markedText` is the only source for it.
+    ///
+    /// "Exactly once" is enforced, not assumed. `discardMarkedText()` is documented to abandon the session
+    /// without committing, but an input method that FINALIZES on teardown instead would push the same
+    /// characters back through `insertText` and land them a second time (`今日今日` ahead of the inserted
+    /// text). `committingComposition` fences that one synchronous call so a re-entrant insert is dropped;
+    /// nothing else can legitimately type inside it. Whether any shipping IME behaves that way is the one
+    /// thing that cannot be settled without a live IME — this makes the answer not matter.
+    ///
+    /// Two guards make it safe on the paths that reach a NON-focused surface (`inject` types into any
+    /// realized session, focused or not). `hasMarkedText()` is per-view state, so a pane with no
+    /// composition of its own does nothing at all. And the input context is only torn down when this view
+    /// actually holds first responder: `inputContext` resolves to the SHARED context, so discarding from a
+    /// background pane would abandon the composition of whichever view is really composing. A background
+    /// pane's own stale composition is still committed — only the IME session teardown is skipped, and
+    /// that session isn't ours to end.
+    func commitOrDiscardComposition() {
+        guard hasMarkedText() else { return }
+        if _markedText.isEmpty {
+            unmarkText()
+        } else {
+            insertText(_markedText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        }
+        guard window?.firstResponder === self else { return }
+        committingComposition = true
+        inputContext?.discardMarkedText()
+        committingComposition = false
+    }
 
     func attributedSubstring(forProposedRange _: NSRange, actualRange _: NSRangePointer?) -> NSAttributedString? {
         nil
@@ -424,43 +466,42 @@ extension GhosttySurfaceView: @preconcurrency NSTextInputClient {
 
     // MARK: - Mouse cursor shape + link opening
 
-    /// Applies the cursor shape libghostty requested (`GHOSTTY_ACTION_MOUSE_SHAPE`) — the pointing hand
-    /// over a link, the I-beam over the grid, resize/crosshair/grab in the matching modes. No-ops when
-    /// unchanged; otherwise sets the cursor at once — but only while this is the on-screen pane (`deckVisible`)
-    /// and the pointer is inside, so a background deck surface never paints its shape over the visible terminal
-    /// (issue #225), and a revert delivered after the pointer already left (the I-beam libghostty emits once
-    /// `mouseExited` reports `-1, -1`) can't paint the terminal cursor onto the sidebar. Setting it here is what
-    /// makes a stationary shape change (⌘ pressed over a link without moving) take effect immediately;
-    /// `mouseMoved` re-asserts it as the pointer moves and `cursorUpdate` on entry.
+    /// Applies the cursor shape libghostty requested (`GHOSTTY_ACTION_MOUSE_SHAPE`). No-ops when unchanged,
+    /// else sets the cursor at once, but only while this is the on-screen pane (`deckVisible`), the pointer
+    /// is inside, and no chrome covers it (`ownsPointer`): a background deck surface must not paint its
+    /// shape over the visible terminal (issue #225), a revert delivered after the pointer left (the I-beam
+    /// libghostty emits once `mouseExited` reports `-1, -1`) must not paint the terminal cursor onto the
+    /// sidebar, and a shape change arriving while the pointer rests on a divider must not repaint it
+    /// (issue #324). Setting it here is what makes a stationary shape change (⌘ over a link without moving)
+    /// take effect immediately.
     func applyMouseShape(_ shape: ghostty_action_mouse_shape_e) {
         guard shape != mouseShape else { return }
         mouseShape = shape
-        if deckVisible, pointerInside { Self.nsCursor(for: shape).set() }
+        if deckVisible, pointerInside, ownsPointer() { Self.nsCursor(for: shape).set() }
     }
 
-    /// AppKit cursor hook (the `.cursorUpdate` tracking-area callback, NOT cursor rectangles): paint the whole
-    /// surface with the libghostty-requested cursor. The surface is hosted inside SwiftUI (`TerminalView`),
-    /// which owns the cursor and resets it as the mouse moves, so `addCursorRect`/`resetCursorRects` never take
-    /// hold here (the link still underlines because libghostty draws that, but the pointing hand is dropped).
-    /// Setting the cursor from `cursorUpdate` re-asserts it on AppKit's cursor pass — the same reason upstream
-    /// Ghostty.app drives the cursor through SwiftUI rather than cursor rectangles. Gated on `deckVisible`:
-    /// AppKit still delivers a `cursorUpdate` to a hidden deck surface on window activation, so a background
-    /// pane must not set the cursor here (issue #225 refocus).
+    /// AppKit's `.cursorUpdate` tracking-area callback (NOT cursor rectangles): paint the whole surface with
+    /// the libghostty-requested cursor. SwiftUI (`TerminalView`) hosts the surface and owns the cursor,
+    /// resetting it as the mouse moves, so `addCursorRect`/`resetCursorRects` never take hold here — the
+    /// link still underlines (libghostty draws it) but the pointing hand is dropped; upstream Ghostty.app
+    /// drives the cursor through SwiftUI for the same reason. Gated on `deckVisible`: AppKit still delivers
+    /// a `cursorUpdate` to a hidden deck surface on window activation (issue #225 refocus), and on
+    /// `ownsPointer` because entry can land in the band a divider's grab handle covers (issue #324).
     override func cursorUpdate(with event: NSEvent) {
-        guard deckVisible else { return }
+        guard deckVisible, ownsPointer(at: event.locationInWindow) else { return }
         Self.nsCursor(for: mouseShape).set()
     }
 
-    /// Re-assert this pane's cursor when its window becomes key. AppKit does NOT re-issue a `cursorUpdate`
-    /// to the visible pane on bare window activation, so a reactivating click otherwise leaves the OS default
-    /// (arrow) cursor until the next mouse move. Gated on `deckVisible` (only the on-screen pane sets the
-    /// cursor) + `isKeyWindow` + pointer-in-bounds (checked fresh from `mouseLocationOutsideOfEventStream`,
-    /// since `pointerInside` can be stale on a no-move activation) — so it never paints the terminal cursor
-    /// over the sidebar/titlebar or a background window, and with hidden surfaces already muted it wins uncontested.
+    /// Re-assert this pane's cursor when its window becomes key: AppKit does NOT re-issue a `cursorUpdate`
+    /// on bare activation, so a reactivating click leaves the OS arrow until the next move. Gated on
+    /// `deckVisible` + `isKeyWindow` + pointer-in-bounds — read fresh from
+    /// `mouseLocationOutsideOfEventStream`, since `pointerInside` can be stale on a no-move activation — so
+    /// it never paints over the sidebar/titlebar or a background window, nor over a divider parked inside
+    /// this pane's bounds (issue #324).
     func reassertCursorOnActivation() {
         guard deckVisible, let window, window.isKeyWindow else { return }
-        let pointInView = convert(window.mouseLocationOutsideOfEventStream, from: nil)
-        guard bounds.contains(pointInView) else { return }
+        let pointInWindow = window.mouseLocationOutsideOfEventStream
+        guard bounds.contains(convert(pointInWindow, from: nil)), ownsPointer(at: pointInWindow) else { return }
         Self.nsCursor(for: mouseShape).set()
     }
 
@@ -486,10 +527,8 @@ extension GhosttySurfaceView: @preconcurrency NSTextInputClient {
         }
     }
 
-    /// Acts on a clicked terminal link (`GHOSTTY_ACTION_OPEN_URL`). The scheme/host decision lives in the
-    /// host-free `LinkPolicy` (unit-tested); this is just the AppKit glue for the three dispositions: OPEN a
-    /// web/mail URL, REVEAL a `file://` link in Finder (never opened — reveal selects it, executing nothing),
-    /// or IGNORE anything else.
+    /// Acts on a clicked terminal link (`GHOSTTY_ACTION_OPEN_URL`); the scheme/host decision lives in the
+    /// host-free `LinkPolicy`. A `file://` link is REVEALED in Finder, never opened — reveal executes nothing.
     func openLink(_ raw: String) {
         switch LinkPolicy.disposition(for: raw) {
         case let .open(url): NSWorkspace.shared.open(url)
@@ -502,13 +541,12 @@ extension GhosttySurfaceView: @preconcurrency NSTextInputClient {
 // MARK: - Standard Edit menu (responder chain)
 
 /// The stock Edit ▸ Copy/Paste/Select All actions, implemented on the surface so AppKit's automatic menu
-/// enabling routes them to the terminal when it holds first responder — while a focused text field (inline
-/// rename, palette search, Settings) keeps its own `copy:`/`paste:`/`selectAll:` because its field editor
-/// wins the responder chain. This is why agterm keeps the standard SwiftUI Edit menu instead of a custom
-/// Commands group. Each action runs the same libghostty binding ⌘C/⌘V/⌘A use. Cut is deliberately NOT
-/// implemented here, so it stays disabled for the terminal (nothing to cut) yet still works in text fields;
-/// it cannot be dropped on its own, sharing SwiftUI's `.pasteboard` group with Copy/Paste/Select All.
-/// Undo/Redo are removed from the menu entirely (`CommandGroup(replacing: .undoRedo)` in `agtermApp+Menus`).
+/// enabling routes them to the terminal when it holds first responder, while a focused text field (inline
+/// rename, palette search, Settings) keeps its own — its field editor wins the responder chain. That is why
+/// agterm keeps the standard SwiftUI Edit menu instead of a custom Commands group. Each action runs the same
+/// libghostty binding ⌘C/⌘V/⌘A use. Cut is deliberately NOT implemented, so it stays disabled for the
+/// terminal yet works in text fields; it cannot be dropped on its own, sharing SwiftUI's `.pasteboard`
+/// group. Undo/Redo are removed entirely (`CommandGroup(replacing: .undoRedo)` in `agtermApp+Menus`).
 extension GhosttySurfaceView: NSMenuItemValidation {
     @objc func copy(_ sender: Any?) { performBindingAction("copy_to_clipboard") }
 
@@ -517,19 +555,17 @@ extension GhosttySurfaceView: NSMenuItemValidation {
     /// `override` because `selectAll(_:)` is declared on `NSResponder`, unlike `copy:`/`paste:`.
     override func selectAll(_ sender: Any?) { performBindingAction("select_all") }
 
-    /// Gate the three items on real availability: Copy needs a selection, Paste needs something the paste
-    /// path can actually insert, Select All needs a realized surface. All three require a realized surface,
-    /// since `performBindingAction` no-ops without one. Items we don't own enable by default (AppKit only
-    /// consults this on the responder that implements the action, so `cut:` never reaches it).
+    /// Gate the three items on real availability: Copy needs a selection, Paste something the paste path can
+    /// insert, all three a realized surface (`performBindingAction` no-ops without one). Items we don't own
+    /// enable by default — AppKit consults this only on the responder implementing the action, so `cut:`
+    /// never reaches it.
     ///
-    /// Paste asks `GhosttyCallbacks.hasPasteboardText()`, which runs the same branches as `pasteboardText` —
-    /// the SAME reader `paste_from_clipboard` ends up using — rather than probing for a plain string. The
-    /// clipboard may hold a file/web URL with no string representation (a Finder copy), which that reader
-    /// turns into a shell-escaped path: probing for `NSString` alone reports "nothing to paste" while ⌘V
-    /// happily pastes the path, which is exactly the menu-vs-keyboard divergence these responder methods
-    /// exist to remove. A bare `canReadObject([NSURL])` TYPE probe is wrong the other way, enabling Paste for a
-    /// pasteboard that only declares a URL type. The gate short-circuits on the first usable URL, so it never
-    /// escapes and joins a whole Finder copy just to answer yes/no.
+    /// Paste asks `GhosttyCallbacks.hasPasteboardText()`, the SAME reader `paste_from_clipboard` uses,
+    /// rather than probing for a plain string: the clipboard may hold a file/web URL with no string
+    /// representation (a Finder copy) the reader turns into a shell-escaped path, so an `NSString` probe
+    /// reports "nothing to paste" while ⌘V pastes it. A bare `canReadObject([NSURL])` TYPE probe is wrong
+    /// the other way, enabling Paste for a URL-type-only pasteboard. The gate short-circuits on the first
+    /// usable URL, never escaping a whole Finder copy to answer.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(copy(_:)):

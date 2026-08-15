@@ -8,6 +8,8 @@ agterm/Resources/terminfo
 # build artifacts
 build/
 .build/
+# AT-SPI smoke diagnostics (scripts/test-linux-ui.sh; CI uploads them from here)
+artifacts/
 agterm.xcodeproj/
 .swiftpm/
 
@@ -19,6 +21,10 @@ windows.json
 workspaces.json
 windows/
 *.sock
+
+# python tooling leftovers from the cookbook recipes: bytecode cache and the ruff lint cache
+__pycache__/
+.ruff_cache/
 
 # revmux review scaffolding: caller-written task context plus its run archive, local to a review
 .revmux/

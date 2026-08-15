@@ -1,9 +1,8 @@
 import Foundation
 import Observation
 
-/// Metadata for one window — a named bundle of workspaces + sessions rendered in its
-/// own on-screen macOS window. Named `WindowInfo` (not `Window`) to avoid clashing with
-/// SwiftUI/AppKit `Window` types in the app target.
+/// Metadata for one window — a named bundle of workspaces + sessions in its own macOS window.
+/// Named `WindowInfo`, not `Window`, to avoid clashing with the SwiftUI/AppKit `Window` types.
 public struct WindowInfo: Codable, Sendable, Identifiable, Equatable {
     public let id: UUID
     public var name: String
@@ -13,12 +12,10 @@ public struct WindowInfo: Codable, Sendable, Identifiable, Equatable {
         self.name = name
     }
 
-    /// Whether `name` is a user-set name rather than an auto-assigned default. The title bar shows
-    /// the window name only when this is true, so default "window N" names stay hidden.
+    /// Whether `name` is user-set; the title bar shows it only when true, so "window N" stays hidden.
     public var hasCustomName: Bool { !Self.isAutoName(name) }
 
-    /// Whether `name` matches the auto-assigned scheme `WindowLibrary.defaultWindowName` produces —
-    /// the literal word "window" followed by a positive integer ("window 1", "window 2", …).
+    /// Whether `name` matches `WindowLibrary.defaultWindowName`: "window" plus a positive integer.
     public static func isAutoName(_ name: String) -> Bool {
         let parts = name.split(separator: " ", omittingEmptySubsequences: true)
         guard parts.count == 2, parts[0] == "window", let number = Int(parts[1]), number >= 1 else { return false }
@@ -26,8 +23,7 @@ public struct WindowInfo: Codable, Sendable, Identifiable, Equatable {
     }
 }
 
-/// One entry in the persisted window index: identity, name, and whether the window was
-/// open at quit (drives reopen-all on the next launch).
+/// One entry in the persisted window index: id, name, and open-at-quit, which drives reopen-all.
 public struct WindowEntry: Codable, Sendable, Equatable {
     public var id: UUID
     public var name: String
@@ -40,11 +36,10 @@ public struct WindowEntry: Codable, Sendable, Equatable {
     }
 }
 
-/// The persisted `windows.json` index: the ordered window list plus the frontmost id.
-/// Carries its own `version`, deliberately independent of `Snapshot.version` (the
-/// per-window file shape) so the two can evolve separately.
+/// The persisted `windows.json` index: ordered window list plus frontmost id. `version` is independent of
+/// `Snapshot.version` (the per-window file shape) so the two evolve separately.
 public struct WindowsIndex: Codable, Equatable, Sendable {
-    /// Bumped when the index shape changes; a mismatch makes the loader treat it as absent.
+    /// Bumped when the index shape changes; a mismatch makes the index count as absent.
     public static let currentVersion = 1
 
     public var version: Int
@@ -58,39 +53,35 @@ public struct WindowsIndex: Codable, Equatable, Sendable {
     }
 }
 
-/// The app-global owner of the window set: the ordered window metadata, the lazily-loaded
-/// per-window `AppStore`s, the open-set, and the frontmost id, plus per-window + index
-/// persistence.
+/// The app-global owner of the window set: ordered window metadata, lazily-loaded per-window `AppStore`s,
+/// the open-set, the frontmost id, and per-window + index persistence. `@Observable` so SwiftUI tracks the
+/// window list + frontmost id; all access is main-actor isolated. A window is "open" iff its `AppStore` is
+/// loaded; the persisted open-set in `windows.json` records which to reopen on the next launch.
 ///
-/// `@Observable @MainActor` like `AppStore` — SwiftUI observes the window list and frontmost
-/// id, and all access is main-actor isolated. A window is "open" iff its `AppStore` is loaded
-/// (`stores[id] != nil`); the persisted open-set in `windows.json` records which to reopen on
-/// the next launch.
-///
-/// Recovery contract (never throws to the caller, mirrors `PersistenceStore.load()`): a
-/// corrupt or version-mismatched `windows.json` is treated as absent → migrate from legacy
-/// `workspaces.json` if present, else seed one window. A missing/corrupt per-window file opens
-/// that window with an empty `Snapshot` (one default workspace + session). The app always
-/// reaches a valid, non-empty window set.
+/// Recovery contract (never throws, mirrors `PersistenceStore.load()`): a corrupt or version-mismatched
+/// `windows.json` counts as absent → migrate legacy `workspaces.json` if present, else seed one window; a
+/// missing/corrupt per-window file opens with an empty `Snapshot` (one default workspace + session), so the
+/// window set is always valid and non-empty.
 @Observable
 @MainActor
 public final class WindowLibrary {
     /// The ordered window metadata, for the menu/palette.
     public private(set) var windows: [WindowInfo]
 
-    /// App-wide recent closed sessions/workspaces, newest first. Reopening inserts the saved item into
-    /// the active window; this list is independent of window reopen semantics.
+    /// App-wide recent closed sessions/workspaces, newest first. Reopening inserts into the active window;
+    /// independent of window reopen semantics.
     public private(set) var recentClosedItems: [RecentClosedItem]
 
-    /// The id of the frontmost on-screen window, mirrored into the index on change.
+    /// The id of the frontmost on-screen window, mirrored into the index on change. Outlives the window
+    /// only when it was the last one closed, so the index records which window the user exited from.
+    /// Resolving it to a live window guards on the store being loaded, so that survivor still reads as
+    /// "none open"; sites that only compare or reassign the raw id are unaffected either way.
     public var frontmostWindowID: UUID?
 
-    /// Live per-window stores. A window is open iff it has a loaded store. `@ObservationIgnored`:
-    /// read imperatively (scene/control), not by any SwiftUI view.
+    /// Live per-window stores. `@ObservationIgnored`: read imperatively (scene/control), never by a view.
     @ObservationIgnored private var stores: [UUID: AppStore]
 
-    /// The state directory (AGTERM_STATE_DIR-aware); the index lives here and per-window files in
-    /// the `windows/` subdirectory.
+    /// The state directory (AGTERM_STATE_DIR-aware): the index here, per-window files in `windows/`.
     @ObservationIgnored private let directory: URL
     @ObservationIgnored private let recentClosedStore: RecentClosedStore
     /// One bounded run-identified ring shared by every window store for this library/app lifetime.
@@ -98,24 +89,20 @@ public final class WindowLibrary {
     @ObservationIgnored private var treeEventDebouncers: [UUID: Debouncer]
     @ObservationIgnored private var isBootstrapping = true
 
-    /// Set once the launch reopen-all has run, so the scene `.task` (which fires per window) drives
-    /// it exactly once. `@ObservationIgnored`: a launch-flow latch, not view state.
+    /// Set once the launch reopen-all has run, so the per-window scene `.task` drives it exactly once.
     @ObservationIgnored public private(set) var hasReopened = false
 
-    /// FIFO of window ids each freshly-appearing SwiftUI window claims as its own. The scene is a
-    /// plain `WindowGroup` (which auto-opens one window at launch and one per `openWindow()`), so a
-    /// window has no presented id — it pops the next id here on appear instead. Seeded with the open
-    /// set (launch window first) by `consumeReopen()`. `@ObservationIgnored`: a launch-flow queue.
+    /// FIFO of window ids each freshly-appearing SwiftUI window pops on appear: the plain `WindowGroup`
+    /// (one window at launch, one per `openWindow()`) gives a window no presented id. Seeded with the open
+    /// set, launch window first, by `consumeReopen()`.
     @ObservationIgnored private var pendingClaim: [UUID] = []
 
-    /// The launch id the launch window adopted via the pre-seed fallback (`adoptLaunchWindowID()`),
-    /// when its `.onAppear` ran before the scene `.task` seeded the queue. `consumeReopen()` excludes
-    /// it from the seeded queue so the first reopened window can't claim it a second time (the
-    /// duplicate-store collision). `@ObservationIgnored`: a launch-flow latch.
+    /// The launch id already adopted via `adoptLaunchWindowID()`'s fallback; `consumeReopen()` excludes it
+    /// from the seeded queue so the first reopened window can't claim it twice.
     @ObservationIgnored private var adoptedLaunchID: UUID?
 
-    /// Set at quit so the per-window `willClose` close-reporting becomes a no-op — the open-set must
-    /// be preserved for the next launch's reopen-all, not zeroed as each window tears down on quit.
+    /// Set at quit so per-window `willClose` close-reporting no-ops — the open-set must survive for the
+    /// next launch's reopen-all instead of being zeroed as each window tears down.
     @ObservationIgnored public var isTerminating = false
 
     private static let indexFileName = "windows.json"
@@ -125,8 +112,7 @@ public final class WindowLibrary {
     private var indexURL: URL { directory.appendingPathComponent(Self.indexFileName) }
     private var windowsDirectory: URL { directory.appendingPathComponent(Self.windowsSubdirectory, isDirectory: true) }
 
-    /// Creates the library rooted at `directory`, running migration/recovery so the resulting
-    /// window set is always valid and non-empty.
+    /// Creates the library rooted at `directory`, running migration/recovery per the recovery contract.
     public init(directory: URL = PersistenceStore.defaultDirectory,
                 controlEventRing: ControlEventRing? = nil) {
         self.directory = directory
@@ -143,41 +129,34 @@ public final class WindowLibrary {
 
     // MARK: - Lookup
 
-    /// The live store of an open window, or nil when the window is closed/unknown.
     public func store(for id: UUID?) -> AppStore? {
         guard let id else { return nil }
         return stores[id]
     }
 
-    /// The frontmost open window's id, falling back to the first open window (in window order)
-    /// when the frontmost id is unset/closed. The app-side seams that key off the window — the
-    /// frontmost store and the frontmost quick terminal — resolve through this. Nil only in the
-    /// degenerate all-windows-closed state (the app is quitting).
+    /// The frontmost open window's id, falling back to the first open window when the frontmost is
+    /// unset/closed — the resolution every window-keyed seam uses. Nil only when all windows are closed
+    /// (the app is quitting).
     public var activeWindowID: UUID? {
         if let frontmostWindowID, stores[frontmostWindowID] != nil { return frontmostWindowID }
         for id in windows.map(\.id) where stores[id] != nil { return id }
         return nil
     }
 
-    /// The frontmost open window's store, falling back to the first open store (in window order)
-    /// when the frontmost id is unset/closed. The app-side action/control/settings seams resolve
-    /// the store to act on through this — it stays non-nil because the library is never windowless
-    /// at launch. Nil only in the degenerate all-windows-closed state (the app is quitting).
+    /// The store for `activeWindowID` — how the action/control/settings seams resolve what to act on.
+    /// Non-nil in practice (never windowless at launch); nil only when all windows are closed.
     public var activeStore: AppStore? {
         store(for: activeWindowID)
     }
 
-    /// Whether the window is currently open (its store is loaded).
     public func isOpen(_ id: UUID) -> Bool {
         stores[id] != nil
     }
 
-    /// Auto-hide-inactive-sidebars driver: the frontmost open window shows its sidebar and every OTHER
-    /// open window collapses its own. With a single open window it force-shows that (active) window's
-    /// sidebar and collapses nothing. Host-free so it is unit-testable; the app-side caller gates it on the
-    /// `autoHideSidebarInactiveWindows` setting and invokes it on every frontmost change (and once when the
-    /// toggle flips on). `setSidebarVisible` no-ops a window already in its target state, so the
-    /// write/persist/notify happens only for the windows that actually change.
+    /// Auto-hide-inactive-sidebars driver: the frontmost open window shows its sidebar, every OTHER open one
+    /// collapses (a lone window is force-shown). The caller gates on `autoHideSidebarInactiveWindows` and
+    /// calls it on every frontmost change plus once when the toggle flips on. `setSidebarVisible` no-ops an
+    /// already-correct window, so only changed windows write/persist/notify.
     public func applyInactiveWindowSidebarHiding() {
         guard let active = activeWindowID else { return }
         for id in openIDs() {
@@ -185,19 +164,16 @@ public final class WindowLibrary {
         }
     }
 
-    /// The window set projected into the `window.list` control payload (id/name + open/active flags),
-    /// in window order.
-    /// The `geometry` closure supplies each open window's live on-screen frame; it is app-side (the NSWindow
-    /// handles live in `WindowRegistry`, not this host-free model), defaulting to nil so unit tests and any
-    /// non-AppKit caller get a geometry-free list.
+    /// The window set projected into the `window.list` payload, in window order. The `geometry` closure
+    /// supplies each open window's live frame app-side (NSWindow handles live in `WindowRegistry`, not this
+    /// host-free model); nil by default so tests and non-AppKit callers get a geometry-free list.
     public func controlWindowNodes(geometry: (WindowInfo.ID) -> ControlWindowFrame? = { _ in nil },
                                    flags: (WindowInfo.ID) -> (fullscreen: Bool, zoomed: Bool, minimized: Bool)? = { _ in nil })
         -> [ControlWindowNode] {
         let active = activeWindowID
         return windows.map {
-            // reach each open store for its auto-follow timeout + sidebar visibility (per-window state); a
-            // closed window has no store and reports nil for both. The frame + fullscreen/zoom/minimized
-            // flags come from the app-side closures (nil for a closed window with no NSWindow).
+            // auto-follow timeout + sidebar visibility come from the per-window store, the frame +
+            // fullscreen/zoom/minimized flags from the app-side closures; both nil for a closed window.
             let live = flags($0.id)
             return ControlWindowNode(id: $0.id.uuidString, name: $0.name, open: isOpen($0.id), active: $0.id == active,
                                      autoFollowMs: stores[$0.id]?.autoFollowMs,
@@ -218,44 +194,39 @@ public final class WindowLibrary {
         }
     }
 
-    /// Test/quit seam: synchronously fires every pending per-window structural invalidation,
-    /// including one queued for a window that has just been removed from the catalog.
+    /// Test/quit seam: fires every pending structural invalidation synchronously, even one queued for a
+    /// window already removed from the catalog.
     func flushTreeEvents() {
         for debouncer in treeEventDebouncers.values { debouncer.flush() }
     }
 
-    /// Resolve a control window target against the library's ordered window set. All known windows are
-    /// candidates, including closed windows; `active` resolves to the frontmost open window, with the
-    /// same fallback as `activeWindowID`.
+    /// Resolve a control window target against the ordered window set. All known windows are candidates,
+    /// closed ones included; `active` resolves like `activeWindowID`.
     public func resolveWindow(_ target: String) -> TargetResolution {
         ControlResolve.resolve(target, candidates: windows.map(\.id), active: activeWindowID)
     }
 
-    /// The persisted open-set in window order, for the launch reopen-all. A window is open iff
-    /// its store is loaded.
+    /// The persisted open-set in window order, for the launch reopen-all.
     public func openIDs() -> [UUID] {
         windows.map(\.id).filter { stores[$0] != nil }
     }
 
-    /// Every session across all open windows, flattened — the shared walk for the per-session sweeps
+    /// Every session across all open windows, flattened — the walk the per-session sweeps share
     /// (restore-running-command capture + `restore.clear`).
     public func allOpenSessions() -> [Session] {
         openIDs().compactMap { stores[$0] }.flatMap { $0.workspaces.flatMap(\.sessions) }
     }
 
-    /// The total unseen-notification count across every session in every OPEN window — the number the
-    /// Dock tile badge shows (`DockBadgeController`), the app-wide roll-up of the same `Session.unseenCount`
-    /// the sidebar's red pills track. Reads the observable `windows` list, each open store's `workspaces`,
-    /// and each session's `unseenCount`, so a `withObservationTracking` observer over this re-fires on a
-    /// notification bump, a focus/select clear, and a session add/remove. A window CLOSE drops a store
-    /// (`@ObservationIgnored stores`), which is NOT observable — the app refreshes the badge explicitly on
-    /// the `willClose` teardown for that case.
+    /// The total unseen count across every session in every OPEN window — what the Dock badge shows,
+    /// rolling up the `Session.unseenCount` the sidebar's red pills track. Reads only observable state
+    /// (`windows`, each store's `workspaces`, `unseenCount`), so a `withObservationTracking` observer
+    /// re-fires on a bump, a focus/select clear, and a session add/remove. A window CLOSE drops a store,
+    /// which is NOT observable — the app refreshes the badge explicitly in the `willClose` teardown.
     public var totalUnseenCount: Int {
         allOpenSessions().reduce(0) { $0 + $1.unseenCount }
     }
 
-    /// The number of currently-open windows and the total number of sessions across them — the
-    /// counts the quit confirmation reports. A window is open iff its store is loaded.
+    /// Open-window count plus total sessions across them — the counts the quit confirmation reports.
     public func openCounts() -> (windows: Int, sessions: Int) {
         let openStores = windows.map(\.id).compactMap { stores[$0] }
         let sessions = openStores.reduce(0) { total, store in
@@ -264,140 +235,143 @@ public final class WindowLibrary {
         return (openStores.count, sessions)
     }
 
-    /// The id SwiftUI's auto-opened launch window claims: the frontmost open window, else the first.
-    /// `nil` only in the degenerate all-windows-closed state. Guards the frontmost on openness (like
-    /// `activeWindowID`) — a frontmost pointing at a closed window must fall through to the first open
-    /// one, else `consumeReopen` seeds a closed id and undercounts the open set.
+    /// The id SwiftUI's auto-opened launch window claims: the frontmost open window, else the first, nil
+    /// when all are closed. Guards the frontmost on openness — one pointing at a closed window must fall
+    /// through, else `consumeReopen` seeds a closed id and undercounts the open set.
     private var launchWindowID: UUID? {
         if let frontmostWindowID, stores[frontmostWindowID] != nil { return frontmostWindowID }
         return openIDs().first
     }
 
-    /// Latches the launch reopen-all so it runs once across the per-window scene `.task`s, seeding
-    /// the claim queue with the open set and returning the *additional* `openWindow()` calls needed
-    /// beyond the one window SwiftUI auto-opens at launch. So with N open windows it returns N-1 (each
-    /// ≥0). Empty on every subsequent call.
+    /// Latches the launch reopen-all so it runs once across the per-window scene `.task`s, seeds the claim
+    /// queue with the open set, and returns the ADDITIONAL `openWindow()` calls needed beyond SwiftUI's
+    /// auto-opened launch window — N-1 for N open windows (≥0), 0 on every later call.
     ///
-    /// The launch window takes exactly one id: via the queue (when this runs before its `.onAppear`)
-    /// or via `adoptLaunchWindowID()`'s fallback (when its `.onAppear` ran first). An already-adopted
-    /// launch id is excluded from the queue so the first reopened window can't claim it a second time
-    /// (two windows binding one store — the duplicate-store collision). The N-1 count is independent
-    /// of which path the launch window took.
+    /// The launch window takes exactly one id: from the queue (this ran before its `.onAppear`) or from
+    /// `adoptLaunchWindowID()`'s fallback (its `.onAppear` ran first); an already-adopted id is excluded so
+    /// the first reopened window can't claim it twice. The N-1 count is the same either way.
     public func consumeReopen() -> Int {
         guard !hasReopened else { return 0 }
         hasReopened = true
         let open = openIDs()
-        // launch window first, then the rest in window order — minus any id the fallback already
-        // handed the launch window (so it isn't claimed twice).
         let ordered = (launchWindowID.map { [$0] } ?? []) + open.filter { $0 != launchWindowID }
         pendingClaim = ordered.filter { $0 != adoptedLaunchID }
         return max(open.count - 1, 0)
     }
 
-    /// Pops the next window id for a freshly-appearing SwiftUI window to render. Returns nil once the
-    /// queue is drained (a window beyond the open set — e.g. a SwiftUI-restored extra — which the app
-    /// dismisses).
+    /// Pops the next window id for a freshly-appearing SwiftUI window to render. Nil once the queue is
+    /// drained — a window beyond the open set (e.g. a SwiftUI-restored extra), which the app dismisses.
     public func claimNextWindowID() -> UUID? {
         guard !pendingClaim.isEmpty else { return nil }
         return pendingClaim.removeFirst()
     }
 
-    /// The launch window's fallback id when its `.onAppear` fires before the scene `.task` seeds the
-    /// claim queue. Records the id as adopted so a later `consumeReopen()` excludes it from the queue
-    /// — without this, `consumeReopen` re-seeds the launch id and the first reopened window claims it
-    /// again, leaving two windows bound to one store. Idempotent-per-launch: only the FIRST caller gets
-    /// the launch id; a second caller before `consumeReopen()` runs (SwiftUI restored more than one
-    /// window, each hitting the empty-queue fallback) gets nil and dismisses itself, so two windows
-    /// can't both bind the one launch store. Returns nil in the degenerate all-windows-closed state.
+    /// The launch window's fallback id when its `.onAppear` beats the scene `.task`'s queue seeding. Records
+    /// it as adopted so a later `consumeReopen()` excludes it — else the first reopened window claims it
+    /// again and two windows bind one store. Only the FIRST caller gets an id; a second (several restored
+    /// windows all hitting the empty-queue fallback) gets nil and dismisses itself, as does an all-closed set.
     public func adoptLaunchWindowID() -> UUID? {
         guard adoptedLaunchID == nil, let id = launchWindowID else { return nil }
         adoptedLaunchID = id
         return id
     }
 
-    /// Enqueues a window id to be claimed by the next appearing window — used when the app opens a
-    /// window (`newWindow` + `openWindow()`, or a `window.select` / reveal of a closed window), so the
-    /// new SwiftUI window adopts that id. Pure queue-membership dedup: an id already pending (a repeated
-    /// `window.select` of the same window before the first claim is consumed) is not appended again, so
-    /// one bundle never spawns two windows. It does NOT skip an id whose store is loaded — `newWindow`
-    /// pre-loads the store before enqueueing, so a store-loaded guard would silently drop the claim and
-    /// the spawned window would self-dismiss. The "already on-screen, raise instead of spawn" check
-    /// lives at the call site (`WindowRegistry.raise`), not here.
+    /// Enqueues a window id for the next appearing SwiftUI window to adopt (`newWindow` + `openWindow()`, or
+    /// a `window.select`/reveal of a closed window). Dedups on queue MEMBERSHIP only, so a repeated
+    /// `window.select` before the first claim is consumed never spawns two windows; it must NOT also skip an
+    /// id whose store is loaded, since `newWindow` pre-loads the store and the window would self-dismiss.
+    /// The "already on-screen, raise instead of spawn" check lives in `WindowRegistry.raise`.
     public func enqueueClaim(_ id: UUID) {
         guard !pendingClaim.contains(id) else { return }
         pendingClaim.append(id)
     }
 
-    /// The id of the open window that owns the given session, or nil when no open window has it.
-    /// Searches only OPEN windows (closed windows aren't loaded).
+    /// The id of the OPEN window owning the given session, or nil — closed windows aren't loaded/searched.
     public func windowID(forSession sessionID: UUID) -> UUID? {
         for id in windows.map(\.id) where stores[id]?.session(withID: sessionID) != nil { return id }
         return nil
     }
 
-    /// The open store that owns the given session, searching only OPEN windows. Backs cross-window
-    /// session targeting (notification reveal + ControlServer).
+    /// The open store owning the given session — backs cross-window targeting (reveal + ControlServer).
     public func store(forSession sessionID: UUID) -> AppStore? {
         store(for: windowID(forSession: sessionID))
     }
 
-    /// The id of the open window backed by `store` (by identity), or nil — the reverse of `store(for:)`,
-    /// used to reach a window's per-window controllers (quick terminal / zoom / dashboard) from its store.
+    /// The id of the open window backed by `store` (by identity) — the reverse of `store(for:)`, for
+    /// reaching a window's per-window controllers (quick terminal / zoom / dashboard).
     public func windowID(for store: AppStore) -> UUID? {
         openIDs().first { stores[$0] === store }
     }
 
-    /// The display name of the window with `id`, or "" when `id` is nil or no window has that id — the
-    /// name half of the `{AGT_WINDOW_NAME}`/`$AGT_WINDOW_NAME` command context.
+    /// The window's display name, "" for a nil or unknown id — the name half of the
+    /// `{AGT_WINDOW_NAME}`/`$AGT_WINDOW_NAME` command context.
     public func windowName(for id: UUID?) -> String {
         guard let id else { return "" }
         return windows.first { $0.id == id }?.name ?? ""
     }
 
-    /// The auto-generated name for the next new window (`window 1`, `window 2`, …).
     public var defaultWindowName: String {
         "window \(windows.count + 1)"
     }
 
     // MARK: - Mutation
 
-    /// Creates a fresh window seeded with one default workspace ("workspace 1") and one session
-    /// at $HOME (the seeding that used to live in the app's `restoredStore()`), opens it (loads
-    /// its store), and persists the index. Defaults the name to "window N".
+    /// Creates a window seeded with "workspace 1" and one $HOME session, opens it, and persists the index.
+    /// Defaults the name to "window N".
     @discardableResult
     public func newWindow(name: String? = nil) -> WindowInfo {
-        let info = WindowInfo(name: name?.trimmedOrNil ?? defaultWindowName)
+        // the name feeds {AGT_WINDOW_NAME}; see TerminalText.
+        let info = WindowInfo(name: name.map(TerminalText.sanitized)?.trimmedOrNil ?? defaultWindowName)
         let store = makeStore(for: info.id, persistence: persistenceStore(for: info.id))
         let workspace = store.addWorkspace(name: "workspace 1")
         store.addSession(toWorkspace: workspace.id, cwd: FileManager.default.homeDirectoryForCurrentUser.path)
         windows.append(info)
         stores[info.id] = store
-        // a newly created window is the active one: mark it frontmost so the seams that key off the
-        // window (the active store, the command palette, the quick terminal) target it immediately,
-        // rather than waiting on the new on-screen window's first `didBecomeKey` (which loses to the
-        // File-menu focus returning to the previous window after New Window).
+        // mark frontmost now so the window-keyed seams target it immediately instead of waiting on its
+        // first `didBecomeKey` — which loses to the File-menu focus returning to the previous window.
         frontmostWindowID = info.id
         saveIndex()
         return info
     }
 
-    /// Lazily builds (or returns the cached) `AppStore` for a window, loading its persisted
-    /// `windows/<id>.json` (an empty `Snapshot` when missing/corrupt, per the recovery contract).
-    /// No-op returning nil for an id with no index entry. Marks the window open and persists.
+    /// Lazily builds (or returns the cached) `AppStore` from `windows/<id>.json`, marks the window open, and
+    /// persists. Nil for an id with no index entry.
     ///
-    /// `launchRestore` marks an APP-BOOTSTRAP load — passed only by `reopen`/`recoverOrphanedWindows`,
-    /// and the only thing that arms a session's persisted `session.restore` override for this launch. It
-    /// defaults to false because `ContentView.resolveStore()` calls this at RUNTIME when a closed window
-    /// is reopened mid-process, which must not execute anything.
+    /// `launchRestore` marks an APP-BOOTSTRAP load — passed only by `reopen`/`recoverOrphanedWindows`, and
+    /// the only thing that arms anything executable: a session's persisted `session.restore` override and
+    /// the captured `foregroundCommand`/`splitForegroundCommand`. False by default because
+    /// `ContentView.resolveStore()` calls this at RUNTIME for a mid-process reopen, which must not execute.
     @discardableResult
     public func loadStore(for id: UUID, launchRestore: Bool = false) -> AppStore? {
         guard windows.contains(where: { $0.id == id }) else { return nil }
         if let existing = stores[id] { return existing }
         let persistence = persistenceStore(for: id)
         let store = makeStore(for: id, persistence: persistence)
-        store.restore(from: persistence.load(), launchRestore: launchRestore)
+        let snapshot = persistence.load()
+        store.restore(from: snapshot, launchRestore: launchRestore)
         stores[id] = store
-        if !launchRestore {
+        let carriedCaptures = snapshot.workspaces.contains { workspace in
+            workspace.sessions.contains { $0.foregroundCommand != nil || $0.splitForegroundCommand != nil }
+        }
+        if launchRestore {
+            // the replay is armed in the sessions' TRANSIENT slots, which `snapshot()` never serializes, so
+            // strip the FILE now and nothing can put the argv back: the persisted fields are already nil,
+            // and a save landing before the surfaces spawn writes that nil. Without the strip the argv
+            // would outlive its one replay whenever no save happens at all, and a crash would run it again
+            // next launch. If the strip fails, disarm instead: losing a restore to a disk error beats
+            // re-running the user's command unasked.
+            if carriedCaptures, !stripCaptures(from: snapshot, into: persistence) {
+                for session in store.workspaces.flatMap(\.sessions) {
+                    session.pendingForegroundCommand = nil
+                    session.pendingSplitForegroundCommand = nil
+                }
+            }
+        } else {
+            // the launch-only gate just dropped any captured foreground command from the live sessions;
+            // rewrite the snapshot too, or the stale argv survives on disk and a force-quit before the
+            // next save replays it on the following launch — after the user last saw this window as a
+            // plain shell.
+            if carriedCaptures { store.save() }
             for workspace in store.workspaces {
                 for session in workspace.sessions { store.emitSessionCreated(session, workspace: workspace.id) }
             }
@@ -405,6 +379,26 @@ public final class WindowLibrary {
         }
         saveIndex()
         return store
+    }
+
+    /// Rewrites `snapshot` without the one-shot foreground captures, leaving every other field — including
+    /// the sticky `restoreCommand` override, which fires again on the next launch. Returns whether the
+    /// write landed; the caller disarms the live sessions when it did not.
+    private func stripCaptures(from snapshot: Snapshot, into persistence: PersistenceStore) -> Bool {
+        var stripped = snapshot
+        for workspaceIndex in stripped.workspaces.indices {
+            for sessionIndex in stripped.workspaces[workspaceIndex].sessions.indices {
+                stripped.workspaces[workspaceIndex].sessions[sessionIndex].foregroundCommand = nil
+                stripped.workspaces[workspaceIndex].sessions[sessionIndex].splitForegroundCommand = nil
+            }
+        }
+        do {
+            try persistence.save(stripped)
+            return true
+        } catch {
+            log("stripCaptures failed: \(error)")
+            return false
+        }
     }
 
     @discardableResult
@@ -431,13 +425,12 @@ public final class WindowLibrary {
         refreshRecentClosedItems()
     }
 
-    /// Closes a window: drops its store (marking it closed) and persists the index. The caller
-    /// (app target) tears down the window's surfaces first — `WindowLibrary` only drops the store.
-    /// No-op for an unknown/closed id, or while terminating (the open-set must survive for reopen-all).
+    /// Closes a window: drops its store and persists the index. The app-target caller tears down the
+    /// window's surfaces first. No-op for an unknown/closed id, or while terminating (see `isTerminating`).
     public func closeWindow(_ id: UUID) {
         guard !isTerminating else { return }
-        // cancel any queued claim for this id so a window still attaching can't re-open it after a
-        // close that raced its registration (window.new immediately followed by window.close).
+        // cancel any queued claim so a window still attaching can't re-open it after a close that raced
+        // its registration (window.new immediately followed by window.close).
         pendingClaim.removeAll { $0 == id }
         guard let store = stores[id] else { return }
         for workspace in store.workspaces {
@@ -445,27 +438,33 @@ public final class WindowLibrary {
         }
         store.scheduleTreeChanged()
         stores[id] = nil
-        if frontmostWindowID == id { frontmostWindowID = activeWindowID }
+        // the persisted `frontmost` is what the next launch's `reopen` fallback picks, and nil there
+        // sends it to `windows.first`. Pin unconditionally on the close that empties the open set, so a
+        // frontmost left nil or stale by `removeWindow` still reopens the exit window; otherwise hand it
+        // to a live window, which guards on the store being loaded.
+        if openIDs().isEmpty {
+            frontmostWindowID = id
+        } else if frontmostWindowID == id {
+            frontmostWindowID = activeWindowID
+        }
         saveIndex()
     }
 
-    /// Renames a window (and its open store is unaffected — the name lives only in the index).
-    /// An empty/whitespace-only name is ignored. Persists the index.
+    /// Renames a window; the name lives only in the index. An empty/whitespace-only name is ignored.
     public func renameWindow(_ id: UUID, to name: String) {
-        guard let trimmed = name.trimmedOrNil, let index = windows.firstIndex(where: { $0.id == id }) else { return }
+        // the name feeds {AGT_WINDOW_NAME}; see TerminalText.
+        guard let trimmed = TerminalText.sanitized(name).trimmedOrNil, let index = windows.firstIndex(where: { $0.id == id }) else { return }
         guard windows[index].name != trimmed else { return }
         windows[index].name = trimmed
         scheduleTreeChanged(for: id)
         saveIndex()
     }
 
-    /// Whether a window may be removed: one window is always kept, so removal is allowed only
-    /// when more than one exists.
+    /// Whether a window may be removed — one window is always kept.
     public var canRemoveWindow: Bool { windows.count > 1 }
 
-    /// Removes a window: drops its store, deletes its per-window file, removes the index entry,
-    /// and persists. No-ops unless more than one window exists (the last one is kept). Clears
-    /// `frontmostWindowID` if it pointed at the removed window.
+    /// Removes a window: drops its store, deletes its per-window file, removes the index entry, and
+    /// persists. No-ops on the last window. Clears `frontmostWindowID` if it pointed at the removed one.
     public func removeWindow(_ id: UUID) {
         guard canRemoveWindow, let index = windows.firstIndex(where: { $0.id == id }) else { return }
         if let store = stores[id] {
@@ -474,20 +473,16 @@ public final class WindowLibrary {
             }
         }
         scheduleTreeChanged(for: id)
-        // cancel the store's pending debounced save BEFORE deleting the file — a save scheduled by a
-        // just-before-delete selectSession/setFontSize captures the store weakly and fires ~0.3 s out;
-        // since the delete-path willClose teardown skips its own save() (the window is no longer open),
-        // an un-cancelled pending save would fire after removeItem and re-create windows/<id>.json as an
-        // orphan that a future index loss would resurrect via recoverOrphanedWindows().
+        // cancel the pending debounced save BEFORE deleting the file: a ~0.3 s save from a just-before-delete
+        // selectSession/setFontSize outlives the delete-path willClose (which skips its own save, the window
+        // being closed) and would land after removeItem, re-creating windows/<id>.json as an orphan that a
+        // future index loss resurrects via recoverOrphanedWindows().
         stores[id]?.cancelPendingSave()
-        // sweep each session's rendered `.text` watermark PNG before dropping the store: deleting a window
-        // permanently destroys its sessions (like closeSession/removeWorkspace), so their PNGs must go too —
-        // window-CLOSE keeps the sessions and is handled elsewhere, but window-DELETE has no later sweep.
-        // An OPEN window's session ids come from its live store; a CLOSED one has no store, so read them from
-        // the persisted snapshot — else deleting a closed window orphans its PNGs in <stateDir>/watermarks/.
-        // `directory` is the state-dir root WatermarkStorage resolves against (both default to
-        // AGTERM_STATE_DIR else PersistenceStore.defaultDirectory), so passing it is production-identical
-        // and lets a test sweep into an injected temp dir without touching process-global env.
+        // sweep each session's rendered `.text` watermark PNG before dropping the store: window-DELETE
+        // destroys its sessions permanently and has no later sweep, unlike window-CLOSE. Ids come from the
+        // live store when open, the persisted snapshot when closed — else a closed window's PNGs orphan in
+        // <stateDir>/watermarks/. `directory` is the same root WatermarkStorage resolves against, so passing
+        // it is production-identical and lets a test sweep into an injected temp dir.
         let sessionIDsToSweep: [UUID] = stores[id].map { $0.workspaces.flatMap(\.sessions).map(\.id) }
             ?? persistenceStore(for: id).load().workspaces.flatMap(\.sessions).map(\.id)
         for sessionID in sessionIDsToSweep {
@@ -501,11 +496,9 @@ public final class WindowLibrary {
         saveIndex()
     }
 
-    /// Clears every session's per-window font-size override across ALL windows — open ones through
-    /// their live store, closed ones by rewriting the persisted `windows/<id>.json` in place. A global
-    /// font/appearance change resets every surface to the new default, so a closed window must drop its
-    /// stale per-session sizes too, else it reopens later overriding the new default. No-ops a window
-    /// (open or closed) whose snapshot has no overrides.
+    /// Clears every session's font-size override across ALL windows — open ones through their live store,
+    /// closed ones by rewriting `windows/<id>.json`. A closed window must drop its stale sizes too, else it
+    /// reopens overriding the new global default. No-ops a window with no overrides.
     public func resetSessionFontSizesAllWindows() {
         for info in windows {
             if let store = stores[info.id] {
@@ -516,9 +509,9 @@ public final class WindowLibrary {
         }
     }
 
-    /// Loads a closed window's snapshot, strips every `fontSize` override, and rewrites the file only
-    /// when something changed (so it doesn't churn untouched windows). Best-effort: a missing/corrupt
-    /// file loads as empty (no overrides to clear) and a write failure is swallowed by the store.
+    /// Strips every `fontSize` override from a closed window's snapshot, rewriting only when something
+    /// changed so untouched windows don't churn. Best-effort: a missing/corrupt file loads as empty (no
+    /// overrides to clear) and a write failure is swallowed.
     private func clearClosedWindowFontSizes(_ id: UUID) {
         let persistence = persistenceStore(for: id)
         var snapshot = persistence.load()
@@ -535,8 +528,8 @@ public final class WindowLibrary {
 
     // MARK: - Persistence
 
-    /// Flushes every open window's store, so per-window cwd changes since the last structural
-    /// mutation are persisted (the quit-time flush the app's terminate path drives).
+    /// Flushes every open window's store — the quit-time flush persisting cwd changes made since the last
+    /// structural mutation.
     public func saveAllOpen() {
         for store in stores.values { store.save() }
     }
@@ -546,8 +539,8 @@ public final class WindowLibrary {
         for store in stores.values { store.finalizeAllPendingCloses() }
     }
 
-    /// Writes `windows.json`: the ordered window list (with each window's open flag) and the
-    /// frontmost id. A write failure is logged and swallowed.
+    /// Writes `windows.json`: ordered window list with open flags, plus the frontmost id. A write failure
+    /// is logged and swallowed.
     public func saveIndex() {
         let entries = windows.map { WindowEntry(id: $0.id, name: $0.name, isOpen: stores[$0.id] != nil) }
         let index = WindowsIndex(frontmost: frontmostWindowID, windows: entries)
@@ -563,11 +556,10 @@ public final class WindowLibrary {
 
     // MARK: - Bootstrap (migration + recovery)
 
-    /// Resolves the window set on init: load `windows.json` if valid; else recover orphaned per-window
-    /// `windows/<id>.json` files into a fresh index when any are present (so a future schema bump that
-    /// invalidates the index doesn't lose the trees); else migrate from legacy `workspaces.json`; else
-    /// seed one empty window. Reopens the persisted open-set (never windowless — falls back to the
-    /// frontmost/first window).
+    /// Resolves the window set on init: a valid `windows.json`; else recover orphaned `windows/<id>.json`
+    /// files into a fresh index (so a schema bump invalidating the index doesn't lose the trees); else
+    /// migrate legacy `workspaces.json`; else seed one window. Reopens the persisted open-set, never
+    /// windowless — falls back to the frontmost/first window.
     private func bootstrap() {
         if let index = loadIndex() {
             windows = index.windows.map { WindowInfo(id: $0.id, name: $0.name) }
@@ -575,16 +567,13 @@ public final class WindowLibrary {
             reopen(index)
             return
         }
-        // index unreadable but per-window files survive: recover them rather than discard the user's
-        // sessions (a future schema bump that invalidates the index must not lose the trees).
         if recoverOrphanedWindows() { return }
         if migrateLegacy() { return }
-        // no index, no orphans, and no legacy file: seed one empty default-named window ("window 1").
         newWindow()
     }
 
-    /// Reads `windows.json`, treating a missing/corrupt/version-mismatched file as absent (nil),
-    /// so the caller falls through to migration/seeding.
+    /// Reads `windows.json`; a missing/corrupt/version-mismatched file reads as nil, so the caller falls
+    /// through to recovery/migration/seeding.
     private func loadIndex() -> WindowsIndex? {
         guard let data = try? Data(contentsOf: indexURL) else { return nil }
         guard let index = try? JSONDecoder().decode(WindowsIndex.self, from: data) else { return nil }
@@ -592,11 +581,9 @@ public final class WindowLibrary {
         return index
     }
 
-    /// Reopens the persisted open-set after loading the index: loads a store for each window
-    /// marked open. If none were open, opens the frontmost (else the first) so the app is never
-    /// windowless. The frontmost id is used only when it actually exists in `windows` — a stale
-    /// frontmost (pointing at a deleted window) would otherwise no-op `loadStore` and leave the app
-    /// windowless; in that case fall through to the first window.
+    /// Reopens the persisted open-set, falling back to the frontmost (else the first) so the app is never
+    /// windowless. The frontmost is used only when it still exists in `windows` — a stale id (a deleted
+    /// window) would no-op `loadStore` and leave the app windowless.
     private func reopen(_ index: WindowsIndex) {
         for entry in index.windows where entry.isOpen { loadStore(for: entry.id, launchRestore: true) }
         guard openIDs().isEmpty else { return }
@@ -605,43 +592,54 @@ public final class WindowLibrary {
         if let fallback { loadStore(for: fallback, launchRestore: true) }
     }
 
-    /// When `windows.json` is unreadable/version-mismatched but per-window `windows/<id>.json` files
-    /// survive, recovers them into a fresh index instead of falling through to legacy/seeding (which
-    /// would discard the user's sessions). Each file whose name stem is a valid UUID becomes an OPEN
-    /// window named "window N", numbered in filename order so the numbering and the frontmost pick are
-    /// deterministic; the first recovered window becomes frontmost. Files with a non-UUID stem are
-    /// skipped. Returns false when no recoverable per-window files exist (the caller then tries
-    /// legacy migration, else seeds). Recovering every orphan as open means the launch reopen-all
-    /// opens them all on screen at once — acceptable for this rare recovery path.
+    /// Recovers surviving `windows/<id>.json` files into a fresh index rather than falling through to
+    /// legacy/seeding, which would discard the user's sessions. Each UUID-stemmed file becomes an OPEN
+    /// window named "window N" in filename order, so numbering and the frontmost pick (the first) are
+    /// deterministic; non-UUID stems are skipped. False when nothing is recoverable. All orphans open means
+    /// the launch reopen-all puts them on screen at once — acceptable for this rare path.
     @discardableResult
     private func recoverOrphanedWindows() -> Bool {
         let contents = (try? FileManager.default.contentsOfDirectory(at: windowsDirectory,
                                                                      includingPropertiesForKeys: nil)) ?? []
-        // stable filename order so "window N" numbering and the frontmost pick are deterministic.
         let ids = contents
             .filter { $0.pathExtension == "json" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
             .compactMap { UUID(uuidString: $0.deletingPathExtension().lastPathComponent) }
         guard !ids.isEmpty else { return false }
         let infos = ids.enumerated().map { WindowInfo(id: $0.element, name: "window \($0.offset + 1)") }
-        // append ALL infos FIRST — loadStore(for:) guards on `windows.contains(id)`, so loading a
-        // store before the append would silently no-op.
+        // append ALL infos FIRST — `loadStore` guards on `windows.contains(id)` and would silently no-op.
         windows.append(contentsOf: infos)
-        for info in infos { loadStore(for: info.id, launchRestore: true) }
+        for info in infos {
+            guard let store = loadStore(for: info.id, launchRestore: true) else { continue }
+            // recovery cannot tell a deliberately-closed window's surviving file from one open at the
+            // loss (per-window snapshots carry no open marker), and a stale file — written by an older
+            // build, or an exit capture resurrected abnormally — may carry a command the user last saw
+            // closed. Drop the one-shot captures and persist; the sticky `session.restore` override
+            // stays armed (the user pinned it to fire on every restart).
+            // disarm the TRANSIENT slots: `loadStore` armed those, not the persisted fields, so clearing
+            // the latter here would leave every recovered window's capture live and replaying.
+            var stripped = false
+            for session in store.workspaces.flatMap(\.sessions)
+            where session.pendingForegroundCommand != nil || session.pendingSplitForegroundCommand != nil {
+                session.pendingForegroundCommand = nil
+                session.pendingSplitForegroundCommand = nil
+                stripped = true
+            }
+            if stripped { store.save() }
+        }
         frontmostWindowID = infos.first?.id
         saveIndex()
         return true
     }
 
-    /// If `windows.json` is absent but legacy `workspaces.json` exists, wraps it into one window
-    /// ("window 1"): writes the loaded snapshot to `windows/<id>.json` + the index marking it
-    /// open/frontmost, and opens it. Returns false (no migration) when no legacy file exists.
+    /// Wraps a legacy `workspaces.json` into one window ("window 1"): writes its snapshot to
+    /// `windows/<id>.json` + an index marking it open/frontmost, and opens it. False when no legacy file.
     @discardableResult
     private func migrateLegacy() -> Bool {
         let legacy = PersistenceStore(directory: directory, fileName: Self.legacyFileName)
         let snapshot = legacy.load()
         guard !snapshot.workspaces.isEmpty else { return false }
-        // first window, so `defaultWindowName` yields "window 1" (windows is empty at this point).
+        // windows is empty here, so `defaultWindowName` yields "window 1".
         let info = WindowInfo(name: defaultWindowName)
         let store = makeStore(for: info.id, persistence: persistenceStore(for: info.id))
         store.restore(from: snapshot, launchRestore: true)
@@ -655,12 +653,10 @@ public final class WindowLibrary {
 
     // MARK: - Helpers
 
-    /// The per-window persistence file `windows/<id>.json`.
     private func windowFileURL(for id: UUID) -> URL {
         windowsDirectory.appendingPathComponent("\(id.uuidString).json")
     }
 
-    /// A `PersistenceStore` pointed at the window's `windows/<id>.json` file.
     private func persistenceStore(for id: UUID) -> PersistenceStore {
         PersistenceStore(directory: windowsDirectory, fileName: "\(id.uuidString).json")
     }

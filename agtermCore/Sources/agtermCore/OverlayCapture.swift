@@ -1,5 +1,3 @@
-import Foundation
-
 /// Shared contract for overlay command exit-status capture.
 ///
 /// The real command and the status-file path are passed through environment variables so the wrapper

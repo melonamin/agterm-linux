@@ -88,9 +88,11 @@ extension AppController {
         gtk_window_set_transient_for(WIN(win), WIN(windowPointer))
         gtk_window_set_modal(WIN(win), 1)
         "Select".withCString { gtk_window_set_title(WIN(win), $0) }
-        gtk_window_set_default_size(WIN(win), 520, 380)
+        let panelSize = interfacePanelSize(width: 520, height: 380)
+        gtk_window_set_default_size(WIN(win), panelSize.0, panelSize.1)
 
         let box = op(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0))
+        gtk_widget_add_css_class(W(box), "agterm-interface-panel")
         let entry = op(gtk_search_entry_new())
         controlPickEntry = entry
         (pick.prompt ?? "Select…").withCString {
@@ -268,7 +270,7 @@ extension AppController {
         }
         guard gtk_window_is_active(WIN(windowPointer)) != 0 else { return }
         MainTimer.schedule(after: 0) { [weak self] in
-            self?.focusedSurface()?.grabFocus()
+            self?.sessionFocusTarget()?.grabFocus()
         }
     }
 }

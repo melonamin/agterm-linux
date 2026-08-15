@@ -1,15 +1,14 @@
 import Foundation
 import Observation
 
-/// A relative step through the flattened session list for keyboard navigation.
-/// `next`/`previous` step one and wrap around at the ends, `first`/`last` jump to a tree end.
-/// `nextAttention`/`previousAttention` step through only the sessions needing attention
-/// (status `blocked` or `completed`), wrapping around.
+/// A relative step through the flattened session list for keyboard navigation. `next`/`previous` step one
+/// and wrap, `first`/`last` jump to a tree end, `nextAttention`/`previousAttention` step (wrapping) through
+/// only the sessions needing attention — status `blocked` or `completed`.
 public enum SessionNavigation: Sendable { case next, previous, first, last, nextAttention, previousAttention }
 
 extension SessionNavigation {
-    /// Maps a control-channel direction string to a case. The CLI uses `prev`; the enum case is
-    /// `.previous`, so both spellings are accepted. Returns nil for an unknown string.
+    /// Maps a control-channel direction string to a case, nil for an unknown one. Both `prev` (the CLI's
+    /// spelling) and `previous` are accepted.
     public init?(wire: String) {
         switch wire {
         case "next": self = .next
@@ -23,71 +22,69 @@ extension SessionNavigation {
     }
 }
 
-/// The whole app state: the workspace tree and the current selection.
-///
-/// `@Observable @MainActor` so SwiftUI views observe mutations and all model
-/// access is main-actor isolated (implicitly `Sendable` via isolation). Selection
-/// is a single `Session.ID?` — workspace rows are non-selectable disclosure
-/// headers, so one id is enough; the owning workspace is derived.
+/// The whole app state: the workspace tree and the current selection. `@Observable @MainActor` so views
+/// observe mutations and all model access is main-actor isolated (implicitly `Sendable` via isolation).
+/// Selection is one `Session.ID?` — workspace rows are non-selectable headers, so the workspace is derived.
 @Observable
 @MainActor
 public final class AppStore {
     public var workspaces: [Workspace]
-    public var selectedSessionID: UUID?
+    /// A CHANGE here drops `freshWorkspaceID`: close, workspace removal, pending-close undo and Reopen
+    /// Closed Item all reselect by assigning directly, so centralizing it is what keeps a fresh workspace
+    /// from outliving a selection made outside `selectSession`. A same-value write must not, because
+    /// reselecting the already-active session is what `navigateSession` with one visible session and
+    /// `overlay open --follow` both do, and neither moves the user. `restore(from:)` clears explicitly —
+    /// it reloads state rather than selecting.
+    public var selectedSessionID: UUID? {
+        didSet {
+            if selectedSessionID != oldValue { freshWorkspaceID = nil }
+        }
+    }
 
-    /// Transient sidebar multi-selection. Not persisted: it is UI command state, while
-    /// `selectedSessionID` remains the durable active terminal target.
+    /// Transient sidebar multi-selection, not persisted — `selectedSessionID` stays the durable active target.
     var sidebarSelectionRaw: [UUID] = []
 
-    /// Whether this window's sidebar is shown. Per-window UI state, persisted in `Snapshot` (restored on
-    /// relaunch); the custom split owns visibility, so the toolbar button, the View menu item, the action
-    /// palette, and the `sidebar` control command all flip this one flag.
+    /// Whether this window's sidebar is shown; per-window state persisted in `Snapshot`. The custom split
+    /// owns visibility, so toolbar, View menu, palette and the `sidebar` command all flip this one flag.
     public var sidebarVisible = true
 
-    /// Which view this window's sidebar renders: the normal workspace tree or a flat list of the
-    /// flagged working-set. Per-window UI state, persisted in `Snapshot` (restored on relaunch);
-    /// flipped by the bottom-bar toggle, the View menu, the action palette, and the `sidebar.mode`
-    /// control command via `setSidebarMode(_:)`.
+    /// Which view this window's sidebar renders: the tree or the flat flagged working set. Per-window state
+    /// in `Snapshot`, flipped via `setSidebarMode(_:)` (bottom bar, View menu, palette, `sidebar.mode`).
     public var sidebarMode: SidebarMode = .tree
 
     /// The workspaces marked for the sidebar focus filter — the working set the tree renders when
-    /// `focusEnabled` is on (see `visibleWorkspaces`). Per-window UI state, persisted in `Snapshot`
-    /// (restored on relaunch); orthogonal to `sidebarMode` (flagged mode ignores focus). Mutated by the
-    /// workspace row menu, the View menu, the palette, and the `workspace.focus` control command via
-    /// `setFocusedWorkspace(_:)` / `setFocusMembership(_:member:)`. A member is pruned when its
-    /// workspace is removed. Read-only outside the module (`internal(set)`) so the invariant below can
-    /// only be broken from inside `agtermCore`, never by an app-target line writing the field directly.
+    /// `focusEnabled` is on (see `visibleWorkspaces`). Per-window state in `Snapshot`; orthogonal to
+    /// `sidebarMode` (flagged mode ignores focus). Mutated via `setFocusedWorkspace(_:)`/
+    /// `setFocusMembership(_:member:)` by the row menu, View menu, palette and `workspace.focus`; a member is
+    /// pruned when its workspace is removed. `internal(set)`, so no app-target line breaks the invariant below.
     public internal(set) var focusedWorkspaceIDs: Set<UUID> = []
 
-    /// Whether the focus filter applies, so a hand-curated set survives being switched off. Per-window
-    /// UI state, persisted in `Snapshot` (restored on relaunch), and `internal(set)` for the same reason
-    /// as the set above. Enabled with an EMPTY set is unrepresentable, which is what makes the FILTER-ON
-    /// half of the control row-visibility read-back (`ControlWorkspaceNode.focused`) exact: an applied
-    /// filter always has at least one visible member. (The filter-OFF half is `visibleWorkspaces`
-    /// returning the whole tree, which this invariant says nothing about.) Three guards hold it:
-    /// `setFocusEnabled(true)` is a no-op on an empty set (matching the bottom-bar toggle, disabled in
-    /// exactly that state), every mutator disables as the set empties (`setFocusMembership`,
-    /// `dropFocusMember`), and `restoreFocus(from:)` prunes ids absent from the restored tree, disabling
-    /// when the prune empties the set. Driven by the bottom-bar `focus-filter-toggle`, View ▸ Toggle
-    /// Workspace Filter, `BuiltinAction.toggleWorkspaceFilter`, and `workspace.filter`.
+    /// Whether the focus filter applies, so a hand-curated set survives being switched off. Per-window state
+    /// in `Snapshot`, `internal(set)` like the set above. Enabled with an EMPTY set is unrepresentable, which
+    /// makes the FILTER-ON half of the control row-visibility read-back (`ControlWorkspaceNode.focused`)
+    /// exact — an applied filter always has at least one visible member; the filter-OFF half
+    /// (`visibleWorkspaces` returning the whole tree) is outside the invariant. Three guards hold it:
+    /// `setFocusEnabled(true)` no-ops on an empty set (matching the bottom-bar toggle, disabled in exactly
+    /// that state), `setFocusMembership`/`dropFocusMember` disable as the set empties, and
+    /// `restoreFocus(from:)` prunes ids absent from the restored tree, disabling when that empties it. Driven
+    /// by the bottom-bar `focus-filter-toggle`, View ▸ Toggle Workspace Filter,
+    /// `BuiltinAction.toggleWorkspaceFilter`, and `workspace.filter`.
     public internal(set) var focusEnabled = false
 
-    /// This window's sidebar width in points. Per-window UI state, persisted in `Snapshot`. Driven by the
-    /// sidebar divider drag (clamped to `sidebarWidthMin...sidebarWidthMax`); restored on relaunch.
+    /// This window's sidebar width in points, persisted in `Snapshot`; drag-driven, clamped to the bounds below.
     public var sidebarWidth: Double = AppStore.sidebarWidthDefault
 
-    /// The sidebar width default and drag/restore bounds, shared by the view's divider drag and the
-    /// `restore()` clamp so the two can't drift (and a hand-edited snapshot can't drive an out-of-range frame).
+    /// Default + drag/restore bounds, shared by the divider drag and the `restore()` clamp so they can't drift.
     public static let sidebarWidthDefault: Double = 220
     public static let sidebarWidthMin: Double = 160
     public static let sidebarWidthMax: Double = 560
 
-    /// The persisted split-divider left-pane fraction bounds. The live capture skips degenerate extremes
-    /// outside this range and `restore()` clamps to it, so the on-disk ratio is always within bounds.
+    /// The persisted split-divider left-pane fraction bounds: live capture skips degenerate extremes outside
+    /// this range and `restore()` clamps to it, so the on-disk ratio is always within bounds.
     public static let splitRatioMin: Double = 0.05
     public static let splitRatioMax: Double = 0.95
-    /// The even split fraction a never-moved divider renders at (the `HSplitView` default); the base for a
-    /// relative `session.resize` when `Session.splitRatio` is still nil.
+    /// The even split a never-moved divider renders at (the `HSplitView` default); the base for a relative
+    /// `session.resize` while `Session.splitRatio` is nil.
     public static let splitRatioDefault: Double = 0.5
 
     /// Clamp a left-pane split fraction to `splitRatioMin...splitRatioMax`.
@@ -95,14 +92,12 @@ public final class AppStore {
         min(splitRatioMax, max(splitRatioMin, ratio))
     }
 
-    /// Most-recently-selected session ids, front = current. Drives the Ctrl-Tab switcher
-    /// (`items[1]` is the previous session). `@ObservationIgnored`: read imperatively by the
-    /// switcher, not by any SwiftUI view. Persisted in the snapshot so the switcher's order
-    /// survives a relaunch.
+    /// Most-recently-selected session ids, front = current; drives the Ctrl-Tab switcher (`items[1]` is the
+    /// previous). `@ObservationIgnored`, read imperatively; persisted so the order survives a relaunch.
     @ObservationIgnored public private(set) var sessionRecency = RecencyStack<UUID>()
 
-    /// The latest session/workspace close that can still be undone. The hidden sessions/workspaces live
-    /// in `pendingCloseRecords`; this observed summary is the host-free state the app target presents.
+    /// The latest undoable session/workspace close; the hidden items live in `pendingCloseRecords`, this
+    /// observed summary is the host-free state the app target presents.
     public var pendingCloseSummary: PendingCloseSummary?
 
     @ObservationIgnored var pendingCloseRecords: [UUID: PendingCloseRecord] = [:]
@@ -115,49 +110,42 @@ public final class AppStore {
     @ObservationIgnored let recentClosedStore: RecentClosedStore?
     @ObservationIgnored var recentClosedDidChange: (() -> Void)?
     @ObservationIgnored let controlEventSink: ((ControlEventDraft) -> Void)?
-    /// Coalesces the high-frequency selection/font saves: a click-storm or a font ramp schedules one
-    /// write ~0.3 s after the burst settles instead of hitting disk per event. `save()` cancels any
-    /// pending scheduled save, so the quit-flush (`saveAllOpen()` → `save()`) still captures the latest.
+    /// Coalesces the high-frequency selection/font saves: a click-storm or a font ramp writes once after the
+    /// burst settles instead of hitting disk per event.
     @ObservationIgnored private let saveDebouncer = Debouncer()
 
     /// The quiet window before a scheduled (selection/font) save writes to disk.
     private static let saveDebounceInterval: TimeInterval = 0.3
 
-    /// The idle timeout after which the window auto-jumps its selection to the oldest blocked session, or
-    /// nil when auto-follow is off (the default). Set by the Settings fan-out; read by `noteUserActivity`
-    /// (to arm the debouncer) and the control tree. `@ObservationIgnored`: read imperatively, no view reacts.
+    /// Idle timeout after which the window auto-jumps its selection to the oldest blocked session, nil when
+    /// auto-follow is off (the default). Set by the Settings fan-out; read imperatively by `noteUserActivity`
+    /// (arming the debouncer) and the control tree, so no view reacts.
     @ObservationIgnored var autoFollowTimeout: TimeInterval?
 
-    /// Whether auto-follow suppresses the jump while the current session is `active` (the opt-in "don't
-    /// auto-follow away from a running session" toggle). Default false. `@ObservationIgnored`.
+    /// Whether auto-follow suppresses the jump while the current session is `active` (opt-in, default false).
     @ObservationIgnored var autoFollowStayOnActive = false
 
-    /// The last time the user interacted with this window (a keystroke or a manual selection), stamped
-    /// unconditionally by `noteUserActivity` so the idle metric is independent of the feature being on.
-    /// nil until the first interaction. `@ObservationIgnored`: read imperatively (`idleMs`, the control
-    /// tree) and stamped at high frequency, so no view should react to it.
+    /// The last user interaction with this window (a keystroke or a manual selection), nil until the first.
+    /// Stamped unconditionally by `noteUserActivity`, so the idle metric is independent of the feature being
+    /// on. Stamped at high frequency and read imperatively, so no view may react to it.
     @ObservationIgnored var lastActivityAt: Date?
 
-    /// Coalesces user activity into a single deferred `autoFollowFire`: each `noteUserActivity` reschedules,
-    /// so the fire runs only once the user has been idle for `autoFollowTimeout`. `internal` (NOT private)
-    /// so `@testable` tests can drive its `flush()` seam.
+    /// Coalesces user activity into one deferred `autoFollowFire`: each `noteUserActivity` reschedules, so it
+    /// fires only after `autoFollowTimeout` of idle. `internal`, not private, for the tests' `flush()` seam.
     @ObservationIgnored let autoFollowDebouncer = Debouncer()
 
-    /// Coalesces the deferred re-arms the auto-follow status observer schedules into one per runloop turn,
-    /// mirroring `DockBadgeController.scheduleRefresh`: a single agent-status flip can fire several live
-    /// observation trackers at once, so this collapses them to one re-arm (and one re-registration).
-    /// `internal` only so the `AppStore+AutoFollow` extension (a separate file) can reach it.
+    /// Coalesces the auto-follow status observer's deferred re-arms into one re-arm (and re-registration) per
+    /// runloop turn, mirroring `DockBadgeController.scheduleRefresh`: one agent-status flip can fire several
+    /// live observation trackers at once. `internal` only for the `AppStore+AutoFollow` extension.
     @ObservationIgnored var autoFollowRearmScheduled = false
 
-    /// Non-zero while a non-terminal editor or transient overlay in this window owns first responder — the
-    /// sidebar inline-rename field or an open command palette. `autoFollowFire` no-ops while this is
-    /// positive, so an armed idle jump can't yank the selection out from under an in-progress rename or
-    /// reshuffle a palette's action target. A COUNT (not a bool) so the several independent suppressors can
-    /// overlap safely: each brackets itself with `suppressAutoFollow`/`resumeAutoFollow`, and a suppressor
-    /// lifting while another still holds keeps the jump suppressed. The app owns the first-responder
-    /// knowledge; the store just gates on the count. `internal` so the `AppStore+AutoFollow` extension can
-    /// read it; mutated only through the two public methods so the app target (a separate module) can't
-    /// desync it. `@ObservationIgnored`: read imperatively at fire time, no view reacts.
+    /// Non-zero while a non-terminal editor or transient overlay owns first responder (the sidebar rename
+    /// field, an open command palette): `autoFollowFire` no-ops while positive, so an armed idle jump can't
+    /// yank the selection out of an in-progress rename or reshuffle a palette's action target. A COUNT, not a
+    /// bool, so independent suppressors overlap safely — each brackets itself with `suppressAutoFollow`/
+    /// `resumeAutoFollow`, and one lifting while another holds keeps the jump suppressed. The app owns the
+    /// first-responder knowledge, the store only the count; `internal` for the `AppStore+AutoFollow` extension
+    /// and mutated only through the two public methods, so the app target cannot desync it.
     @ObservationIgnored var autoFollowSuppressionCount = 0
 
     public init(workspaces: [Workspace] = [], selectedSessionID: UUID? = nil,
@@ -179,10 +167,58 @@ public final class AppStore {
         return session(withID: selectedSessionID)
     }
 
-    /// The workspace a new session should land in: the selected session's workspace, else the
-    /// last workspace (nil when there are no workspaces). Drives both the bottom bar's add
-    /// actions and the File menu's New Session / Open Directory.
+    /// The workspace that holds the target without owning the selection: a FOREGROUND create, or a
+    /// `selectWorkspace` on an empty one, which has no session to select. Without it a new workspace is never
+    /// current (discussion #325): selection does not move on create, so Rename Workspace edited the previous
+    /// one and the next new session landed there too. Dropped by a selection CHANGE
+    /// (`selectedSessionID`'s observer, so a same-value write keeps it), by `selectWorkspace` naming a
+    /// workspace that HAS a session — which a same-value selection alone would not do — by removing the
+    /// workspace, by the focus filter hiding it, and by `restore(from:)`. A BACKGROUND create (`revealNewWorkspace: false`)
+    /// never sets it, so a script's create cannot steer the GUI's next add.
+    private var freshWorkspaceID: UUID?
+
+    /// Drops the fresh-workspace preference when that workspace is the one going away, so an Undo or Reopen
+    /// re-inserting the same id cannot revive it. Every removal path calls this; a reorder must not.
+    func forgetFreshWorkspace(_ workspaceID: UUID) {
+        if freshWorkspaceID == workspaceID { freshWorkspaceID = nil }
+    }
+
+    /// Makes `workspaceID` the current one and selects its first session when it has one. Both halves are
+    /// needed: the first session may already BE the selection, and a same-value write leaves the target
+    /// alone; an empty workspace has nothing to select at all, and reporting success while targeting
+    /// somewhere else is what made `workspace.select --target <empty>` a lie. Backs `workspace.select`.
+    @discardableResult
+    public func selectWorkspace(_ workspaceID: UUID) -> Bool {
+        guard let workspace = workspaces.first(where: { $0.id == workspaceID }) else { return false }
+        if let first = workspace.sessions.first {
+            selectSession(first.id)
+            freshWorkspaceID = nil
+            return true
+        }
+        // an empty workspace the filter hides would be a target with no row: reveal it, the same
+        // auto-reveal `addWorkspace` performs, so what is current is always on screen. the target itself
+        // is live state outside `snapshot()`, so only the widened set is worth a write.
+        let marked = focusedWorkspaceIDs
+        revealNewFocusMember(workspaceID)
+        freshWorkspaceID = workspaceID
+        if focusedWorkspaceIDs != marked { save() }
+        return true
+    }
+
+    /// Drops the target when the focus filter has hidden it, so turning the filter off later cannot make it
+    /// current again — hiding it hands targeting back for good. Called from the one focus commit point.
+    func forgetHiddenFreshWorkspace() {
+        guard let freshWorkspaceID else { return }
+        if !visibleWorkspaces.contains(where: { $0.id == freshWorkspaceID }) { self.freshWorkspaceID = nil }
+    }
+
+    /// The workspace a new session lands in: a freshly created one, else the selected session's, else the
+    /// last (nil when there are none). Drives the bottom bar's add actions, File ▸ New Session / Open
+    /// Directory / Rename Workspace, and resolves `active` for control-channel workspace targets.
     public var currentWorkspaceID: UUID? {
+        if let freshWorkspaceID, workspaces.contains(where: { $0.id == freshWorkspaceID }) {
+            return freshWorkspaceID
+        }
         if let selectedSessionID, let workspace = workspace(forSession: selectedSessionID) {
             return workspace.id
         }
@@ -226,16 +262,20 @@ public final class AppStore {
                                           cwd: session.effectiveCwd, title: session.oscTitle,
                                           active: session.id == activeID,
                                           split: session.isSplit,
+                                          hasSplit: session.hasSplit ? true : nil,
                                           splitRatio: session.hasSplit ? session.splitRatio : nil,
                                           splitFocused: session.hasSplit ? session.splitFocused : nil,
-                                          overlay: session.overlayActive,
-                                          overlaySizePercent: session.overlayActive ? session.overlaySizePercent : nil,
+                                          overlay: session.programOverlayActive,
+                                          overlaySizePercent: session.programOverlayActive
+                                              ? session.overlaySizePercent : nil,
+                                          paneOverlays: paneOverlays(session),
+                                          hud: hudNode(session),
                                           scratch: session.scratchActive, flagged: session.flagged,
                                           commandWait: (session.initialCommand != nil && session.commandWait) ? true : nil,
                                           foreground: foreground(session),
                                           splitForeground: splitForeground(session),
-                                          // the PERSISTED overrides, never the transient pending payloads,
-                                          // so a read after one fired still reports what stays pinned.
+                                          // the PERSISTED overrides, not the transient pending payloads, so
+                                          // a read after one fired still reports what stays pinned.
                                           restoreCommand: session.restoreCommand,
                                           splitRestoreCommand: session.splitRestoreCommand, status: status,
                                           statusPane: statusPane,
@@ -266,31 +306,50 @@ public final class AppStore {
                            pickPending: pickPending())
     }
 
-    /// Creates a workspace and appends it. When `revealNewWorkspace` (the default) and the focus filter is
-    /// ON, the new workspace JOINS the marked set so it is immediately visible — else `visibleWorkspaces`
-    /// would render only the existing members and silently hide it (the auto-reveal contract, like
-    /// `addSession`). Widening the set rather than clearing it keeps the rest of the working set filtered;
-    /// the user asked for this workspace, so mutating the set here is intentional.
-    /// Pass `revealNewWorkspace: false` to leave the filter untouched — a background
-    /// `session.new --no-select` create, which must not widen the view.
-    /// Pass `collapsed: true` to create it already collapsed in the sidebar (backs `workspace.new --collapsed`):
-    /// a runtime add defaults `isExpanded == true` and renders open, so a collapsed workspace can be built
-    /// and filled with `addSession(select: false)` without opening.
+    /// The tree's `paneOverlays`: the panes covered by their own overlay, omitted when neither is.
+    private func paneOverlays(_ session: Session) -> [String]? {
+        let panes = session.openPaneOverlays.map(\.rawValue)
+        return panes.isEmpty ? nil : panes
+    }
+
+    /// The tree's `hud`: the live panel's spec carrying the slot's EFFECTIVE size on BOTH axes and the
+    /// effective position, omitted when no HUD occupies the slot.
+    private func hudNode(_ session: Session) -> ControlHudNode? {
+        guard session.hudActive, let spec = session.hudSpec else { return nil }
+        return ControlHudNode(message: spec.message, detail: spec.detail,
+                              spinner: spec.spinner?.rawValue ?? HudSpinner.noneName,
+                              backgroundColor: spec.backgroundColor, textColor: spec.textColor,
+                              sizePercent: session.overlaySizePercent,
+                              heightPercent: session.hudHeightPercent, position: spec.position.rawValue)
+    }
+
+    /// Creates a workspace and appends it. With `revealNewWorkspace` (the default) and the filter ON, the new
+    /// workspace JOINS the marked set so it is immediately visible — the auto-reveal contract, like
+    /// `addSession`; widening rather than clearing keeps the rest filtered. `false` leaves the filter
+    /// untouched: a background `session.new --no-select` create must not widen the view. `collapsed: true`
+    /// (backing `workspace.new --collapsed`) starts it collapsed against the runtime default of expanded, so
+    /// it can be filled with `addSession(select: false)` unopened. `revealNewWorkspace` also decides
+    /// targeting: true makes this workspace `currentWorkspaceID` for as long as `freshWorkspaceID` holds it,
+    /// false leaves the target where it is. `ensureWorkspace(named:revealNewWorkspace:)` forwards both.
     @discardableResult
     public func addWorkspace(name: String, collapsed: Bool = false, revealNewWorkspace: Bool = true) -> Workspace {
-        let workspace = Workspace(name: name, isExpanded: !collapsed)
+        // the name feeds {AGT_WORKSPACE_NAME}; see TerminalText.
+        let workspace = Workspace(name: TerminalText.sanitized(name), isExpanded: !collapsed)
         workspaces.append(workspace)
-        if revealNewWorkspace { revealNewFocusMember(workspace.id) }
+        if revealNewWorkspace {
+            revealNewFocusMember(workspace.id)
+            freshWorkspaceID = workspace.id
+        }
         scheduleTreeChanged()
         save()
         return workspace
     }
 
-    /// The first workspace whose name exactly equals `name` (case-sensitive, trimmed), or nil when none
-    /// matches or `name` is blank. Backs `session.new --workspace-name` (addressing a workspace by its
-    /// sidebar label instead of an id).
+    /// The first workspace whose name exactly equals `name` (case-sensitive, trimmed); nil when none matches
+    /// or `name` is blank. Backs `session.new --workspace-name` (addressing by sidebar label, not id).
     public func workspace(named name: String) -> Workspace? {
-        guard let needle = name.trimmedOrNil else { return nil }
+        // the needle sanitizes like the stored names, or a raw control-char lookup misses its own workspace.
+        guard let needle = TerminalText.sanitized(name).trimmedOrNil else { return nil }
         return workspaces.first { $0.name == needle }
     }
 
@@ -298,20 +357,25 @@ public final class AppStore {
     /// is forwarded to `addWorkspace` on the create path. Nil only when blank. Backs `--workspace-name --create-workspace`.
     @discardableResult
     public func ensureWorkspace(named name: String, revealNewWorkspace: Bool = true) -> Workspace? {
-        guard let needle = name.trimmedOrNil else { return nil }
+        // sanitize before the blank check, so a control-char-only name reads as blank instead of appending
+        // an unmatchable empty-named workspace on every call.
+        guard let needle = TerminalText.sanitized(name).trimmedOrNil else { return nil }
         return workspace(named: needle) ?? addWorkspace(name: needle, revealNewWorkspace: revealNewWorkspace)
     }
 
-    /// Creates a session in the given workspace and, when `select` is true (the default), selects it;
-    /// `select: false` appends it in the background, leaving selection/focus/recency untouched (backs
-    /// `session.new --no-select`). An optional `name` seeds `customName` (trimmed; blank = the auto
-    /// basename, matching `renameSession`). `at` nil appends (default); `at` set inserts at the clamped
-    /// index (`0...count`), backing `session.new --after`/`--before`. Returns nil if no workspace matches.
+    /// Creates a session in the given workspace and selects it when `select` (the default); `select: false`
+    /// appends it in the background, leaving selection/focus/recency untouched (`session.new --no-select`).
+    /// `name` seeds `customName` (trimmed; blank = the auto basename, matching `renameSession`). `at` nil
+    /// appends, else inserts at the clamped index (`0...count`), backing `--after`/`--before`. Nil if no
+    /// workspace matches.
     @discardableResult
     public func addSession(toWorkspace workspaceID: UUID, cwd: String, command: String? = nil,
                            name: String? = nil, wait: Bool = false, at index: Int? = nil, select: Bool = true) -> Session? {
         guard let wsIndex = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return nil }
-        let session = Session(initialCwd: cwd, customName: name?.trimmedOrNil)
+        // cwd feeds {AGT_SESSION_PWD} through initialCwd → effectiveCwd until OSC 7 reports; name feeds
+        // {AGT_SESSION_NAME}. See TerminalText.
+        let session = Session(initialCwd: TerminalText.sanitized(cwd),
+                              customName: name.map(TerminalText.sanitized)?.trimmedOrNil)
         session.initialCommand = command
         session.commandWait = wait
         if let index {
@@ -320,7 +384,6 @@ public final class AppStore {
         } else {
             workspaces[wsIndex].sessions.append(session)
         }
-        // a background add (`session.new --no-select`) leaves selection/focus/recency untouched.
         if select {
             selectedSessionID = session.id
             disableFocusIfSelectionOutsideSet(session.id) // a control-driven add into another workspace must reveal it
@@ -331,15 +394,12 @@ public final class AppStore {
         return session
     }
 
-    /// Selects a session (or clears the selection when passed nil) and persists.
-    /// A non-nil id that matches no session is ignored, leaving the current
-    /// selection untouched; nil always deselects. Backs the sidebar's
-    /// `List(selection:)` so a click persists (debounced ~0.3 s) rather than waiting
-    /// for the next structural mutation. Visiting a session clears its unseen badge. An
-    /// `autoReset` agent indicator (the one-time `completed` flash) is reset to idle on
-    /// BOTH the session moved to (you've seen it) and the one moved from (it must not
-    /// persist once you leave it); a non-`autoReset` indicator (active/blocked) is left
-    /// untouched (keep-state). Returns the destination's pre-reset indicator so GUI callers can reveal its tagged pane consistently.
+    /// Selects a session (nil clears) and persists. A non-nil id matching no session is ignored, leaving the
+    /// current selection; nil always deselects. Backs the sidebar's `List(selection:)`, so a click persists
+    /// (debounced) rather than waiting for the next structural mutation, and clears the visited session's
+    /// unseen badge. An `autoReset` indicator (the one-time `completed` flash) must not persist once you leave
+    /// it, so it resets to idle on BOTH the session moved to and the one moved from; a non-`autoReset` one
+    /// (active/blocked) is untouched. Returns the destination's pre-reset indicator to reveal its tagged pane.
     @discardableResult
     public func selectSession(_ sessionID: UUID?, sidebarSelection selectionIDs: [UUID]? = nil) -> AgentIndicator? {
         if let sessionID, session(withID: sessionID) == nil { return nil }
@@ -353,28 +413,25 @@ public final class AppStore {
         }
         disableFocusIfSelectionOutsideSet(sessionID)
         if let sessionID { clearUnseen(sessionID) }
-        clearAutoResetIndicator(sessionID) // visit: you've seen it
-        clearAutoResetIndicator(previous)  // leave: a one-time status must not linger on the row you left
+        clearAutoResetIndicator(sessionID)
+        clearAutoResetIndicator(previous)
         recordRecency()
-        scheduleSave() // selection fires on every click/keystroke — coalesce the writes
+        scheduleSave()
         return destinationIndicator
     }
 
-    /// Reset a session's agent indicator to idle when it is marked `autoReset` (the one-time `completed`
-    /// flash). No-op for nil / an unknown id / a non-autoReset indicator.
+    /// Reset a session's indicator to idle when marked `autoReset`; no-op for nil, unknown, or non-autoReset.
     private func clearAutoResetIndicator(_ id: UUID?) {
         guard let id, let session = session(withID: id), session.agentIndicator.autoReset else { return }
         setAgentIndicator(AgentIndicator(), forSession: id)
     }
 
-    /// Clears a session's unseen-notification badge — it's been looked at. No-op for an unknown id.
-    /// Not persisted (the count is ephemeral), so it never triggers a `save()`.
+    /// Clears a session's unseen-notification badge; no-op for an unknown id, and never saves (ephemeral).
     public func clearUnseen(_ sessionID: UUID) {
         session(withID: sessionID)?.unseenCount = 0
     }
 
-    /// Pushes the current selection to the front of the recency stack (the Ctrl-Tab order).
-    /// No-op when nothing is selected.
+    /// Pushes the current selection to the front of the recency stack (the Ctrl-Tab order); no-op when none.
     func recordRecency() {
         if let selectedSessionID { sessionRecency.push(selectedSessionID) }
     }
@@ -383,9 +440,8 @@ public final class AppStore {
         sessionRecency.remove(id)
     }
 
-    /// Removes a session, tears down its surface, and — if it was the active
-    /// session — reselects the most-recently-active surviving session in scope
-    /// (see `closeReselectionTarget(after:)`), falling back to the positional neighbor.
+    /// Removes a session, tears down its surface, and — if it was active — reselects the most-recently-active
+    /// surviving session in scope (`closeReselectionTarget(after:)`), falling back to the positional neighbor.
     public func closeSession(_ sessionID: UUID) {
         guard let location = location(ofSession: sessionID) else { return }
         let wasActive = selectedSessionID == sessionID
@@ -397,7 +453,9 @@ public final class AppStore {
         removed.surface?.teardown()
         removed.splitSurface?.teardown()
         removed.overlaySurface?.teardown()
+        removed.teardownPaneOverlays()
         removed.scratchSurface?.teardown()
+        removed.discardHudBody() // a HUD whose surface never realized has no teardown to delete its body file
         WatermarkStorage.removeRenderedText(sessionID: sessionID) // drop any rendered .text PNG; the session is gone
         sessionRecency.remove(sessionID)
         if wasActive {
@@ -411,22 +469,18 @@ public final class AppStore {
         save()
     }
 
-    /// Whether a workspace may be removed: one workspace is always kept, so removal is
-    /// allowed only when more than one exists.
+    /// Whether a workspace may be removed: one is always kept, so only when more than one exists.
     public var canRemoveWorkspace: Bool { workspaces.count > 1 }
 
-    /// Removes a workspace and every session in it, tearing down each session's surfaces
-    /// and pruning them from the recency stack. No-ops unless more than one workspace
-    /// exists (the last one is kept). If the active session lived in the removed
-    /// workspace, reselects the first session of a remaining workspace (the one that
-    /// shifted into the removed slot, else the first non-empty workspace), or nil when
-    /// no sessions remain.
+    /// Removes a workspace and every session in it, tearing down their surfaces and pruning the recency
+    /// stack. No-ops unless more than one workspace exists (the last is kept). If the active session lived
+    /// there, `workspaceRemovalTarget(at:)` reselects the most recent still VISIBLE session, falling back to
+    /// the positional walk only when nothing is visible, nil when none remain.
     public func removeWorkspace(_ workspaceID: UUID) {
         guard canRemoveWorkspace, let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
         let workspace = workspaces[index]
         let removingActive = selectedSessionID.map { id in workspace.sessions.contains { $0.id == id } } ?? false
-        // the membership goes into the record BEFORE `dropFocusMember` below prunes it, so Reopen Closed
-        // Item can mark the workspace again
+        // record the membership BEFORE `dropFocusMember` below prunes it, so Reopen Closed Item can re-mark it
         recordRecentClosedWorkspace(workspace, selectedSessionID: removingActive ? selectedSessionID : nil,
                                     focusMember: focusedWorkspaceIDs.contains(workspaceID))
         for session in workspace.sessions { emitSessionClosed(session, workspace: workspace.id) }
@@ -435,16 +489,17 @@ public final class AppStore {
             session.surface?.teardown()
             session.splitSurface?.teardown()
             session.overlaySurface?.teardown()
+            session.teardownPaneOverlays()
             session.scratchSurface?.teardown()
+            session.discardHudBody() // a HUD whose surface never realized has no teardown to delete its body file
             WatermarkStorage.removeRenderedText(sessionID: session.id) // drop any rendered .text PNG; the session is gone
             sessionRecency.remove(session.id)
         }
         dropFocusMember(workspaceID) // a marked root is gone; the filter goes with the last member
         workspaces.remove(at: index)
+        forgetFreshWorkspace(workspaceID)
         if removingActive {
-            let fallbackIndex = min(index, workspaces.count - 1)
-            selectedSessionID = workspaces[fallbackIndex].sessions.first?.id
-                ?? workspaces.first(where: { !$0.sessions.isEmpty })?.sessions.first?.id
+            selectedSessionID = workspaceRemovalTarget(at: index)
             replaceSidebarSelection(with: selectedSessionID)
             disableFocusIfSelectionOutsideSet(selectedSessionID) // the reselected session may live outside the marked set
             recordRecency()
@@ -454,17 +509,13 @@ public final class AppStore {
         save()
     }
 
-    /// Moves a session to another workspace (or reorders within the same one),
-    /// keeping the **same** `Session` instance so its attached surface and live
-    /// shell survive. `index` is the destination position in the target's session
-    /// array **after** the move's removal (clamped to bounds); nil appends.
-    /// `selectedSessionID` is unaffected — the id is stable, so a moved active
-    /// session stays selected. No-ops if the session or target workspace is
-    /// unknown; a same-workspace move to the current slot leaves order unchanged.
-    /// Moving the **active** session out of the marked set suspends the focus
-    /// filter while KEEPING the set (`disableFocusIfSelectionOutsideSet`, the
-    /// auto-reveal contract — the active session must stay inside the visible
-    /// set); moving a non-active session leaves the filter intact.
+    /// Moves a session to another workspace (or reorders within one), keeping the **same** `Session` instance
+    /// so its attached surface and live shell survive. `index` is the destination position **after** the
+    /// move's removal (clamped); nil appends. `selectedSessionID` is unaffected — the id is stable. No-ops on
+    /// an unknown session or target workspace, and a same-workspace move to the current slot leaves order
+    /// unchanged. Moving the **active** session out of the marked set suspends the focus filter while KEEPING
+    /// the set (the auto-reveal contract: the active session must stay inside the visible set); a non-active
+    /// session leaves the filter intact.
     public func moveSession(_ sessionID: UUID, toWorkspace targetID: UUID, at index: Int? = nil) {
         guard let source = location(ofSession: sessionID) else { return }
         guard let targetIndex = workspaces.firstIndex(where: { $0.id == targetID }) else { return }
@@ -479,18 +530,16 @@ public final class AppStore {
         save()
     }
 
-    /// Moves selected sessions in their current tree order. With `index == nil`, a multi-session context
-    /// move appends cross-workspace sessions and leaves sessions already in the target in place; a
-    /// one-session call matches `moveSession` and appends even within that workspace. With an explicit
-    /// `index`, this is a drag drop: remove every dragged session first, then insert the dragged block at
-    /// that post-removal target index. Returns the number of sessions actually moved.
+    /// Moves selected sessions in their current tree order. With `index == nil`, a multi-session move appends
+    /// cross-workspace sessions and leaves those already in the target in place; a one-session call matches
+    /// `moveSession` and appends even within that workspace. With an explicit `index` (a drag drop), every
+    /// dragged session is removed first, then the block inserted at that post-removal index. Returns the count.
     @discardableResult
     public func moveSessions(_ sessionIDs: [UUID], toWorkspace targetID: UUID, at index: Int? = nil) -> Int {
         guard workspaces.contains(where: { $0.id == targetID }) else { return 0 }
         let before = workspaces.map { $0.sessions.map(\.id) }
         var movingIDs = orderedSessionIDs(matching: Set(sessionIDs))
-        // A one-element batch is wire-equivalent to `moveSession`: even within the destination
-        // workspace it moves to the end. Multi-selection context moves leave existing members in place.
+        // a one-element batch stays wire-equivalent to `moveSession`, so only multi-selection filters
         if index == nil, movingIDs.count > 1 {
             movingIDs = movingIDs.filter { workspace(forSession: $0)?.id != targetID }
         }
@@ -515,9 +564,8 @@ public final class AppStore {
         return moving.count
     }
 
-    /// Reorders a session one relative step within its own workspace (`up`/`down`/`top`/`bottom`),
-    /// reusing `moveSession` with the same workspace id. No-op (no write) on an unknown id or when
-    /// the move would leave order unchanged (already at the end in that direction).
+    /// Reorders a session one step within its own workspace (`up`/`down`/`top`/`bottom`) via `moveSession`.
+    /// No-op (no write) on an unknown id or when the move would leave order unchanged (already at that end).
     public func reorderSession(_ id: UUID, _ direction: ReorderDirection) {
         guard let loc = location(ofSession: id) else { return }
         let count = workspaces[loc.workspaceIndex].sessions.count
@@ -525,9 +573,8 @@ public final class AppStore {
         moveSession(id, toWorkspace: workspaces[loc.workspaceIndex].id, at: dest)
     }
 
-    /// Moves a workspace to `index` among its siblings, mirroring `moveSession`'s
-    /// remove/clamp/insert/save shape. `index` is the destination position **after**
-    /// the move's removal (clamped to bounds). No-op on an unknown id.
+    /// Moves a workspace to `index` among its siblings, mirroring `moveSession`'s remove/clamp/insert/save
+    /// shape; `index` is the destination position **after** the move's removal (clamped). No-op on unknown.
     public func moveWorkspace(_ id: UUID, at index: Int) {
         guard let current = workspaces.firstIndex(where: { $0.id == id }) else { return }
         let before = workspaces.map(\.id)
@@ -538,35 +585,29 @@ public final class AppStore {
         save()
     }
 
-    /// Reorders a workspace one relative step among its siblings (`up`/`down`/`top`/`bottom`),
-    /// reusing `moveWorkspace`. No-op (no write) on an unknown id or when the move would leave
-    /// order unchanged (already at the end in that direction).
+    /// Reorders a workspace one step among its siblings (`up`/`down`/`top`/`bottom`) via `moveWorkspace`.
+    /// No-op (no write) on an unknown id or when the move would leave order unchanged (already at that end).
     public func reorderWorkspace(_ id: UUID, _ direction: ReorderDirection) {
         guard let current = workspaces.firstIndex(where: { $0.id == id }) else { return }
         guard let dest = direction.destinationIndex(from: current, count: workspaces.count) else { return }
         moveWorkspace(id, at: dest)
     }
 
-    /// The owning workspace id, the session's index within it, and that workspace's session count, or
-    /// nil for an unknown id. Lets the sidebar drag handler resolve owner + index in a single tree walk
-    /// instead of re-deriving each piece, while feeding the host-free `SidebarDrop` resolver.
+    /// The owning workspace id, the session's index in it, and that workspace's session count; nil for an
+    /// unknown id. One tree walk for the sidebar drag handler, feeding the host-free `SidebarDrop` resolver.
     public func sessionLocation(ofSession id: UUID) -> (workspace: UUID, index: Int, count: Int)? {
         guard let loc = location(ofSession: id) else { return nil }
         let workspace = workspaces[loc.workspaceIndex]
         return (workspace.id, loc.sessionIndex, workspace.sessions.count)
     }
 
-    /// Steps the selection through the flattened VISIBLE/FILTERED session list (`navigableSessions`:
-    /// the flagged set in `.flagged` mode, the MARKED workspaces' sessions while the focus filter is
-    /// applied, else all), in the sidebar's visual order. `next`/`previous` move one and WRAP at the ends
-    /// WITHIN the filtered set (`next` on the last lands on the first, `previous` on the first lands on
-    /// the last, never leaking across the filter — matching the cyclic attention-nav below);
-    /// `first`/`last` jump to the ends of the filtered list.
-    /// With no/invalid current selection, `next`/`previous` land on its first
-    /// session. No-op when the filtered list is empty. Routes through `selectSession`, inheriting recency,
-    /// badge clearing, persistence, and workspace derivation. Because the targets are always in-set, nav
-    /// never triggers `disableFocusIfSelectionOutsideSet` — that stays the safety net for an explicit cross-set
-    /// select.
+    /// Steps the selection through the flattened VISIBLE/FILTERED session list in the sidebar's visual order
+    /// (`navigableSessions`: the flagged set in `.flagged` mode, the MARKED workspaces' sessions while the
+    /// focus filter is applied, else all). `next`/`previous` move one and WRAP WITHIN that set, never leaking
+    /// across the filter; `first`/`last` jump to its ends; with no/invalid selection `next`/`previous` land
+    /// on the first session. No-op on an empty list. Routes through `selectSession`, inheriting recency,
+    /// badge clearing, persistence and workspace derivation. Targets are always in-set, so nav never triggers
+    /// `disableFocusIfSelectionOutsideSet` — that stays the safety net for an explicit cross-set select.
     @discardableResult
     public func navigateSession(_ direction: SessionNavigation) -> AgentIndicator? {
         let sessions = navigableSessions
@@ -581,7 +622,7 @@ public final class AppStore {
                 let step = direction == .next ? 1 : -1
                 target = ids[((i + step) % ids.count + ids.count) % ids.count] // cycle within the filtered set
             } else {
-                target = first // no/invalid selection -> first
+                target = first
             }
         case .nextAttention, .previousAttention:
             guard let found = attentionTarget(in: sessions, forward: direction == .nextAttention) else { return nil }
@@ -590,10 +631,10 @@ public final class AppStore {
         return selectSession(target)
     }
 
-    /// The next/previous session needing attention (status `blocked` or `completed`) in the flattened
-    /// order, scanning from the current selection and WRAPPING around. The current session is excluded,
-    /// so repeated steps cycle through the others. With no/invalid selection the scan starts from the
-    /// tree end opposite the direction. Returns nil when no other attention session exists (a no-op).
+    /// The next/previous session needing attention (`blocked`/`completed`) in the flattened order, scanning
+    /// from the current selection and WRAPPING; the current session is excluded, so repeated steps cycle
+    /// through the others. With no/invalid selection the scan starts from the tree end opposite the
+    /// direction. Nil (a no-op) when no other attention session exists.
     private func attentionTarget(in sessions: [Session], forward: Bool) -> UUID? {
         let ids = sessions.map(\.id)
         let count = ids.count
@@ -609,20 +650,16 @@ public final class AppStore {
         return nil
     }
 
-    /// Records a session's terminal font size (points) and persists it. No-ops when
-    /// unchanged so the cell-size event firing on a DPI change (not a font change)
-    /// doesn't write. The save is debounced (~0.3 s) so a font ramp (held ⌘+/⌘−)
-    /// coalesces into one write instead of hitting disk per step.
+    /// Records a session's terminal font size (points) and persists it, debounced so a held ⌘+/⌘− ramp
+    /// coalesces into one write. No-ops when unchanged, so a DPI-change cell-size event doesn't write.
     public func setFontSize(_ sessionID: UUID, _ size: Double) {
         guard let session = session(withID: sessionID), session.fontSize != size else { return }
         session.fontSize = size
         scheduleSave()
     }
 
-    /// Clears every session's per-session font-size override (back to the app default). Called
-    /// when an appearance change is applied: the shared ghostty `update_config` resets all live
-    /// surfaces to the default size, so the persisted overrides are cleared to match. No-ops (no
-    /// write) when nothing was overridden.
+    /// Clears every per-session font-size override (no write when none was set). Called on an appearance
+    /// change: the shared ghostty `update_config` resets live surfaces to the default, so the pins must match.
     public func resetSessionFontSizes() {
         var changed = false
         for workspace in workspaces {
@@ -634,16 +671,14 @@ public final class AppStore {
         if changed { save() }
     }
 
-    /// Sets this window's sidebar visibility and persists it. Clean no-op (no write) when unchanged, so
-    /// menu, toolbar, palette, and control callers can delta-compute their desired state without
-    /// duplicating the persistence gate. `sidebarVisible` is per-window state saved in this store's
-    /// snapshot.
+    /// Sets this window's sidebar visibility and persists it. Clean no-op (no write) when unchanged, so menu,
+    /// toolbar, palette and control callers need not duplicate the persistence gate.
     public func setSidebarVisible(_ visible: Bool) {
         guard sidebarVisible != visible else { return }
         sidebarVisible = visible
         save()
-        // refresh the app-target ControlServer's window.list cache: a GUI-only toggle isn't a control
-        // command, so without this the cached sidebarVisible would lag until the next command.
+        // refresh ControlServer's window.list cache: a GUI-only toggle is no control command, so the cached
+        // sidebarVisible would lag until the next one.
         NotificationCenter.default.post(name: .agtermSidebarVisibilityChanged, object: nil)
     }
 
@@ -652,30 +687,29 @@ public final class AppStore {
         setSidebarVisible(!sidebarVisible)
     }
 
-    /// Sets the sidebar mode and persists it. Clean no-op (no write) when the mode is unchanged, so the
-    /// delta-computed control/menu callers stay idempotent.
+    /// Sets the sidebar mode and persists it; clean no-op when unchanged, so delta-computed control/menu
+    /// callers stay idempotent. BOTH flips reselect when they would hide the active session.
     public func setSidebarMode(_ mode: SidebarMode) {
         guard sidebarMode != mode else { return }
         sidebarMode = mode
         pruneSidebarSelection()
+        reselectIfSelectionHidden()
         save()
     }
 
-    /// Sets one workspace's expand/collapse state and persists it. Clean no-op (no write) for an unknown id
-    /// or when unchanged. The sidebar calls this for a GENUINE per-row user toggle only (a row click or the
-    /// disclosure triangle), never for a programmatic reveal — so a deliberate collapse survives a later
-    /// reveal of a session inside the workspace, and toggling one workspace never touches another's saved
-    /// state (unlike `setWorkspacesExpanded`, which rewrites the whole tree).
+    /// Sets one workspace's expand/collapse state and persists it; clean no-op for an unknown id or when
+    /// unchanged. The sidebar calls this for a GENUINE per-row user toggle only (a row click or the
+    /// disclosure triangle), never a programmatic reveal, so a deliberate collapse survives a later reveal of
+    /// a session inside it and never touches another workspace's state (unlike `setWorkspacesExpanded`).
     public func setWorkspaceExpanded(_ id: UUID, expanded: Bool) {
         guard let index = workspaces.firstIndex(where: { $0.id == id }), workspaces[index].isExpanded != expanded else { return }
         workspaces[index].isExpanded = expanded
         save()
     }
 
-    /// Marks each workspace expanded iff its id is in `expandedIDs` and persists the collapse state so it
-    /// survives a relaunch. One `save()` for the whole diff; a clean no-op (no write) when nothing changed.
-    /// Backs the deliberate all-workspace commands (Expand Workspaces / Collapse Workspaces), which set
-    /// every workspace at once; per-row toggles use `setWorkspaceExpanded` instead.
+    /// Marks each workspace expanded iff its id is in `expandedIDs`, one `save()` for the whole diff and no
+    /// write when nothing changed. Backs Expand / Collapse Workspaces, which set every workspace at once;
+    /// per-row toggles use `setWorkspaceExpanded` instead.
     public func setWorkspacesExpanded(_ expandedIDs: Set<UUID>) {
         var changed = false
         for index in workspaces.indices {
@@ -688,13 +722,15 @@ public final class AppStore {
         if changed { save() }
     }
 
-    /// Sets (or clears) a session's flag — the durable flagged working-set membership the flat sidebar
-    /// view projects. Persists the change. Clean no-op (no write) for an unknown id or when the flag is
-    /// already in the requested state, so the delta-computed control/menu callers stay idempotent.
+    /// Sets (or clears) a session's flag — the durable flagged working-set membership the flat sidebar view
+    /// projects — and persists. Clean no-op for an unknown id or a matching flag, so delta-computed callers
+    /// stay idempotent. Unflagging narrows in `.flagged` mode (dropping the row rendering the active session),
+    /// hence `reselectIfSelectionHidden`; in tree mode it only repairs a selection stranded by something else.
     public func setFlag(_ on: Bool, forSession id: UUID) {
         guard let session = session(withID: id), session.flagged != on else { return }
         session.flagged = on
         pruneSidebarSelection()
+        reselectIfSelectionHidden()
         save()
     }
 
@@ -711,24 +747,23 @@ public final class AppStore {
         }
         if changed {
             pruneSidebarSelection()
+            reselectIfSelectionHidden() // the batch can unflag the active session too
             save()
         }
     }
 
-    /// Sets (or clears) a session's background watermark and persists it. Clean no-op (no write) for an
-    /// unknown id or when the spec is unchanged, so a repeated `session.background` set is idempotent.
-    /// Returns whether the spec actually CHANGED, so the app target can gate the (retained, teardown-only-
-    /// freed) per-surface config apply on a real change — without it, a scripted set-loop keeps appending
-    /// owned configs. The app target applies it to the session's surface(s) after this returns (the
-    /// host-free store owns only the spec; the C-boundary apply lives in `ControlServer`/`GhosttySurfaceView`).
+    /// Sets (or clears) a session's background watermark and persists it; clean no-op for an unknown id or an
+    /// unchanged spec, so a repeated `session.background` is idempotent. Returns whether the spec CHANGED, so
+    /// the app target can gate its (retained, teardown-only-freed) per-surface config apply on a real change
+    /// — without that a scripted set-loop keeps appending owned configs. The store owns only the spec; the
+    /// C-boundary apply lives app-side in `ControlServer`/`GhosttySurfaceView`.
     @discardableResult
     public func setBackgroundWatermark(_ watermark: BackgroundWatermark?, forSession id: UUID) -> Bool {
         guard let session = session(withID: id), session.backgroundWatermark != watermark else { return false }
         let previous = session.backgroundWatermark
         session.backgroundWatermark = watermark
-        // a `.text` watermark owns a rendered `<id>.png`; switching to anything that isn't `.text` (an
-        // image, or nil) leaves it id-keyed but unreferenced, so drop it here. `clear`/teardown also sweep
-        // the same id-keyed file, so this is just the eager reclaim for the text→image/nil transition.
+        // a `.text` watermark owns a rendered `<id>.png`; switching away leaves it unreferenced. `clear` and
+        // teardown sweep the same file, so this is only the eager reclaim for text→image/nil.
         if previous?.kind == .text, watermark?.kind != .text {
             WatermarkStorage.removeRenderedText(sessionID: id)
         }
@@ -736,8 +771,9 @@ public final class AppStore {
         return true
     }
 
-    /// Unflags every session across all workspaces in one `save()`. No-ops (no write) when nothing is
-    /// flagged. Backs the Clear Flagged action and the `session.flag clear` control mode.
+    /// Unflags every session in one `save()`; no write when nothing is flagged. Backs Clear Flagged and the
+    /// `session.flag clear` control mode. No `reselectIfSelectionHidden`, unlike the `setFlag` mutators:
+    /// clearing EVERY flag leaves the list empty, so there is nowhere to move — a partial clear would need it.
     public func clearFlags() {
         var changed = false
         for workspace in workspaces {
@@ -752,53 +788,26 @@ public final class AppStore {
         }
     }
 
-    /// The flagged sessions across all workspaces in tree order (`workspaces.flatMap(\.sessions)` filtered
-    /// by `flagged`). A pure derived projection — the flat sidebar view renders this directly.
+    /// The flagged sessions across all workspaces in tree order — the projection the flat sidebar renders.
     public var flaggedSessions: [Session] {
         workspaces.flatMap(\.sessions).filter(\.flagged)
     }
 
     // MARK: - Persistence
 
-    /// Builds a `Snapshot` value of the current tree. Each session captures its
-    /// live `currentCwd` (or `initialCwd` if no PWD report has arrived). Runs on
-    /// `@MainActor`; the resulting value is `Sendable` and safe to hand to a writer.
-    public func snapshot() -> Snapshot {
-        let workspaceSnapshots = workspaces.map { workspace in
-            let sessions = workspace.sessions.map(sessionSnapshot)
-            // only a collapsed workspace writes the flag; an expanded one omits it (nil) so an all-expanded
-            // tree serializes identically to a legacy snapshot.
-            return WorkspaceSnapshot(id: workspace.id, name: workspace.name, sessions: sessions,
-                                     collapsed: workspace.isExpanded ? nil : true)
-        }
-        // the marked set in TREE order, so the on-disk list is deterministic rather than following the
-        // Set's hash order; an unmarked store omits both focus keys, keeping its file identical to one
-        // written before the set existed. The legacy `focusedWorkspaceID` is never populated.
-        let focusIDs = workspaces.map(\.id).filter(focusedWorkspaceIDs.contains)
-        return Snapshot(selectedSessionID: selectedSessionID, workspaces: workspaceSnapshots,
-                        sidebarWidth: sidebarWidth, sidebarVisible: sidebarVisible, sidebarMode: sidebarMode,
-                        focusedWorkspaceIDs: focusIDs.isEmpty ? nil : focusIDs,
-                        focusEnabled: focusEnabled ? true : nil,
-                        sessionRecency: sessionRecency.items)
-    }
-
-    /// Rebuilds the tree from a snapshot: fresh `Session`s (surfaces and shells
-    /// spawn lazily on first display) keyed by the persisted ids so the restored
-    /// `selectedSessionID` still resolves. Replaces the current state wholesale.
-    ///
-    /// Deliberately does NOT call `save()`: it loads what was just read from disk,
-    /// so re-persisting it would be a pointless write (and the only mutator that
-    /// skips `save()` for that reason). If the persisted `selectedSessionID` points
-    /// at a session that no longer exists, it is cleared to keep selection valid.
-    ///
-    /// `launchRestore` marks an APP-BOOTSTRAP restore and is threaded down to `session(from:launchRestore:)`,
-    /// where it is the only thing that arms a persisted `session.restore` override for this launch. It
-    /// defaults to false because this method has a RUNTIME caller too: reopening a closed window
-    /// mid-process reloads its store through here, and that must not execute anything.
+    /// Rebuilds the tree from a snapshot: fresh `Session`s (surfaces and shells spawn lazily on first
+    /// display) keyed by the persisted ids so the restored `selectedSessionID` still resolves, replacing the
+    /// current state wholesale. A persisted selection pointing at a session that no longer exists is cleared.
+    /// Deliberately does NOT call `save()` — it loads what was just read from disk; the closing
+    /// `reselectIfSelectionHidden` is the exception, since repairing a stranded selection is worth writing.
+    /// `launchRestore` marks an APP-BOOTSTRAP restore, the only thing that arms anything executable — a
+    /// persisted `session.restore` override and the captured `foregroundCommand`/`splitForegroundCommand`.
+    /// It defaults to false because reopening a closed window mid-process reloads its store through here,
+    /// and that RUNTIME caller must not execute anything.
     public func restore(from snapshot: Snapshot, launchRestore: Bool = false) {
-        // fold workspaces sharing an id into the first occurrence, and keep only the first snapshot of any
-        // repeated session id, wherever it sits: a file written by a build that could duplicate either
-        // stays unreachable past the first match otherwise, and re-saves the corruption.
+        freshWorkspaceID = nil // live create-time state, never restored from disk
+        // fold duplicate workspace ids into the first occurrence and keep only the first snapshot of a
+        // repeated session id, else the rest stay unreachable past the first match and get re-saved.
         var seenSessionIDs: Set<UUID> = []
         workspaces = snapshot.workspaces.reduce(into: [Workspace]()) { restored, workspaceSnapshot in
             let sessions = workspaceSnapshot.sessions
@@ -824,28 +833,25 @@ public final class AppStore {
             selectedSessionID = snapshot.selectedSessionID
         }
         replaceSidebarSelection(with: selectedSessionID)
-        // re-seed the Ctrl-Tab order from the persisted list (dropping ids not in the restored
-        // tree) so the switcher works right after relaunch; the restored selection floats to the
-        // front, keeping the "previous session" slot truthful.
+        // re-seed the Ctrl-Tab order from the persisted list (dropping ids not in the restored tree); the
+        // restored selection floats to the front, keeping the "previous session" slot truthful.
         let restoredIDs = Set(workspaces.flatMap(\.sessions).map(\.id))
         sessionRecency = RecencyStack(items: (snapshot.sessionRecency ?? []).filter { restoredIDs.contains($0) })
         recordRecency()
+        // LAST, after the recency stack is re-seeded: the pick is MRU, so earlier finds an empty stack.
+        reselectIfSelectionHidden()
     }
 
-    /// Persists the current state eagerly. Called after every structural mutation and on
-    /// terminate. Cancels any pending debounced save first, so a `save()` (incl. the
-    /// quit-flush) always writes the latest snapshot and a stale scheduled write can't
-    /// fire afterward. A write failure is logged and swallowed — a transient disk error
-    /// must not bring down the model.
+    /// Persists the current state eagerly, after every structural mutation and on terminate. Cancels any
+    /// pending debounced save first, so a `save()` (incl. the quit-flush) writes the latest snapshot and no
+    /// stale write fires afterward. A failure is logged and swallowed — a disk error must not kill the model.
     public func save() {
         saveChecked()
     }
 
-    /// `save()` that REPORTS whether the write landed instead of swallowing the failure, for a caller
-    /// whose acknowledgement must not outrun the disk. `setRestoreCommand` is the one today: its payload
-    /// is an arbitrary shell line re-typed on every launch, so a "cleared" ack that never reached disk
-    /// would leave the old command armed forever. `save()` is this with the result discarded, so the two
-    /// can't drift.
+    /// `save()` that REPORTS whether the write landed, for a caller whose acknowledgement must not outrun the
+    /// disk. `setRestoreCommand` is the one today: a "cleared" ack that never reached disk would leave the
+    /// old shell line armed on every launch. `save()` is this with the result discarded, so they can't drift.
     @discardableResult
     func saveChecked() -> Bool {
         saveDebouncer.cancel()
@@ -858,20 +864,17 @@ public final class AppStore {
         }
     }
 
-    /// Debounces a `save()` ~0.3 s out, coalescing the rapid selection/font writes. Used only by
-    /// `selectSession`/`setFontSize`; structural mutations call `save()` immediately. A `save()`
-    /// (or the quit-flush) cancels the pending schedule, so the latest state is always captured.
+    /// Debounces a `save()`, coalescing the rapid selection/font writes; used only by
+    /// `selectSession`/`setFontSize`, while structural mutations call `save()` immediately.
     private func scheduleSave() {
         saveDebouncer.schedule(after: AppStore.saveDebounceInterval) { [weak self] in
             self?.save()
         }
     }
 
-    /// Drops any pending debounced save WITHOUT writing — unlike `save()`, which cancels then writes.
-    /// Used when the owning window is being deleted (`WindowLibrary.removeWindow`): the per-window file
-    /// is about to be removed, so a save scheduled by a just-before-delete selectSession/setFontSize
-    /// must be dropped rather than flushed, else it would fire after the file is deleted and re-create
-    /// it as an orphan.
+    /// Drops any pending debounced save WITHOUT writing, unlike `save()`, which cancels then writes. Used when
+    /// the owning window is being deleted (`WindowLibrary.removeWindow`): a save scheduled just before the
+    /// delete must be dropped, else it fires afterward and re-creates the per-window file as an orphan.
     public func cancelPendingSave() {
         saveDebouncer.cancel()
     }
@@ -907,9 +910,8 @@ public final class AppStore {
         workspaces.flatMap(\.sessions).map(\.id).filter { ids.contains($0) }
     }
 
-    /// Picks the next selection after removing the session at `location`. Prefers
-    /// the session that shifted into the removed slot, then the previous one in
-    /// that workspace, then the first session of any remaining workspace.
+    /// Picks the next selection after removing the session at `location`: the session that shifted into the
+    /// removed slot, else the previous one in that workspace, else the first session of any remaining one.
     func reselectionTarget(after location: (workspaceIndex: Int, sessionIndex: Int)) -> UUID? {
         let sessions = workspaces[location.workspaceIndex].sessions
         if location.sessionIndex < sessions.count { return sessions[location.sessionIndex].id }
@@ -920,62 +922,6 @@ public final class AppStore {
             if let first = workspace.sessions.first { return first.id }
         }
         return nil
-    }
-
-    func sessionSnapshot(_ session: Session) -> SessionSnapshot {
-        SessionSnapshot(id: session.id, customName: session.customName, cwd: session.currentCwd ?? session.initialCwd,
-                        isSplit: session.isSplit, fontSize: session.fontSize,
-                        splitCwd: session.splitCwd ?? session.initialSplitCwd, splitRatio: session.splitRatio,
-                        flagged: session.flagged,
-                        foregroundCommand: session.foregroundCommand,
-                        splitForegroundCommand: session.splitForegroundCommand,
-                        initialCommand: session.initialCommand, commandWait: session.commandWait ? true : nil,
-                        backgroundWatermark: session.backgroundWatermark,
-                        restoreCommand: session.restoreCommand,
-                        splitRestoreCommand: session.splitRestoreCommand)
-    }
-
-    func workspaceSnapshot(_ workspace: Workspace) -> WorkspaceSnapshot {
-        WorkspaceSnapshot(id: workspace.id, name: workspace.name, sessions: workspace.sessions.map(sessionSnapshot),
-                          collapsed: workspace.isExpanded ? nil : true)
-    }
-
-    /// Rebuilds one session from its snapshot. `launchRestore` marks an APP-BOOTSTRAP restore, the only
-    /// path allowed to arm a persisted `restoreCommand` override for this launch by copying it into the
-    /// transient `pendingRestoreCommand` the surface factory consumes; it defaults to false so any other
-    /// rebuild (a mid-process window reload, Reopen Closed Item) comes back with nothing armed.
-    ///
-    /// A split hidden at the last quit is NOT rebuilt (`hasSplit` follows `isSplit`), so its pinned
-    /// override describes a pane that no longer exists: it is DROPPED here, the same rule `closeSplit`
-    /// applies when the pane goes away. Keeping it would leave a value `tree` reports but no write can
-    /// clear (`session.restore --pane right` is rejected without a split), and a fresh ⌘D split shown at
-    /// the next quit would inherit and run it.
-    func session(from snapshot: SessionSnapshot, launchRestore: Bool = false) -> Session {
-        let session = Session(id: snapshot.id, initialCwd: snapshot.cwd, customName: snapshot.customName)
-        session.isSplit = snapshot.isSplit ?? false
-        session.hasSplit = session.isSplit
-        session.fontSize = snapshot.fontSize
-        session.initialSplitCwd = snapshot.splitCwd
-        session.splitRatio = snapshot.splitRatio.map { min(AppStore.splitRatioMax, max(AppStore.splitRatioMin, $0)) }
-        session.flagged = snapshot.flagged ?? false
-        session.foregroundCommand = snapshot.foregroundCommand
-        session.splitForegroundCommand = snapshot.splitForegroundCommand
-        session.initialCommand = snapshot.initialCommand
-        session.commandWait = snapshot.commandWait ?? false
-        session.wasRestored = true
-        session.backgroundWatermark = snapshot.backgroundWatermark
-        session.restoreCommand = snapshot.restoreCommand
-        session.splitRestoreCommand = session.isSplit ? snapshot.splitRestoreCommand : nil
-        if launchRestore {
-            session.pendingRestoreCommand = snapshot.restoreCommand
-            if session.isSplit { session.pendingSplitRestoreCommand = session.splitRestoreCommand }
-        }
-        return session
-    }
-
-    func workspace(from snapshot: WorkspaceSnapshot) -> Workspace {
-        Workspace(id: snapshot.id, name: snapshot.name, sessions: snapshot.sessions.map { session(from: $0) },
-                  isExpanded: !(snapshot.collapsed ?? false))
     }
 
 }

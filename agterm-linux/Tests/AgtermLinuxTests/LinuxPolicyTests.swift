@@ -185,7 +185,47 @@ struct LinuxPolicyTests {
         #expect(LinuxSurfaceRole.overlay.notificationPane == .overlay)
         #expect(LinuxSurfaceRole.scratch.notificationPane == .overlay)
         #expect(LinuxSurfaceRole.quick.notificationPane == nil)
+        #expect(LinuxSurfaceRole.overlay.notificationPane(liveOverlayPane: .left) == .main)
+        #expect(LinuxSurfaceRole.overlay.notificationPane(liveOverlayPane: .right) == .split)
+        #expect(LinuxSurfaceRole.overlay.notificationPane(liveOverlayPane: nil) == .overlay)
         #expect(LinuxSurfaceRole.scratch.statusPane == .scratch)
+    }
+
+    @Test("HUD presentation is passive while program overlays remain interactive")
+    @MainActor
+    func floatingOverlayInputPolicy() {
+        #expect(!AppController.floatingOverlayTargetable(isHud: true))
+        #expect(AppController.floatingOverlayTargetable(isHud: false))
+        #expect(!AppController.floatingOverlayFocusable(isHud: true))
+        #expect(AppController.floatingOverlayFocusable(isHud: false))
+        #expect(AppController.floatingFrameOpacity(quickVisible: true, dimmed: 0.55) == 0.55)
+        #expect(AppController.floatingFrameOpacity(quickVisible: false, dimmed: 0.55) == 1)
+    }
+
+    @Test("HUD geometry refreshes once per positive deck allocation")
+    @MainActor
+    func hudGeometryRefreshPolicy() {
+        #expect(!AppController.hudGeometryNeedsRefresh(previous: nil, width: 0, height: 400))
+        #expect(AppController.hudGeometryNeedsRefresh(previous: nil, width: 640, height: 400))
+        #expect(!AppController.hudGeometryNeedsRefresh(previous: (640, 400), width: 640, height: 400))
+        #expect(AppController.hudGeometryNeedsRefresh(previous: (640, 400), width: 600, height: 400))
+    }
+
+    @Test("HUD layout uses the stable session font before settings or defaults")
+    @MainActor
+    func hudFontPolicy() {
+        #expect(AppController.hudFontSize(sessionFontSize: 17, settingsFontSize: 15) == 17)
+        #expect(AppController.hudFontSize(sessionFontSize: nil, settingsFontSize: 15) == 15)
+        #expect(AppController.hudFontSize(sessionFontSize: nil, settingsFontSize: nil)
+                == DashboardLayout.ghosttyDefaultFontSize)
+    }
+
+    @Test("deferred workspace row clicks re-read the current setting")
+    @MainActor
+    func workspaceRowTogglePolicy() {
+        #expect(AppController.workspaceRowToggleEnabled(nil))
+        #expect(AppController.workspaceRowToggleEnabled(true))
+        #expect(!AppController.workspaceRowToggleEnabled(false))
     }
 
     @Test("pane identities coalesce independently and stale reveal panes fall back safely")

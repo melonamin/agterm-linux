@@ -20,6 +20,7 @@ fi
 
 BIN="$APP/.build/release/AgtermLinux"
 CTL="$APP/.build/release/agtermctl-linux"
+APP_RESOURCES="$APP/.build/release/agterm-linux_AgtermLinux.resources"
 [[ -f "$BIN" ]] || {
   echo "no agterm-linux release build found — run 'swift build -c release' in agterm-linux/ first" >&2
   exit 1
@@ -28,12 +29,17 @@ CTL="$APP/.build/release/agtermctl-linux"
   echo "no agtermctl-linux release build found — run 'swift build -c release' in agterm-linux/ first" >&2
   exit 1
 }
+[[ -r "$APP_RESOURCES/hud/hud.sh" ]] || {
+  echo "no agterm-linux resource bundle found — run 'swift build -c release' in agterm-linux/ first" >&2
+  exit 1
+}
 
 "$ROOT/scripts/verify-linux-resources.sh" "$APP/vendor/ghostty/share"
 
 mkdir -p "$DEST/bin" "$DEST/lib" "$DEST/share/applications" "$DEST/share/pixmaps"
 install -m755 "$BIN" "$DEST/bin/agterm-linux.bin"
 install -m755 "$CTL" "$DEST/bin/agtermctl.bin"
+cp -R "$APP_RESOURCES" "$DEST/bin/"
 
 # Bundle the non-system libraries that make the Swift app portable. GTK, libadwaita, and glibc remain
 # host dependencies in tar/DEB/RPM; the AppImage packaging pass adds its GTK stack separately.

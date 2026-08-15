@@ -6,7 +6,7 @@
     <title>Command reference — agterm | agtermctl control API</title>
     <meta
       name="description"
-      content="Complete agtermctl reference: all 71 control commands for agterm, including sessions, workspaces, windows, overlays, the native picker, the quick terminal, sidebar, agent status, themes, and keymaps, with arguments and return values."
+      content="Complete agtermctl reference: all 74 control commands for agterm, including sessions, workspaces, windows, overlays, the native picker, the quick terminal, sidebar, agent status, themes, and keymaps, with arguments and return values."
     />
     <meta
       name="keywords"
@@ -18,7 +18,7 @@
     <meta property="og:title" content="Command reference — agterm" />
     <meta
       property="og:description"
-      content="All 71 agtermctl control commands with arguments, return values, and errors."
+      content="All 74 agtermctl control commands with arguments, return values, and errors."
     />
     <meta property="og:url" content="https://agterm.com/commands" />
     <meta property="og:image" content="https://agterm.com/assets/agterm-og.png" />
@@ -30,7 +30,7 @@
     <meta name="twitter:title" content="Command reference — agterm" />
     <meta
       name="twitter:description"
-      content="All 71 agtermctl control commands with arguments, return values, and errors."
+      content="All 74 agtermctl control commands with arguments, return values, and errors."
     />
     <meta name="twitter:image" content="https://agterm.com/assets/agterm-og.png" />
     <link rel="icon" type="image/x-icon" href="/assets/favicon.ico" />
@@ -190,6 +190,7 @@
             <a href="#workspace" style="color: #bfbab0; padding: 7px 12px; border-radius: 7px" class="hv9">workspace</a>
             <a href="#session" style="color: #bfbab0; padding: 7px 12px; border-radius: 7px" class="hv9">session</a>
             <a href="#overlay" style="color: #bfbab0; padding: 7px 12px; border-radius: 7px" class="hv9">session overlay</a>
+            <a href="#hud" style="color: #bfbab0; padding: 7px 12px; border-radius: 7px" class="hv9">session hud</a>
             <a href="#window" style="color: #bfbab0; padding: 7px 12px; border-radius: 7px" class="hv9">window</a>
             <a href="#surface" style="color: #bfbab0; padding: 7px 12px; border-radius: 7px" class="hv9">surface zoom</a>
             <a href="#dashboard" style="color: #bfbab0; padding: 7px 12px; border-radius: 7px" class="hv9">dashboard</a>
@@ -236,7 +237,7 @@
             Command reference
           </h1>
           <p style="font-size: 19px; line-height: 1.6; color: #bfbab0; margin: 0 0 8px">
-            All 71 commands of the agterm control API, with arguments and return values. Every one is reachable from the
+            All 74 commands of the agterm control API, with arguments and return values. Every one is reachable from the
             <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">agtermctl</span> CLI and from the local
             control socket.
           </p>
@@ -339,7 +340,17 @@
               the current workspace). It accepts a full UUID (case-insensitive) or a unique, git-style prefix. Zero matches gives
               <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">notFound</span>; an ambiguous prefix
               gives <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">ambiguous</span>, listing the
-              candidates.
+              candidates. For a workspace, <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">active</span>
+              is where a new session lands: one you just created in the foreground, or an empty one you named with
+              <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">workspace select</span>, until the
+              selection changes, <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">workspace
+              select</span> names a workspace that has sessions, that workspace is deleted, or the workspace filter
+              hides it; otherwise the selected session's workspace, otherwise the last one. A background create
+              (<span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">workspace new --collapsed</span>,
+              <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">session new --create-workspace --no-select</span>)
+              never takes it, and the tree's workspace
+              <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc">active</span> flag reads the selected
+              session's workspace only, so right after a foreground create the two can name different workspaces.
             </p>
             <p style="font-size: 16px; line-height: 1.7; color: #cbc6bc; margin: 0 0 16px">
               <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #cbc6bc; white-space: nowrap">--window &lt;id|prefix|active&gt;</span>
@@ -422,11 +433,24 @@
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">cwd</span>,
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">title</span> (raw OSC terminal title, omitted when
                 none), <span style="font-family: &quot;JetBrains Mono&quot;, monospace">active</span>,
-                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">split</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">split</span> (the split is SHOWN side by side),
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">hasSplit</span> (a second pane exists at all, shown or
+                hidden, omitted when there is none — read this rather than
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">split</span> to tell whether a session has a split),
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">splitRatio</span>,
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">splitFocused</span>,
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">overlay</span>,
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">overlaySizePercent</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">paneOverlays</span> (the panes covered by their own
+                pane-scoped overlay — <span style="font-family: &quot;JetBrains Mono&quot;, monospace">["left"]</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">["right"]</span> or
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">["left","right"]</span>, omitted when neither is),
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">hud</span> (the message panel holding the session-wide
+                slot — <span style="font-family: &quot;JetBrains Mono&quot;, monospace">{message, detail?, spinner, backgroundColor?, textColor?, sizePercent?, heightPercent?, position}</span>, where
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">spinner</span> names the effective style or
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">none</span> —
+                omitted when none is up; mutually exclusive with
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">overlay</span>, which reads false beside it),
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">scratch</span>,
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">flagged</span>,
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">status</span>,
@@ -628,8 +652,8 @@
               </p>
               <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">--target active</span> resolves to the current
-                workspace, which with no selected session falls back to the last workspace — address a specific workspace by id to
-                step the same one repeatedly.
+                workspace — one you just created in the foreground, otherwise the selected session's, otherwise the last one —
+                so address a specific workspace by id to step the same one repeatedly.
               </p>
             </div>
 
@@ -659,8 +683,21 @@
                 While the filter is applied, <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">session go</span>
                 navigation is scoped to the marked workspaces' sessions, and an explicit
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">session select</span> of a session outside
-                the set suspends the filter while keeping the set. Read membership back via the workspace node's
+                the set suspends the filter while keeping the set — in TREE mode only, since the flagged list ignores the
+                marked set, so a selection made there leaves the filter applied. Read membership back via the workspace node's
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">focused</span> field.
+              </p>
+              <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
+                A narrowing mode CAN move the selection: when
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">on</span>, a narrowing
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">toggle</span>, or an
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">off</span> that drops the selected session's
+                workspace while other members keep the filter applied would hide the selected session, the most recently used
+                session still visible is selected instead. Read it back as
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">active</span> on the session node.
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">add</span> normally narrows nothing and leaves the
+                selection alone — except while the marked set holds only session-less workspaces, where nothing was visible
+                to move to: adding a populated workspace then selects its most recent session.
               </p>
             </div>
 
@@ -686,6 +723,15 @@
                 sidebar-mode term, is on the <span style="font-family: &quot;JetBrains Mono&quot;, monospace">focused</span> field
                 in the <span style="font-family: &quot;JetBrains Mono&quot;, monospace">tree</span> section). Read back via the
                 tree's top-level <span style="font-family: &quot;JetBrains Mono&quot;, monospace">workspaceFilter</span> field.
+              </p>
+              <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
+                Applying the filter CAN move the selection: if it would hide the selected session, the most recently used
+                session still visible is selected instead — read back as
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">active</span> on the session node. The same holds
+                for <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">sidebar mode flagged</span>.
+                A script that narrows and then relies on the default
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">active</span> target should re-read
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">tree</span> first.
               </p>
             </div>
 
@@ -933,8 +979,11 @@
                 Inject text as real keystrokes — printable runs plus a Return for each newline, with no bracketed-paste markers. So a
                 trailing newline submits the command.
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--stdin</span> reads the text from stdin instead of the
-                argument. <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--select</span> selects and realizes a
-                never-shown session first (the main pane only); any realized session is normally typable without it.
+                argument. Any session is typable without
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--select</span>, including one created moments ago: the main
+                pane waits briefly for its surface, so creating and typing back to back does not race.
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--select</span> selects the session first, and only when its
+                surface is not ready yet.
               </p>
               <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">--pane left</span> is the main pane (the default),
@@ -1048,6 +1097,11 @@
                 A side-by-side second shell in the same session.
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">off</span> <em>hides</em> it but keeps the shell alive
                 (mirroring ⌘D); the pane's surface is torn down only when its own shell exits. Idempotent; an unknown mode errors.
+                Read back via the session node's <span style="font-family: &quot;JetBrains Mono&quot;, monospace">split</span> (shown) and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">hasSplit</span> (exists at all); a hidden split reads
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">split: false</span> with the pane still alive, and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">agtermctl tree</span> tags it
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">(split hidden)</span>.
               </p>
             </div>
 
@@ -1103,7 +1157,8 @@
                 split.
               </p>
               <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
-                Control-native: the divider is otherwise mouse-drag only, with no GUI, menu, or keymap action — bind a key by mapping
+                Control-native: the divider is otherwise mouse-only — drag it, or double-click it for an even split. No GUI, menu, or
+                keymap action reaches any other fraction — bind a key by mapping
                 a <span style="font-family: &quot;JetBrains Mono&quot;, monospace">command "agtermctl session resize …"</span> custom
                 action. Resizing a hidden split updates the stored fraction, applied when it is next shown.
               </p>
@@ -1179,6 +1234,17 @@
                 session in the window. Unknown mode errors. Pair with
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">sidebar mode flagged</span>. Read back via the node's
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">flagged</span> field.
+              </p>
+              <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">off</span> CAN move the selection: unflagging the
+                selected session while the flagged view is up removes the only row pointing at it, so the most recently used
+                session still flagged is selected instead — read back as
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">active</span> on the session node.
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">on</span> moves it the other way when the flagged
+                view is up with nothing flagged: the first flag puts a row on screen and selects it, unless nothing was
+                selected to begin with.
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">clear</span> leaves nothing to move to, so it never
+                does.
               </p>
             </div>
 
@@ -1305,7 +1371,7 @@
             <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
               <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
                 agtermctl session overlay open &lt;command&gt; [--cwd DIR] [--wait] [--block] [--size-percent N]
-                [--background-color #rrggbb] [--follow] [--target T] [--window W]
+                [--background-color #rrggbb] [--follow] [--pane left|right] [--target T] [--window W]
               </div>
               <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">session.overlay.open</div>
               <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
@@ -1340,6 +1406,27 @@
                 127 (the overlay flashes open then vanishes). Give an absolute path or wrap in
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #f2b45c; white-space: nowrap">"zsh -lc '…'"</span>.
               </p>
+              <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">--pane left|right</span> scopes the
+                overlay to ONE split pane, leaving the sibling pane visible and interactive. The two panes are independent and may
+                both hold an overlay at once, each with its own
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--background-color</span> and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--cwd</span>. A pane overlay is always full-pane, so
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--pane</span> cannot combine with
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">--size-percent</span>; everything
+                else matches the session-wide overlay. A non-split session accepts
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">--pane left</span> (its shell reports
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">AGTERM_PANE=left</span>), so a caller can pass
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">--pane "$AGTERM_PANE"</span> without
+                checking the split state. Errors
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">pane overlay already open</span> on a
+                second open, and <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">pane not visible</span>
+                when that pane is not currently rendered — hiding the split AFTER opening is fine. Read the covered panes back from
+                the session node's <span style="font-family: &quot;JetBrains Mono&quot;, monospace">paneOverlays</span>; each one also
+                appears in <span style="font-family: &quot;JetBrains Mono&quot;, monospace">surfaces</span> as
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">overlay-left</span>/<span style="font-family: &quot;JetBrains Mono&quot;, monospace">overlay-right</span>
+                for <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">surface zoom</span>.
+              </p>
             </div>
 
             <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
@@ -1357,27 +1444,186 @@
               <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
                 Record the node's <span style="font-family: &quot;JetBrains Mono&quot;, monospace">overlaySizePercent</span> first to
                 restore the exact size after a zoom to <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--full</span>.
+                It takes no <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--pane</span>: pane overlays are always
+                full-pane, and passing one errors.
+              </p>
+              <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
+                Against a <a href="#hud" style="color: #6d82f3">HUD</a> a percent is accepted and re-flows its WIDTH (the height
+                stays measured from the message, which a resize does not change), but
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--full</span> errors
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">a hud is always floating: pass --size-percent, not --full</span>
+                — full size would cover the session the message is about.
               </p>
             </div>
 
             <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
               <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
-                agtermctl session overlay close [--target T] [--window W]
+                agtermctl session overlay close [--pane left|right] [--target T] [--window W]
               </div>
               <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">session.overlay.close</div>
-              <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">Close and destroy the overlay.</p>
+              <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
+                Close and destroy the overlay.
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--pane</span> closes that split pane's overlay; omit it
+                for the session-wide one. It takes a <a href="#hud" style="color: #6d82f3">HUD</a> down too, as a courtesy — the
+                slot is the same one.
+              </p>
             </div>
 
             <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
               <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
-                agtermctl session overlay result [--target T] [--window W]
+                agtermctl session overlay result [--pane left|right] [--target T] [--window W]
               </div>
               <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">session.overlay.result</div>
               <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
                 <strong style="color: #bfbab0">Returns</strong>
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">result.exitCode</span> once the overlay has closed.
-                Errors <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">still running</span> while it is up, and
-                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">no result</span> if none ran.
+                Errors <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">overlay still running</span> while it is up, and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">no overlay result</span> if none ran.
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--pane</span> reads that split pane's overlay; omit it
+                for the session-wide one.
+              </p>
+              <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
+                A <a href="#hud" style="color: #6d82f3">HUD</a> runs the app's own painter, not a caller's program, so there is no
+                status to report and the session-wide arm errors
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">no overlay result: the slot holds a hud</span>. The
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--pane</span> arm is unaffected — a HUD only ever takes
+                the session-wide slot.
+              </p>
+            </div>
+          </section>
+
+          <!-- HUD -->
+          <section id="hud" style="scroll-margin-top: 88px; padding-top: 56px">
+            <h2
+              style="
+                font-family: &quot;JetBrains Mono&quot;, monospace;
+                font-weight: 700;
+                font-size: 28px;
+                letter-spacing: -0.02em;
+                margin: 0 0 16px;
+                padding-bottom: 12px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+              "
+            >
+              session hud
+            </h2>
+            <p style="font-size: 16px; line-height: 1.7; color: #cbc6bc; margin: 0 0 16px">
+              A passive message panel in the session's overlay slot. It carries text rather than a program, takes no input, and
+              leaves the session focused, typable, undimmed, and clickable underneath — for the seconds before a caller can show
+              anything. One slot, so a session holds either a HUD or a program overlay, never both.
+            </p>
+
+            <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
+                agtermctl session hud [open] &lt;message&gt; [--detail T] [--spinner] [--spinner-style S] [--position P]
+                [--background-color #rrggbb] [--text-color #rrggbb] [--size-percent N] [--target T] [--window W]
+              </div>
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">session.hud.open</div>
+              <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
+                Post the panel. <strong style="color: #bfbab0">Returns</strong> the session's
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">result.id</span>.
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">open</span> is the group's default subcommand, so
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">session hud "gathering options…"</span>
+                posts one; a message that is literally
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">update</span> or
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">close</span> needs the explicit
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">hud open</span> verb.
+              </p>
+              <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--detail</span> adds a dim second line,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--spinner</span> animates a glyph in the default
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">bar</span> style while
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--spinner-style bar|braille|circle|blocks|dot</span> picks another and turns
+                the spinner on by itself (<span style="font-family: &quot;JetBrains Mono&quot;, monospace">none</span> is accepted too and leaves the panel static,
+                so the value a read-back reports round-trips) (<span style="font-family: &quot;JetBrains Mono&quot;, monospace">dot</span> blinks rather than animating, for a panel
+                that sits up for minutes), and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--position</span> anchors the panel to any of the nine
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">top-left|top-center|top-right|center-left|center|center-right|bottom-left|bottom-center|bottom-right</span>
+                (default <span style="font-family: &quot;JetBrains Mono&quot;, monospace">center</span>), the same anchors
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">session background</span> takes.
+                Every anchor off center holds a fixed margin off that pane edge on its own, so even the largest allowed panel
+                stays inside the pane, and a corner keeps a long-lived panel clear of the text being read. The bare
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">top</span> and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">bottom</span> this argument shipped with are still
+                accepted for the middle column, and the read-back reports the canonical anchor. The panel is measured from the message
+                against the session's terminal font on BOTH axes separately — width from the longest wrapped line, height from
+                the number of them — so a title and a subtitle give a wide, short panel rather than a square one.
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">--size-percent N</span> (1–100)
+                overrides the WIDTH only; the height always follows the message, since a caller-set height could only strand it
+                in an empty box. The effective width is bounded to 10–80% of the pane, so a message never covers the session
+                it is about and a requested 100 reads back as 80. <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--background-color</span> gives the
+                panel its own solid background, read once when the panel is created, while
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--text-color</span> colors the TEXT and rides the
+                panel's body file, so an update can change it. Both effective shares read back, as
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">sizePercent</span> and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">heightPercent</span>, and both colors as
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">backgroundColor</span> and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">textColor</span>.
+              </p>
+              <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
+                Message and detail cap at 256 characters and reject control characters, newline included — the panel prints
+                straight into a live terminal, and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--detail</span> is the second line on offer. A second
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">hud</span> replaces the first and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">session overlay open</span>
+                replaces a HUD, but a HUD over a RUNNING program errors
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">overlay already open</span> — a
+                message is replaceable, a program is not.
+              </p>
+              <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
+                There is no menu item, chord, or palette entry: this is control-only, with nothing for a human to invoke by hand.
+              </p>
+            </div>
+
+            <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
+                agtermctl session hud update &lt;message&gt; [--detail T] [--spinner] [--spinner-style S] [--position P]
+                [--text-color #rrggbb] [--size-percent N] [--target T] [--window W]
+              </div>
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">session.hud.update</div>
+              <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
+                Repaint the live panel in place — no re-spawn, no blink. It REPLACES the whole spec rather than patching it, so
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--detail</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--spinner</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--position</span>, and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--text-color</span> must be repeated to survive;
+                an omitted one drops. Same required message and same rejections as
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">open</span>. Errors
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">no hud</span> when none is up.
+              </p>
+              <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
+                It takes no <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--background-color</span>: the surface
+                reads that once at creation, so only a fresh
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">session hud</span> can change it. A
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">color</span> sent on an update over the raw protocol
+                is ignored for the same reason, and the read-back keeps naming the color the panel actually paints.
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--text-color</span> is the half that CAN change: it
+                rides the body file the panel's painter re-reads every tick, so the live text recolors with no re-spawn.
+              </p>
+            </div>
+
+            <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
+                agtermctl session hud close [--target T] [--window W]
+              </div>
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">session.hud.close</div>
+              <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
+                Take the panel down. Errors <span style="font-family: &quot;JetBrains Mono&quot;, monospace">no hud</span> when none is
+                up, so it is not idempotent. A program overlay in the same slot is left alone;
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">session overlay close</span>, ⌘W,
+                and closing the session also tear a HUD down.
+              </p>
+              <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
+                Read the panel back from the session node's
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">hud</span> object, whose
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">position</span> and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">spinner</span> always report the effective value,
+                defaults included. Beside it the node's
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">overlay</span> reads false with
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">overlaySizePercent</span> omitted, so a poll for "is a
+                program covering this session" cannot mistake a message for one, and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">surface zoom</span> will not
+                address the panel. HUD state is poll-only; no event announces it.
               </p>
             </div>
           </section>
@@ -1534,7 +1780,7 @@
               <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">window.fullscreen</div>
               <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
                 Toggle native macOS full screen — a separate Space with an auto-hidden menu bar. A second call exits. The window must
-                be open. The control half of View ▸ Toggle Full Screen (⌃⌘F) and the green traffic-light button; distinct from
+                be open. The control half of ⌃⌘F, View ▸ Enter/Exit Full Screen, and the green traffic-light button; distinct from
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">zoom</span>. Read back via
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">window list</span>'s
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">fullscreen</span>.
@@ -1593,8 +1839,8 @@
                 (traffic lights plus an exit button). Omit
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--target</span> (or pass
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">active</span>) to zoom the active surface — the quick
-                terminal if shown, else the active session's overlay, scratch, focused split, or primary pane. An explicit
-                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">surface:&lt;session-id&gt;:&lt;left|right|scratch|overlay&gt;</span>
+                terminal if shown, else the active session's overlay, scratch, the focused pane's own overlay, or that pane. An explicit
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">surface:&lt;session-id&gt;:&lt;left|right|scratch|overlay|overlay-left|overlay-right&gt;</span>
                 id (from <span style="font-family: &quot;JetBrains Mono&quot;, monospace">tree</span>'s
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">surfaces[].id</span>) zooms that exact surface, including a
                 hidden-but-alive split or scratch; <span style="font-family: &quot;JetBrains Mono&quot;, monospace">quick</span> addresses a
@@ -1638,7 +1884,7 @@
 
             <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
               <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
-                agtermctl dashboard &lt;ids…&gt; [--mru] [--font-size N | --auto-size] [--close] [--window W]
+                agtermctl dashboard &lt;ids[:left|:right]…&gt; [--mru] [--font-size N | --auto-size] [--close] [--window W]
               </div>
               <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">dashboard</div>
               <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
@@ -1647,7 +1893,15 @@
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--close</span> the open one. The cell unit is a session+pane: a
                 non-split session is one cell, and a split session shows as two — its left/primary and right/split panes — so the
                 9-cell cap counts <em>panes</em> (laid out ceil(√n)). Positional ids are session addresses (id / unique prefix /
-                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">active</span>), deduped by resolved session; unresolved ids are
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">active</span>), each optionally carrying a
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">:left</span>/<span style="font-family: &quot;JetBrains Mono&quot;, monospace">:right</span>
+                pane suffix — the same form <span style="font-family: &quot;JetBrains Mono&quot;, monospace">dashboardMembers</span> reports — which
+                places that pane alone, so
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">dashboard A:left B:right</span> grids one pane per
+                session while a bare id still takes all of them. Cells are deduped by session+pane, so a bare id beside a pane ref for the
+                same session collapses. Any other suffix (<span style="font-family: &quot;JetBrains Mono&quot;, monospace">:scratch</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">:primary</span>, a typo) is rejected outright; unresolved ids — including
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">:right</span> on a session with no split — are
                 dropped and any panes beyond 9 are trimmed, both reported in the response text.
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--mru</span> is mutually exclusive with ids and
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--close</span>, composes with the font flags and
@@ -1699,7 +1953,7 @@
 
             <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
               <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
-                agtermctl pick [--prompt TEXT] [--allow-custom] [--follow] [--window W] [--no-block]
+                agtermctl pick [--prompt TEXT] [--query TEXT] [--allow-custom] [--follow] [--window W] [--no-block]
               </div>
               <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">pick.open</div>
               <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
@@ -1707,10 +1961,18 @@
                 the label. Input whose first non-whitespace byte is
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">[</span> is a JSON array of
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">{id,label,subtitle?}</span> objects. Item ids must be
-                unique, labels must not be empty, and the list is capped at 1,000 items.
+                unique, labels must not be empty, and the list is capped at 1,000 items. The list may be empty only with
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--allow-custom</span>, which turns the picker into a
+                plain text prompt.
+              </p>
+              <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
+                Typing matches item labels only; a subtitle is displayed but never searched. An empty query lists the items in the
+                order the caller supplied them, so the first item is the one Return runs on open.
               </p>
               <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--prompt</span> sets the query field placeholder.
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--query</span> prefills it and filters on open, which
+                ranks by match score and so does not preserve the supplied order.
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--allow-custom</span> accepts a nonmatching query.
                 A background <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--window</span> target stays in the
                 background unless <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--follow</span> raises it. The
@@ -1725,7 +1987,9 @@
               </p>
               <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
                 <strong style="color: #bfbab0">Errors:</strong>
-                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">pick.open requires at least one item</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">pick.open requires items</span> (none supplied),
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">pick.open requires at least one item</span> (empty list
+                without <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--allow-custom</span>),
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">too many items (max 1000)</span>,
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">pick item label must not be empty</span>,
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">pick item ids must be unique</span>, or
@@ -1896,6 +2160,14 @@
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">session go</span> navigation and the Ctrl-Tab switcher
                 are scoped to the flagged sessions only.
               </p>
+              <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
+                BOTH flips can move the selection, since either can hide the selected session:
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">flagged</span> when it is unflagged, and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">tree</span> when an applied workspace filter hides a
+                session that was selected in the flagged view. The most recently used session still visible is selected
+                instead — read back as
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">active</span> on the session node.
+              </p>
             </div>
 
             <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
@@ -1917,7 +2189,7 @@
               </div>
               <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">sidebar.collapse</div>
               <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
-                Collapse every workspace except the active session's, which stays expanded and is scrolled into view. Same
+                Collapse every workspace except the current one, which stays expanded and is scrolled into view. Same
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--window</span> selector and defaults as
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">expand</span>. Idempotent; a graceful no-op in flagged
                 mode.
@@ -2361,7 +2633,7 @@
                     padding: 4px 9px;
                     white-space: nowrap;
                   "
-                  >still running<span style="color: #6b727a; font-family: &quot;IBM Plex Sans&quot;, sans-serif"> (overlay)</span></span
+                  >overlay still running</span
                 >
                 <span
                   style="
@@ -2374,7 +2646,189 @@
                     padding: 4px 9px;
                     white-space: nowrap;
                   "
-                  >no result<span style="color: #6b727a; font-family: &quot;IBM Plex Sans&quot;, sans-serif"> (overlay)</span></span
+                  >no overlay result</span
+                >
+                <span
+                  style="
+                    font-family: &quot;JetBrains Mono&quot;, monospace;
+                    font-size: 12.5px;
+                    color: #cbc6bc;
+                    background: #191d20;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 4px 9px;
+                    white-space: nowrap;
+                  "
+                  >pane overlay already open</span
+                >
+                <span
+                  style="
+                    font-family: &quot;JetBrains Mono&quot;, monospace;
+                    font-size: 12.5px;
+                    color: #cbc6bc;
+                    background: #191d20;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 4px 9px;
+                    white-space: nowrap;
+                  "
+                  >pane not visible<span style="color: #6b727a; font-family: &quot;IBM Plex Sans&quot;, sans-serif"> (overlay)</span></span
+                >
+                <span
+                  style="
+                    font-family: &quot;JetBrains Mono&quot;, monospace;
+                    font-size: 12.5px;
+                    color: #cbc6bc;
+                    background: #191d20;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 4px 9px;
+                    white-space: nowrap;
+                  "
+                  >no hud<span style="color: #6b727a; font-family: &quot;IBM Plex Sans&quot;, sans-serif"> (hud update/close)</span></span
+                >
+                <span
+                  style="
+                    font-family: &quot;JetBrains Mono&quot;, monospace;
+                    font-size: 12.5px;
+                    color: #cbc6bc;
+                    background: #191d20;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 4px 9px;
+                    white-space: nowrap;
+                  "
+                  >no overlay result: the slot holds a hud</span
+                >
+                <span
+                  style="
+                    font-family: &quot;JetBrains Mono&quot;, monospace;
+                    font-size: 12.5px;
+                    color: #cbc6bc;
+                    background: #191d20;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 4px 9px;
+                    white-space: nowrap;
+                  "
+                  >a hud is always floating: pass --size-percent, not --full</span
+                >
+                <span
+                  style="
+                    font-family: &quot;JetBrains Mono&quot;, monospace;
+                    font-size: 12.5px;
+                    color: #cbc6bc;
+                    background: #191d20;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 4px 9px;
+                    white-space: nowrap;
+                  "
+                  >hud text must not contain control characters</span
+                >
+                <span
+                  style="
+                    font-family: &quot;JetBrains Mono&quot;, monospace;
+                    font-size: 12.5px;
+                    color: #cbc6bc;
+                    background: #191d20;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 4px 9px;
+                    white-space: nowrap;
+                  "
+                  >hud message too long (max 256 characters)</span
+                >
+                <span
+                  style="
+                    font-family: &quot;JetBrains Mono&quot;, monospace;
+                    font-size: 12.5px;
+                    color: #cbc6bc;
+                    background: #191d20;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 4px 9px;
+                    white-space: nowrap;
+                  "
+                  >hud detail too long (max 256 characters)</span
+                >
+                <span
+                  style="
+                    font-family: &quot;JetBrains Mono&quot;, monospace;
+                    font-size: 12.5px;
+                    color: #cbc6bc;
+                    background: #191d20;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 4px 9px;
+                    white-space: nowrap;
+                  "
+                  >session.hud.open requires a message</span
+                >
+                <span
+                  style="
+                    font-family: &quot;JetBrains Mono&quot;, monospace;
+                    font-size: 12.5px;
+                    color: #cbc6bc;
+                    background: #191d20;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 4px 9px;
+                    white-space: nowrap;
+                  "
+                  >session.hud.open: --size-percent must be 1...100</span
+                >
+                <span
+                  style="
+                    font-family: &quot;JetBrains Mono&quot;, monospace;
+                    font-size: 12.5px;
+                    color: #cbc6bc;
+                    background: #191d20;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 4px 9px;
+                    white-space: nowrap;
+                  "
+                  >hud helper is not bundled in this build</span
+                >
+                <span
+                  style="
+                    font-family: &quot;JetBrains Mono&quot;, monospace;
+                    font-size: 12.5px;
+                    color: #cbc6bc;
+                    background: #191d20;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 4px 9px;
+                    white-space: nowrap;
+                  "
+                  >could not write the hud message</span
+                >
+                <span
+                  style="
+                    font-family: &quot;JetBrains Mono&quot;, monospace;
+                    font-size: 12.5px;
+                    color: #cbc6bc;
+                    background: #191d20;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 4px 9px;
+                    white-space: nowrap;
+                  "
+                  >invalid position: &lt;value&gt;<span style="color: #6b727a; font-family: &quot;IBM Plex Sans&quot;, sans-serif"> (hud)</span></span
+                >
+                <span
+                  style="
+                    font-family: &quot;JetBrains Mono&quot;, monospace;
+                    font-size: 12.5px;
+                    color: #cbc6bc;
+                    background: #191d20;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 4px 9px;
+                    white-space: nowrap;
+                  "
+                  >invalid spinner: &lt;value&gt;<span style="color: #6b727a; font-family: &quot;IBM Plex Sans&quot;, sans-serif"> (hud)</span></span
                 >
                 <span
                   style="

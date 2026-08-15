@@ -38,20 +38,15 @@ class ControlAPITestCase: XCTestCase {
         markerDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("agterm-ctlmarker-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: markerDir, withIntermediateDirectories: true)
-        // socket path constraints: it must be (a) under the unix-socket sun_path ~104-byte limit and
-        // (b) inside the runner's sandbox grant. The per-test AGTERM_STATE_DIR subdir pushes the path to
-        // ~135 bytes (too long), and /tmp is outside the runner sandbox (connect → EPERM). The runner's
-        // own temp dir (NSTemporaryDirectory(), ~81 bytes) with a short filename satisfies both.
+        // the runner's own temp dir keeps the socket path under the sun_path ~104-byte limit AND inside
+        // the sandbox grant (the per-test AGTERM_STATE_DIR subdir is ~135 bytes; /tmp gives EPERM).
         socketPath = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("agtermc-\(UUID().uuidString.prefix(8)).sock")
         app = XCUIApplication()
         app.launchEnvironment["AGTERM_STATE_DIR"] = stateDir.path
         app.launchEnvironment["AGTERM_CONTROL_SOCKET"] = socketPath
-        // Pin the title-bar double-click action so the header gesture tests are hermetic regardless of
-        // the host's Desktop & Dock setting (the app honors this env override in
-        // performTitlebarDoubleClickAction; launch args can't carry it — FB11763863). Most tests never
-        // double-click, so the value is irrelevant to them; the no-op-case test opts into "None".
-        // (that test, testDoubleClickHeaderHonorsNoneSetting, now lives in ControlWindowUITests.)
+        // pin the title-bar double-click action so the header gesture tests are hermetic regardless of
+        // the host's Desktop & Dock setting; launch args can't carry it — FB11763863.
         app.launchEnvironment["AGTERM_UITEST_DOUBLECLICK_ACTION"] =
             name.contains("testDoubleClickHeaderHonorsNoneSetting") ? "None" : "Maximize"
         try seedSettingsIfNeeded()
@@ -262,20 +257,42 @@ class ControlAPITestCase: XCTestCase {
         return nil
     }
 
-    /// Inject `command` (which redirects to `file`) and wait for the shell to write it back, retrying the
-    /// inject if the marker hasn't appeared yet. A freshly-realized surface's shell/pty may not be ready to
-    /// read when the first keystrokes land (especially under full-suite CPU load), so a single injection can
-    /// be dropped — re-injecting once the shell has had time to spawn is the deterministic readiness wait.
+    /// Inject `command` (which redirects to `file`) and wait for the shell to write it back, re-injecting
+    /// while the marker is missing. The keystrokes are not dropped — they queue to the pty and the kernel
+    /// buffers them — but a freshly-realized surface's shell can take longer than one attempt's poll to spawn
+    /// and run them under full-suite CPU load, so the retries buy time rather than re-deliver lost text.
     /// The marker file is the readiness signal: when it's non-empty the command actually ran. Returns the
     /// marker contents, or nil if it never appeared across all attempts. Asserts each type request returns ok.
-    func typeUntilMarker(_ command: String, target: String, file: URL, select: Bool,
+    func typeUntilMarker(_ command: String, target: String, file: URL, select: Bool, pane: String? = nil,
                          attempts: Int = 4, perAttempt: TimeInterval = 4) throws -> String? {
         for attempt in 0..<attempts {
             // clear any marker a prior attempt's late injection may have written, so a stale value
             // can't be read as this attempt's success.
             try? FileManager.default.removeItem(at: file)
-            let typed = try sendCommand(typeRequest(text: command, target: target, select: select))
-            XCTAssertEqual(typed["ok"] as? Bool, true, "typing the probe (attempt \(attempt)) should succeed: \(typed)")
+            let typed = try sendCommand(typeRequest(text: command, target: target, select: select, pane: pane))
+            if typed["ok"] as? Bool != true {
+                // `session not realized` is the same readiness race this loop exists to absorb — a background
+                // session's surface is built lazily, so an early probe can arrive before it exists. Any OTHER
+                // error is a real failure. Exhausting every attempt returns nil, which the callers unwrap.
+                XCTAssertTrue((typed["error"] as? String ?? "").contains("not realized"),
+                              "typing the probe (attempt \(attempt)) should succeed: \(typed)")
+                usleep(300_000)
+                continue
+            }
+            if let value = pollMarker(file, timeout: perAttempt) { return value }
+        }
+        return nil
+    }
+
+    /// `typeUntilMarker`'s KEYBOARD twin: types through the real keyboard, so the marker names whichever
+    /// surface actually holds first responder — the only oracle for a focus move. Retried for the same
+    /// shell-readiness reason.
+    func keyboardTypeUntilMarker(_ command: String, file: URL,
+                                 attempts: Int = 6, perAttempt: TimeInterval = 2.5) -> String? {
+        for _ in 0..<attempts {
+            try? FileManager.default.removeItem(at: file)
+            app.typeText(command)
+            app.typeKey(.return, modifierFlags: [])
             if let value = pollMarker(file, timeout: perAttempt) { return value }
         }
         return nil

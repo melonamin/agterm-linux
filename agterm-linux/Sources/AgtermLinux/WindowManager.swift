@@ -115,6 +115,7 @@ extension WindowLibrary {
     // recency entries — and the snapshot below would be written while a finalizer was still pending.
     library.finalizeAllPendingCloses()
     library.saveAllOpen()
+    for controller in gWindows.values { controller.store.discardHudBodies() }
     library.saveIndex()
 }
 
