@@ -85,7 +85,7 @@ struct LinuxPolicyTests {
         }
 
         func buildConfig(layers: [String]) throws -> ghostty_config_t {
-            let cfg = ghostty_config_new()
+            let cfg = try #require(ghostty_config_new())
             for layer in layers {
                 let path = try writeConf(layer)
                 path.withCString { ghostty_config_load_file(cfg, $0) }
