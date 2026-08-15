@@ -789,11 +789,14 @@ final class AppController {
 
     /// Show a persistent, centered message when the GtkGLArea can't create a GL context (VM/headless/
     /// llvmpipe-less/Wayland-no-GL) — the terminal can't render, so explain it instead of a blank pane.
-    /// Added once over the deck; a GL failure is display-wide so a single message suffices.
     func showGLError() {
+        showSurfaceError("Terminal rendering needs OpenGL.\n\nNo GL context is available — check your GPU drivers, " +
+                         "or enable 3D acceleration if you're running in a VM.")
+    }
+
+    /// Added once over the deck; a surface failure is display-wide so a single message suffices.
+    func showSurfaceError(_ msg: String) {
         guard let overlay = deckOverlay, glErrorLabel == nil else { return }
-        let msg = "Terminal rendering needs OpenGL.\n\nNo GL context is available — check your GPU drivers, " +
-                  "or enable 3D acceleration if you're running in a VM."
         guard let label = op(gtk_label_new(msg)) else { return }
         gtk_label_set_justify(label, GTK_JUSTIFY_CENTER)
         gtk_label_set_wrap(label, 1)

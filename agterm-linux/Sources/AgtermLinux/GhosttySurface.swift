@@ -222,6 +222,15 @@ final class GhosttySurface: TerminalSurface {
         GhosttyApp.shared.applyColorScheme(appearanceSide)
         surface = ghostty_surface_new(app, &cfg)
         guard let surface else {
+            // libghostty logs the cause, but lib builds compile stderr logging off, so without this
+            // the pane is blank with no diagnostic anywhere. The cause is not knowable from here, so
+            // name the common one without asserting it.
+            FileHandle.standardError.write(Data("agterm: libghostty rejected the surface\n".utf8))
+            runOnMain { [weak controller] in MainActor.assumeIsolated {
+                controller?.showSurfaceError("Terminal failed to start.\n\nlibghostty could not create the " +
+                                             "surface. The usual cause is OpenGL older than 4.3 — check your " +
+                                             "GPU drivers, or enable 3D acceleration if you're running in a VM.")
+            } }
             storage.release()
             configurationStorage = nil
             return
