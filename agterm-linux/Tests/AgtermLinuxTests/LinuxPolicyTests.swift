@@ -66,6 +66,76 @@ struct LinuxPolicyTests {
         #expect(defaults.contains("keybind = performable:ctrl+shift+key_a=select_all"))
         #expect(!defaults.contains("ctrl+shift+c="))
         #expect(!defaults.contains("ctrl+shift+v="))
+        #expect(!defaults.contains("ctrl+shift+a="))
+    }
+
+    @Test("bundled libghostty defaults parse clean and bind physical C/V/A on any layout")
+    func bundledDefaultsParserCoverage() throws {
+        // libghostty's config API allocates through process-global state that is undefined
+        // until ghostty_init; the app calls it in GhosttyApp.init, tests must call it themselves.
+        _ = ghostty_init(0, nil)
+        let fm = FileManager.default
+
+        func writeConf(_ contents: String) throws -> String {
+            let url = fm.temporaryDirectory
+                .appendingPathComponent("agterm-bundled-\(UUID().uuidString).conf")
+            try contents.write(to: url, atomically: true, encoding: .utf8)
+            return url.path
+        }
+
+        func buildConfig(layers: [String]) throws -> ghostty_config_t {
+            let cfg = ghostty_config_new()
+            for layer in layers {
+                let path = try writeConf(layer)
+                path.withCString { ghostty_config_load_file(cfg, $0) }
+            }
+            ghostty_config_finalize(cfg)
+            return cfg
+        }
+
+        // A Ctrl+Shift key event for a physical XKB keycode, carrying the glyph a Russian
+        // ЙЦУКЕН layout produces on that key — the exact event shape a non-Latin layout
+        // hands the terminal (the produced character must not affect physical-key binds).
+        func ctrlShiftKey(keycode: UInt32, unshifted: UInt32) -> ghostty_input_key_s {
+            var event = ghostty_input_key_s()
+            event.action = GHOSTTY_ACTION_PRESS
+            event.keycode = keycode
+            event.mods = ghosttyMods((1 << 0) | (1 << 2)) // GDK_SHIFT | GDK_CONTROL
+            event.consumed_mods = GHOSTTY_MODS_NONE
+            event.unshifted_codepoint = unshifted
+            event.text = nil
+            event.composing = false
+            return event
+        }
+
+        // The baseline isolates the bundled layer's contribution: libghostty's own defaults
+        // may add environment diagnostics, so the bundled lines must add ZERO on top of it.
+        let baseline = try buildConfig(layers: [""])
+        defer { ghostty_config_free(baseline) }
+        let baselineDiagnostics = ghostty_config_diagnostics_count(baseline)
+
+        let bundled = try buildConfig(layers: [GhosttyDefaults.baseConfLines])
+        defer { ghostty_config_free(bundled) }
+        #expect(ghostty_config_diagnostics_count(bundled) == baselineDiagnostics)
+
+        let physicalC = ctrlShiftKey(keycode: 54, unshifted: 0x0441) // с
+        let physicalV = ctrlShiftKey(keycode: 55, unshifted: 0x043C) // м
+        let physicalA = ctrlShiftKey(keycode: 38, unshifted: 0x0444) // ф
+        #expect(ghostty_config_key_is_binding(bundled, physicalC))
+        #expect(ghostty_config_key_is_binding(bundled, physicalV))
+        #expect(ghostty_config_key_is_binding(bundled, physicalA))
+
+        // A later scoped layer (the agterm-scoped ghostty.conf) can unbind ONE physical
+        // default without touching the others: C freed, V/A still bound, no new diagnostics.
+        let scoped = try buildConfig(layers: [
+            GhosttyDefaults.baseConfLines,
+            "keybind = ctrl+shift+key_c=unbind\n",
+        ])
+        defer { ghostty_config_free(scoped) }
+        #expect(ghostty_config_diagnostics_count(scoped) == baselineDiagnostics)
+        #expect(!ghostty_config_key_is_binding(scoped, physicalC))
+        #expect(ghostty_config_key_is_binding(scoped, physicalV))
+        #expect(ghostty_config_key_is_binding(scoped, physicalA))
     }
 
     @Test("session switcher starts from the previous MRU entry and wraps")
