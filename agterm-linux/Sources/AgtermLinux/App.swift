@@ -95,6 +95,19 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
     // Re-push the system light/dark scheme to live surfaces whenever it changes.
     connect(adw_style_manager_get_default(), "notify::dark",
             unsafeBitCast(onColorSchemeChanged, to: GCallback.self), nil)
+    // Re-measure the sidebar whenever a desktop setting its width floor derives from changes: GTK
+    // resolves the sidebar CSS's `pt` size through `gtk-xft-dpi` (so GNOME "Large Text" widens every row
+    // like a bigger sidebar font), the row minimum depends on the font FAMILY `gtk-font-name` resolves,
+    // and `gtk-overlay-scrolling` decides whether the sidebar scroller's vertical bar floats over the
+    // content or takes real width out of it (see `sidebarScrollbarOverhead`). Nil-guarded because
+    // `g_signal_connect_data(NULL, …)` is a GLib CRITICAL, and GtkSettings has no default until a
+    // display is open.
+    if let desktopSettings = gtk_settings_get_default() {
+        for signal in ["notify::gtk-xft-dpi", "notify::gtk-font-name", "notify::gtk-overlay-scrolling"] {
+            connect(desktopSettings, signal,
+                    unsafeBitCast(onDesktopSidebarMetricsChanged, to: GCallback.self), nil)
+        }
+    }
     let ids = gLibrary.openIDs()
     let toOpen = ids.isEmpty ? [gLibrary.windows.first?.id].compactMap { $0 } : ids
     for id in toOpen { openWindow(id) }
@@ -255,6 +268,21 @@ private let onColorSchemeChanged: @MainActor @convention(c) (OpaquePointer?, Opa
                   controller.reloadConfigForAppearanceChange(plan.side) else { return }
             for ctl in gWindows.values { ctl.rebuildSettingsForColorSchemeChange() }
         }
+    }
+}
+
+/// A desktop text-scale or UI-font change — rebuild every sidebar so its width floor is re-measured.
+/// Deferred through `scheduleSidebarMetadataRefresh`, never a direct `rebuildSidebar()`: it coalesces the
+/// notify burst and gates on `sidebarInteractionInProgress`, so it cannot land on a live inline rename.
+///
+/// IMPORTANT: never route it through the shared `AppController.softCloseReconcile` — its `arm()`
+/// supersedes the pending job, stranding held sessions' surfaces. See `agterm-linux/docs/sidebar.md`.
+private let onDesktopSidebarMetricsChanged: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, _, _ in
+    MainActor.assumeIsolated {
+        // Synchronously, BEFORE the deferred rebuilds: the cached scrollbar reservation is exactly what
+        // `gtk-overlay-scrolling` moves, and the rebuild below is what re-measures through it.
+        AppController.invalidateSidebarScrollbarOverhead()
+        for ctl in gWindows.values { ctl.scheduleSidebarMetadataRefresh() }
     }
 }
 

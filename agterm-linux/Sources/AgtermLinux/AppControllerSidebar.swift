@@ -80,6 +80,9 @@ extension AppController {
         if let provider = Self.sidebarFontProvider {
             css.withCString { gtk_css_provider_load_from_string(cast(provider), $0) }
         }
+        // The width floor is NOT refreshed here: GTK revalidates a CSS node only on the next frame, so a
+        // measure taken now would still report the OLD font size. Every caller follows this with
+        // `rebuildSidebar`, which measures the floor off labels rebuilt under the new CSS.
     }
 
     func applyInterfaceFontSize() {
@@ -170,6 +173,7 @@ extension AppController {
                 appendSection(ws.name, ws.sessions, workspace: ws.id, settings: settings)
             }
         }
+        refreshSidebarWidthFloor()
     }
 
     private func updateWorkspaceFilterButton() {

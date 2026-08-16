@@ -214,6 +214,90 @@ struct LinuxPolicyTests {
         #expect(LinuxSidebarPolicy.sidebarCSS(fontSize: 2) == dense)
     }
 
+    @Test("the clamp pins the derived sidebar floor inside the shared width range")
+    @MainActor
+    func clampSidebarWidth() {
+        // `refreshSidebarWidthFloor`'s call: the measured content minimum, pinned at the shared default.
+        func floor(_ measured: Double) -> Double {
+            LinuxSidebarPolicy.clampSidebarWidth(measured, minimum: AppStore.sidebarWidthDefault)
+        }
+        // Content the pin already holds keeps the pin, so a fresh window's 220px stays reachable.
+        for measured in [0.0, 181, AppStore.sidebarWidthDefault] {
+            #expect(floor(measured) == AppStore.sidebarWidthDefault)
+        }
+        // …and follows the measurement once the chrome no longer fits inside it.
+        #expect(floor(229) == 229)
+        #expect(floor(255) == 255)
+        // The cap is a CAP, not a fall back to the pin; a floor above the max could never settle.
+        #expect(floor(900) == AppStore.sidebarWidthMax)
+        // The other caller's shape: an observed drag clamped against the start child's own minimum.
+        #expect(LinuxSidebarPolicy.clampSidebarWidth(160, minimum: 310) == 310)
+        #expect(LinuxSidebarPolicy.clampSidebarWidth(900, minimum: 310) == AppStore.sidebarWidthMax)
+    }
+
+    @Test("a floor-driven divider move is not persisted, so the requested width survives it")
+    @MainActor
+    func persistedSidebarWidth() {
+        // `minimum` is the EFFECTIVE minimum measured off the paned start child, not the content floor;
+        // the default maximum is the `G_MAXINT` a paned reports before its first allocation.
+        func persisted(observed: Double, requested: Double, minimum: Double,
+                       layoutMaximum: Double = Double(Int32.max)) -> Double? {
+            LinuxSidebarPolicy.persistedSidebarWidth(observed: observed, requested: requested,
+                                                     minimum: minimum, layoutMaximum: layoutMaximum)
+        }
+        // A minimum that rose past the saved width clamps the divider up; persisting that overwrites
+        // the request for good, since nothing pulls the divider back when the minimum drops again.
+        #expect(persisted(observed: 250, requested: 220, minimum: 250) == nil)
+        #expect(persisted(observed: 220, requested: 160, minimum: 220) == nil)
+        // The same for the header's window controls raising the start child above the content floor.
+        #expect(persisted(observed: 235, requested: 220, minimum: 235) == nil)
+
+        // A real drag is anything the layout did not produce — wider, or down onto the floor itself.
+        #expect(persisted(observed: 300, requested: 220, minimum: 220) == 300)
+        #expect(persisted(observed: 220, requested: 300, minimum: 220) == 220)
+        #expect(persisted(observed: 250, requested: 300, minimum: 250) == 250)
+        // A drag past the shared maximum records the maximum, which the caller also lays out at.
+        #expect(persisted(observed: 900, requested: 300, minimum: 220) == AppStore.sidebarWidthMax)
+        // Sub-pixel jitter around the standing request is not a drag.
+        #expect(persisted(observed: 220.4, requested: 220, minimum: 220) == nil)
+
+        // The `max-position` leg: a narrowed window's cap is not a drag; a drag below it still is, and
+        // a maximum above the standing request never masks one.
+        #expect(persisted(observed: 349, requested: 400, minimum: 220, layoutMaximum: 349) == nil)
+        #expect(persisted(observed: 300, requested: 400, minimum: 220, layoutMaximum: 349) == 300)
+        #expect(persisted(observed: 349, requested: 400, minimum: 220, layoutMaximum: 900) == 349)
+
+        // A minimum above the shared maximum is a LAYOUT constraint: no request there is honourable, so
+        // every position would read as a drag and the write-back would destroy the request.
+        #expect(persisted(observed: 700, requested: 220, minimum: 700) == nil)
+        // The boundary itself stays live — these two pin the guard as `<=`; only the second survives `<`.
+        #expect(persisted(observed: 300, requested: 220,
+                          minimum: AppStore.sidebarWidthMax) == AppStore.sidebarWidthMax)
+        #expect(persisted(observed: AppStore.sidebarWidthMax, requested: 220,
+                          minimum: AppStore.sidebarWidthMax) == nil)
+    }
+
+    @Test("the divider is laid out at the request the floor and the window width both allow")
+    @MainActor
+    func laidOutSidebarWidth() {
+        func laidOut(requested: Double, minimum: Double, layoutMaximum: Double) -> Double {
+            LinuxSidebarPolicy.laidOutSidebarWidth(requested: requested, minimum: minimum,
+                                                   layoutMaximum: layoutMaximum)
+        }
+        // A wide enough window: the request stands, raised by the minimum and capped by the shared max.
+        #expect(laidOut(requested: 400, minimum: 220, layoutMaximum: 899) == 400)
+        #expect(laidOut(requested: 160, minimum: 220, layoutMaximum: 899) == 220)
+        #expect(laidOut(requested: 900, minimum: 220, layoutMaximum: 899)
+            == AppStore.sidebarWidthMax)
+        // Narrowed past the request, the window wins — the LOAD-BEARING leg, without which the
+        // `notify::max-position` handler re-asserts an over-wide position and the sidebar overhangs.
+        #expect(laidOut(requested: 400, minimum: 220, layoutMaximum: 349) == 349)
+        // All three readings of "no window cap yet"; `.infinity` must never reach `set_position`.
+        for unbounded in [Double(Int32.max), 0, -1] {
+            #expect(laidOut(requested: 400, minimum: 220, layoutMaximum: unbounded) == 400)
+        }
+    }
+
     @Test("notification delivery delegates policy and identity to shared core")
     @MainActor
     func notificationDelivery() {

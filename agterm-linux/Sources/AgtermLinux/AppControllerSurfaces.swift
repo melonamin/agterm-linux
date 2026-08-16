@@ -701,7 +701,10 @@ extension AppController {
     /// instead of being dropped; whichever ends the interaction rebuilds anyway, and the retry is then a
     /// cheap no-op repaint. The gate is the shared `sidebarInteractionInProgress`, so this and the trailing
     /// soft-close reconcile defer on exactly the same condition.
-    private func scheduleSidebarMetadataRefresh(after delay: TimeInterval = 0.01) {
+    ///
+    /// Internal rather than file-private because the app-level desktop-metrics observer in `App.swift`
+    /// routes its own notification burst through this same debouncer and interaction gate.
+    func scheduleSidebarMetadataRefresh(after delay: TimeInterval = 0.01) {
         sidebarMetadataDebouncer.schedule(after: delay) { [weak self] in
             guard let self else { return }
             guard !self.sidebarInteractionInProgress else {

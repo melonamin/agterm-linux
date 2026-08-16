@@ -20,6 +20,9 @@ extension AppController {
             gtk_widget_set_margin_top(W(bar), padding)
             gtk_widget_set_margin_bottom(W(bar), padding)
         }
+        // The header moves the paned start child's minimum but not the CONTENT floor (it is an
+        // `AdwToolbarView` top bar, not a child of `sidebarBox`), so re-lay out rather than re-measure.
+        if let paned = splitView { applySidebarWidth(paned) }
     }
 
     func applyWindowTranslucency(settings: AppSettings? = nil) {

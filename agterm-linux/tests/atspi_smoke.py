@@ -63,13 +63,20 @@ def find_app(process_id):
     return matches[-1] if matches else None
 
 
-def wait_for(predicate, message, timeout=12):
+def wait_for(predicate, message, timeout=12, required=True):
+    """Poll `predicate` until it returns something truthy.
+
+    `required=False` returns None on timeout instead of asserting, for a leg whose PRECONDITION the host
+    may decline to provide (a compositor ignoring a window resize) — the caller then reports a SKIP.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         value = predicate()
         if value:
             return value
         time.sleep(0.1)
+    if not required:
+        return None
     raise AssertionError(message)
 
 
@@ -2096,6 +2103,306 @@ def verify_sidebar_narrow_clipping(env):
         stop(process)
 
 
+# `AppStore.sidebarWidthDefault` — the width the floor pins to while the content fits inside it.
+SIDEBAR_PIN_WIDTH = 220
+# A saved request above the pin and below `AppStore.sidebarWidthMax` (560), so the window-width leg can
+# be capped from above with neither the floor nor the shared maximum interfering.
+SIDEBAR_REQUESTED_WIDTH = 400
+
+
+def sidebar_window_frame_width(app):
+    """The toplevel frame's own allocated width, or None while it is unallocated.
+
+    The window-width leg's PRECONDITION, read off the FRAME so a compositor declining the resize stays
+    distinguishable from the regression that leg gates. The WIDEST frame is the toplevel.
+    """
+    widths = [box.width for node in collect(app, role="frame") if (box := window_extents(node))]
+    return max(widths) if widths else None
+
+
+def sidebar_column_settled(app, accept):
+    """The sidebar column's width once two reads 0.1s apart agree AND `accept` takes it, else None.
+
+    `accept` is REQUIRED: the pre-transition value is itself stable, so without a predicate `wait_for`
+    returns the seeded width and the caller fails hard instead of polling on. Re-read per assertion and
+    never hoisted — every step below re-measures the floor and re-lays the divider.
+    """
+    first = sidebar_column(app)
+    if first is None:
+        return None
+    time.sleep(0.1)
+    second = sidebar_column(app)
+    if second is None or second.width != first.width:
+        return None
+    return first.width if accept(first.width) else None
+
+
+def sidebar_width_record(state, width=None):
+    """The per-window record's path, after optionally patching its `sidebarWidth` to `width`.
+
+    Launch 1 has no window record yet — `sidebarWidth` is per-window state in `windows/<uuid>.json` — so
+    it seeds through the legacy `workspaces.json` and `WindowLibrary` migrates it; every later launch
+    patches the migrated record through here.
+    """
+    windows = os.path.join(state, "windows")
+    records = [os.path.join(windows, name) for name in sorted(os.listdir(windows))
+               if name.endswith(".json")]
+    assert len(records) == 1, (
+        f"expected exactly one window record under {windows}, found {len(records)} — the file this "
+        "patches and the file the on-disk assertions read are only the same one while there is one")
+    path = records[0]
+    if width is not None:
+        with open(path, encoding="utf-8") as source:
+            record = json.load(source)
+        record["sidebarWidth"] = width
+        with open(path, "w", encoding="utf-8") as target:
+            json.dump(record, target)
+    return path
+
+
+def verify_sidebar_width_floor(env):
+    """The sidebar's ONE derived width floor: it PINS at the default width, FOLLOWS the measured content
+    once that stops fitting, and never lets the LAYOUT overwrite the saved request.
+
+    The contract, and what makes each of the five launches non-redundant, is the width-floor section of
+    `agterm-linux/docs/sidebar.md`. Every leg asserts a width the app CHOSE, which is what makes them
+    discriminating; `SIDEBAR_EDGE_SLACK` appears throughout as a PIXEL-EQUALITY tolerance, because these
+    legs compare the SCROLLER's width against a number applied to the paned start child above it.
+
+    Launches 1-3 seed `toolbarMode: hidden`, the smallest sidebar font, and an isolated `XDG_CONFIG_HOME`
+    so the content floor alone holds the column open and no host theming reaches an exact-pixel
+    assertion. Launch 4 puts the header back deliberately — see it for why.
+    """
+    state = env["AGTERM_STATE_DIR"]
+    settings_path = os.path.join(state, "settings.json")
+    seed_legacy_sidebar_width(env, 160, "width floor workspace",
+                              "7B1D4E62-0F3A-4D18-9C55-3E7A2B6F91C0",
+                              "1A9C5D30-8E42-4B77-A0F6-2D8B4C1E5093")
+    # GTK reads overlay scrolling from the ENVIRONMENT as well as GtkSettings, so a host that already
+    # exports 0 would make launches 2 and 2b identical and the scrollbar leg could never fail.
+    overlay_env = dict(env, GTK_OVERLAY_SCROLLING="1")
+
+    def seed_settings(**overrides):
+        # Merge rather than clobber, so a first-run settings write is not silently reset.
+        settings = {}
+        if os.path.exists(settings_path):
+            with open(settings_path, encoding="utf-8") as source:
+                settings = json.load(source)
+        settings.update({"toolbarMode": "hidden", "sidebarFontSize": 9, **overrides})
+        with open(settings_path, "w", encoding="utf-8") as target:
+            json.dump(settings, target)
+
+    # LAUNCH 1 — the PIN gate. The store holds a 160px request and the layout refuses it, because the
+    # floor pins at the default width whatever the request says.
+    seed_settings()
+    process, app = launch(sidebar_isolated_env(overlay_env))
+    try:
+        # The predicate carries the SAME slack the assertion does, and still excludes the seeded 160.
+        pinned = wait_for(
+            lambda: sidebar_column_settled(
+                app, lambda width: width >= SIDEBAR_PIN_WIDTH - SIDEBAR_EDGE_SLACK),
+            f"the sidebar column never settled at or above the {SIDEBAR_PIN_WIDTH}px pin — it stayed at "
+            "the seeded 160px request, so nothing floored it")
+        # SLACK, not equality: `pinned` is the SCROLLER's width, the floor a request on the view above it.
+        assert abs(pinned - SIDEBAR_PIN_WIDTH) <= SIDEBAR_EDGE_SLACK, (
+            f"the sidebar laid out at {pinned}px, not the {SIDEBAR_PIN_WIDTH}px "
+            "`AppStore.sidebarWidthDefault` the floor pins to while the measured content fits inside "
+            "it — that is a SECOND width constraint on the sidebar tree (a `gtk_widget_set_size_request` "
+            "that came back) binding ahead of the derived floor")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+    # LAUNCH 2 — the MEASUREMENT gate. The lever is a user `gtk-4.0/gtk.css` in the isolated
+    # XDG_CONFIG_HOME, honoured at GTK_STYLE_PROVIDER_PRIORITY_USER (800), above the app's own sidebar
+    # provider. `min-width` in px, so the raised minimum is identical on every host, font family and text
+    # scale, and stays under `AppStore.sidebarWidthMax` (560).
+    sidebar_width_record(state, 160)
+    seed_settings()
+    process, app = launch(
+        sidebar_isolated_env(overlay_env, ".agterm-sidebar label { min-width: 300px; }\n"))
+    try:
+        window_id = next(item["id"] for item in window_list(env) if item["open"])
+        session_id = window_tree(env, window_id)["workspaces"][0]["sessions"][0]["id"]
+        measured = wait_for(
+            lambda: sidebar_column_settled(app, lambda width: width > SIDEBAR_PIN_WIDTH),
+            f"the sidebar stayed at or below the {SIDEBAR_PIN_WIDTH}px pin while its content needs more "
+            "— the floor is no longer following `gtk_widget_measure` (a constant, or a measure pointed "
+            "at the wrong widget: the scroller measures ~46px, the sidebar box is the widest sidebar "
+            "site by construction)")
+        # Decorating the row adds two more labels the lever pins at 300px each, so the content minimum
+        # jumps and the floor has to follow it — the shared `rebuildSidebar` -> `refreshSidebarWidthFloor`
+        # path every re-measure ends in, and the only half an Xvfb session can drive.
+        control_json(env, "session", "status", "blocked", "--target", session_id, "--json")
+        control_json(env, "notify", "--title", "floor", "width floor",
+                     "--target", session_id, "--window", window_id, "--json")
+
+        def decorated():
+            session = window_tree(env, window_id)["workspaces"][0]["sessions"][0]
+            return session.get("status") == "blocked" and session.get("unseen", 0) > 0
+
+        wait_for(decorated, "session never took the status and unseen-badge decorations")
+        regrown = wait_for(
+            lambda: sidebar_column_settled(app, lambda width: width > measured),
+            f"the sidebar stayed at {measured}px after the row grew two more 300px labels — the floor "
+            "was measured once when the split was built instead of at the end of every "
+            "`rebuildSidebar`, so a desktop font or text-scale change would leave the sidebar clipped "
+            "for the rest of the session")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+    # LAUNCH 2b — the SCROLLBAR gate: launch 2's configuration with one env var flipped, so `measured` is
+    # the baseline and a non-overlay bar taking width out of the viewport is the ONLY difference.
+    sidebar_width_record(state, 160)
+    seed_settings()
+    process, app = launch(sidebar_isolated_env(
+        dict(env, GTK_OVERLAY_SCROLLING="0"), ".agterm-sidebar label { min-width: 300px; }\n"))
+    try:
+        widened = wait_for(
+            lambda: sidebar_column_settled(app, lambda width: width > measured + SIDEBAR_EDGE_SLACK),
+            f"the sidebar settled at the same {measured}px it did with overlay scrollbars, so the floor "
+            "carries no scrollbar term — the bar now takes ~15px out of the viewport and carries the "
+            "row's trailing badge exactly that far past the right edge, the clipping the floor exists to "
+            "prevent")
+        # A BAND, not a floor: 8px of slack against a ~15px signal is loose enough that an unrelated
+        # difference would also clear the lower bound, so cap the delta at a few times the bar's width.
+        assert widened <= measured + 40, (
+            f"the sidebar widened from {measured}px to {widened}px, far past the ~15px a non-overlay "
+            "vertical scrollbar takes out of the viewport — these two launches differ only in "
+            "GTK_OVERLAY_SCROLLING, so something other than the scrollbar term moved the column and "
+            "this leg is no longer measuring what it names")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+    # LAUNCH 3 — the WINDOW-WIDTH gate, the only cover for `notify::max-position`: GTK emits no
+    # `notify::position` when the window widens again, so without that handler the divider stays at the
+    # narrow window's cap. No `gtk.css` lever, so the floor is the plain pin and the request sits above it.
+    sidebar_width_record(state, SIDEBAR_REQUESTED_WIDTH)
+    seed_settings()
+    process, app = launch(sidebar_isolated_env(overlay_env))
+    try:
+        window_id = next(item["id"] for item in window_list(env) if item["open"])
+
+        def at_request(width):
+            return abs(width - SIDEBAR_REQUESTED_WIDTH) <= SIDEBAR_EDGE_SLACK
+
+        wait_for(lambda: sidebar_column_settled(app, at_request),
+                 f"the sidebar never restored its saved {SIDEBAR_REQUESTED_WIDTH}px request")
+
+        def resize(width):
+            control_json(env, "window", "resize", window_id,
+                         "--width", str(width), "--height", "700", "--json")
+
+        wide_window = wait_for(lambda: sidebar_window_frame_width(app),
+                               "the window frame never reported an allocation")
+        resize(360)
+
+        def narrowed_window():
+            width = sidebar_window_frame_width(app)
+            return width if width is not None and width < wide_window - SIDEBAR_EDGE_SLACK else None
+
+        # The PRECONDITION is read off the FRAME, never inferred from the sidebar: `window.resize` is
+        # `gtk_window_set_default_size` and a Wayland compositor may decline it, which asking the sidebar
+        # would conflate with the very regression this leg is the SOLE cover for — printing SKIP and
+        # passing. It does take under the Xvfb + openbox session, where this gate is authoritative.
+        narrowed = wait_for(narrowed_window, "the window never narrowed", timeout=8, required=False)
+        if narrowed is None:
+            capped = None
+            print(f"SKIP: the compositor kept the window at {wide_window}px instead of the 360px asked "
+                  "for, so the sidebar cannot be capped and the widen-restores-the-request cycle cannot "
+                  "run here (it runs under the Xvfb + openbox session CI uses)")
+        else:
+            capped = wait_for(
+                lambda: sidebar_column_settled(
+                    app, lambda width: width < SIDEBAR_REQUESTED_WIDTH - SIDEBAR_EDGE_SLACK),
+                f"the window narrowed from {wide_window}px to {narrowed}px and the sidebar column held "
+                f"its {SIDEBAR_REQUESTED_WIDTH}px request anyway — `applySidebarWidth` is not capping at "
+                "GtkPaned's `max-position`, so it re-asserts the over-wide position from inside GtkPaned's"
+                " own `size_allocate`, where GTK does not re-clamp it, and the sidebar overhangs the "
+                "window", timeout=8)
+            resize(1100)
+            wait_for(lambda: sidebar_column_settled(app, at_request),
+                     f"the sidebar stayed at the narrow window's {capped}px cap after the window "
+                     f"widened again instead of returning to its {SIDEBAR_REQUESTED_WIDTH}px request — "
+                     "`notify::position` does not fire for a widening, so `notify::max-position` is the "
+                     "only signal that can pull the divider back up")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+    # Read AFTER the quit: the 0.4s save debouncer only guarantees a current record once the SIGTERM
+    # flush has run. Guarded on `capped`, since without it the divider provably never moved.
+    record_path = sidebar_width_record(state)
+    if capped is None:
+        saved = None
+    else:
+        with open(record_path, encoding="utf-8") as source:
+            saved = json.load(source).get("sidebarWidth")
+        assert saved == SIDEBAR_REQUESTED_WIDTH, (
+            f"the saved sidebar width is {saved}px, not the {SIDEBAR_REQUESTED_WIDTH}px request — the "
+            f"narrow window's {capped}px `max-position` cap was persisted over the request, which "
+            "destroys it for good: nothing restores a width the store no longer remembers")
+
+    # LAUNCH 4 — the WIRING gate: `captureSidebarWidth` must weigh the divider against
+    # `sidebarEffectiveMinimum`, not the content floor. The launches above HIDE the sidebar header, which
+    # leaves the two numbers EQUAL, so three levers separate them here — a 160px request, so the minimum
+    # rather than the request decides; `.agterm-sidebar-column headerbar`, lifting the VISIBLE sidebar
+    # header's minimum to ~310px without touching the content floor (it is an `AdwToolbarView` top bar,
+    # not a child of `sidebarBox`); and `.agterm-sidebar row label`, driving the content floor to ~404px
+    # in tree mode. Flagged mode with nothing flagged then empties the list — the wrapped hint is a bare
+    # label the second lever misses — and the floor drops back to the 220px pin while the header holds
+    # the minimum at 310. That is the one moment the two candidates disagree; see the rule's wiring
+    # bullet for the half this cannot cover.
+    record_path = sidebar_width_record(state, 160)
+    seed_settings(toolbarMode="normal")
+    process, app = launch(sidebar_isolated_env(
+        overlay_env, ".agterm-sidebar-column headerbar { min-width: 300px; }\n"
+                     ".agterm-sidebar row label { min-width: 300px; }\n"))
+    try:
+        wide = wait_for(
+            lambda: sidebar_column_settled(app, lambda width: width > SIDEBAR_PIN_WIDTH),
+            "the sidebar never rose above the pin in tree mode, so the row-label lever never reached the "
+            "content floor and the mode switch below would not move the divider")
+        control_json(env, "sidebar", "mode", "flagged", "--json")
+        bound = wait_for(
+            lambda: sidebar_column_settled(app, lambda width: width < wide - SIDEBAR_EDGE_SLACK),
+            f"the sidebar stayed at {wide}px after flagged mode emptied the list — the floor did not "
+            "fall back to the pin, so the divider never moved and this leg cannot see the wiring")
+        assert bound > SIDEBAR_PIN_WIDTH + SIDEBAR_EDGE_SLACK, (
+            f"the sidebar fell all the way to {bound}px, at or below the {SIDEBAR_PIN_WIDTH}px pin — the "
+            "raised `headerbar` minimum never reached the paned start child, so the effective minimum "
+            "and the content floor are the same number here and the assertion below cannot fail")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+    with open(record_path, encoding="utf-8") as source:
+        requested = json.load(source).get("sidebarWidth")
+    assert requested == 160, (
+        f"the saved sidebar width is {requested}px, not the 160px request — the divider settled at "
+        f"{bound}px, held there by the start child's minimum rather than by the request, and that LAYOUT "
+        "position was persisted over the request. `captureSidebarWidth` is reasoning with the content "
+        f"floor ({SIDEBAR_PIN_WIDTH}px here) instead of `sidebarEffectiveMinimum`, so GTK's clamp up to "
+        "the real minimum reads as a drag — the user's saved width is destroyed on any client-side-"
+        "decorated desktop, and no unit test can see it")
+    narrow_leg = (f"survives the narrow window's {capped}px cap" if capped is not None
+                  else "SKIPPED the compositor-dependent narrow-window cycle")
+    print(f"OK: the sidebar width floor pins at {SIDEBAR_PIN_WIDTH}px, follows its measured content to "
+          f"{measured}px, re-measures to {regrown}px when the row grows, widens to {widened}px for a "
+          f"non-overlay scrollbar, the saved {SIDEBAR_REQUESTED_WIDTH}px request {narrow_leg}, and a "
+          f"160px request survives a {bound}px effective minimum instead of being overwritten by it")
+
+
 def verify_preferences_pages(env, home):
     process, app = launch(env)
     try:
@@ -2356,18 +2663,23 @@ def main():
 
     scenario = os.environ.get("AGTERM_ATSPI_SCENARIO")
     if scenario is None:
+        failures = []
         for child_scenario in (
             "normal", "upstream-controls", "dashboard-modal", "context-menu",
             "window-ownership", "preferences-pages",
             "notification-reveal", "notification-focus", "session-pickers",
             "custom-command-failures", "surface-lifetimes", "sidebar-row-height",
             "sidebar-narrow-clipping",
+            "sidebar-width-floor",
             "auto-follow", "hidden-toolbar",
         ):
             child_env = dict(os.environ, AGTERM_ATSPI_SCENARIO=child_scenario)
             result = subprocess.run([sys.executable, __file__], env=child_env)
             if result.returncode != 0:
-                return result.returncode
+                failures.append((child_scenario, result.returncode))
+        if failures:
+            print("FAILED: " + ", ".join(f"{name} ({code})" for name, code in failures))
+            return failures[0][1]
         print("PASS")
         return 0
 
@@ -2416,6 +2728,8 @@ def main():
             verify_sidebar_row_height_follows_font_size(env)
         elif scenario == "sidebar-narrow-clipping":
             verify_sidebar_narrow_clipping(env)
+        elif scenario == "sidebar-width-floor":
+            verify_sidebar_width_floor(env)
         elif scenario == "preferences-pages":
             verify_preferences_pages(env, home)
         elif scenario == "auto-follow":

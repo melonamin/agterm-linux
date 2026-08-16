@@ -201,7 +201,6 @@ final class AppController {
         sidebarScroller = scroller
         gtk_widget_add_css_class(W(scroller), "agterm-sidebar")   // theme-bg tint target
         gtk_scrolled_window_set_child(scroller, W(sidebarBox))
-        gtk_widget_set_size_request(W(scroller), 240, -1)
         let sidebarToolbar = OpaquePointer(adw_toolbar_view_new())
         adw_toolbar_view_add_top_bar(sidebarToolbar, W(sidebarHeader))
         adw_toolbar_view_set_content(sidebarToolbar, W(scroller))
