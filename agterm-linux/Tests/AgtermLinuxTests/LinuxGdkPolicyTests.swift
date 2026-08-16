@@ -108,6 +108,79 @@ struct LinuxGdkPolicyAssignmentTests {
         #expect(assignments(5, 0) == [.init(name: "GDK_DISABLE", value: "gles-api,vulkan")])
     }
 
+    @Test("inverted all already selects both required flags on either GTK branch")
+    func invertedAllNeedsNoAssignment() {
+        #expect(assignments(4, 14, debug: "all").isEmpty)
+        #expect(assignments(4, 22, disable: "all").isEmpty)
+    }
+
+    @Test("ordinary exclusions after inverted all do not disturb the required flags")
+    func invertedAllWithOrdinaryExclusionsNeedsNoAssignment() {
+        #expect(assignments(4, 14, debug: "all,gl").isEmpty)
+        #expect(assignments(4, 22, disable: "all,gl").isEmpty)
+    }
+
+    @Test("required flags are removed from an inverted list instead of appended")
+    func invertedRequiredFlagsAreRemoved() {
+        #expect(assignments(4, 14, debug: "all,gl-disable-gles,vulkan-disable") ==
+                [.init(name: "GDK_DEBUG", value: "all")])
+        #expect(assignments(4, 22, disable: "all,gles-api,vulkan") ==
+                [.init(name: "GDK_DISABLE", value: "all")])
+    }
+
+    @Test("one required exclusion is removed while ordinary ordering stays intact")
+    func invertedPartialExclusionIsRemoved() {
+        #expect(assignments(4, 14, debug: "all,gl,gl-disable-gles") ==
+                [.init(name: "GDK_DEBUG", value: "all,gl")])
+        #expect(assignments(4, 22, disable: "all,gl,gles-api") ==
+                [.init(name: "GDK_DISABLE", value: "all,gl")])
+    }
+
+    /// Rewriting is required only for an inverted list that excludes a policy flag. At that point the
+    /// normalizer uses one stable delimiter, removes every case-insensitive required duplicate, and keeps
+    /// every other token's spelling, order, and duplicates. Ordinary lists remain byte-for-byte intact.
+    @Test("inverted rewrites have deterministic ordering and canonical separators")
+    func invertedRewriteCanonicalization() {
+        #expect(assignments(4, 14,
+                            debug: "frames;VULKAN-DISABLE:ALL gl-disable-gles,vulkan-disable;frames") ==
+                [.init(name: "GDK_DEBUG", value: "frames,ALL,frames")])
+        #expect(assignments(4, 22, disable: "frames;VULKAN:all gles-api,vulkan;frames") ==
+                [.init(name: "GDK_DISABLE", value: "frames,all,frames")])
+    }
+
+    @Test("ordinary duplicates and ordering survive while the missing flag is appended")
+    func ordinaryDuplicatesAndOrderingArePreserved() {
+        #expect(assignments(4, 14, debug: "frames;frames;vulkan-disable") ==
+                [.init(name: "GDK_DEBUG", value: "frames;frames;vulkan-disable,gl-disable-gles")])
+        #expect(assignments(4, 22, disable: "frames;frames;vulkan") ==
+                [.init(name: "GDK_DISABLE", value: "frames;frames;vulkan,gles-api")])
+    }
+
+    @Test("the effective emitted value always selects both policy flags")
+    func effectiveValuesSelectRequiredFlags() {
+        let fixtures = [
+            (minor: 14, existing: "all", required: ["gl-disable-gles", "vulkan-disable"]),
+            (minor: 14, existing: "all,gl,gl-disable-gles,vulkan-disable",
+             required: ["gl-disable-gles", "vulkan-disable"]),
+            (minor: 14, existing: "frames", required: ["gl-disable-gles", "vulkan-disable"]),
+            (minor: 22, existing: "all", required: ["gles-api", "vulkan"]),
+            (minor: 22, existing: "all,gl,gles-api,vulkan", required: ["gles-api", "vulkan"]),
+            (minor: 22, existing: "gl", required: ["gles-api", "vulkan"]),
+        ]
+        for fixture in fixtures {
+            let result = fixture.minor >= 16
+                ? assignments(4, fixture.minor, disable: fixture.existing)
+                : assignments(4, fixture.minor, debug: fixture.existing)
+            let effective = result.first?.value ?? fixture.existing
+            let parsed = Set(effective.components(separatedBy: LinuxGdkPolicyTestSupport.delimiters)
+                .filter { !$0.isEmpty }.map { $0.lowercased() })
+            for required in fixture.required {
+                let selected = parsed.contains("all") ? !parsed.contains(required) : parsed.contains(required)
+                #expect(selected, "policy flag \(required) was excluded by \(effective)")
+            }
+        }
+    }
+
     @Test("only the missing token is appended to an existing value")
     func appendsOnlyTheMissingToken() {
         #expect(assignments(4, 22, disable: "vulkan") == [.init(name: "GDK_DISABLE", value: "vulkan,gles-api")])
@@ -218,6 +291,21 @@ struct LinuxGdkPreLaunchEnvironmentTests {
         #expect(captured.childRestore == ["GDK_DEBUG": "frames"])
     }
 
+    @Test("an inverted user value is normalized for agterm and restored verbatim to children")
+    func capturesAnInvertedUserValue() {
+        let debug = LinuxGdkPolicy.PreLaunchEnvironment(
+            gtkMajor: 4, gtkMinor: 14,
+            environment: ["GDK_DEBUG": "all,gl-disable-gles,vulkan-disable"])
+        #expect(debug.assignments == [.init(name: "GDK_DEBUG", value: "all")])
+        #expect(debug.childRestore == ["GDK_DEBUG": "all,gl-disable-gles,vulkan-disable"])
+
+        let disable = LinuxGdkPolicy.PreLaunchEnvironment(
+            gtkMajor: 4, gtkMinor: 22,
+            environment: ["GDK_DISABLE": "all,gles-api,vulkan"])
+        #expect(disable.assignments == [.init(name: "GDK_DISABLE", value: "all")])
+        #expect(disable.childRestore == ["GDK_DISABLE": "all,gles-api,vulkan"])
+    }
+
     @Test("a GTK too old for either spelling assigns nothing and leaves children alone")
     func capturesNothingBelowFourteen() {
         let captured = LinuxGdkPolicy.PreLaunchEnvironment(gtkMajor: 4, gtkMinor: 13,
@@ -270,4 +358,8 @@ struct LinuxGdkPreLaunchEnvironmentTests {
             #expect(captured.childRestore[assignment.name] == environment[assignment.name])
         }
     }
+}
+
+private enum LinuxGdkPolicyTestSupport {
+    static let delimiters = CharacterSet(charactersIn: ",;: \t")
 }

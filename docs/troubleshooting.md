@@ -99,7 +99,10 @@ agterm: GtkGLArea failed to create a GL context: <driver message>
 Capture it by launching the binary from a terminal, or with `journalctl --user` as described under **Reading the logs**.
 The known cause is GTK 4.16 and later preferring the OpenGL ES API for its own EGL paint context, which makes a desktop-GL sibling context unrealizable; agterm now prevents it by setting `GDK_DISABLE=gles-api,vulkan` (`GDK_DEBUG=gl-disable-gles,vulkan-disable` on GTK 4.14–4.15) before GTK initializes.
 That is why a launch from a terminal prints one line such as `agterm: setting GDK_DISABLE=gles-api,vulkan` — it is expected, not an error, and `agterm: failed to set …` instead means the assignment did not take.
-Nothing is printed when there is nothing to assign: on GTK below 4.14 neither spelling exists, and an environment that already carries both tokens is left exactly as it is.
+Nothing is printed when there is nothing to assign: on GTK below 4.14 neither spelling exists, an ordinary
+environment that already carries both tokens is left exactly as it is, and `all` already selects both flags.
+Because GDK interprets tokens after `all` as exclusions, agterm removes either required flag if it appears
+there; appending it would re-enable the feature the policy must disable.
 
 To look deeper, run with `GDK_DEBUG=opengl` and read the context decisions: a paint context reported as `es:yes` is the GLES preference, and after the fix every context should report `es:no` with a desktop GL version.
 The `vulkan` token is part of the fix, not a tuning knob: with GTK's Vulkan renderer active, GSK cannot import the desktop-GL terminal texture and falls back to a per-frame CPU readback that is retained, which shows up as steadily climbing memory under heavy terminal output.

@@ -68,9 +68,10 @@ It shows the exact file plan before a write and never replaces unrelated hooks, 
 Before GTK initializes, agterm sets `GDK_DISABLE=gles-api,vulkan` on itself (`GDK_DEBUG=gl-disable-gles,vulkan-disable`
 on GTK 4.14–4.15), printing one line whenever it makes the assignment: the bundled Ghostty renderer is desktop-OpenGL-only, and GTK 4.16+
 otherwise prefers OpenGL ES for its own paint context, which leaves every terminal on a "needs OpenGL" overlay.
-A value you set yourself is appended to per token rather than replaced, spawned shells and anything agterm launches
-get your pre-launch values back, and there is no opt-out — on GTK 4.14 and newer the tokens are always present in
-agterm's own process, whether you set them or agterm did (below 4.14 neither spelling exists, so nothing is set).
+An ordinary value you set yourself is appended to per token rather than replaced; for GDK's inverse `all`
+syntax, agterm removes the required flags from the exclusions instead. Spawned shells and anything agterm
+launches get your pre-launch values back, and there is no opt-out — on GTK 4.14 and newer both safeguards
+are always active in agterm's own process (below 4.14 neither spelling exists, so nothing is set).
 GTK4 restores and clamps window sizes to a connected display.
 It does not expose reliable programmatic window positioning: Wayland compositors own placement, and the
 GTK4 frontend intentionally leaves x/y geometry absent on both Wayland and X11 rather than reporting

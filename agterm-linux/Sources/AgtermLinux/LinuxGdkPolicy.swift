@@ -81,18 +81,19 @@ enum LinuxGdkPolicy {
     ///   (GTK #8228/#8303, MR !10130, first fixed in 4.23.3).
     ///
     /// The version gate exists because the tokens moved from `GDK_DEBUG` to `GDK_DISABLE` in 4.16 and
-    /// neither spelling exists below 4.14. A user's own value is appended to per token, never clobbered.
+    /// neither spelling exists below 4.14. Ordinary user values are appended to per token, never clobbered.
+    /// GDK's special `all` token inverts the list, so required flags are instead removed from its exclusions.
     static func assignments(gtkMajor: Int,
                             gtkMinor: Int,
                             existingDisable: String?,
                             existingDebug: String?) -> [Assignment] {
         guard gtkMajor >= 4 else { return [] }
         if gtkMajor > 4 || gtkMinor >= 16 {
-            guard let value = appending(["gles-api", "vulkan"], to: existingDisable) else { return [] }
+            guard let value = enforcing(["gles-api", "vulkan"], in: existingDisable) else { return [] }
             return [Assignment(name: disableVariable, value: value)]
         }
         guard gtkMinor >= 14 else { return [] }
-        guard let value = appending(["gl-disable-gles", "vulkan-disable"], to: existingDebug) else { return [] }
+        guard let value = enforcing(["gl-disable-gles", "vulkan-disable"], in: existingDebug) else { return [] }
         return [Assignment(name: debugVariable, value: value)]
     }
 
@@ -101,14 +102,24 @@ enum LinuxGdkPolicy {
     /// an over-broad split risks a false "already present" that silently skips the fix.
     private static let delimiters = CharacterSet(charactersIn: ",;: \t")
 
-    /// The new value for a variable, or nil when every token is already present. Matches whole tokens,
-    /// never substrings, so `gles-apis` / `no-gles-api` still get the append.
-    private static func appending(_ tokens: [String], to existing: String?) -> String? {
-        let present = Set((existing ?? "")
+    /// The new value for a variable, or nil when its parsed flags already include every required flag.
+    /// GDK treats `all` as the complement of every other token: there the required flags must be absent
+    /// from the textual exclusions. A rewritten inverted value is canonicalized to comma separators while
+    /// preserving the spelling, order, and duplicates of every non-policy token. The ordinary append path
+    /// preserves the user's value verbatim and matches whole tokens, never substrings.
+    private static func enforcing(_ required: [String], in existing: String?) -> String? {
+        let parsed = (existing ?? "")
             .components(separatedBy: delimiters)
             .filter { !$0.isEmpty }
-            .map { $0.lowercased() })
-        let missing = tokens.filter { !present.contains($0.lowercased()) }
+        let requiredLowercase = Set(required.map { $0.lowercased() })
+        if parsed.contains(where: { $0.caseInsensitiveCompare("all") == .orderedSame }) {
+            let normalized = parsed.filter { !requiredLowercase.contains($0.lowercased()) }
+            guard normalized.count != parsed.count else { return nil }
+            return normalized.joined(separator: ",")
+        }
+
+        let present = Set(parsed.map { $0.lowercased() })
+        let missing = required.filter { !present.contains($0.lowercased()) }
         guard !missing.isEmpty else { return nil }
         let appended = missing.joined(separator: ",")
         guard let existing, !existing.isEmpty else { return appended }

@@ -29,7 +29,9 @@ paths:
   Upstream ghostty's `setGtkEnv()` sets the same pair, and the spellings follow it across GTK's rename:
   `GDK_DISABLE=gles-api,vulkan` on 4.16 and above, `GDK_DEBUG=gl-disable-gles,vulkan-disable` on 4.14–4.15,
   nothing below.
-  A user's own value is appended to per token rather than clobbered, so a `GDK_DEBUG=frames` survives.
+  An ordinary user value is appended to per token rather than clobbered, so a `GDK_DEBUG=frames` survives.
+  GDK's special `all` token complements the rest of the list, so there the required flags must be removed
+  from the textual exclusions instead; appending them would re-enable GLES and Vulkan.
   `gtk_get_major_version`/`gtk_get_minor_version` are the ONLY GTK calls allowed above the `setenv` loop:
   each reports the linked library's own version number, initializing nothing and opening no display.
   Children get the PRE-LAUNCH value of every variable the policy actually ASSIGNED handed back

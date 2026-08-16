@@ -11,6 +11,8 @@ because GDK parses those variables exactly once while GTK initializes and ignore
 They turn off GDK's GLES API, because libghostty's renderer is desktop-GL-only and the GLArea's
 desktop-GL context is otherwise unrealizable on GTK ≥ 4.16, and GTK's Vulkan GSK renderer, which cannot
 import the desktop-GL GLArea texture and falls back to a per-frame CPU readback that is retained forever.
+Ordinary existing values are extended without replacement. GDK's special `all` token inverts every other
+token, so an inverted value is instead normalized by removing the required flags from its exclusions.
 Those overrides are agterm's own, so every path that spawns a child hands the pre-launch values back:
 session shells at the `GhosttySurface` env choke point, the custom-command `/bin/sh -c` and `notify-send`
 through `restoringChildEnvironment(_:)`, and desktop-handler launches through
