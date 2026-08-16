@@ -1525,10 +1525,22 @@ def verify_context_menu(env):
                 break
         assert flag, "session context menu did not open"
         assert process.poll() is None, "session context menu terminated the app"
-        press_escape(process.pid)
+        created = control_json(env, "window", "new", "context-background", "--json")["result"]["id"]
+        assert process.poll() is None, "backgrounding a window with a context menu terminated the app"
+        control_json(env, "window", "close", created, "--json")
+        activate(wait_for(lambda: actionable(app, "New Session"), "New Session button is not actionable"))
+        wait_for(
+            lambda: len(collect(app, role="list item")) == len(rows) + 1,
+            "creating a session with a context menu open blocked the app",
+        )
+
+        # #26 resolves a split row from the row controller itself and parents its popover to that row.
+        # Exercise that current-base shape through #13's closed/detach seam: Escape must unparent the
+        # popover and restore keyboard input to the deliberately focused right pane.
         primary_window = wait_for(lambda: next(iter(window_list(env)), None), "primary window did not register")
         primary_id = primary_window["id"]
         primary_session = window_tree(env, primary_id)["workspaces"][0]["sessions"][0]["id"]
+        control_json(env, "session", "select", "--target", primary_session, "--json")
         control_json(env, "session", "split", "on", "--target", primary_session, "--json")
         wait_for(
             lambda: window_tree(env, primary_id)["workspaces"][0]["sessions"][0].get("hasSplit"),
@@ -1543,16 +1555,22 @@ def verify_context_menu(env):
         wait_for(lambda: actionable(app, "Close Session"), "split session context menu did not open")
         assert process.poll() is None, "split session context menu terminated the app"
         press_escape(process.pid)
-        created = control_json(env, "window", "new", "context-background", "--json")["result"]["id"]
-        assert process.poll() is None, "backgrounding a window with a context menu terminated the app"
-        control_json(env, "window", "close", created, "--json")
-        activate(wait_for(lambda: actionable(app, "New Session"), "New Session button is not actionable"))
-        wait_for(
-            lambda: len(collect(app, role="list item")) == len(rows) + 1,
-            "creating a session with a context menu open blocked the app",
+        wait_for(lambda: actionable(app, "Close Session") is None,
+                 "Escape did not dismiss the split session context menu")
+        focus_marker = os.path.join(env["AGTERM_STATE_DIR"], "split-context-focus")
+        type_x11_text(
+            f'printf %s "$AGTERM_PANE" > {shlex.quote(focus_marker)}',
+            process.pid,
         )
+        press_return(process.pid)
+        wait_for(lambda: os.path.exists(focus_marker),
+                 "typing after split context-menu dismissal did not reach a terminal pane")
+        with open(focus_marker, encoding="utf-8") as marker:
+            assert marker.read() == "right", (
+                "split context-menu dismissal did not restore the deliberately focused right pane"
+            )
         control_json(env, "tree", "--json")
-        print("OK: session context menu survives a sidebar rebuild")
+        print("OK: session context menu survives rebuilds and restores split-pane focus")
     except AssertionError:
         describe_tree(app)
         raise
