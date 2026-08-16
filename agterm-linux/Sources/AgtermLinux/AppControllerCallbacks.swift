@@ -202,6 +202,9 @@ let onRecentSessionsButton: @MainActor @convention(c) (OpaquePointer?, gpointer?
     MainActor.assumeIsolated { controllerForWidget(button)?.showSessionPicker(attention: false, anchor: button) }
 }
 
+// Deliberately UNCONNECTED: Linux sidebar rows use capture-phase press/release gestures while the
+// list boxes stay in GTK_SELECTION_NONE. Connecting `row-activated` would add a second click path
+// that collapses the custom multi-selection (agterm-linux/docs/sidebar.md).
 let onRowActivated: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { list, row, _ in
     MainActor.assumeIsolated {
         guard let controller = controllerForWidget(list), let id = controller.session(forRow: row) else { return }
@@ -209,14 +212,28 @@ let onRowActivated: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, g
     }
 }
 
-let onSessionRowClick: @MainActor @convention(c) (OpaquePointer?, Int32, Double, Double, gpointer?) -> Void = { gesture, presses, _, _, data in
+// Session-row left-click gestures. `pressed` and `released` share one C signature, so each phase
+// gets its own named callback. NEITHER may claim the sequence — the rationale lives in
+// agterm-linux/docs/sidebar.md (no claiming click gesture on a drag-source row).
+// Only the PRESS reads modifier state: the release consumes the press's remembered decision
+// (`SessionClickTracker`), so a modifier lifted between press and release changes nothing.
+
+let onSessionRowPress: @MainActor @convention(c) (OpaquePointer?, Int32, Double, Double, gpointer?) -> Void = { gesture, presses, _, _, data in
     guard presses == 1, let gesture, let data else { return }
     MainActor.assumeIsolated {
         guard let controller = controllerForEventController(gesture),
               let id = controller.session(forRow: OpaquePointer(data)) else { return }
         let modifiers = gtk_event_controller_get_current_event_state(gesture).rawValue
-        gtk_gesture_set_state(gesture, GTK_EVENT_SEQUENCE_CLAIMED)
-        controller.handleSessionRowClick(id, modifiers: modifiers)
+        controller.handleSessionRowPress(id, modifiers: modifiers)
+    }
+}
+
+let onSessionRowRelease: @MainActor @convention(c) (OpaquePointer?, Int32, Double, Double, gpointer?) -> Void = { gesture, presses, _, _, data in
+    guard presses == 1, let gesture, let data else { return }
+    MainActor.assumeIsolated {
+        guard let controller = controllerForEventController(gesture),
+              let id = controller.session(forRow: OpaquePointer(data)) else { return }
+        controller.handleSessionRowRelease(id)
     }
 }
 
@@ -261,14 +278,17 @@ let onRowDragPrepare: @MainActor @convention(c) (OpaquePointer?, Double, Double,
     return provider.map { OpaquePointer($0) }
 }
 
-let onRowDrop: @MainActor @convention(c) (OpaquePointer?, UnsafePointer<GValue>?, Double, Double, gpointer?) -> gboolean = { target, value, _, _, _ in
+let onRowDrop: @MainActor @convention(c) (OpaquePointer?, UnsafePointer<GValue>?, Double, Double, gpointer?) -> gboolean = { target, value, _, y, _ in
     MainActor.assumeIsolated {
         guard let value, let cstr = g_value_get_string(value),
               let w = gtk_event_controller_get_widget(target),
               let controller = controllerForEventController(target),
               let targetSid = controller.session(forRow: OpaquePointer(w)),
               let sourceSid = UUID(uuidString: String(cString: cstr)) else { return 0 }
-        controller.handleSessionDrop(source: sourceSid, onto: targetSid)
+        // The drop target is attached to the session row itself, so `y` is already in the row's
+        // coordinate space; the row height turns it into a top/bottom-half insertion slot.
+        controller.handleSessionDrop(source: sourceSid, onto: targetSid,
+                                     y: y, targetHeight: Double(gtk_widget_get_height(w)))
         return 1
     }
 }
@@ -288,7 +308,7 @@ let onHeaderDragPrepare: @MainActor @convention(c) (OpaquePointer?, Double, Doub
     return provider.map { OpaquePointer($0) }
 }
 
-let onHeaderDrop: @MainActor @convention(c) (OpaquePointer?, UnsafePointer<GValue>?, Double, Double, gpointer?) -> gboolean = { target, value, _, _, _ in
+let onHeaderDrop: @MainActor @convention(c) (OpaquePointer?, UnsafePointer<GValue>?, Double, Double, gpointer?) -> gboolean = { target, value, _, y, _ in
     MainActor.assumeIsolated {
         guard let value, let cstr = g_value_get_string(value),
               let w = gtk_event_controller_get_widget(target),
@@ -296,8 +316,12 @@ let onHeaderDrop: @MainActor @convention(c) (OpaquePointer?, UnsafePointer<GValu
               let targetWS = controller.workspaceForHeader(OpaquePointer(w)) else { return 0 }
         let s = String(cString: cstr)
         if s.hasPrefix("w:"), let src = UUID(uuidString: String(s.dropFirst(2))) {
-            controller.handleWorkspaceDrop(source: src, onto: targetWS)
+            // As in `onRowDrop`, the drop target sits on the row itself, so `y` is row-local.
+            controller.handleWorkspaceDrop(source: src, onto: targetWS,
+                                           y: y, targetHeight: Double(gtk_widget_get_height(w)))
         } else if let src = UUID(uuidString: s) {
+            // A session dropped on a workspace HEADER appends (unambiguous — no slot), carrying
+            // its whole selected block like a row drop.
             controller.handleSessionToWorkspace(session: src, workspace: targetWS)
         }
         return 1

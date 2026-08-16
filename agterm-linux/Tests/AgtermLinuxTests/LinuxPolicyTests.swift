@@ -419,3 +419,330 @@ struct LinuxPolicyTests {
             pane: .main, sessionExists: false, hasSplit: false, coverActive: false) == nil)
     }
 }
+
+@Suite("Sidebar drop insertion slots")
+struct SidebarDropSlotTests {
+    @Test("y-midpoint maps to an insertion slot: top half before, bottom half (midpoint inclusive) after")
+    func dropInsertionSlot() {
+        #expect(LinuxSidebarPolicy.dropInsertionSlot(targetIndex: 3, y: 0, height: 30) == 3)
+        #expect(LinuxSidebarPolicy.dropInsertionSlot(targetIndex: 3, y: 14.9, height: 30) == 3)
+        #expect(LinuxSidebarPolicy.dropInsertionSlot(targetIndex: 3, y: 15, height: 30) == 4)
+        #expect(LinuxSidebarPolicy.dropInsertionSlot(targetIndex: 3, y: 29.9, height: 30) == 4)
+        #expect(LinuxSidebarPolicy.dropInsertionSlot(targetIndex: 0, y: 20, height: 30) == 1)
+        // Out-of-range y (GTK can report a drop just outside the row): each side resolves to
+        // its nearest half.
+        #expect(LinuxSidebarPolicy.dropInsertionSlot(targetIndex: 3, y: -5, height: 30) == 3)
+        #expect(LinuxSidebarPolicy.dropInsertionSlot(targetIndex: 3, y: 35, height: 30) == 4)
+    }
+
+    // A selection id can close mid-drag: `handleSessionDrop` still hands `moveSessions` the full id list.
+    @Test("moveSessions ignores a stale id and moves the survivors (agtermCore assumption)")
+    @MainActor
+    func staleSelectionIDTolerance() {
+        let first = Session(initialCwd: "/tmp")
+        let second = Session(initialCwd: "/tmp")
+        let home = Workspace(name: "home", sessions: [first, second])
+        let target = Workspace(name: "target", sessions: [])
+        let store = AppStore(workspaces: [home, target])
+        let moved = store.moveSessions([first.id, UUID()], toWorkspace: target.id, at: 0)
+        #expect(moved == 1)
+        #expect(store.workspaces[0].sessions.map(\.id) == [second.id])
+        #expect(store.workspaces[1].sessions.map(\.id) == [first.id])
+    }
+
+    /// Feeds a synthesized drop through `handleWorkspaceDrop`'s OWN composition —
+    /// `LinuxSidebarPolicy.workspaceDropChildIndex` (the function the controller calls), then the
+    /// UNCHANGED `SidebarDrop.resolveWorkspace` — and returns the post-removal destination
+    /// (nil = no-op). `target` is the aimed-at row's position among the RENDERED rows;
+    /// `visibleIndices` their full-array indices (default: every workspace rendered, where the
+    /// mapping is the identity).
+    private func workspaceDestination(source: Int, target: Int, count: Int,
+                                      bottomHalf: Bool, height: Double = 30,
+                                      visibleIndices: [Int]? = nil) -> Int? {
+        let childIndex = LinuxSidebarPolicy.workspaceDropChildIndex(
+            targetVisibleIndex: target, visibleIndices: visibleIndices ?? Array(0..<count),
+            y: bottomHalf ? height * 0.75 : height * 0.25, height: height)
+        return SidebarDrop.resolveWorkspace(sourceIndex: source, count: count,
+                                            childIndex: childIndex)?.destination
+    }
+
+    @Test("two-workspace reorder: every half of every row resolves to the macOS destinations")
+    func twoWorkspaceTable() {
+        // [A, B]: drag A onto B's bottom half -> slot 2 -> destination 1 -> [B, A].
+        // This is the reported repro ("drag A to last" was silently dropped by the raw-index bug).
+        #expect(workspaceDestination(source: 0, target: 1, count: 2, bottomHalf: true) == 1)
+        // A onto B's top half -> slot 1 -> insert-before-B is where A already is -> no-op.
+        #expect(workspaceDestination(source: 0, target: 1, count: 2, bottomHalf: false) == nil)
+        // B onto A's top half -> slot 0 -> [B, A] (the direction that already worked).
+        #expect(workspaceDestination(source: 1, target: 0, count: 2, bottomHalf: false) == 0)
+        // B onto A's bottom half -> slot 1 -> no-op.
+        #expect(workspaceDestination(source: 1, target: 0, count: 2, bottomHalf: true) == nil)
+    }
+
+    @Test("three-workspace reorder pins the old off-by-one and both halves of a far target")
+    func threeWorkspaceTable() {
+        // [A, B, C]: A onto C's bottom half -> slot 3 -> destination 2 (the old raw-index bug landed at 1).
+        #expect(workspaceDestination(source: 0, target: 2, count: 3, bottomHalf: true) == 2)
+        // A onto C's top half -> slot 2 -> destination 1.
+        #expect(workspaceDestination(source: 0, target: 2, count: 3, bottomHalf: false) == 1)
+        // C onto A's bottom half -> slot 1 -> destination 1.
+        #expect(workspaceDestination(source: 2, target: 0, count: 3, bottomHalf: true) == 1)
+        // C onto A's top half -> slot 0 -> destination 0.
+        #expect(workspaceDestination(source: 2, target: 0, count: 3, bottomHalf: false) == 0)
+        // A dropped onto its own bottom half -> slot 1 -> no-op.
+        #expect(workspaceDestination(source: 0, target: 0, count: 3, bottomHalf: true) == nil)
+    }
+
+    @Test("focus-filtered workspace drops land adjacent to the visible target, never across hidden rows")
+    func filteredWorkspaceTable() {
+        // [A, B, C, D] with only {B(1), D(3)} rendered by the focus filter. `target` is the row's
+        // VISIBLE position (B = 0, D = 1); `visibleIndices` maps it back to the full array.
+        let visible = [1, 3]
+        // B onto D's top half: in visible space that is the slot just after B — where B already sits,
+        // so a NO-OP. The raw full-array slot (3) would have moved B past the HIDDEN C ([A, C, B, D]),
+        // a reorder invisible at drop time and impossible to aim at.
+        #expect(workspaceDestination(source: 1, target: 1, count: 4,
+                                     bottomHalf: false, visibleIndices: visible) == nil)
+        // B onto D's bottom half -> full-array insert 4 -> destination 3 -> [A, C, D, B].
+        #expect(workspaceDestination(source: 1, target: 1, count: 4,
+                                     bottomHalf: true, visibleIndices: visible) == 3)
+        // D onto B's top half -> insert 1, immediately before B: the hidden A stays first -> [A, D, B, C].
+        #expect(workspaceDestination(source: 3, target: 0, count: 4,
+                                     bottomHalf: false, visibleIndices: visible) == 1)
+        // D onto B's bottom half -> insert 2, immediately after B and before the hidden C -> [A, B, D, C].
+        #expect(workspaceDestination(source: 3, target: 0, count: 4,
+                                     bottomHalf: true, visibleIndices: visible) == 2)
+    }
+
+    /// Feeds a synthesized session drop through the slot helper into the UNCHANGED
+    /// `SidebarDrop.resolveSessions`.
+    private func sessionResolution(sources: [SidebarDrop.SessionSource],
+                                   targetWorkspace: UUID, targetIndex: Int, targetCount: Int,
+                                   bottomHalf: Bool, height: Double = 30) -> SidebarDrop.SessionResolution? {
+        let slot = LinuxSidebarPolicy.dropInsertionSlot(
+            targetIndex: targetIndex, y: bottomHalf ? height * 0.75 : height * 0.25, height: height)
+        return SidebarDrop.resolveSessions(
+            sources: sources,
+            target: .sessionRow(workspace: targetWorkspace, sessionIndex: targetIndex, sessionCount: targetCount),
+            childIndex: slot)
+    }
+
+    @Test("same-workspace session drops reach the first slot, append at the end, and no-op on own position")
+    func sameWorkspaceSessionTable() {
+        let ws = UUID()
+        // [s0, s1, s2]: drag s2 onto s0's top half -> slot 0 -> destination 0 (the previously
+        // unreachable FIRST slot; the old onItemIndex redirect forced sessionIndex + 1).
+        let toFirst = sessionResolution(sources: [.init(workspace: ws, index: 2)],
+                                        targetWorkspace: ws, targetIndex: 0, targetCount: 3, bottomHalf: false)
+        #expect(toFirst?.workspace == ws)
+        #expect(toFirst?.destination == 0)
+        // s0 onto s2's bottom half -> slot 3 -> post-removal destination 2 (append).
+        let toLast = sessionResolution(sources: [.init(workspace: ws, index: 0)],
+                                       targetWorkspace: ws, targetIndex: 2, targetCount: 3, bottomHalf: true)
+        #expect(toLast?.destination == 2)
+        // Drop on the dragged row's OWN halves: both resolve back to its current slot -> no-op.
+        #expect(sessionResolution(sources: [.init(workspace: ws, index: 1)],
+                                  targetWorkspace: ws, targetIndex: 1, targetCount: 3, bottomHalf: false) == nil)
+        #expect(sessionResolution(sources: [.init(workspace: ws, index: 1)],
+                                  targetWorkspace: ws, targetIndex: 1, targetCount: 3, bottomHalf: true) == nil)
+    }
+
+    @Test("cross-workspace session drops land before or after the aimed-at row")
+    func crossWorkspaceSessionTable() {
+        let source = UUID()
+        let target = UUID()
+        let top = sessionResolution(sources: [.init(workspace: source, index: 0)],
+                                    targetWorkspace: target, targetIndex: 1, targetCount: 2, bottomHalf: false)
+        #expect(top?.workspace == target)
+        #expect(top?.destination == 1)
+        let bottom = sessionResolution(sources: [.init(workspace: source, index: 0)],
+                                       targetWorkspace: target, targetIndex: 1, targetCount: 2, bottomHalf: true)
+        #expect(bottom?.workspace == target)
+        #expect(bottom?.destination == 2)
+    }
+
+    @Test("multi-selection blocks keep their order and a block containing the target stays a no-op")
+    func multiSelectionBlockTable() {
+        let ws = UUID()
+        // [s0, s1, s2]: drag the [s0, s1] block onto s2's bottom half -> slot 3 -> post-removal
+        // destination 1; the caller inserts `sources` in order, so the block order is preserved.
+        let block = sessionResolution(sources: [.init(workspace: ws, index: 0), .init(workspace: ws, index: 1)],
+                                      targetWorkspace: ws, targetIndex: 2, targetCount: 3, bottomHalf: true)
+        #expect(block?.destination == 1)
+        // A block dropped onto a row INSIDE itself is a no-op on either half.
+        let selfSources: [SidebarDrop.SessionSource] = [.init(workspace: ws, index: 1), .init(workspace: ws, index: 2)]
+        #expect(sessionResolution(sources: selfSources,
+                                  targetWorkspace: ws, targetIndex: 1, targetCount: 3, bottomHalf: false) == nil)
+        #expect(sessionResolution(sources: selfSources,
+                                  targetWorkspace: ws, targetIndex: 2, targetCount: 3, bottomHalf: true) == nil)
+        // A cross-workspace block lands as one insertion at the slot.
+        let other = UUID()
+        let mixed = sessionResolution(sources: [.init(workspace: other, index: 0), .init(workspace: ws, index: 0)],
+                                      targetWorkspace: ws, targetIndex: 1, targetCount: 2, bottomHalf: true)
+        #expect(mixed?.workspace == ws)
+        #expect(mixed?.destination == 1)
+    }
+
+    @Test("a drag carries the whole selected block only when the pressed row is inside it")
+    func draggedSessionBlockTable() {
+        let a = UUID()
+        let b = UUID()
+        let c = UUID()
+        // Pressed row inside the selection: the block moves, preserving its (visual) order.
+        #expect(LinuxSidebarPolicy.draggedSessionBlock(source: b, selection: [a, b, c]) == [a, b, c])
+        // Pressed row outside the selection, or no multi-select in flight: only the pressed row.
+        #expect(LinuxSidebarPolicy.draggedSessionBlock(source: b, selection: [a, c]) == [b])
+        #expect(LinuxSidebarPolicy.draggedSessionBlock(source: b, selection: []) == [b])
+    }
+
+    /// The header-drop composition `handleSessionToWorkspace` ships: the expanded block through
+    /// `resolveSessions` with a `.workspaceRow` target and the `onItemIndex` append slot.
+    private func headerResolution(sources: [SidebarDrop.SessionSource], targetWorkspace: UUID,
+                                  targetCount: Int) -> SidebarDrop.SessionResolution? {
+        SidebarDrop.resolveSessions(
+            sources: sources,
+            target: .workspaceRow(id: targetWorkspace, sessionCount: targetCount),
+            childIndex: SidebarDrop.onItemIndex)
+    }
+
+    @Test("header drops append the whole block and no-op when it already tails the target")
+    func headerBlockAppendTable() {
+        let src = UUID()
+        let dest = UUID()
+        // A cross-workspace [s0, s1] block appends after the target's existing session.
+        let block = headerResolution(sources: [.init(workspace: src, index: 0), .init(workspace: src, index: 1)],
+                                     targetWorkspace: dest, targetCount: 1)
+        #expect(block?.workspace == dest)
+        #expect(block?.destination == 1)
+        // A block already at its own workspace's tail dropped on that header is a no-op.
+        #expect(headerResolution(sources: [.init(workspace: src, index: 1), .init(workspace: src, index: 2)],
+                                 targetWorkspace: src, targetCount: 3) == nil)
+        // Not at the tail: the same-workspace block re-appends at the post-removal end.
+        let reappend = headerResolution(sources: [.init(workspace: src, index: 0), .init(workspace: src, index: 1)],
+                                        targetWorkspace: src, targetCount: 3)
+        #expect(reappend?.destination == 1)
+    }
+}
+
+@Suite("Sidebar session-click timing")
+struct SidebarSessionClickTests {
+    // `#expect` cannot call a mutating member inside its macro expansion, so tracker calls land in a `let`.
+    @Test("press applies immediately except a plain press inside the current selection, which defers")
+    func pressTable() {
+        var tracker = LinuxSidebarPolicy.SessionClickTracker()
+        let row = UUID()
+        let plainOutside = tracker.press(row, modified: false, alreadyInSelection: false)
+        #expect(plainOutside)
+        // The deferred collapse-to-one runs on release, so a block drag keeps its block.
+        let plainInside = tracker.press(row, modified: false, alreadyInSelection: true)
+        #expect(!plainInside)
+        let modifiedOutside = tracker.press(row, modified: true, alreadyInSelection: false)
+        #expect(modifiedOutside)
+        let modifiedInside = tracker.press(row, modified: true, alreadyInSelection: true)
+        #expect(modifiedInside)
+    }
+
+    @Test("release collapses only after a press that deferred on the same row")
+    func deferredPressThenRelease() {
+        var tracker = LinuxSidebarPolicy.SessionClickTracker()
+        let row = UUID()
+        let applied = tracker.press(row, modified: false, alreadyInSelection: true)
+        #expect(!applied)
+        let collapses = tracker.release(row)
+        #expect(collapses)
+        // The pending state is CONSUMED: a second release (stale event) changes nothing.
+        let replay = tracker.release(row)
+        #expect(!replay)
+    }
+
+    @Test("a modifier press applies on press and its release never collapses, whatever the release-time modifiers")
+    func modifierLiftedBeforeButtonUp() {
+        var tracker = LinuxSidebarPolicy.SessionClickTracker()
+        let row = UUID()
+        // alreadyInSelection: true — the clicked row IS in the selection the shift press just built.
+        let shiftApplied = tracker.press(row, modified: true, alreadyInSelection: true)
+        #expect(shiftApplied)
+        let shiftReleaseCollapses = tracker.release(row)
+        #expect(!shiftReleaseCollapses)
+        // Same for a plain press on an unselected row: applying on press leaves nothing to defer.
+        let plainApplied = tracker.press(row, modified: false, alreadyInSelection: false)
+        #expect(plainApplied)
+        let plainReleaseCollapses = tracker.release(row)
+        #expect(!plainReleaseCollapses)
+    }
+
+    @Test("a new press resets a pending collapse a cancelled release left behind")
+    func dragCancelThenNextClick() {
+        var tracker = LinuxSidebarPolicy.SessionClickTracker()
+        let dragged = UUID()
+        let other = UUID()
+        // A drag past the threshold cancels `released`, so the deferred collapse survives the drag...
+        let deferred = tracker.press(dragged, modified: false, alreadyInSelection: true)
+        #expect(!deferred)
+        // ...but the NEXT press resets it, so a later release cannot replay the stale collapse.
+        let nextApplied = tracker.press(other, modified: false, alreadyInSelection: false)
+        #expect(nextApplied)
+        let staleCollapse = tracker.release(dragged)
+        #expect(!staleCollapse)
+        // And a release on a DIFFERENT row than the pending one never collapses.
+        let deferredAgain = tracker.press(dragged, modified: false, alreadyInSelection: true)
+        #expect(!deferredAgain)
+        let wrongRowCollapse = tracker.release(other)
+        #expect(!wrongRowCollapse)
+    }
+
+    @Test("CSS and accessibility selection follow single, range, and collapse transitions")
+    func effectiveSelectionTransitions() {
+        let a = UUID()
+        let b = UUID()
+        let c = UUID()
+        let ids = [a, b, c]
+        func selected(_ selection: [UUID], activeID: UUID?) -> [UUID] {
+            ids.filter {
+                LinuxSidebarPolicy.sessionIsInEffectiveSelection(
+                    $0, selection: selection, activeID: activeID)
+            }
+        }
+        // Empty transient selection: the active session alone counts as in-selection.
+        #expect(selected([], activeID: c) == [c])
+        #expect(selected([], activeID: nil).isEmpty)
+        // Range selection publishes every member, then a plain-click release collapses to one.
+        #expect(selected([a, b, c], activeID: c) == [a, b, c])
+        #expect(selected([b], activeID: b) == [b])
+        // Once transient selection exists it is authoritative even if the active id differs.
+        #expect(selected([a, b], activeID: c) == [a, b])
+    }
+
+    // The release collapse re-runs `selectSession(id, sidebarSelection: [id])`; this pins that re-run as inert.
+    @Test("selectSession on an already-sole selection is idempotent (agtermCore assumption)")
+    @MainActor
+    func collapseIdempotence() {
+        let session = Session(initialCwd: "/tmp")
+        let store = AppStore(workspaces: [Workspace(name: "work", sessions: [session])])
+        store.selectSession(session.id, sidebarSelection: [session.id])
+        store.selectSession(session.id, sidebarSelection: [session.id])
+        #expect(store.selectedSessionID == session.id)
+        #expect(store.sidebarSelectionIDs == [session.id])
+    }
+}
+
+@Suite("Sidebar hover CSS")
+struct SidebarHoverCSSTests {
+    @Test("the sidebar hover rule keys on bare :hover, never .activatable")
+    func hoverCSS() {
+        // Passive rows (non-activatable, makeRow) lose the `.activatable` class libadwaita's own
+        // hover rule keys on, so the replacement rule must key on bare `:hover` — a selector
+        // containing `.activatable` would never match a sidebar row again.
+        let css = LinuxSidebarPolicy.sidebarHoverCSS
+        #expect(css.contains(".agterm-sidebar .navigation-sidebar > row:hover"))
+        #expect(css.contains("background-color: alpha(currentColor, 0.07)"))
+        #expect(!css.contains(".activatable"))
+    }
+
+    @Test("the installed app CSS carries the sidebar hover rule")
+    func appCSSInstallsHoverRule() {
+        // The hover constant only takes effect once `installAppCSS` interpolates it into the
+        // installed stylesheet — pin the composed string, not just the constant.
+        #expect(appCSS.contains(LinuxSidebarPolicy.sidebarHoverCSS))
+    }
+}

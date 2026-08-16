@@ -81,6 +81,27 @@ def wait_for(predicate, message, timeout=12, required=True):
     raise AssertionError(message)
 
 
+def poll(predicate, timeout, interval=0.2):
+    """Bool-returning sibling of `wait_for`: True as soon as `predicate()` is truthy, False on
+    timeout. Retry sweeps (the dy-offset legs below) need to OBSERVE a timeout and move on to
+    the next probe instead of failing the scenario, which `wait_for`'s raise cannot express."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
+
+
+# Observed on GTK 4.22/X11 (Manjaro host): the AT-SPI WINDOW extents of the sidebar rows can sit
+# a few pixels above the real pixels, so a pointer aimed at the reported center can land on the
+# row above. Pointer scenarios therefore sweep small vertical offsets — one absolute sweep that
+# probes from scratch (dy=0 first, so exact-extents hosts succeed immediately) and one nudge
+# sweep that adjusts a dy `calibrate_row_click` already proved out for the same sidebar rows.
+ABSOLUTE_DYS = (0, 8, -8, 16, 24)
+NUDGE_DYS = (0, 4, -4, 8)
+
+
 def named(root, name, role=None):
     matches = collect(root, role=role, name=name)
     return matches[0] if matches else None
@@ -327,8 +348,18 @@ def focus_accessible_window(window, process_id):
     )
 
 
-def mouse_click(node_provider, process_id, window_title=None, button="right"):
-    """Send a real pointer click to an accessible in one exact GTK window."""
+def mouse_click(node_provider, process_id, window_title=None, button="right", count=1, dy=0,
+                modifier=None, x_fraction=0.5):
+    """Send a real pointer click to an accessible in one exact GTK window.
+
+    `count=2` sends the clicks inside GTK's double-click interval so a name label's
+    double-click (rename) gesture sees a genuine double click. `dy` nudges the click point
+    vertically: on some hosts the AT-SPI WINDOW extents and the real pixels disagree by a few
+    pixels (observed ~8px on GTK 4.22/X11), which a small-target caller can calibrate away by
+    probing offsets until the click's observable effect lands. `modifier` (e.g. "shift") holds
+    a modifier key around the click so GTK sees a modified press. `x_fraction` places the click
+    horizontally within the target's width (default: center).
+    """
     if window_title and not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
         app = wait_for(lambda: find_app(process_id), "agterm app disappeared before pointer input")
         window = wait_for(
@@ -371,8 +402,8 @@ def mouse_click(node_provider, process_id, window_title=None, button="right"):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        x = client["at"][0] + local.x + max(1, local.width // 2)
-        y = client["at"][1] + local.y + max(1, local.height // 2)
+        x = client["at"][0] + local.x + max(1, int(local.width * x_fraction))
+        y = client["at"][1] + local.y + max(1, local.height // 2) + dy
         if shutil.which("dotool"):
             pointer = subprocess.Popen(
                 ["dotool"], stdin=subprocess.PIPE, text=True,
@@ -387,35 +418,382 @@ def mouse_click(node_provider, process_id, window_title=None, button="right"):
                     stderr=subprocess.DEVNULL,
                 )
                 time.sleep(0.2)
-                pointer.stdin.write(f"click {button}\n")
-                pointer.stdin.flush()
-                time.sleep(0.2)
+                if modifier:
+                    pointer.stdin.write(f"keydown {modifier}\n")
+                    pointer.stdin.flush()
+                    time.sleep(0.1)
+                for _ in range(count):
+                    pointer.stdin.write(f"click {button}\n")
+                    pointer.stdin.flush()
+                    time.sleep(0.1)
             finally:
+                if modifier:
+                    # Lift from `finally`, mirroring the X11 path: a write/flush/click failure
+                    # after `keydown` must not leave the modifier held and poison later legs.
+                    try:
+                        pointer.stdin.write(f"keyup {modifier}\n")
+                        pointer.stdin.flush()
+                    except OSError:
+                        pass  # dotool already gone; device teardown drops the key anyway.
                 pointer.stdin.close()
                 pointer.wait(timeout=3)
             return
+        assert modifier is None, "modified clicks need dotool on Wayland"
         number = 3 if button == "right" else 1
-        assert Atspi.generate_mouse_event(x, y, f"b{number}c"), "AT-SPI click failed"
+        for _ in range(count):
+            assert Atspi.generate_mouse_event(x, y, f"b{number}c"), "AT-SPI click failed"
         return
     local = component.get_extents(Atspi.CoordType.WINDOW)
     geometry = subprocess.check_output(
         ["xdotool", "getactivewindow", "getwindowgeometry", "--shell"], text=True
     )
     origin = dict(line.split("=", 1) for line in geometry.splitlines() if "=" in line)
-    x = int(origin["X"]) + local.x + max(1, local.width // 2)
-    y = int(origin["Y"]) + local.y + max(1, local.height // 2)
+    x = int(origin["X"]) + local.x + max(1, int(local.width * x_fraction))
+    y = int(origin["Y"]) + local.y + max(1, local.height // 2) + dy
     number = 3 if button == "right" else 1
     time.sleep(0.2)
+    click = ["click"]
+    if count > 1:
+        click += ["--repeat", str(count), "--delay", "50"]
+    hold = ["keydown", modifier] if modifier else []
+    try:
+        subprocess.run(
+            ["xdotool", *hold, "mousemove", "--sync", str(x), str(y), *click, str(number)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    finally:
+        if modifier:
+            # Lift OUTSIDE the chain: a chain that dies between `keydown` and the click (a
+            # mousemove stall) would leave the modifier held for the rest of the scenario,
+            # distorting every later leg's diagnostics.
+            subprocess.run(
+                ["xdotool", "keyup", modifier],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+
+def right_click(node_provider, process_id, window_title=None, dy=0):
+    mouse_click(node_provider, process_id, window_title=window_title, button="right", dy=dy)
+
+
+def window_bounds(provider, what, timeout=8):
+    """WINDOW-coordinate extents of `provider()`'s accessible, waiting out the post-map lag.
+
+    A freshly-(re)built row can be missing or extents-less for a few frames, so poll until the
+    component interface answers — shared by `mouse_drag` and `mouse_press_probe_release`."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            node = provider()
+            component = node.get_component_iface() if node else None
+            if component:
+                return component.get_extents(Atspi.CoordType.WINDOW)
+        except Exception:
+            pass
+        time.sleep(0.1)
+    raise AssertionError(f"the {what} did not expose stable window bounds")
+
+
+def mouse_drag(source_provider, target_provider, process_id, window_title=None,
+               target_fraction=0.75, dy=0):
+    """Drag from one accessible's center to a vertical fraction of another with a real
+    press-move-release, in one exact GTK window.
+
+    `target_fraction` picks the drop point inside the target's height: < 0.5 lands in the
+    TOP half ("insert before"), > 0.5 in the BOTTOM half ("insert after") under the sidebar's
+    y-midpoint drop-slot convention. `dy` carries the same AT-SPI extents-offset calibration
+    as `mouse_click` (probe it with a click first). The pointer presses on the source, crosses
+    GTK's drag threshold in small synchronized steps so the GtkDragSource sees genuine motion,
+    hovers the drop point long enough for the GtkDropTarget to register, then releases.
+    """
+    if window_title and not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        app = wait_for(lambda: find_app(process_id), "agterm app disappeared before pointer input")
+        window = wait_for(
+            lambda: named(app, window_title, role="frame"),
+            f"agterm window {window_title!r} disappeared before pointer input",
+        )
+        focus_accessible_window(window, process_id)
+    else:
+        focus_window(process_id)
+
+    source = window_bounds(source_provider, "drag source")
+    target = window_bounds(target_provider, "drag target")
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
+        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
+        client = next(
+            (
+                item for item in clients
+                if item.get("pid") == process_id
+                and (window_title is None or item.get("title") == window_title)
+            ),
+            None,
+        )
+        assert client, "Hyprland did not expose the isolated agterm client"
+        origin_x, origin_y = client["at"]
+    else:
+        geometry = subprocess.check_output(
+            ["xdotool", "getactivewindow", "getwindowgeometry", "--shell"], text=True
+        )
+        origin = dict(line.split("=", 1) for line in geometry.splitlines() if "=" in line)
+        origin_x, origin_y = int(origin["X"]), int(origin["Y"])
+    start_x = origin_x + source.x + max(1, source.width // 2)
+    start_y = origin_y + source.y + max(1, source.height // 2) + dy
+    end_x = origin_x + target.x + max(1, target.width // 2)
+    end_y = origin_y + target.y + max(1, round(target.height * target_fraction)) + dy
+    steps = 12
+    path = [
+        (round(start_x + (end_x - start_x) * step / steps),
+         round(start_y + (end_y - start_y) * step / steps))
+        for step in range(1, steps + 1)
+    ]
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
+        # Best effort only: the automated drag coverage runs under X11/Xvfb; the Wayland leg
+        # of the matrix is verified manually (Post-Completion in the plan).
+        assert shutil.which("dotool"), "a Wayland drag needs dotool for the button hold"
+        subprocess.run(
+            ["hyprctl", "dispatch", "focuswindow", f"address:{client['address']}"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        pointer = subprocess.Popen(
+            ["dotool"], stdin=subprocess.PIPE, text=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            time.sleep(0.5)  # Let the compositor register the temporary uinput pointer.
+
+            def move_cursor(point_x, point_y):
+                subprocess.run(
+                    ["hyprctl", "dispatch", "movecursor", str(point_x), str(point_y)],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+            move_cursor(start_x, start_y)
+            time.sleep(0.2)
+            pointer.stdin.write("buttondown left\n")
+            pointer.stdin.flush()
+            try:
+                time.sleep(0.2)
+                for point_x, point_y in path:
+                    move_cursor(point_x, point_y)
+                    time.sleep(0.03)
+                time.sleep(0.3)
+            finally:
+                # Always lift the button, even when a move_cursor dispatch fails mid-path — a held
+                # virtual button would poison every later scenario on the shared desktop.
+                pointer.stdin.write("buttonup left\n")
+                pointer.stdin.flush()
+                time.sleep(0.2)
+        finally:
+            pointer.stdin.close()
+            pointer.wait(timeout=3)
+        return
+
+    def xdo(*arguments):
+        subprocess.run(
+            ["xdotool", *arguments],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    time.sleep(0.2)
+    xdo("mousemove", "--sync", str(start_x), str(start_y))
+    time.sleep(0.15)
+    xdo("mousedown", "1")
+    try:
+        time.sleep(0.15)
+        for point_x, point_y in path:
+            xdo("mousemove", "--sync", str(point_x), str(point_y))
+            time.sleep(0.03)
+        time.sleep(0.3)  # Let the drop target register the hover before the release.
+    finally:
+        # Always lift the button, even when a mousemove fails mid-path — a held button 1 would
+        # poison every later click on the display (same shape as mouse_press_probe_release).
+        xdo("mouseup", "1")
+    time.sleep(0.2)
+
+
+def mouse_press_probe_release(node_provider, process_id, probe, dy=0):
+    """Press-and-HOLD button 1 on an accessible's center, run `probe()` mid-hold, then release.
+
+    Returns the probe's value. Exists for the deferred-collapse contract: what the model looks
+    like WHILE the button is down is the observable difference between "applied on press" and
+    "deferred to release". The hold is motionless, so no drag threshold is crossed.
+    """
+    focus_window(process_id)
+    local = window_bounds(node_provider, "press-hold target")
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
+        # Best effort only, like mouse_drag: the automated press-hold coverage runs under
+        # X11/Xvfb; the Wayland leg of the matrix is verified manually.
+        assert shutil.which("dotool"), "a Wayland press-hold needs dotool for the button hold"
+        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
+        client = next((item for item in clients if item.get("pid") == process_id), None)
+        assert client, "Hyprland did not expose the isolated agterm client"
+        x = client["at"][0] + local.x + max(1, local.width // 2)
+        y = client["at"][1] + local.y + max(1, local.height // 2) + dy
+        pointer = subprocess.Popen(
+            ["dotool"], stdin=subprocess.PIPE, text=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            time.sleep(0.5)  # Let the compositor register the temporary uinput pointer.
+            subprocess.run(
+                ["hyprctl", "dispatch", "movecursor", str(x), str(y)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            time.sleep(0.2)
+            pointer.stdin.write("buttondown left\n")
+            pointer.stdin.flush()
+            try:
+                return probe()
+            finally:
+                pointer.stdin.write("buttonup left\n")
+                pointer.stdin.flush()
+                time.sleep(0.2)
+        finally:
+            pointer.stdin.close()
+            pointer.wait(timeout=3)
+    geometry = subprocess.check_output(
+        ["xdotool", "getactivewindow", "getwindowgeometry", "--shell"], text=True
+    )
+    origin = dict(line.split("=", 1) for line in geometry.splitlines() if "=" in line)
+    x = int(origin["X"]) + local.x + max(1, local.width // 2)
+    y = int(origin["Y"]) + local.y + max(1, local.height // 2) + dy
+    time.sleep(0.2)
     subprocess.run(
-        ["xdotool", "mousemove", "--sync", str(x), str(y), "click", str(number)],
+        ["xdotool", "mousemove", "--sync", str(x), str(y), "mousedown", "1"],
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    try:
+        return probe()
+    finally:
+        subprocess.run(
+            ["xdotool", "mouseup", "1"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(0.2)
 
 
-def right_click(node_provider, process_id, window_title=None):
-    mouse_click(node_provider, process_id, window_title=window_title, button="right")
+def sidebar_session_row_label(app, name):
+    """The sidebar row label carrying a session name.
+
+    Scoped to the sidebar rows: the header bar shows the ACTIVE session's name in a plain
+    label too, so an app-wide label search could hit the title instead.
+    """
+    row = sidebar_session_row(app, name)
+    return named(row, name, role="label") if row else None
+
+
+def sidebar_session_row(app, name):
+    """The sidebar `list item` ROW carrying the named session label.
+
+    The accessible SELECTED state is published on the ROW accessible only (the CSS paint also
+    touches the row's child; the a11y state deliberately does not), so selection assertions
+    need the row while pointer aims keep targeting the label.
+    """
+    for row in collect(app, role="list item"):
+        if named(row, name, role="label"):
+            return row
+    return None
+
+
+def row_selected(app, name):
+    """True when the named session row's accessible state set carries STATE_SELECTED.
+
+    This is the read leg of the sidebar's a11y contract: the list boxes run GTK_SELECTION_NONE
+    with passive rows, so GTK's native selection state is off, and `setSidebarSelectionStyle`
+    publishes GTK_ACCESSIBLE_STATE_SELECTED alongside the `agterm-selected` CSS class from the
+    single selection choke point. A missing row reads as not-selected, so absence assertions
+    must pin the row's existence separately.
+    """
+    row = sidebar_session_row(app, name)
+    if row is None:
+        return False
+    try:
+        return row.get_state_set().contains(Atspi.StateType.SELECTED)
+    except Exception:
+        return False
+
+
+def row_deselected(app, name):
+    """True when the named session row EXISTS and its state set lacks SELECTED.
+
+    The absence leg of the a11y contract: `row_selected` reads a vanished row as not-selected,
+    so a negative assertion built on it could vacuously pass after a rebuild dropped the row —
+    this pins the row's existence inside the same read.
+    """
+    row = sidebar_session_row(app, name)
+    if row is None:
+        return False
+    try:
+        return not row.get_state_set().contains(Atspi.StateType.SELECTED)
+    except Exception:
+        return False
+
+
+def calibrate_row_click(app, process_id, name):
+    """Click the named sidebar row and return the dy offset that made it selected.
+
+    Sweeps `ABSOLUTE_DYS` (see the offset-tuple rationale at the constants):
+    probing small vertical offsets keeps a scenario meaningful on hosts where the extents
+    are exact (dy=0 wins immediately). The success predicate is the row's own accessible
+    STATE_SELECTED — the state the selection choke point publishes — so a probe needs no
+    control-channel round-trip.
+    """
+    def selected():
+        return row_selected(app, name)
+
+    assert not selected(), (
+        f"calibration target {name} is already selected; the sweep could false-pass at dy=0"
+    )
+    previous = None
+    for dy in ABSOLUTE_DYS:
+        if previous is not None and selected():
+            # The PREVIOUS probe's click landed after its own poll window — credit that offset
+            # instead of attributing the late effect to this one.
+            return previous
+        try:
+            mouse_click(lambda: sidebar_session_row_label(app, name), process_id,
+                        button="left", dy=dy)
+        except AssertionError as error:
+            # The sweep's probe clicks are blind: when the published state never appears, every
+            # offset keeps "missing" and a stray probe can hit destructive chrome (the workspace
+            # header's click-to-collapse sits just above the FIRST row), after which the target
+            # row stops resolving and the pointer helper's bounds assert would blame the tree.
+            # Surface the calibration verdict instead: the row never became selected.
+            raise AssertionError(
+                f"clicking the {name} sidebar row did not select it at any probed offset "
+                f"before dy={dy}, and the row then stopped resolving ({error})"
+            ) from error
+        if poll(selected, timeout=3):
+            return dy
+        previous = dy
+    raise AssertionError(f"clicking the {name} sidebar row did not select it at any offset")
+
+
+def pointer_leg_step(operation, verdict):
+    """Run one RETRIED pointer step, converting a pointer-helper AssertionError (a target that
+    stopped resolving after a destructive aim miss) into the leg's own verdict — the same
+    honesty rule as `calibrate_row_click`'s sweep: the leg must fail as itself, not with the
+    helper's tree-blaming "did not expose stable window bounds"."""
+    try:
+        return operation()
+    except AssertionError as error:
+        raise AssertionError(f"{verdict} ({error})") from error
 
 
 def app_stderr_sink():
@@ -1119,13 +1497,14 @@ def verify_context_menu(env):
     try:
         rows = wait_for(lambda: collect(app, role="list item"), "expected at least one session row")
         flag = None
-        for _ in range(3):
-            right_click(lambda: next(iter(collect(app, role="list item")), None), process.pid)
-            try:
-                flag = wait_for(lambda: actionable(app, "Flag"), "session context menu did not open", timeout=1)
+        # Retry across small vertical offsets: on hosts where the AT-SPI extents sit a few pixels
+        # off the real row (the offset-tuple note at the constants), the exact-center right-click
+        # misses the row.
+        for dy in ABSOLUTE_DYS:
+            right_click(lambda: next(iter(collect(app, role="list item")), None), process.pid, dy=dy)
+            if poll(lambda: actionable(app, "Flag"), timeout=1):
+                flag = actionable(app, "Flag")
                 break
-            except AssertionError:
-                pass
         assert flag, "session context menu did not open"
         assert process.poll() is None, "session context menu terminated the app"
         press_escape(process.pid)
@@ -1137,7 +1516,12 @@ def verify_context_menu(env):
             lambda: window_tree(env, primary_id)["workspaces"][0]["sessions"][0].get("hasSplit"),
             "session split did not become active",
         )
-        right_click(lambda: next(iter(collect(app, role="list item")), None), process.pid)
+        # The split leg re-aims across the same offsets as the first leg: a single exact-center
+        # right-click misses on hosts with offset extents.
+        for dy in ABSOLUTE_DYS:
+            right_click(lambda: next(iter(collect(app, role="list item")), None), process.pid, dy=dy)
+            if poll(lambda: actionable(app, "Close Session"), timeout=1):
+                break
         wait_for(lambda: actionable(app, "Close Session"), "split session context menu did not open")
         assert process.poll() is None, "split session context menu terminated the app"
         press_escape(process.pid)
@@ -2010,6 +2394,620 @@ def verify_surface_failure_diagnostics(env):
             "proven GL context failure incorrectly used a generic role-local diagnostic"
         )
         print("OK: proven GL context failure keeps the display-wide diagnostic")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
+def verify_sidebar_click_and_rename(env):
+    """Session-row gestures without a claiming click gesture: click selects, typing reaches
+    the terminal, and a name double-click enters inline rename.
+
+    Selection is asserted through the accessible STATE_SELECTED on the row state sets: the
+    list boxes run GTK_SELECTION_NONE with passive rows, so GTK's native selection machinery
+    is off, and the selection choke point publishes GTK_ACCESSIBLE_STATE_SELECTED alongside
+    the `agterm-selected` paint — AT-SPI observes exactly what the user sees. The control
+    tree is consulted only for model effects (the active session). The rename entry is
+    detected by its editable-text interface inside a sidebar row rather than by role name
+    (it surfaces as a `text` role, not `edit-field`)."""
+    process, app = launch(env)
+    try:
+        window_id = wait_for(
+            lambda: next((item["id"] for item in window_list(env) if item["open"]), None),
+            "initial window was not registered",
+        )
+        control_json(env, "session", "rename", "row-one", "--window", window_id, "--json")
+        control_json(env, "session", "new", "--name", "row-two", "--window", window_id, "--json")
+
+        def active_name():
+            sessions = window_tree(env, window_id)["workspaces"][0]["sessions"]
+            return next((s["name"] for s in sessions if s.get("active")), None)
+
+        wait_for(lambda: active_name() == "row-two", "the created session did not become active")
+        wait_for(lambda: sidebar_session_row_label(app, "row-one"), "the row-one sidebar row is missing")
+
+        # Single click on a session row selects it on mouse-down (calibrates the click offset,
+        # with the row's published SELECTED state as the success predicate).
+        row_dy = calibrate_row_click(app, process.pid, "row-one")
+
+        # Click a row then TYPE: the input must land in the clicked session's TERMINAL, never the
+        # sidebar row (passive rows keep the revived list-box click gesture from moving keyboard
+        # focus to the row). There is no control command that reads terminal contents, so the
+        # typed command proves itself through a marker file.
+        mouse_click(lambda: sidebar_session_row_label(app, "row-two"), process.pid, button="left", dy=row_dy)
+        # A plain click leaves exactly ONE row carrying the published SELECTED state
+        # (`row_deselected` pins row-one's existence, so the negative half cannot vacuously
+        # pass on a vanished row).
+        wait_for(
+            lambda: row_selected(app, "row-two") and row_deselected(app, "row-one"),
+            "clicking the row-two sidebar row did not move the published SELECTED state to it",
+        )
+        wait_for(
+            lambda: active_name() == "row-two",
+            "clicking the row-two sidebar row did not select it",
+        )
+        marker = os.path.join(env["AGTERM_STATE_DIR"], "sidebar-click-typing")
+        type_x11_text(f"printf sidebar-typing > {shlex.quote(marker)}", process.pid)
+        press_return(process.pid)
+        wait_for(
+            lambda: os.path.exists(marker),
+            "typed input did not reach the clicked session's terminal",
+        )
+        with open(marker, encoding="utf-8") as source:
+            assert source.read() == "sidebar-typing", (
+                "post-click terminal command produced unexpected output"
+            )
+
+        # Double-click on a session NAME label enters inline rename: the label is replaced by a
+        # focused editable entry seeded with the name.
+        mouse_click(lambda: sidebar_session_row_label(app, "row-one"), process.pid, button="left",
+                    count=2, dy=row_dy)
+
+        def rename_entry():
+            for row in collect(app, role="list item"):
+                entry = editable_descendant(row)
+                if entry:
+                    return entry
+            return None
+
+        wait_for(
+            lambda: rename_entry(),
+            "double-clicking the session name did not open the inline rename entry",
+        )
+
+        # The renamed row (its label replaced by the entry) stays the SOLE published selection:
+        # the double-click's first press selected it, and opening the entry rebuilds the row
+        # without losing the state.
+        def rename_row_is_sole_selection():
+            editing_row = next(
+                (row for row in collect(app, role="list item") if editable_descendant(row)), None
+            )
+            other_row = sidebar_session_row(app, "row-two")
+            try:
+                return bool(
+                    editing_row and other_row
+                    and editing_row.get_state_set().contains(Atspi.StateType.SELECTED)
+                    and not other_row.get_state_set().contains(Atspi.StateType.SELECTED)
+                )
+            except Exception:
+                return False
+
+        wait_for(
+            rename_row_is_sole_selection,
+            "AT-SPI selection did not follow the rename double-click",
+        )
+        # A SHIFT-click INSIDE the open rename entry is a normal extend-text-selection gesture:
+        # the press/release handlers ignore the row being renamed, so the entry must survive it.
+        # Shift makes the press MODIFIED, which without the guard applies the selection logic
+        # immediately on press — grab_focus to the terminal, whose focus-leave commits the
+        # rename mid-edit. (A PLAIN caret click cannot observe the guard: the renamed row is
+        # always in the selection, so the press defers, and the entry claims the sequence.)
+        # The click must PROVABLY land inside the entry or the survival assert is vacuous: the
+        # entry opens select-all with the caret at the text's END, so a shift-click aimed into
+        # the text's left half MOVES the caret — the landing proof. An aim miss onto dead row
+        # space moves nothing and retries at the next probe, exactly like the sibling pointer
+        # legs; the grid also probes two x-fractions because the entry's left padding can
+        # swallow a click the vertical nudge alone would have landed.
+        def caret_offset():
+            entry = rename_entry()
+            try:
+                return entry.get_text_iface().get_caret_offset() if entry else None
+            except Exception:
+                return None
+
+        for nudge, fraction in [(n, f) for n in NUDGE_DYS for f in (0.3, 0.2)]:
+            before = caret_offset()
+            if before is None:
+                break   # entry already gone — the survival assert below reports it
+            pointer_leg_step(
+                lambda: mouse_click(lambda: rename_entry(), process.pid, button="left",
+                                    dy=row_dy + nudge, modifier="shift", x_fraction=fraction),
+                "the rename-entry shift-click aborted: the entry stopped resolving mid-retry")
+            if poll(lambda: caret_offset() != before, timeout=2):
+                break
+        else:
+            raise AssertionError(
+                "the shift-click never provably landed inside the rename entry "
+                "(the caret did not move at any probed offset)"
+            )
+        assert not poll(lambda: rename_entry() is None, timeout=0.8), (
+            "a shift-click inside the rename entry dismissed it "
+            "(the renamed-row press guard is gone)"
+        )
+        press_escape(process.pid)
+        wait_for(
+            lambda: rename_entry() is None and sidebar_session_row_label(app, "row-one"),
+            "Escape did not cancel the inline rename back to the label",
+        )
+
+        # Flagged working-set view inherits the same passive rows and click routing: a click on
+        # a flagged row (its label carries the workspace breadcrumb) publishes SELECTED and
+        # activates the session exactly as in tree mode.
+        tree = window_tree(env, window_id)
+        ws_name = tree["workspaces"][0]["name"]
+        row_two_id = next(s["id"] for s in tree["workspaces"][0]["sessions"]
+                          if s["name"] == "row-two")
+        control_json(env, "session", "flag", "on", "--target", row_two_id,
+                     "--window", window_id, "--json")
+        control_json(env, "sidebar", "mode", "flagged", "--json")
+        flagged_label = f"row-two  —  {ws_name}"
+        wait_for(lambda: sidebar_session_row_label(app, flagged_label),
+                 "the flagged view did not show the flagged row's breadcrumb label")
+        for nudge in NUDGE_DYS:
+            pointer_leg_step(
+                lambda: mouse_click(lambda: sidebar_session_row_label(app, flagged_label),
+                                    process.pid, button="left", dy=row_dy + nudge),
+                "clicking the flagged-view row aborted: the row stopped resolving mid-retry")
+            if poll(lambda: active_name() == "row-two" and row_selected(app, flagged_label),
+                    timeout=3):
+                break
+        else:
+            raise AssertionError("clicking the flagged-view row never selected its session")
+        print("OK: sidebar click selects, typing reaches the terminal, double-click renames, "
+              "and the flagged view selects on click")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
+def verify_sidebar_session_drag(env):
+    """Synthesized press-move-release drags reorder sessions through the y-midpoint drop slot.
+
+    Leg 1 drops `drag-one` on the LAST row's bottom half (insert after -> append); leg 2 drops
+    it back on the FIRST row's top half — the slot the old `SidebarDrop.onItemIndex` redirect
+    made unreachable. Leg 3 drops it on ANOTHER workspace's session row (top half — precise
+    cross-workspace placement); leg 4 drops a session on that workspace's HEADER (append
+    semantics, `handleSessionToWorkspace`). Order is asserted over the CONTROL tree — drop
+    order is a model effect; the published accessible selection is covered by the click and
+    multiselect scenarios. An aim miss (the AT-SPI extents offset can push the pointer into a
+    neighbouring row, the workspace header, or a section gap) either leaves the tree unchanged
+    or lands wrong; the latter is restored to the leg's base distribution over the control
+    channel before the retry at a nudged offset, so a miss never cascades — while a drag that
+    can never produce the expected placement still fails the leg.
+    """
+    process, app = launch(env)
+    try:
+        window_id = wait_for(
+            lambda: next((item["id"] for item in window_list(env) if item["open"]), None),
+            "initial window was not registered",
+        )
+        control_json(env, "workspace", "rename", "ws-src", "--json")
+        control_json(env, "session", "rename", "drag-one", "--window", window_id, "--json")
+        control_json(env, "session", "new", "--name", "drag-two", "--window", window_id, "--json")
+        control_json(env, "session", "new", "--name", "drag-three", "--window", window_id, "--json")
+
+        def workspaces():
+            return window_tree(env, window_id)["workspaces"]
+
+        def distribution():
+            return {w["name"]: [s["name"] for s in w["sessions"]] for w in workspaces()}
+
+        def session_id_of(name):
+            session_id = next((s["id"] for w in workspaces() for s in w["sessions"]
+                               if s["name"] == name), None)
+            assert session_id is not None, (
+                f"session {name} vanished from the control tree while restoring a drag retry"
+            )
+            return session_id
+
+        wait_for(lambda: distribution() == {"ws-src": ["drag-one", "drag-two", "drag-three"]},
+                 "the created sessions did not settle into their creation order")
+        wait_for(lambda: sidebar_session_row_label(app, "drag-one"),
+                 "the drag-one sidebar row is missing")
+
+        # Calibrate the extents offset with a plain click before any drag (the same
+        # STATE_SELECTED probe as the sidebar-click-rename scenario; dy=0 first so
+        # exact-extents hosts are unaffected).
+        row_dy = calibrate_row_click(app, process.pid, "drag-one")
+
+        def restore(base):
+            # Move every strayed session back to its home workspace, then rebuild each
+            # workspace's order with bottom-moves (bottom-moving every session in the desired
+            # order rebuilds exactly that order, so multi-session workspaces restore too).
+            for ws_name, session_names in base.items():
+                ws_id = next((w["id"] for w in workspaces() if w["name"] == ws_name), None)
+                assert ws_id is not None, (
+                    f"workspace {ws_name} vanished while restoring a drag retry"
+                )
+                for name in session_names:
+                    if name not in distribution().get(ws_name, []):
+                        control_json(env, "session", "move", ws_id,
+                                     "--target", session_id_of(name), "--json")
+            for session_names in base.values():
+                for name in session_names:
+                    control_json(env, "session", "move", "--to", "bottom",
+                                 "--target", session_id_of(name), "--json")
+            wait_for(lambda: distribution() == base,
+                     "restoring the session distribution for a retry failed")
+
+        def drag_leg(source, target_provider, fraction, expected, label):
+            for nudge in NUDGE_DYS:
+                base = distribution()
+                pointer_leg_step(
+                    lambda: mouse_drag(lambda: sidebar_session_row_label(app, source),
+                                       target_provider, process.pid,
+                                       target_fraction=fraction, dy=row_dy + nudge),
+                    f"{label}: a drag endpoint stopped resolving mid-retry")
+                poll(lambda: distribution() != base, timeout=4)
+                if distribution() == expected:
+                    return
+                if distribution() != base:
+                    restore(base)
+            raise AssertionError(f"{label} never produced the distribution {expected}")
+
+        def row_provider(name):
+            return lambda: sidebar_session_row_label(app, name)
+
+        drag_leg("drag-one", row_provider("drag-three"), 0.75,
+                 {"ws-src": ["drag-two", "drag-three", "drag-one"]},
+                 "dropping drag-one on drag-three's bottom half")
+        drag_leg("drag-one", row_provider("drag-two"), 0.25,
+                 {"ws-src": ["drag-one", "drag-two", "drag-three"]},
+                 "dropping drag-one on the first row's top half")
+
+        # A second workspace for the cross-workspace legs (`workspace new` creates it EMPTY,
+        # so the anchor session is created into it by name) — a stably-named row makes the
+        # leg's expected placement addressable.
+        control_json(env, "workspace", "new", "ws-dest", "--json")
+        control_json(env, "session", "new", "--name", "drop-anchor",
+                     "--workspace-name", "ws-dest", "--window", window_id, "--json")
+        wait_for(lambda: distribution().get("ws-dest") == ["drop-anchor"],
+                 "the drop-anchor session did not appear in ws-dest")
+        wait_for(lambda: sidebar_session_row_label(app, "drop-anchor"),
+                 "the drop-anchor sidebar row is missing")
+
+        drag_leg("drag-one", row_provider("drop-anchor"), 0.25,
+                 {"ws-src": ["drag-two", "drag-three"],
+                  "ws-dest": ["drag-one", "drop-anchor"]},
+                 "dropping drag-one on another workspace's row top half")
+        drag_leg("drag-two", lambda: named(app, "ws-dest", role="label"), 0.5,
+                 {"ws-src": ["drag-three"],
+                  "ws-dest": ["drag-one", "drop-anchor", "drag-two"]},
+                 "dropping drag-two on the ws-dest workspace header (append)")
+        print("OK: session drags reorder through the y-midpoint slot "
+              "(append, first slot, cross-workspace row, header append)")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
+def verify_sidebar_workspace_drag(env):
+    """Drag a workspace header onto the other's bottom half (the reported "drag A to last"
+    repro that the old raw-index slot silently dropped as a no-op), then back onto its TOP
+    half — both directions of the y-midpoint slot through the real GTK glue.
+
+    Workspace order is asserted over the CONTROL tree. With two workspaces each drop can only
+    succeed or no-op, so retries walk the dy offsets; the one hazardous aim miss — the press
+    landing on a session row instead of the header, which the header's append semantics turn
+    into a SESSION moving between workspaces — is detected by comparing the per-workspace
+    session-id lists and repaired over the control channel before the retry. The repair's
+    order check relies on each workspace holding AT MOST one session (a cross-workspace
+    append cannot break within-workspace order); a multi-session variant would need
+    order-restoring moves on top of the append.
+    """
+    process, app = launch(env)
+    try:
+        window_id = wait_for(
+            lambda: next((item["id"] for item in window_list(env) if item["open"]), None),
+            "initial window was not registered",
+        )
+        control_json(env, "workspace", "rename", "ws-alpha", "--json")
+        control_json(env, "workspace", "new", "ws-beta", "--json")
+
+        def workspaces():
+            return window_tree(env, window_id)["workspaces"]
+
+        def ws_names():
+            return [w["name"] for w in workspaces()]
+
+        def distribution():
+            return {w["name"]: [s["id"] for s in w["sessions"]] for w in workspaces()}
+
+        def header_label(name):
+            # Workspace headers are plain boxes, not list rows; the name label is the only
+            # accessible carrying the workspace name (the title bar shows the SESSION name).
+            return named(app, name, role="label")
+
+        wait_for(lambda: ws_names() == ["ws-alpha", "ws-beta"], "the workspaces did not settle")
+        wait_for(lambda: header_label("ws-alpha") and header_label("ws-beta"),
+                 "the workspace header labels are missing from the sidebar")
+
+        base_distribution = distribution()
+
+        def repair_strayed():
+            strayed = distribution()
+            if strayed == base_distribution:
+                return
+            for ws_name, ids in base_distribution.items():
+                # next(..., None) + assert, not a bare next(): an uncaught StopIteration
+                # would abort with no tree dump.
+                ws_id = next((w["id"] for w in workspaces() if w["name"] == ws_name), None)
+                assert ws_id is not None, (
+                    f"workspace {ws_name} vanished after an aim miss — cannot repair the "
+                    "strayed session"
+                )
+                for session_id in ids:
+                    if session_id not in strayed.get(ws_name, []):
+                        control_json(env, "session", "move", ws_id,
+                                     "--target", session_id, "--json")
+            wait_for(lambda: distribution() == base_distribution,
+                     "restoring the strayed session for a retry failed")
+
+        def header_drag_leg(source, target, fraction, expected, label):
+            for dy in ABSOLUTE_DYS:
+                pointer_leg_step(
+                    lambda: mouse_drag(lambda: header_label(source),
+                                       lambda: header_label(target),
+                                       process.pid, target_fraction=fraction, dy=dy),
+                    f"{label}: a header stopped resolving mid-retry")
+                if poll(lambda: ws_names() == expected, timeout=4):
+                    assert distribution() == base_distribution, (
+                        "the workspace drag moved a session between workspaces"
+                    )
+                    return
+                repair_strayed()
+            raise AssertionError(f"{label} never reordered the workspaces to {expected}")
+
+        header_drag_leg("ws-alpha", "ws-beta", 0.75, ["ws-beta", "ws-alpha"],
+                        "dragging ws-alpha onto ws-beta's bottom half")
+        header_drag_leg("ws-alpha", "ws-beta", 0.25, ["ws-alpha", "ws-beta"],
+                        "dragging ws-alpha back onto ws-beta's top half")
+        print("OK: workspace header drags reorder through both halves of the y-midpoint slot")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
+def verify_sidebar_multiselect_collapse(env):
+    """Shift-click builds a selection block on PRESS, a plain press inside the block changes
+    nothing until release (the deferred collapse), a ctrl-click toggles a member out on press,
+    and a drag of a selected row moves the whole block — onto a session row AND onto a
+    workspace header (the header append must expand the same block, not just the pressed row).
+
+    The selection block is observed directly through the accessible STATE_SELECTED the
+    choke point publishes on every member row: all members mid-block, the whole block still
+    published mid-hold, and the collapse to the single clicked row after release. The control
+    tree supplies the model effects — the ACTIVE session (a click makes the clicked row
+    active; a deferred press leaves it alone until release) and the block drag's order (both
+    selected sessions move together). The mid-hold probe of `mouse_press_probe_release` is
+    what distinguishes "applied on press" from "deferred to release" — the split the GTK
+    press/release glue exists for.
+    """
+    process, app = launch(env)
+    try:
+        window_id = wait_for(
+            lambda: next((item["id"] for item in window_list(env) if item["open"]), None),
+            "initial window was not registered",
+        )
+        control_json(env, "session", "rename", "pick-one", "--window", window_id, "--json")
+        control_json(env, "session", "new", "--name", "pick-two", "--window", window_id, "--json")
+        control_json(env, "session", "new", "--name", "pick-three", "--window", window_id, "--json")
+
+        def sessions():
+            return window_tree(env, window_id)["workspaces"][0]["sessions"]
+
+        def names():
+            return [s["name"] for s in sessions()]
+
+        def active_name():
+            return next((s["name"] for s in sessions() if s.get("active")), None)
+
+        wait_for(lambda: names() == ["pick-one", "pick-two", "pick-three"],
+                 "the created sessions did not settle into their creation order")
+        wait_for(lambda: sidebar_session_row_label(app, "pick-one"),
+                 "the pick-one sidebar row is missing")
+        row_dy = calibrate_row_click(app, process.pid, "pick-one")
+
+        def build_block(last, members):
+            """Anchor on pick-one, then shift-click `last` to extend the block on PRESS.
+
+            The block is observed two ways: the published STATE_SELECTED on EVERY member row
+            (the a11y leg) and the active session over the control tree (the model leg — the
+            shift-click makes `last` active)."""
+            mouse_click(lambda: sidebar_session_row_label(app, "pick-one"), process.pid,
+                        button="left", dy=row_dy)
+            wait_for(lambda: active_name() == "pick-one", "anchoring the block on pick-one failed")
+            wait_for(lambda: row_selected(app, "pick-one"),
+                     "anchoring the block did not publish SELECTED on pick-one")
+            for nudge in NUDGE_DYS:
+                pointer_leg_step(
+                    lambda: mouse_click(lambda: sidebar_session_row_label(app, last),
+                                        process.pid, button="left", dy=row_dy + nudge,
+                                        modifier="shift"),
+                    f"shift-clicking {last} aborted: the row stopped resolving mid-retry")
+                if poll(lambda: active_name() == last
+                        and all(row_selected(app, member) for member in members), timeout=3):
+                    return
+            raise AssertionError(
+                f"shift-clicking {last} never published SELECTED on the whole block {members}"
+            )
+
+        # Leg 1: a plain press INSIDE the block changes nothing while the button is down, and
+        # the release collapses to the clicked row. A press that misses pick-two lands on a
+        # row whose release-collapse leaves the active session elsewhere, so the outer loop
+        # rebuilds the block and retries at a nudged offset.
+        block = ("pick-one", "pick-two", "pick-three")
+
+        def probe_mid_hold():
+            time.sleep(0.6)   # give a wrongly-applied press time to reach the store
+            return active_name(), tuple(m for m in block if row_selected(app, m))
+
+        for nudge in NUDGE_DYS:
+            build_block("pick-three", block)   # selection [one, two, three], active = pick-three
+            held_active, held_selected = pointer_leg_step(
+                lambda: mouse_press_probe_release(
+                    lambda: sidebar_session_row_label(app, "pick-two"), process.pid,
+                    probe_mid_hold, dy=row_dy + nudge),
+                "the mid-hold press aborted: the row stopped resolving mid-retry")
+            if poll(lambda: active_name() == "pick-two", timeout=3):
+                assert held_active == "pick-three", (
+                    "a plain press inside the multi-selection must change nothing until "
+                    f"release, but the active session became {held_active!r} mid-hold "
+                    "(sampled 0.6s after the press)"
+                )
+                assert held_selected == block, (
+                    "a plain press inside the multi-selection must keep the whole block "
+                    f"published as SELECTED until release, but mid-hold only {held_selected!r} "
+                    "carried the state (sampled 0.6s after the press)"
+                )
+                # The release collapse narrows the published state to the clicked row alone
+                # (`row_deselected` pins the other rows' existence, so the negative halves
+                # cannot vacuously pass on vanished rows).
+                wait_for(
+                    lambda: row_selected(app, "pick-two")
+                    and row_deselected(app, "pick-one")
+                    and row_deselected(app, "pick-three"),
+                    "the release collapse did not narrow the published SELECTED state to pick-two",
+                )
+                break
+        else:
+            raise AssertionError(
+                "releasing a plain press inside the selection never collapsed to pick-two"
+            )
+
+        # Leg 2: a CTRL-click on a block member is a MODIFIED press — it applies on press and
+        # toggles the member OUT (never the deferred collapse), leaving the rest of the block
+        # published. Pins the control bit of the press-modifier mask end-to-end: without it a
+        # ctrl-click inside the block would defer and the release would collapse to pick-two.
+        for nudge in NUDGE_DYS:
+            build_block("pick-three", block)   # selection [one, two, three], active = pick-three
+            pointer_leg_step(
+                lambda: mouse_click(lambda: sidebar_session_row_label(app, "pick-two"),
+                                    process.pid, button="left", dy=row_dy + nudge,
+                                    modifier="ctrl"),
+                "ctrl-clicking pick-two aborted: the row stopped resolving mid-retry")
+            if poll(lambda: row_deselected(app, "pick-two")
+                    and row_selected(app, "pick-one") and row_selected(app, "pick-three"),
+                    timeout=3):
+                break
+        else:
+            raise AssertionError(
+                "ctrl-clicking pick-two never toggled it out of the published selection block"
+            )
+
+        # Leg 3: the block survives a drag — press pick-one (inside the rebuilt [one, two]
+        # block) and drop on pick-three's bottom half; both selected sessions move together,
+        # preserving their visual order.
+        base = ["pick-one", "pick-two", "pick-three"]
+        expected = ["pick-three", "pick-one", "pick-two"]
+        for nudge in NUDGE_DYS:
+            build_block("pick-two", ("pick-one", "pick-two"))   # selection [one, two]
+            pointer_leg_step(
+                lambda: mouse_drag(lambda: sidebar_session_row_label(app, "pick-one"),
+                                   lambda: sidebar_session_row_label(app, "pick-three"),
+                                   process.pid, target_fraction=0.75, dy=row_dy + nudge),
+                "the block drag aborted: a row stopped resolving mid-retry")
+            poll(lambda: names() != base, timeout=4)
+            if names() == expected:
+                # The drop rebuilds every row; the published block must SURVIVE the rebuild —
+                # GTK resets SELECTED while rooting the new rows, so this leg pins the deferred
+                # re-publish (build-loop publication alone is wiped).
+                wait_for(
+                    lambda: row_selected(app, "pick-one") and row_selected(app, "pick-two")
+                    and row_deselected(app, "pick-three"),
+                    "AT-SPI lost the selected block while rebuilding rows after the drag",
+                )
+                break
+            if names() != base:
+                # A miss moved something else — rebuild the base order for the retry.
+                for name in base:
+                    session_id = next(s["id"] for s in sessions() if s["name"] == name)
+                    control_json(env, "session", "move", "--to", "bottom",
+                                 "--target", session_id, "--json")
+                wait_for(lambda: names() == base,
+                         "restoring the session order for a retry failed")
+        else:
+            raise AssertionError(
+                "dragging a selected block never moved both sessions together"
+            )
+
+        # Leg 4: a workspace-HEADER drop carries the same block — rebuild the [one, two] block
+        # and drop pick-one on the ws-dest header; BOTH sessions append in order. Without the
+        # block expansion in `handleSessionToWorkspace` only the pressed row moves, which the
+        # expected-distribution check turns into a failed leg.
+        control_json(env, "workspace", "rename", "ws-home", "--json")
+        control_json(env, "workspace", "new", "ws-dest", "--json")
+
+        def distribution():
+            return {w["name"]: [s["name"] for s in w["sessions"]]
+                    for w in window_tree(env, window_id)["workspaces"]}
+
+        def session_id_of(name):
+            session_id = next((s["id"] for w in window_tree(env, window_id)["workspaces"]
+                               for s in w["sessions"] if s["name"] == name), None)
+            assert session_id is not None, (
+                f"session {name} vanished while restoring a header-drop retry"
+            )
+            return session_id
+
+        wait_for(lambda: named(app, "ws-dest", role="label"),
+                 "the ws-dest workspace header is missing from the sidebar")
+        header_base = {"ws-home": ["pick-three", "pick-one", "pick-two"], "ws-dest": []}
+        header_expected = {"ws-home": ["pick-three"], "ws-dest": ["pick-one", "pick-two"]}
+        wait_for(lambda: distribution() == header_base,
+                 "the tree did not settle before the header block drop")
+
+        def restore_header_base():
+            ws_home_id = next((w["id"] for w in window_tree(env, window_id)["workspaces"]
+                               if w["name"] == "ws-home"), None)
+            assert ws_home_id is not None, "ws-home vanished while restoring a header-drop retry"
+            for name in header_base["ws-home"]:
+                if name not in distribution().get("ws-home", []):
+                    control_json(env, "session", "move", ws_home_id,
+                                 "--target", session_id_of(name), "--json")
+            for name in header_base["ws-home"]:
+                control_json(env, "session", "move", "--to", "bottom",
+                             "--target", session_id_of(name), "--json")
+            wait_for(lambda: distribution() == header_base,
+                     "restoring the distribution for a header-drop retry failed")
+
+        for nudge in NUDGE_DYS:
+            build_block("pick-two", ("pick-one", "pick-two"))   # selection [one, two]
+            pointer_leg_step(
+                lambda: mouse_drag(lambda: sidebar_session_row_label(app, "pick-one"),
+                                   lambda: named(app, "ws-dest", role="label"),
+                                   process.pid, target_fraction=0.5, dy=row_dy + nudge),
+                "the header block drag aborted: an endpoint stopped resolving mid-retry")
+            poll(lambda: distribution() != header_base, timeout=4)
+            if distribution() == header_expected:
+                break
+            if distribution() != header_base:
+                restore_header_base()
+        else:
+            raise AssertionError(
+                "dropping the selected block on the ws-dest header never moved both sessions"
+            )
+        print("OK: shift-click builds a block, a plain press defers its collapse to release, "
+              "ctrl-click toggles a member out, and a block drag moves the whole block "
+              "onto a row and onto a workspace header")
     except AssertionError:
         describe_tree(app)
         raise
@@ -2959,6 +3957,8 @@ def main():
             "sidebar-row-height",
             "sidebar-narrow-clipping",
             "sidebar-width-floor",
+            "sidebar-click-rename", "sidebar-session-drag", "sidebar-workspace-drag",
+            "sidebar-multiselect",
             "auto-follow", "hidden-toolbar",
         ):
             child_env = dict(os.environ, AGTERM_ATSPI_SCENARIO=child_scenario)
@@ -3038,6 +4038,14 @@ def main():
             verify_sidebar_narrow_clipping(env)
         elif scenario == "sidebar-width-floor":
             verify_sidebar_width_floor(env)
+        elif scenario == "sidebar-click-rename":
+            verify_sidebar_click_and_rename(env)
+        elif scenario == "sidebar-session-drag":
+            verify_sidebar_session_drag(env)
+        elif scenario == "sidebar-workspace-drag":
+            verify_sidebar_workspace_drag(env)
+        elif scenario == "sidebar-multiselect":
+            verify_sidebar_multiselect_collapse(env)
         elif scenario == "preferences-pages":
             verify_preferences_pages(env, home)
         elif scenario == "auto-follow":

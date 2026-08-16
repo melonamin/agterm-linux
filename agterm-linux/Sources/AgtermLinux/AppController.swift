@@ -104,6 +104,12 @@ final class AppController {
     var splitPaneHosts: [UUID: OpaquePointer] = [:]   // GtkOverlay holding split + its pane cover
     var sessionStacks: [UUID: OpaquePointer] = [:]    // outer GtkStack (main <-> scratch), the deck page
     var rowSession: [OpaquePointer: UUID] = [:]; var sidebarSelectionAnchor: UUID?
+    // Press/release timing for session-row clicks: remembers a deferred collapse so the release
+    // never re-derives the decision from live modifier state (LinuxSidebarPolicy.SessionClickTracker).
+    var sessionClickTracker = LinuxSidebarPolicy.SessionClickTracker()
+    // The post-rebuild accessible-selection re-publish (GTK resets the published SELECTED
+    // state while rooting rebuilt rows); disarmed in `windowWillClose`.
+    let selectionRepublish = SelectionRepublishCoordinator()
     var nameLabels: [OpaquePointer: (id: UUID, isWorkspace: Bool)] = [:]  // name label -> rename target (double-click)
     var sessionNameWidgets: [UUID: OpaquePointer] = [:]
     var workspaceDiscButtons: [OpaquePointer: UUID] = [:]  // disclosure button -> workspace (collapse toggle)
@@ -121,7 +127,6 @@ final class AppController {
     }
     var renaming: RenameTarget?
     var renameEntry: OpaquePointer?  // the live rename GtkEntry (focused after rebuild)
-    var workspaceListBoxes: [OpaquePointer] = []
     var sidebarScroller: OpaquePointer?               // the sidebar's GtkScrolledWindow (scroll-to-selected)
     var contextMenuSession: UUID?                     // the session a row context menu targets
     var contextMoveTargets: [OpaquePointer: UUID] = [:]   // "Move to <ws>" button → target workspace

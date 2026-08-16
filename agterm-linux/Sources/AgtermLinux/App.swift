@@ -179,13 +179,9 @@ private let onShutdown: @MainActor @convention(c) (OpaquePointer?, gpointer?) ->
     }
 }
 
-/// Install the app-wide CSS once: the `.agterm-blink` keyframe animation that pulses an in-progress
-/// agent-status glyph (the `AgentIndicator.blink` cue). Added at the application priority so it layers
-/// over the theme without overriding user CSS.
-@MainActor private func installAppCSS() {
-    guard let display = gdk_display_get_default() else { return }
-    let provider = gtk_css_provider_new()
-    let css = """
+/// The app-wide stylesheet `installAppCSS` loads — internal (not private) so the tests can pin that
+/// interpolated policy constants (the sidebar hover rule) actually reach the installed string.
+let appCSS = """
     .agterm-blink { animation: agterm-blink-pulse 1.2s ease-in-out infinite; }
     /* one selector per keyframe: GTK 4.14's _gtk_css_keyframes_parse takes a single progress value and then
        expects the block, so a `0%, 100%` list is a parse error there - and GTK drops @keyframes silently */
@@ -204,10 +200,18 @@ private let onShutdown: @MainActor @convention(c) (OpaquePointer?, gpointer?) ->
     .agterm-palette-badge { font-size: 0.8em; padding: 1px 6px; border-radius: 6px; background-color: alpha(@window_fg_color, 0.14); color: alpha(@window_fg_color, 0.7); }  /* keymap-command pill */
     .agterm-sidebar #workspace-row .workspace-add-session { opacity: 0; }
     .agterm-sidebar #workspace-row:hover .workspace-add-session { opacity: 1; }
+    \(LinuxSidebarPolicy.sidebarHoverCSS)   /* passive rows lose `.activatable`, so hover keys on bare `:hover` — contract + pins live on the constant; see agterm-linux/docs/sidebar.md */
     /* trailing inset inside the selection highlight (the row's content box paints it, so a box margin would indent the highlight itself) */
     .agterm-session-row-content { padding-right: 6px; }
     """
-    css.withCString { gtk_css_provider_load_from_string(provider, $0) }
+
+/// Install the app-wide CSS once: the `.agterm-blink` keyframe animation that pulses an in-progress
+/// agent-status glyph (the `AgentIndicator.blink` cue). Added at the application priority so it layers
+/// over the theme without overriding user CSS.
+@MainActor private func installAppCSS() {
+    guard let display = gdk_display_get_default() else { return }
+    let provider = gtk_css_provider_new()
+    appCSS.withCString { gtk_css_provider_load_from_string(provider, $0) }
     // GTK_STYLE_PROVIDER_PRIORITY_APPLICATION = 600; the macro cast isn't available in Swift, the
     // GtkCssProvider pointer is passed straight through as the GtkStyleProvider.
     gtk_style_context_add_provider_for_display(display, OpaquePointer(provider), 600)

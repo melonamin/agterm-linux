@@ -73,6 +73,8 @@ extension AppController {
         layoutSaveDebouncer.cancel()
         themePreviewDebouncer.cancel()
         softCloseReconcile.cancel()
+        // The post-rebuild selection re-publish would touch destroyed rows.
+        selectionRepublish.cancel()
         // The soft-close grace finalizer is STORE-scoped, so none of the window-scoped cancels above reach
         // it. FINALIZE rather than cancel — cancelling strands the held records and leaks what only the
         // finalizer's teardown sweeps (see `.claude/rules/main-loop.md`).

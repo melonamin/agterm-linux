@@ -262,6 +262,8 @@ Local helper scripts:
 - `scripts/run-linux.sh` builds and runs the GTK app from the checkout.
 - `scripts/install-linux.sh` installs a personal build into `~/.local`.
 - `scripts/flatpak-linux.sh` builds and installs the local Flatpak manifest.
+- `scripts/test-linux-ui.sh` runs the GTK accessibility smoke suite locally under Xvfb (the same
+  scenarios CI runs; works on dbus-broker hosts — the script pre-starts the AT-SPI registry).
 
 ### macOS
 
@@ -443,7 +445,9 @@ exposes the app chrome to AT-SPI, but libghostty renders the terminal in a `GtkG
 AT-SPI `EditableText` surface. Accessibility clients therefore cannot insert text directly into the Linux
 terminal grid. Use `agtermctl session type --stdin` for keyboard semantics, or the normal clipboard/paste
 path. Implementing editable terminal insertion would require a custom GTK accessible-text widget/provider;
-GTK does not supply that bridge for `GtkGLArea`.
+GTK does not supply that bridge for `GtkGLArea`. Sidebar rows are not keyboard-focus targets on Linux; the
+selected row is exposed to AT-SPI as selected, and session navigation is driven by keybindings, the
+palettes, or `agtermctl session go`.
 
 ## Settings
 

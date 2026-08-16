@@ -50,18 +50,7 @@ extension AppController {
     }
 
     func syncSidebarSelection() {
-        for listBox in workspaceListBoxes { gtk_list_box_unselect_all(listBox) }
-        for row in rowSession.keys { setSidebarSelectionStyle(row, selected: false) }
-        let selected = store.sidebarSelectionIDs.isEmpty ? store.selectedSessionID.map { [$0] } ?? []
-            : store.sidebarSelectionIDs
-        for id in selected {
-            guard let row = rowSession.first(where: { $0.value == id })?.key,
-                  let parent = gtk_widget_get_parent(W(row)) else { continue }
-            gtk_list_box_select_row(OpaquePointer(parent), GLBR(row))
-            // Libadwaita's navigation-sidebar rules can suppress GtkListBoxRow's :selected paint.
-            // Mirror the model selection into an explicit class so the themed highlight stays visible.
-            setSidebarSelectionStyle(row, selected: true)
-        }
+        syncSidebarSelectionStyles()
         if let active = store.selectedSessionID,
            let row = rowSession.first(where: { $0.value == active })?.key {
             scrollRowIntoView(row)
@@ -76,6 +65,17 @@ extension AppController {
             ? LinuxSidebarPolicy.flaggedRowLabel(for: session, in: store)
             : session.displayName
         text.withCString { gtk_label_set_text(widget, $0) }
+    }
+
+    /// One pass over every live row through the effective-selection predicate, so the CSS paint and
+    /// the published accessible state always describe the same model selection (the choke-point
+    /// contract — see `setSidebarSelectionStyle`).
+    func syncSidebarSelectionStyles() {
+        let selection = store.sidebarSelectionIDs
+        for (row, id) in rowSession {
+            setSidebarSelectionStyle(row, selected: LinuxSidebarPolicy.sessionIsInEffectiveSelection(
+                id, selection: selection, activeID: store.selectedSessionID))
+        }
     }
 
     func applySidebarFontSize() {
@@ -163,7 +163,6 @@ extension AppController {
         nameLabels.removeAll()
         sessionNameWidgets.removeAll()
         workspaceDiscButtons.removeAll()
-        workspaceListBoxes.removeAll()
         updateWorkspaceFilterButton()
 
         if store.sidebarMode == .flagged {
@@ -185,6 +184,12 @@ extension AppController {
             }
         }
         refreshSidebarWidthFloor()
+        // GtkListBoxRow resets the published SELECTED state while GTK roots the rebuilt hierarchy
+        // (the list intentionally stays in GTK_SELECTION_NONE, so nothing re-derives it). Re-publish
+        // from the current model on the next main-loop turn, after every row is rooted; later
+        // selection changes update synchronously. Disarmed in `windowWillClose` — a pending job
+        // must not touch a destroyed widget tree (`.claude/rules/main-loop.md`).
+        selectionRepublish.arm { [weak self] in self?.syncSidebarSelectionStyles() }
     }
 
     private func updateWorkspaceFilterButton() {
@@ -272,18 +277,20 @@ extension AppController {
         guard let lb = op(gtk_list_box_new()) else { return }
         gtk_widget_add_css_class(W(lb), "navigation-sidebar")
         if workspace != nil { gtk_widget_set_margin_start(W(lb), 14) }
-        gtk_list_box_set_selection_mode(lb, GTK_SELECTION_MULTIPLE)
-        workspaceListBoxes.append(lb)
+        // Selection mode NONE: the custom shift/ctrl logic owns selection (painted through the
+        // `agterm-selected` class), which lets the session-row click gesture run WITHOUT claiming
+        // the sequence — see agterm-linux/docs/sidebar.md (no claiming click gesture).
+        gtk_list_box_set_selection_mode(lb, GTK_SELECTION_NONE)
 
         for s in sessions {
             guard let row = makeRow(s) else { continue }
             gtk_list_box_append(lb, W(row))
             rowSession[row] = s.id
-            if store.sidebarSelectionIDs.contains(s.id) ||
-                (store.sidebarSelectionIDs.isEmpty && s.id == store.selectedSessionID) {
-                gtk_list_box_select_row(lb, GLBR(row))
-                setSidebarSelectionStyle(row, selected: true)
-            }
+            // Publish for EVERY fresh row, not only the selected ones (an untouched row would
+            // otherwise carry an UNDEFINED accessible SELECTED state until the first sync),
+            // through the same effective-selection predicate the sync pass uses.
+            setSidebarSelectionStyle(row, selected: LinuxSidebarPolicy.sessionIsInEffectiveSelection(
+                s.id, selection: store.sidebarSelectionIDs, activeID: store.selectedSessionID))
         }
         gtk_box_append(cast(sidebarBox), W(lb))
     }
@@ -336,10 +343,21 @@ extension AppController {
         // content. The trailing inset lives inside the box as CSS `padding-right` (installAppCSS),
         // mirroring the leading icon's margin_start on the left.
         gtk_list_box_row_set_child(GLBR(row), W(box))
+        // Rows are PASSIVE: under GTK_SELECTION_NONE the list box's built-in click gesture would
+        // still move keyboard focus to a selectable/activatable row on release — after showActive()
+        // already gave the terminal focus on press — sending subsequent typing into the sidebar.
+        // Non-selectable + non-activatable makes the box's click handling skip the row, and
+        // focusable=FALSE is ALSO required: GtkListBoxRow is focusable by default, so the
+        // toplevel's click-to-focus would still move keyboard focus onto the row (verified by the
+        // sidebar-click-rename AT-SPI scenario's typing leg, which lands in the sidebar without it).
+        gtk_list_box_row_set_selectable(GLBR(row), 0)
+        gtk_list_box_row_set_activatable(GLBR(row), 0)
+        gtk_widget_set_focusable(W(row), 0)
         let selectClick = gtk_gesture_click_new()
         gtk_gesture_single_set_button(selectClick, 1)
         gtk_event_controller_set_propagation_phase(selectClick, GTK_PHASE_CAPTURE)
-        connect(selectClick, "pressed", unsafeBitCast(onSessionRowClick, to: GCallback.self), RAW(row))
+        connect(selectClick, "pressed", unsafeBitCast(onSessionRowPress, to: GCallback.self), RAW(row))
+        connect(selectClick, "released", unsafeBitCast(onSessionRowRelease, to: GCallback.self), RAW(row))
         gtk_widget_add_controller(W(row), selectClick)
         let rightClick = gtk_gesture_click_new()
         gtk_gesture_single_set_button(rightClick, 3)
@@ -363,6 +381,13 @@ extension AppController {
         return row
     }
 
+    /// The sidebar selection choke point: ONE paint path (the `agterm-selected` CSS class, on the
+    /// row and its content box) and ONE a11y path (`GTK_ACCESSIBLE_STATE_SELECTED` on the row
+    /// accessible, via `publishRowAccessibleSelected`). Every selection change routes through here
+    /// — `syncSidebarSelectionStyles`' single predicate pass and the initial paint in
+    /// `appendSection`'s build loop — so the visual highlight and the published accessible state
+    /// cannot drift apart.
+    /// See agterm-linux/docs/sidebar.md (selection contract).
     private func setSidebarSelectionStyle(_ row: OpaquePointer, selected: Bool) {
         let update: (OpaquePointer?) -> Void = { widget in
             if selected {
@@ -373,6 +398,28 @@ extension AppController {
         }
         update(row)
         update(gtk_list_box_row_get_child(GLBR(row)).map { OpaquePointer($0) })
+        publishRowAccessibleSelected(row, selected: selected)
+    }
+
+    /// Publish `GTK_ACCESSIBLE_STATE_SELECTED` on the ROW accessible — the a11y half of the
+    /// selection contract (see `setSidebarSelectionStyle` for the contract itself). The state goes
+    /// on the row only, never the row's child (the CSS class touches both, but the child is
+    /// presentation). Verified over AT-SPI on GTK 4.22: the row's `STATE_SELECTED` follows this
+    /// call (present on the selected row, absent after deselection).
+    private func publishRowAccessibleSelected(_ row: OpaquePointer, selected: Bool) {
+        var state = GTK_ACCESSIBLE_STATE_SELECTED
+        var value = GValue()
+        // `gtk_accessible_state_init_value` types the GValue for the state: SELECTED is
+        // boolean-or-undefined, which GTK's language-binding API represents as G_TYPE_INT
+        // (false/true/undefined), not G_TYPE_BOOLEAN — a boolean GValue trips a
+        // GLib-GObject-CRITICAL and the update is silently dropped (observed on GTK 4.22).
+        gtk_accessible_state_init_value(state, &value)
+        g_value_set_int(&value, selected ? 1 : 0)
+        // The row passes as-is: GTK_ACCESSIBLE() is a C macro, and GtkAccessible's instance
+        // struct is never defined (G_DECLARE_INTERFACE), so `GtkAccessible *` imports as the
+        // same bare OpaquePointer every widget is stored as.
+        gtk_accessible_update_state_value(row, 1, &state, &value)
+        g_value_unset(&value)
     }
 
     func updateAttentionButton(settings: AppSettings? = nil) {
@@ -394,18 +441,61 @@ extension AppController {
         return rowSession[row]
     }
 
-    func handleSessionDrop(source: UUID, onto target: UUID) {
+    /// `SidebarDrop.resolveSessions` expects an INSERTION SLOT: the old `SidebarDrop.onItemIndex`
+    /// redirected every drop to `sessionIndex + 1` ("insert after target"), which made the FIRST slot
+    /// unreachable. The slot comes from the drop's `y` against the target row's midpoint
+    /// (`LinuxSidebarPolicy.dropInsertionSlot`): top half inserts before the target, bottom half after.
+    func handleSessionDrop(source: UUID, onto target: UUID, y: Double, targetHeight: Double) {
         guard let tgt = store.sessionLocation(ofSession: target) else { return }
         let dropTarget = SidebarDrop.SessionDropTarget.sessionRow(workspace: tgt.workspace, sessionIndex: tgt.index, sessionCount: tgt.count)
-        let ids = store.sidebarSelectionIDs.contains(source) ? store.sidebarSelectionIDs : [source]
+        let slot = LinuxSidebarPolicy.dropInsertionSlot(targetIndex: tgt.index, y: y, height: targetHeight)
+        let ids = LinuxSidebarPolicy.draggedSessionBlock(source: source, selection: store.sidebarSelectionIDs)
         let sources = ids.compactMap { id -> SidebarDrop.SessionSource? in
             guard let location = store.sessionLocation(ofSession: id) else { return nil }
             return SidebarDrop.SessionSource(workspace: location.workspace, index: location.index)
         }
         guard let resolution = SidebarDrop.resolveSessions(sources: sources, target: dropTarget,
-                                                           childIndex: SidebarDrop.onItemIndex) else { return }
+                                                           childIndex: slot) else { return }
         store.moveSessions(ids, toWorkspace: resolution.workspace, at: resolution.destination)
         reconcile()
+    }
+
+    private func sessionClickIsModified(_ modifiers: UInt32) -> Bool {
+        modifiers & (UInt32(GDK_SHIFT_MASK.rawValue) | UInt32(GDK_CONTROL_MASK.rawValue)) != 0
+    }
+
+    /// The press half of a session-row click: apply immediately unless the tracker defers
+    /// (a plain press inside the current selection collapses on release instead, so a block drag
+    /// keeps its block — see `LinuxSidebarPolicy.SessionClickTracker`).
+    /// A press on the row being INLINE-RENAMED is ignored entirely: it is a caret/selection click
+    /// inside the rename entry, and running the selection logic would `grab_focus` the terminal,
+    /// firing the entry's focus-leave commit mid-edit.
+    func handleSessionRowPress(_ id: UUID, modifiers: UInt32) {
+        guard renaming?.id != id else { return }
+        // A press is user activity even when the tracker DEFERS the selection change: a deferred
+        // press is how every block drag starts, and once the drag claims the sequence the release
+        // (the other activity-noting path) never fires — so without this the idle auto-follow
+        // timer keeps running through the hold/drag and its fire would replace
+        // `sidebarSelectionIDs` before `handleSessionDrop` reads the block.
+        noteUserActivity()
+        let applyNow = sessionClickTracker.press(
+            id,
+            modified: sessionClickIsModified(modifiers),
+            alreadyInSelection: LinuxSidebarPolicy.sessionIsInEffectiveSelection(
+                id, selection: store.sidebarSelectionIDs, activeID: store.selectedSessionID))
+        guard applyNow else { return }
+        handleSessionRowClick(id, modifiers: modifiers)
+    }
+
+    /// The release half: collapse to just the clicked row, but ONLY when the matching press
+    /// deferred — the tracker remembers the press decision, so release-time modifier state is
+    /// irrelevant (a shift/ctrl key lifted before the button cannot collapse the multi-selection
+    /// that same click just built). Never fires for a completed drag — past the drag threshold the
+    /// `GtkDragSource` claims the sequence and the click gesture is cancelled before `released`.
+    func handleSessionRowRelease(_ id: UUID) {
+        guard renaming?.id != id else { return }
+        guard sessionClickTracker.release(id) else { return }
+        handleSessionRowClick(id, modifiers: 0)
     }
 
     func handleSessionRowClick(_ id: UUID, modifiers: UInt32) {
@@ -438,18 +528,48 @@ extension AppController {
 
     func workspaceForHeader(_ header: OpaquePointer?) -> UUID? { header.flatMap { workspaceDiscButtons[$0] } }
 
-    func handleWorkspaceDrop(source: UUID, onto target: UUID) {
+    /// `SidebarDrop.resolveWorkspace` expects an INSERTION SLOT, not the target row's raw index —
+    /// feeding it the raw index made "drag onto the row below" a no-op and every downward drop land
+    /// one short. The slot comes from the drop's `y` against the target header's midpoint
+    /// (`LinuxSidebarPolicy.dropInsertionSlot`): top half inserts before the target, bottom half after.
+    /// The slot is read in VISIBLE-row space — the sidebar renders `store.visibleWorkspaces`, under the
+    /// focus filter a possibly NON-CONTIGUOUS subset of `store.workspaces` — and mapped onto the full
+    /// array by `SidebarDrop.workspaceInsertIndex`, the same mapping the macOS coordinator applies
+    /// (`resolveWorkspaceMove`). Feeding the target's full-array index directly would jump the dragged
+    /// workspace across the hidden workspaces between rendered rows (visible `[B, D]` of `[A, B, C, D]`:
+    /// B on D's top half must be a no-op, not a hop over the hidden C).
+    func handleWorkspaceDrop(source: UUID, onto target: UUID, y: Double, targetHeight: Double) {
         guard source != target,
-              let s = store.workspaces.firstIndex(where: { $0.id == source }),
-              let t = store.workspaces.firstIndex(where: { $0.id == target }),
-              let res = SidebarDrop.resolveWorkspace(sourceIndex: s, count: store.workspaces.count, childIndex: t) else { return }
+              let s = store.workspaces.firstIndex(where: { $0.id == source }) else { return }
+        let visible = store.visibleWorkspaces
+        guard let targetVisibleIndex = visible.firstIndex(where: { $0.id == target }) else { return }
+        let visibleIndices = visible.compactMap { workspace in
+            store.workspaces.firstIndex(where: { $0.id == workspace.id })
+        }
+        let childIndex = LinuxSidebarPolicy.workspaceDropChildIndex(
+            targetVisibleIndex: targetVisibleIndex, visibleIndices: visibleIndices,
+            y: y, height: targetHeight)
+        guard let res = SidebarDrop.resolveWorkspace(sourceIndex: s, count: store.workspaces.count,
+                                                     childIndex: childIndex) else { return }
         store.moveWorkspace(source, at: res.destination)
         rebuildSidebar()
     }
 
+    /// A session dropped on a workspace HEADER appends — and carries its whole selected block through
+    /// the same expansion as `handleSessionDrop` (macOS header drops move the full dragged block too).
     func handleSessionToWorkspace(session: UUID, workspace: UUID) {
-        guard store.session(withID: session) != nil else { return }
-        store.moveSession(session, toWorkspace: workspace)
+        guard store.session(withID: session) != nil,
+              let target = store.workspaces.first(where: { $0.id == workspace }) else { return }
+        let ids = LinuxSidebarPolicy.draggedSessionBlock(source: session, selection: store.sidebarSelectionIDs)
+        let sources = ids.compactMap { id -> SidebarDrop.SessionSource? in
+            guard let location = store.sessionLocation(ofSession: id) else { return nil }
+            return SidebarDrop.SessionSource(workspace: location.workspace, index: location.index)
+        }
+        guard let resolution = SidebarDrop.resolveSessions(
+            sources: sources,
+            target: .workspaceRow(id: workspace, sessionCount: target.sessions.count),
+            childIndex: SidebarDrop.onItemIndex) else { return }
+        store.moveSessions(ids, toWorkspace: resolution.workspace, at: resolution.destination)
         reconcile()
     }
 

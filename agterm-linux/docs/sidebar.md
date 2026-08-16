@@ -135,3 +135,113 @@ scenarios in `agterm-linux/tests/atspi_smoke.py`.
   holds 310: the one moment the two candidates disagree, and the only moment `notify::position` fires.
   Not covered: a MID-SESSION `applyToolbarMode` toggle, reachable from Preferences but from no control
   command.
+
+## Drag-and-drop: no claiming click gesture on a drag-source row
+
+- A row that carries a `GtkDragSource` must NEVER have a claiming click gesture.
+  `gtk_gesture_set_state(…, GTK_EVENT_SEQUENCE_CLAIMED)` at press time cancels every other gesture on
+  the sequence: the row's `GtkDragSource` (which must observe press-then-motion) never starts a drag,
+  and the name label's bubble-phase double-click gesture never sees a press, so session double-click
+  rename dies as collateral.
+  The session-row click callbacks (`onSessionRowPress`/`onSessionRowRelease` in
+  `AppControllerCallbacks.swift`) therefore never claim; the workspace header row is the precedent —
+  a drag source plus a non-claiming click gesture.
+
+## Selection: mode NONE, one paint path, one published accessible state
+
+- The claim only existed to keep `GtkListBox`'s built-in selection from fighting the custom shift/ctrl
+  logic, so the sidebar list boxes run `GTK_SELECTION_NONE` (`appendSection`) instead — nothing left to
+  fight, no native `gtk_list_box_select_row`/`unselect_all` calls anywhere in the SIDEBAR code
+  (the Palette/ControlPicker/ThemePicker list boxes keep theirs — different widgets).
+- `setSidebarSelectionStyle` (`AppControllerSidebar.swift`) is the single selection choke point and
+  owns BOTH selection surfaces.
+  Paint: `syncSidebarSelection` mirrors the model into the `agterm-selected` CSS class, the ONLY
+  selection visual (libadwaita suppresses `:selected` under `navigation-sidebar` anyway).
+  Accessibility: the same call publishes `GTK_ACCESSIBLE_STATE_SELECTED` on the ROW accessible
+  (`publishRowAccessibleSelected`) — with native selection off, GTK publishes no selection state of
+  its own, so screen readers only see what is set here.
+  Because `GtkListBoxRow` resets that published state while GTK roots a rebuilt hierarchy,
+  `rebuildSidebar` re-runs `syncSidebarSelectionStyles` on the next main-loop turn through
+  `SelectionRepublishCoordinator` (re-armed by every rebuild, disarmed in `windowWillClose`).
+- The state goes on the row accessible ONLY, never the row's child (the CSS class touches both,
+  but the child is presentation).
+  The GValue must be built as `G_TYPE_INT` + `g_value_set_int`, never boolean: SELECTED is an
+  undefined-able state, so GTK's GValue collector reads it with `g_value_get_int`, and a boolean
+  GValue trips a GLib-GObject-CRITICAL and silently drops the update (observed on GTK 4.22).
+  Verified over AT-SPI on GTK 4.22: the row's `STATE_SELECTED` follows this call — present on the
+  selected row, absent after deselection — and the AT-SPI sidebar scenarios assert selection through
+  it (`row_selected` in `agterm-linux/tests/atspi_smoke.py`).
+
+## Rows are passive and non-focusable; hover keys on bare `:hover`
+
+- All three calls in `makeRow` are load-bearing: `gtk_list_box_row_set_selectable(row, 0)` +
+  `gtk_list_box_row_set_activatable(row, 0)` AND `gtk_widget_set_focusable(row, 0)`.
+  With the claim gone the list box's own click gesture is live again, and even under
+  `GTK_SELECTION_NONE` it would move keyboard focus to the clicked row on release — after
+  `showActive()` grabbed the terminal on press — sending subsequent typing into the sidebar.
+  The third is NOT redundant: `GtkListBoxRow` is focusable by default and the toplevel's
+  click-to-focus still moved keyboard focus onto a merely-passive row — caught by the AT-SPI
+  click-then-type leg, whose typing landed in the sidebar instead of the terminal.
+  (`onRowActivated` stays dead code — never connect `row-activated` to the sidebar boxes;
+  it would collapse the multi-selection on every click.)
+- The trade-off is deliberate: non-focusable rows are never Tab/arrow focus targets, so sidebar
+  navigation is keybinding/palette/control-driven (session next/prev, the palettes, `session go`),
+  not row-focus-driven — and assistive tech still sees the selected row via the published
+  `STATE_SELECTED` above.
+- Row hover CSS must key on bare `:hover`, never `.activatable:hover`.
+  Non-activatable rows lose the `.activatable` CSS class, and libadwaita keys sidebar row hover on
+  `.navigation-sidebar > row.activatable:hover` — so passive rows silently lost hover paint.
+  The replacement rule lives host-free as `LinuxSidebarPolicy.sidebarHoverCSS` — keyed on bare
+  `:hover`, a pointer state independent of activatable — interpolated into `installAppCSS`
+  (`App.swift`) and string-pinned in `LinuxPolicyTests`, including the NEGATIVE assertion that the
+  selector never regains `.activatable`.
+
+## Deferred collapse keeps a multi-select block draggable
+
+- A plain press on an UNSELECTED row selects on mouse-DOWN (snappy) and shift/ctrl act on press,
+  but a plain press on a row already inside the multi-selection defers its collapse-to-one to
+  `"released"`: a drag past the threshold claims the sequence, the click gesture is cancelled,
+  `released` never fires, and `handleSessionDrop` still reads the full `sidebarSelectionIDs` block.
+  The timing state is the host-free, sequence-table-tested `LinuxSidebarPolicy.SessionClickTracker`:
+  the press RECORDS a deferred collapse and the release CONSUMES it, ignoring release-time modifier
+  state entirely — so a shift/ctrl key lifted before the mouse button cannot collapse the selection
+  that same click just built, and the next press resets a pending collapse a cancelled release left
+  behind.
+  `alreadyInSelection` comes from `LinuxSidebarPolicy.sessionIsInEffectiveSelection` (the transient
+  multi-selection when present, else the sole active session).
+- A press or release on the row being INLINE-RENAMED is ignored: a caret click inside the rename
+  entry must not run `showActive()`'s terminal `grab_focus`, which would fire the entry's
+  focus-leave commit mid-edit.
+  End-to-end coverage is the `sidebar-multiselect` AT-SPI scenario (shift-click block build,
+  a mid-hold active-session probe pinning "deferred, not applied", and block drags onto a
+  session row and a workspace header).
+  A DEFERRED press still calls `noteUserActivity` — otherwise the idle auto-follow timer would
+  replace `sidebarSelectionIDs` mid-hold, and a block drag would lose its block; that auto-follow
+  interplay has no automated scenario (auto-follow's idle window defeats pointer-leg timing) and
+  remains a known manual check.
+
+## Y-midpoint drop slots feed the shared `SidebarDrop` math
+
+- `onRowDrop`/`onHeaderDrop` convert the drop's `y` against the target row's height into a REAL
+  insertion slot via `LinuxSidebarPolicy.dropInsertionSlot`: top half → before the target
+  (`targetIndex`), bottom half (including the exact midpoint) → after (`targetIndex + 1`).
+  The slot goes to the UNCHANGED host-free `SidebarDrop.resolveWorkspace`/`resolveSessions` as
+  `childIndex` — the same between-rows convention macOS derives from `rect(ofRow:).midY`.
+  A WORKSPACE slot is read in VISIBLE-row space (the sidebar renders `store.visibleWorkspaces`,
+  under the focus filter a possibly non-contiguous subset) and mapped onto the full array by
+  `SidebarDrop.workspaceInsertIndex` before `resolveWorkspace`, so the drop lands immediately
+  adjacent to the aimed-at row instead of jumping across the hidden workspaces between rendered
+  rows — the same mapping macOS's `resolveWorkspaceMove` applies.
+  That slot→`childIndex` composition lives in `LinuxSidebarPolicy.workspaceDropChildIndex`,
+  called by BOTH `handleWorkspaceDrop` and the policy tables, so the tables exercise the shipped
+  composition rather than a re-derived mirror of it.
+  Never pass a raw target index or `SidebarDrop.onItemIndex` where a slot is expected:
+  raw-index made the last workspace slot unreachable (drag-to-last was a silent no-op),
+  and `onItemIndex` made the first session slot unreachable.
+  Dropping a session on a workspace HEADER keeps append semantics (`onItemIndex`, the one
+  legitimate use) and carries the SAME selected block as a row drop: both paths expand the
+  single-UUID drag payload through `LinuxSidebarPolicy.draggedSessionBlock`, matching the macOS
+  pasteboard writer's whole-block payload — a header drop that moved only the pressed row would
+  silently split a multi-selection.
+- Slot + click-timing tables live in `LinuxPolicyTests`; the pointer-synthesized
+  drag/rename/typing scenarios live in `agterm-linux/tests/atspi_smoke.py`.
