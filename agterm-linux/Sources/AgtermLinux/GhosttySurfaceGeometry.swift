@@ -9,35 +9,40 @@ enum GhosttySurfaceGeometry {
         let y: Double
     }
 
-    /// Size a surface is CREATED at: the widget's own allocation, else the caller's fallback, else the
-    /// historic clamp to one.
+    struct InitialSizeInputs {
+        let gtkWidth: Int32
+        let gtkHeight: Int32
+        let scaleFactor: Int32
+        let storedFallback: (width: Int32, height: Int32)?
+        let deckFallback: (width: Int32, height: Int32)?
+    }
+
+    /// Size a surface is CREATED at: the widget's own allocation, else the stored frame estimate, else
+    /// the deck allocation, else the historic clamp to one.
     ///
     /// A surface force-realized behind a hidden deck page reads `0x0` for itself because no layout pass
-    /// has run yet. The fallback carries the caller's best estimate in the same logical GTK units, so
-    /// the content scale applies to whichever source wins.
+    /// has run yet. Both fallbacks use the same logical GTK units, so the content scale applies to
+    /// whichever credible pair wins.
     static func initialBackingSize(
         gtkWidth: Int32,
         gtkHeight: Int32,
         scaleFactor: Int32,
-        fallback: (width: Int32, height: Int32)?
+        storedFallback: (width: Int32, height: Int32)?,
+        deckFallback: (width: Int32, height: Int32)? = nil
     ) -> Size {
         let scale = UInt64(max(1, scaleFactor))
         return credibleSize((width: gtkWidth, height: gtkHeight), scale: scale)
-            ?? credibleSize(fallback, scale: scale)
+            ?? credibleSize(storedFallback, scale: scale)
+            ?? credibleSize(deckFallback, scale: scale)
             ?? Size(width: UInt32(clamping: scale), height: UInt32(clamping: scale))
     }
 
     /// The deterministic boundary used immediately after `ghostty_surface_new`: production supplies
     /// `ghostty_surface_set_size`, while tests supply a recorder and assert the exact initial dimensions.
-    static func pushInitialSize(
-        gtkWidth: Int32,
-        gtkHeight: Int32,
-        scaleFactor: Int32,
-        fallback: (width: Int32, height: Int32)?,
-        setSurfaceSize: (UInt32, UInt32) -> Void
-    ) {
+    static func pushInitialSize(_ inputs: InitialSizeInputs, setSurfaceSize: (UInt32, UInt32) -> Void) {
         let viewport = initialBackingSize(
-            gtkWidth: gtkWidth, gtkHeight: gtkHeight, scaleFactor: scaleFactor, fallback: fallback)
+            gtkWidth: inputs.gtkWidth, gtkHeight: inputs.gtkHeight, scaleFactor: inputs.scaleFactor,
+            storedFallback: inputs.storedFallback, deckFallback: inputs.deckFallback)
         setSurfaceSize(viewport.width, viewport.height)
     }
 
