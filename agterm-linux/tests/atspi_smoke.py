@@ -324,6 +324,18 @@ def focus_window(process_id):
             stderr=subprocess.DEVNULL,
         )
         return
+    # A popover already owns X11 focus on behalf of this process. Re-resolving its parent through the
+    # accessible frame title is both unnecessary and racy: a shell OSC title can change between AT-SPI's
+    # `get_name()` and xdotool's search. Prove ownership from `_NET_WM_PID` instead; a different app or a
+    # different agterm process still falls through to the exact accessible-window activation below.
+    active_pid = subprocess.run(
+        ["xdotool", "getactivewindow", "getwindowpid"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if active_pid.returncode == 0 and active_pid.stdout.strip() == str(process_id):
+        return
     app = wait_for(lambda: find_app(process_id), "agterm app disappeared before focus")
     windows = collect(app, role="frame")
     assert windows, "agterm has no accessible window to focus"
