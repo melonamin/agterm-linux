@@ -172,7 +172,15 @@ The reason is that ghostty's own copy/paste binds match the produced character: 
 
 On Linux the bundled defaults bind the terminal-convention chord the same way — `ctrl+shift+key_c`, `ctrl+shift+key_v`, and `ctrl+shift+key_a` — because bare Ctrl+C is SIGINT there. They match by physical position regardless of the produced glyph, so Ctrl+Shift+C/V/A keep working after switching to Russian, Greek, Hebrew, Arabic, or Thai.
 
-Those binds always consume the key, even when there is nothing to act on: ⌘C with no selection does nothing at all, rather than reaching the running program. That is deliberate. The Edit menu disables Copy without a selection and Paste without pasteable content — on every layout — so those presses fall to the terminal's own bind, and a bind that declined them would let the chord through to key encoding. A plain shell shows nothing either way, but under the kitty keyboard protocol, which Claude Code and other TUIs turn on, the program receives the chord as a key report and renders it as text — a stray `с` or `^[[1089;9u` in the prompt. If you rebind copy or paste yourself, do not add ghostty's `performable:` prefix for the same reason.
+On macOS, the physical `super+key_*` fallbacks always consume the key, even when there is nothing to act on: ⌘C with no selection does nothing at all, rather than reaching the running program.
+That is deliberate.
+The Edit menu disables Copy without a selection and Paste without pasteable content — on every layout — so those presses fall to the terminal's own bind, and a bind that declined them would let the chord through to key encoding.
+A plain shell shows nothing either way, but under the kitty keyboard protocol, which Claude Code and other TUIs turn on, the program receives the chord as a key report and renders it as text — a stray `с` or `^[[1089;9u` in the prompt.
+If you rebind copy or paste on macOS, do not add ghostty's `performable:` prefix for the same reason.
+
+Linux deliberately keeps ghostty's `performable:` prefix on the bundled `ctrl+shift+key_c`, `ctrl+shift+key_v`, and `ctrl+shift+key_a` bindings.
+When copy, paste, or select all cannot run, ghostty lets the chord fall through instead of consuming it.
+Keep `performable:` on a Linux replacement if you want the same behavior; omit it only when you intentionally want an unavailable action to consume the chord.
 
 The same distinction lets you remap any shortcut for your layout:
 

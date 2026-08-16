@@ -86,20 +86,24 @@ menu shortcuts, the menu's ⌘C/⌘V/⌘A equivalents are not rebindable through
 there is no menu layer — the bundled binds below are the only layer, and every one of them IS
 rebindable there.
 
-agterm's bundled ghostty defaults are the **fallback**, binding all three to the physical key POSITIONS
-(`super+key_c`/`super+key_v`/`super+key_a`), matched by keycode regardless of the character the layout
-prints. On Linux the bundled layer is the ONLY layer and binds the terminal convention —
-`ctrl+shift+key_c`/`ctrl+shift+key_v`/`ctrl+shift+key_a` — since bare Ctrl+C is SIGINT. They fire
-whenever the menu equivalent does not: on a Russian/Greek/etc. layout the physical C key
-yields `с`, so the menu's ⌘C never matches and the keycode bind runs instead; likewise a ⌘C with no
-selection, or a ⌘V with nothing pasteable, leaves the menu item disabled and reaches the bind on ANY
-layout. The three binds deliberately omit ghostty's `performable:` prefix so they always consume the key,
-and one that cannot act simply does nothing. With that prefix the unperformed press fell through to key
-encoding — invisible under legacy encoding, which drops ⌘ chords on macOS, but the kitty keyboard protocol
-reports them and the program renders a stray `^[[…u` as text. This is why copy, paste, and select-all all
-keep working on a non-Latin layout. (ghostty's own
-`super+c`/`super+v`/`super+a` match the produced CHARACTER, so alone they would miss there — `super+key_a`
-in particular exists because without it ⌘A would silently do nothing on a Cyrillic layout.)
+agterm's bundled macOS ghostty defaults are the **fallback**, binding all three to the physical key
+POSITIONS (`super+key_c`/`super+key_v`/`super+key_a`), matched by keycode regardless of the character the
+layout prints. They fire whenever the menu equivalent does not: on a Russian/Greek/etc. layout the
+physical C key yields `с`, so the menu's ⌘C never matches and the keycode bind runs instead; likewise a
+⌘C with no selection, or a ⌘V with nothing pasteable, leaves the menu item disabled and reaches the
+bind on ANY layout. The three macOS fallback binds deliberately omit ghostty's `performable:` prefix so
+they always consume the key, and one that cannot act simply does nothing. With that prefix the
+unperformed press would fall through to key encoding — invisible under legacy encoding, which drops ⌘
+chords on macOS, but the kitty keyboard protocol reports them and the program renders a stray `^[[…u` as
+text. (ghostty's own `super+c`/`super+v`/`super+a` match the produced CHARACTER, so alone they would miss
+on a non-Latin layout — `super+key_a` in particular exists because without it ⌘A would silently do
+nothing on a Cyrillic layout.)
+
+On Linux there is no menu layer. The bundled layer is the ONLY layer and uses
+`performable:ctrl+shift+key_c`/`performable:ctrl+shift+key_v`/`performable:ctrl+shift+key_a`, since bare
+Ctrl+C is SIGINT. The physical-key form works across layouts when the action is available. The
+`performable:` prefix preserves ghostty's native fall-through when copy, paste, or select all cannot run.
+All three bindings are rebindable through `ghostty.conf`.
 
 To remap a shortcut ghostty still owns: a physical key name (`key_c`, `key_v`, …) matches by position on
 any layout; a bare letter (`c`, `v`) matches the produced character. Edit `~/.config/agterm/ghostty.conf`,
