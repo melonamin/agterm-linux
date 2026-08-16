@@ -307,13 +307,12 @@ final class GhosttySurface: TerminalSurface {
     /// every other surface is in layout and is corrected by the `GtkGLArea::resize` that follows.
     private func pushSize() {
         guard let surface else { return }
-        let viewport = GhosttySurfaceGeometry.initialBackingSize(
+        GhosttySurfaceGeometry.pushInitialSize(
             gtkWidth: gtk_widget_get_width(W(glArea)),
             gtkHeight: gtk_widget_get_height(W(glArea)),
             scaleFactor: gtk_widget_get_scale_factor(W(glArea)),
-            fallback: sizeFallback ?? controller?.deckAllocationSize()
-        )
-        ghostty_surface_set_size(surface, viewport.width, viewport.height)
+            fallback: sizeFallback ?? controller?.deckAllocationSize(),
+            setSurfaceSize: { ghostty_surface_set_size(surface, $0, $1) })
     }
 
     func render() {

@@ -47,6 +47,21 @@ struct GhosttySurfaceGeometryTests {
         ) == .init(width: 1_698, height: 1_288))
     }
 
+    @Test("surface creation pushes the fallback through the libghostty size boundary")
+    func creationPushesFallbackSize() {
+        var calls: [(UInt32, UInt32)] = []
+        GhosttySurfaceGeometry.pushInitialSize(
+            gtkWidth: 0,
+            gtkHeight: 0,
+            scaleFactor: 2,
+            fallback: (width: 849, height: 644),
+            setSurfaceSize: { calls.append(($0, $1)) })
+
+        #expect(calls.count == 1)
+        #expect(calls.first?.0 == 1_698)
+        #expect(calls.first?.1 == 1_288)
+    }
+
     @Test("creation prefers the widget's own allocation over the fallback")
     func initialSizePrefersOwnAllocation() {
         #expect(GhosttySurfaceGeometry.initialBackingSize(

@@ -27,6 +27,20 @@ enum GhosttySurfaceGeometry {
             ?? Size(width: UInt32(clamping: scale), height: UInt32(clamping: scale))
     }
 
+    /// The deterministic boundary used immediately after `ghostty_surface_new`: production supplies
+    /// `ghostty_surface_set_size`, while tests supply a recorder and assert the exact initial dimensions.
+    static func pushInitialSize(
+        gtkWidth: Int32,
+        gtkHeight: Int32,
+        scaleFactor: Int32,
+        fallback: (width: Int32, height: Int32)?,
+        setSurfaceSize: (UInt32, UInt32) -> Void
+    ) {
+        let viewport = initialBackingSize(
+            gtkWidth: gtkWidth, gtkHeight: gtkHeight, scaleFactor: scaleFactor, fallback: fallback)
+        setSurfaceSize(viewport.width, viewport.height)
+    }
+
     /// The CHILD's usable box inside a chrome-bearing container: the size request minus the container's
     /// own measured chrome, per AXIS, keeping the RAW REQUEST for an unusable axis. Not in tension with
     /// `credibleSize`'s per-PAIR rule: this corrects ONE source in place, that one CHOOSES between two.
