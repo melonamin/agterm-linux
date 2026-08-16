@@ -551,8 +551,8 @@ def mouse_drag(source_provider, target_provider, process_id, window_title=None,
         for step in range(1, steps + 1)
     ]
     if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
-        # Best effort only: the automated drag coverage runs under X11/Xvfb; the Wayland leg
-        # of the matrix is verified manually (Post-Completion in the plan).
+        # Best effort only: the automated drag coverage runs under X11/Xvfb; real Wayland
+        # compositor pointer injection remains a manual Linux acceptance check.
         assert shutil.which("dotool"), "a Wayland drag needs dotool for the button hold"
         subprocess.run(
             ["hyprctl", "dispatch", "focuswindow", f"address:{client['address']}"],
@@ -2418,6 +2418,11 @@ def verify_sidebar_click_and_rename(env):
             lambda: next((item["id"] for item in window_list(env) if item["open"]), None),
             "initial window was not registered",
         )
+        initial_session = window_tree(env, window_id)["workspaces"][0]["sessions"][0]["name"]
+        wait_for(
+            lambda: row_selected(app, initial_session),
+            "the startup sidebar did not publish SELECTED on the active row",
+        )
         control_json(env, "session", "rename", "row-one", "--window", window_id, "--json")
         control_json(env, "session", "new", "--name", "row-two", "--window", window_id, "--json")
 
@@ -2427,6 +2432,10 @@ def verify_sidebar_click_and_rename(env):
 
         wait_for(lambda: active_name() == "row-two", "the created session did not become active")
         wait_for(lambda: sidebar_session_row_label(app, "row-one"), "the row-one sidebar row is missing")
+        wait_for(
+            lambda: row_selected(app, "row-two") and row_deselected(app, "row-one"),
+            "the fresh sidebar rebuild did not publish SELECTED on the active row",
+        )
 
         # Single click on a session row selects it on mouse-down (calibrates the click offset,
         # with the row's published SELECTED state as the success predicate).
@@ -2540,6 +2549,25 @@ def verify_sidebar_click_and_rename(env):
         wait_for(
             lambda: rename_entry() is None and sidebar_session_row_label(app, "row-one"),
             "Escape did not cancel the inline rename back to the label",
+        )
+        wait_for(
+            lambda: row_selected(app, "row-one") and row_deselected(app, "row-two"),
+            "the rename rebuild did not preserve SELECTED on the active row",
+        )
+
+        # A collapsed workspace removes its rows from the accessibility tree; expanding it rebuilds
+        # them and must immediately restore SELECTED on the active session without another click.
+        tree = window_tree(env, window_id)
+        workspace_id = tree["workspaces"][0]["id"]
+        control_json(env, "workspace", "collapse", "--target", workspace_id,
+                     "--window", window_id, "--json")
+        wait_for(lambda: sidebar_session_row(app, "row-one") is None,
+                 "collapsing the workspace did not remove its session rows")
+        control_json(env, "workspace", "expand", "--target", workspace_id,
+                     "--window", window_id, "--json")
+        wait_for(
+            lambda: row_selected(app, "row-one") and row_deselected(app, "row-two"),
+            "expanding the workspace did not restore SELECTED on the active row",
         )
 
         # Flagged working-set view inherits the same passive rows and click routing: a click on
