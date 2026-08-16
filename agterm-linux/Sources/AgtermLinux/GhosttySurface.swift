@@ -187,7 +187,7 @@ final class GhosttySurface: TerminalSurface {
 
     func realize() {
         if LinuxSurfaceFailureInjection.failure(for: role) == .glContext {
-            reportGLContextFailure()
+            reportGLContextFailure(message: "injected by AGTERM_ATSPI_SURFACE_FAILURE")
             return
         }
         gtk_gl_area_make_current(GLA(glArea))

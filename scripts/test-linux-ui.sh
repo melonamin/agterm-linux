@@ -169,11 +169,19 @@ fail_on_log_pattern -E "Theme parser (error|warning): <data>" "GTK rejected app 
 # A failed GL context is the terminal itself failing: GhosttySurface.realize() logs this line, returns
 # before createSurface(), and every pane shows the generic "needs OpenGL" overlay -- while the scenarios
 # that exercise sidebar, dashboard and window chrome can still pass, so the build stays green with a dead
-# terminal. Nothing else reads that line. It is also the tripwire for the pre-GTK-init ordering contract:
-# moving anything that opens a display above main()'s setenv block turns the GDK_DISABLE/GDK_DEBUG
-# assignment into a silent no-op, and on a GLES-preferring GDK the failure lands exactly here.
-fail_on_log_pattern -F "agterm: GtkGLArea failed to create a GL context" \
-  "the terminal GL context failed; see $APP_LOG"
+# terminal. It is also the tripwire for the pre-GTK-init ordering contract: moving anything that opens a
+# display above main()'s setenv block turns the GDK assignment into a silent no-op and lands here. The
+# surface-failures scenario deliberately injects one context failure to prove #29's display-wide overlay;
+# its exact test-only suffix keeps that synthetic line distinguishable without masking any real failure.
+gl_failure_pattern="agterm: GtkGLArea failed to create a GL context"
+injected_gl_failure="$gl_failure_pattern: injected by AGTERM_ATSPI_SURFACE_FAILURE"
+unexpected_gl_failures="$(grep -F -e "$gl_failure_pattern" "$APP_LOG" 2>/dev/null \
+  | grep -F -v -x -e "$injected_gl_failure" || true)"
+if [[ -n "$unexpected_gl_failures" ]]; then
+  echo "the terminal GL context failed; see $APP_LOG" >&2
+  printf '%s\n' "$unexpected_gl_failures" >&2
+  if [[ "$status" -eq 0 ]]; then status=1; fi
+fi
 
 # GDK warns once about a token it does not recognize and then carries on, so a wrong spelling in
 # LinuxGdkPolicy ships as a silent no-op that every unit test still passes -- those pin which tokens the
