@@ -157,6 +157,9 @@ extension AppController {
             if store.flaggedSessions.isEmpty {
                 if let hint = op(gtk_label_new("No flagged sessions.\nRight-click a session → Flag.")) {
                     gtk_label_set_justify(hint, GTK_JUSTIFY_CENTER)
+                    // Fixed instructional text wraps rather than ellipsizes: wrapping drops the minimum
+                    // width from the longest line to the longest word, which is all the sidebar needs.
+                    gtk_label_set_wrap(hint, 1)
                     gtk_widget_set_margin_top(W(hint), 24)
                     gtk_widget_add_css_class(W(hint), "dim-label")
                     gtk_box_append(cast(sidebarBox), W(hint))
@@ -286,14 +289,22 @@ extension AppController {
         // The flagged row normally includes its workspace breadcrumb, but inline rename must edit only
         // the session's bare display name. Reuse the normal name widget for the active rename so the
         // entry is created and seeded without the breadcrumb.
-        let label = flaggedView && renaming?.id != s.id
+        let breadcrumb = flaggedView && renaming?.id != s.id
+        let label = breadcrumb
             ? op(gtk_label_new(LinuxSidebarPolicy.flaggedRowLabel(for: s, in: store)))
             : makeNameWidget(id: s.id, text: s.displayName, isWorkspace: false)
         gtk_widget_set_hexpand(W(label), 1)
         gtk_widget_set_margin_top(W(label), 4)
         gtk_widget_set_margin_bottom(W(label), 4)
         gtk_widget_set_margin_start(W(label), 4)
-        if flaggedView { gtk_label_set_xalign(label, 0) }
+        // Guard on `breadcrumb`, not the weaker `flaggedView`: renaming in flagged view takes the
+        // makeNameWidget branch, and a GtkLabel setter on the GtkEntry it returns raises a GTK critical.
+        if breadcrumb {
+            gtk_label_set_xalign(label, 0)
+            // END even though the breadcrumb ends in the workspace: the flagged view is already
+            // workspace-scoped, so the tail is what can be given up first.
+            gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_END)
+        }
         gtk_box_append(cast(box), W(label))
         if let glyph = Self.makeStatusGlyph(
             s.agentIndicator, settings: linuxSettingsStore().load()

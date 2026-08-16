@@ -1817,6 +1817,285 @@ def verify_sidebar_row_height_follows_font_size(env):
     )
 
 
+# How far past the sidebar column's right edge a row part may sit — and how far the column itself may
+# grow — before it counts as a regression. THEME-INSET tolerance, not a fudge factor: AT-SPI extents
+# include a widget's own CSS margin and padding, and a trailing widget's inset from the scroller's
+# content edge varies by libadwaita version, so shrinking this back to 1 fails on some hosts for a clip
+# nobody can see. It costs no discriminating power: with the fix backed out one leg at a time the
+# tree-row name lands 426px past the column's right edge, the flagged breadcrumb 771px and the unwrapped
+# hint 114px, so nothing real lands in the 1..8 band.
+SIDEBAR_EDGE_SLACK = 8
+
+
+def window_extents(node):
+    """Window-relative extents for an accessible, or None while it is still unallocated.
+
+    WINDOW and never SCREEN: Wayland withholds global coordinates from AT-SPI, so SCREEN reports a 0,0
+    origin. Returning None for the empty box GTK publishes before a node's first allocate lets `wait_for`
+    keep polling instead of asserting on a placeholder.
+
+    ⚠️ A NEGATIVE ORIGIN is NORMAL, never "not yet allocated" — WINDOW coordinates start inside the CSD
+    border. Every caller is origin-relative, so do not add an `x < 0` guard here.
+    """
+    try:
+        component = node.get_component_iface()
+        if not component:
+            return None
+        bounds = component.get_extents(Atspi.CoordType.WINDOW)
+    except Exception:
+        return None
+    return bounds if bounds.width > 1 and bounds.height > 1 else None
+
+
+def sidebar_column(app):
+    """The sidebar column's own window-relative box, or None while it is still unallocated.
+
+    The `GtkScrolledWindow` IS the column: it is the clipping boundary, so its allocation tracks the
+    paned position rather than the overflowing content — unlike the viewport, content box, list box and
+    row parent box BELOW it, which inherit the overflow under the bug and would make containment
+    vacuously true. It is the LEFTMOST scrolled window in the tree, and both edges come from it because
+    the CSD inset means the left edge is not reliably 0.
+    """
+    boxes = [box for node in collect(app, role="scroll pane") if (box := window_extents(node))]
+    return min(boxes, key=lambda box: box.x) if boxes else None
+
+
+def sidebar_settled_label(app, prefix):
+    """The box of the first label whose name starts with `prefix` and that reports a real extent."""
+    for candidate in collect(app, role="label"):
+        if (candidate.get_name() or "").startswith(prefix) and (box := window_extents(candidate)):
+            return box
+    return None
+
+
+def sidebar_fits(app, box, description, column=None):
+    """CONTAINMENT: fails when `box` sticks out past the sidebar column's right edge.
+
+    `column` defaults to a fresh read and must never be hoisted ACROSS the scenario's steps — each goes
+    through `rebuildSidebar`, so a limit captured once would be stale for the rest. Callers measuring
+    several parts of ONE row pass the column they resolved for it (see `sidebar_row_parts_fit`).
+
+    ⚠️ Half the gate on any site — `sidebar_does_not_widen` is the other half.
+    """
+    if column is None:
+        column = wait_for(lambda: sidebar_column(app), "the sidebar column never allocated")
+    limit = column.x + column.width
+    edge = box.x + box.width
+    assert edge <= limit + SIDEBAR_EDGE_SLACK, (
+        f"{description} is pushed past the {column.width}px sidebar column (right edge {limit}px): "
+        f"x={box.x} width={box.width} right={edge} — a sidebar label lost its PANGO_ELLIPSIZE_END (or a "
+        "new row builder never set one), so it reports its whole text as its minimum width")
+
+
+def sidebar_does_not_widen(app, baseline, description):
+    """NO GROWTH: fails when the sidebar column had to grow to hold `description`.
+
+    Never redundant with `sidebar_fits`: containment is the load-bearing half while the sidebar's minimum
+    stays pinned independent of its rows, and goes quiet the moment that minimum follows them instead,
+    because every part then sits inside the widened column.
+
+    Asserting no width of its own is what makes this independent of the host font family and text
+    scaling: a part that truncates correctly reports a minimum FAR narrower than the decorated row that
+    already sized the column, so it cannot move that column at any font size.
+
+    `baseline` must be an EARLIER column read, never a re-read: re-reading it after the offending text
+    appeared would measure the regression against itself.
+    """
+    column = wait_for(lambda: sidebar_column(app), "the sidebar column never allocated")
+    assert column.width <= baseline + SIDEBAR_EDGE_SLACK, (
+        f"the sidebar column GREW from {baseline}px to {column.width}px when {description} appeared — "
+        "correctly truncated it is narrower than the decorated row that already sized the column and "
+        "cannot move it, so this is a sidebar label reporting its whole text as its minimum width (a "
+        "lost PANGO_ELLIPSIZE_END on a user-text label, or a lost wrap on the fixed hint)")
+
+
+def sidebar_row_settled(app, carrying=None, images=0, labels=0):
+    """The settled sidebar row PROVABLY the one under test, or None while it is not in the tree yet.
+
+    Never merely "the first list item reporting an extent": rows rebuild ASYNCHRONOUSLY while the model
+    state flips as soon as the control call returns, so a stale accessible from before a rebuild and a
+    freshly built but not-yet-decorated one both report an extent, and either would satisfy every
+    assertion downstream against the wrong row. `carrying` pins the row's TEXT, `images`/`labels` its
+    DECORATIONS; rows are SEARCHED, not indexed, so a stale sibling is skipped rather than measured.
+    """
+    for row in collect(app, role="list item"):
+        if not window_extents(row):
+            continue
+        parts = [item for item in descendants(row) if window_extents(item)]
+        roles = [item.get_role_name() for item in parts]
+        if roles.count("image") < images or roles.count("label") < labels:
+            continue
+        if carrying is None or any((item.get_name() or "").startswith(carrying) for item in parts):
+            return row
+    return None
+
+
+def sidebar_row_parts_fit(app, row, images=0, labels=0):
+    """CONTAINMENT for every visible part of one sidebar row; returns how many it measured.
+
+    ⚠️ The row's OWN box is deliberately NOT contained, and restoring that check fails this scenario on
+    some libadwaita versions for a clip nobody can see: a `GtkListBoxRow`'s extents include the Adwaita
+    `.navigation-sidebar > row` margin, empty space whose inset inside the column is theme-dependent. The
+    parts are the reported symptom anyway — the bug pushed the status glyph, flag star and unseen badge
+    out of the viewport.
+
+    `images`/`labels` are re-asserted on the parts collected HERE, never inherited from the
+    `sidebar_row_settled` poll that found the row: that poll walked an EARLIER collection, and an async
+    `rebuildSidebar` in between leaves this one empty — the loop would then assert nothing while the
+    caller still printed a success line. The column is resolved once for the whole row, which is the
+    limit these parts were laid out under and one AT-SPI round trip instead of one per part.
+    """
+    column = wait_for(lambda: sidebar_column(app), "the sidebar column never allocated")
+    parts = [(item, box) for item in descendants(row) if (box := window_extents(item))]
+    roles = [item.get_role_name() for item, _ in parts]
+    assert roles.count("image") >= images and roles.count("label") >= labels, (
+        f"the sidebar row no longer exposes a fully built set of parts — rebuilt away before they could "
+        f"be measured? {len(parts)} parts with extents ({roles.count('image')} images, "
+        f"{roles.count('label')} labels), expected at least {images} images and {labels} labels")
+    for item, box in parts:
+        sidebar_fits(app, box, f"{item.get_role_name()} {(item.get_name() or '')[:32]!r}", column=column)
+    return len(parts)
+
+
+def sidebar_isolated_env(env, css=None):
+    """`env` with an ISOLATED, empty `XDG_CONFIG_HOME`, optionally carrying one user `gtk-4.0/gtk.css`.
+
+    Sidebar-geometry scenarios are made of width measurements, so none may inherit the developer's own
+    `gtk-4.0/gtk.css` or `settings.ini`: a stray `min-width` on a sidebar label can quietly DISARM a gate
+    rather than merely fail it. The optional `css` is the deliberate opposite — a stylesheet for a
+    scenario that needs to move the measured minimum on any host, honoured at
+    GTK_STYLE_PROVIDER_PRIORITY_USER (800), above the app's own sidebar provider.
+    """
+    config = os.path.join(env["AGTERM_STATE_DIR"], "xdg-config")
+    gtk_config = os.path.join(config, "gtk-4.0")
+    os.makedirs(gtk_config, exist_ok=True)
+    user_css = os.path.join(gtk_config, "gtk.css")
+    if css is None:
+        if os.path.exists(user_css):
+            os.remove(user_css)
+    else:
+        with open(user_css, "w", encoding="utf-8") as target:
+            target.write(css)
+    return dict(env, XDG_CONFIG_HOME=config)
+
+
+def seed_legacy_sidebar_width(env, width, workspace_name, workspace_id, session_id):
+    """Seed the legacy `workspaces.json` with one workspace, one session and a `sidebarWidth` request.
+
+    `sidebarWidth` is per-window state in `windows/<uuid>.json` and that uuid does not exist before the
+    FIRST launch of a state dir, so a narrow starting width can only be ASKED FOR through the legacy
+    file, which `WindowLibrary` migrates while `windows.json` is absent — a later launch reads the
+    migrated record instead, which makes a second call here inert. Callers pass 160,
+    `AppStore.sidebarWidthMin`, the narrowest width the shared model will carry; the ids are fixed
+    constants so a failing run's `describe_tree` output compares across runs.
+    """
+    with open(os.path.join(env["AGTERM_STATE_DIR"], "workspaces.json"), "w", encoding="utf-8") as target:
+        json.dump({
+            "version": 1,
+            "sidebarWidth": width,
+            "workspaces": [{
+                "id": workspace_id,
+                "name": workspace_name,
+                "sessions": [{"id": session_id, "cwd": env["HOME"]}],
+            }],
+        }, target)
+
+
+def verify_sidebar_narrow_clipping(env):
+    """A narrow sidebar truncates fully decorated rows instead of overflowing its column.
+
+    Regression cover for the shrink-clipping bug; the label sizing contract it gates — which sites
+    ellipsize, which wraps, and which get nothing — is in `agterm-linux/docs/sidebar.md`. Three sites, one
+    launch: the tree row's name (`makeNameWidget`), the flagged row's breadcrumb, and the wrapped
+    flagged-empty hint, each checked BOTH ways — containment (`sidebar_row_parts_fit`, `sidebar_fits`)
+    and no growth (`sidebar_does_not_widen`), neither redundant with the other.
+
+    ⚠️ Driving the decorations REBUILDS the row, and GTK allocates a rebuilt widget only while the window
+    is being rendered — always true under Xvfb, which is how this suite runs. On a live Wayland session
+    `launch()` parks the window on a silent workspace and the frame clock stalls, so the settle polls
+    below time out; run it as `env -u HYPRLAND_INSTANCE_SIGNATURE AGTERM_ATSPI_SCENARIO=…` there.
+    """
+    workspace_name = "narrow sidebar workspace"
+    # Far longer than any sidebar column, so an un-ellipsized label reports a minimum hundreds of pixels
+    # past it and the row overflows rather than truncating.
+    session_name = "sidebar-clipping-regression-session-name"
+    # The LARGEST sidebar font is what gives the flagged-empty hint's leg any discriminating power: its
+    # longest LINE measures ~354px at 20pt, comfortably past the column, but already fits at the default.
+    with open(os.path.join(env["AGTERM_STATE_DIR"], "settings.json"), "w", encoding="utf-8") as target:
+        json.dump({"sidebarFontSize": 20}, target)
+    # GTK floors this request at the sidebar's own minimum, which is the tightest column obtainable here.
+    seed_legacy_sidebar_width(env, 160, workspace_name,
+                              "4C2A1E80-6C1E-4C6B-9B2E-1B0A5F3D77A1",
+                              "9E6D3F14-2B77-4A55-8C31-0D5E9A2B6C48")
+    # This scenario compares measured widths, so the developer's own `gtk.css` must not be one of the
+    # inputs — see `sidebar_isolated_env`.
+    process, app = launch(sidebar_isolated_env(env))
+    try:
+        window_id = next(item["id"] for item in window_list(env) if item["open"])
+        session_id = window_tree(env, window_id)["workspaces"][0]["sessions"][0]["id"]
+        control_json(env, "session", "flag", "on", "--target", session_id, "--json")
+        control_json(env, "session", "status", "blocked", "--target", session_id, "--json")
+        # `unseenCount` and `agentIndicator` are EPHEMERAL — SessionSnapshot carries neither — so badge
+        # and status glyph can only be driven at runtime, and the session must NOT be re-selected
+        # afterwards, because AppStore.selectSession zeroes unseenCount.
+        control_json(env, "notify", "--title", "clipping", "narrow sidebar",
+                     "--target", session_id, "--window", window_id, "--json")
+
+        def decorated():
+            session = window_tree(env, window_id)["workspaces"][0]["sessions"][0]
+            return (session.get("status") == "blocked" and session.get("flagged")
+                    and session.get("unseen", 0) > 0)
+
+        wait_for(decorated, "session never took the status, flag and unseen-badge decorations")
+        # Tree mode: terminal icon and flag star are the two images; the name, the status glyph (a
+        # GtkLabel, not a GtkImage — `LinuxStatusGlyph.makeStatusGlyph`) and the unseen badge the three
+        # labels. `decorated()` polls the MODEL and the sidebar rebuild LAGS it, so wait on the parts
+        # themselves: a yardstick read off the still-undecorated row would be too narrow.
+        wait_for(lambda: sidebar_row_settled(app, images=2, labels=3),
+                 "the sidebar row never rebuilt with the status glyph, flag star and unseen badge")
+        # The YARDSTICK for every `sidebar_does_not_widen` below, captured with the row FULLY decorated
+        # but its name still short: the decorations are legitimate chrome a column following its content
+        # may widen for, so a baseline taken before them would report that growth as a regression.
+        baseline = wait_for(lambda: sidebar_column(app), "the sidebar column never allocated").width
+
+        # Only NOW rename, so the long name is the SINGLE variable between the baseline and the checks.
+        control_json(env, "session", "rename", session_name, "--target", session_id, "--json")
+        row = wait_for(lambda: sidebar_row_settled(app, session_name, images=2, labels=3),
+                       "no rebuilt sidebar row carrying the long session name reported a settled, fully "
+                       "decorated extent")
+        tree_parts = sidebar_row_parts_fit(app, row, images=2, labels=3)
+        sidebar_does_not_widen(app, baseline, "the long tree-row name")
+
+        # Flagged mode renders the sidebar's LONGEST string, the "<session>  —  <workspace>" breadcrumb,
+        # through a different label site than makeNameWidget; its flag star is suppressed (every row is
+        # flagged), so only the terminal icon remains.
+        control_json(env, "sidebar", "mode", "flagged", "--json")
+        breadcrumb = f"{session_name}  —  {workspace_name}"
+        # Filtered by the BREADCRUMB, not just by role: a tree-mode row still in the accessibility tree
+        # carries 2 images and 3 labels, so it satisfies these counts and would pass containment while
+        # the breadcrumb site this leg exists to gate went unmeasured.
+        flagged_row = wait_for(lambda: sidebar_row_settled(app, breadcrumb, images=1, labels=3),
+                               "the flagged view never rebuilt a settled row carrying the breadcrumb")
+        flagged_parts = sidebar_row_parts_fit(app, flagged_row, images=1, labels=3)
+        sidebar_does_not_widen(app, baseline, "the flagged breadcrumb")
+
+        control_json(env, "session", "flag", "off", "--target", session_id, "--json")
+        hint_box = wait_for(lambda: sidebar_settled_label(app, "No flagged sessions"),
+                            "the empty flagged view never rebuilt its hint")
+        sidebar_fits(app, hint_box, "the flagged-empty hint")
+        # The empty view drops the rows entirely, so the column can only be NARROWER than the yardstick
+        # — unless the hint stopped wrapping and started reporting its longest LINE.
+        sidebar_does_not_widen(app, baseline, "the flagged-empty hint")
+        print(f"OK: decorated sidebar rows truncate inside the narrow column and never widen it "
+              f"({tree_parts} tree parts, {flagged_parts} flagged parts and the wrapped empty-state "
+              f"hint all inside the {baseline}px column the decorated short-named row sized)")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
 def verify_preferences_pages(env, home):
     process, app = launch(env)
     try:
@@ -2082,6 +2361,7 @@ def main():
             "window-ownership", "preferences-pages",
             "notification-reveal", "notification-focus", "session-pickers",
             "custom-command-failures", "surface-lifetimes", "sidebar-row-height",
+            "sidebar-narrow-clipping",
             "auto-follow", "hidden-toolbar",
         ):
             child_env = dict(os.environ, AGTERM_ATSPI_SCENARIO=child_scenario)
@@ -2134,6 +2414,8 @@ def main():
             verify_surface_configuration_lifetimes(env)
         elif scenario == "sidebar-row-height":
             verify_sidebar_row_height_follows_font_size(env)
+        elif scenario == "sidebar-narrow-clipping":
+            verify_sidebar_narrow_clipping(env)
         elif scenario == "preferences-pages":
             verify_preferences_pages(env, home)
         elif scenario == "auto-follow":

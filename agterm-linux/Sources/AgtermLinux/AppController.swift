@@ -685,6 +685,7 @@ final class AppController {
         guard let label = op(gtk_label_new(text)) else { return nil }
         gtk_label_set_xalign(label, 0)
         gtk_widget_set_hexpand(W(label), 1)
+        gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_END)
         nameLabels[label] = (id, isWorkspace)
         let dbl = gtk_gesture_click_new()
         gtk_gesture_single_set_button(dbl, 1)   // left double-click only; right-click goes to the context menu
