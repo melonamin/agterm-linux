@@ -56,6 +56,7 @@ def verify_background_overlay_grid(env):
         # initial size before the child runs, so no assertion may require observing libghostty's default.
         target.write(
             "#!/bin/sh\n"
+            'if [ -n "$2" ]; then : > "$2"; fi\n'
             "sleep 3\n"
             'stty size > "$1" 2>&1\n'
             "sleep 3600\n"
@@ -176,21 +177,26 @@ def verify_background_overlay_grid(env):
 
         # Leg 3: a dashboard open flips EVERY page child-visible, realizing sessions never shown yet.
         sample = markers("dashboard")
+        started = os.path.join(state, "dashboard-started")
         # The id is kept only to bracket the settle window with `assert_off_screen`; nothing may SELECT
         # this session, or `::resize` would overwrite the grid the map storm gave it.
         dashboard_id = make_session("grid-dashboard", "--no-select",
-                                    "--command", f"{probe} {sample}")
-        # Vacuity guard: the probe has not run yet, so nothing could have been measured yet.
-        assert not os.path.exists(sample), (
+                                    "--command", f"{probe} {sample} {started}")
+        # Vacuity guard: the probe writes `started` before its deliberate settle delay. Checking the
+        # later pty marker here would allow a prematurely running child to hide inside that delay.
+        assert not os.path.exists(started), (
             "the --no-select session ran its command before the dashboard opened; the leg is vacuous"
+        )
+        assert not os.path.exists(sample), (
+            "the --no-select session reported a pty grid before the dashboard opened; the leg is vacuous"
         )
         control_json(env, "dashboard", "--mru", "--window", window_id, "--json")
         wait_for(lambda: window_tree(env, window_id).get("dashboardMembers"), "dashboard did not open")
         # Realization happened AT DASHBOARD-OPEN TIME: GTK4 maps and realizes synchronously inside
         # `gtk_widget_set_child_visible(1)`, which is what lets this tell map-storm realization from
         # realization later on.
-        wait_for(lambda: os.path.exists(sample),
-                 "the dashboard-open surface did not run its probe", timeout=30)
+        wait_for(lambda: os.path.exists(started),
+                 "the dashboard-open surface did not start its probe", timeout=30)
         control_json(env, "dashboard", "--close", "--window", window_id, "--json")
         wait_for(lambda: not window_tree(env, window_id).get("dashboardMembers"), "dashboard did not close")
         # Bracketed like the two overlay legs, so the settled sample can only describe the map storm.
