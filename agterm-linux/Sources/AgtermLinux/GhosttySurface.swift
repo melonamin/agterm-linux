@@ -584,8 +584,15 @@ final class GhosttySurface: TerminalSurface {
             surface, side.isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT)
     }
 
-    func grabFocus() {
-        _ = gtk_widget_grab_focus(W(glArea))
+    func grabFocus(supersedingPopoverCapture: Bool = false) {
+        // Explicit user/control transfers are newer than any search-entry owner captured before a
+        // popover took the keyboard. Implicit repair grabs (window reactivation and popover dismissal)
+        // deliberately keep the capture so the entry can be restored after GTK moves focus transiently.
+        let mapped = gtk_widget_get_mapped(W(glArea)) != 0
+        let accepted = gtk_widget_grab_focus(W(glArea)) != 0
+        if mapped, accepted, supersedingPopoverCapture {
+            controller?.invalidatePopoverSearchEntryCapture()
+        }
     }
 
     /// Force libghostty to redraw this surface (e.g. after a split re-layout), mirroring the macOS
@@ -885,7 +892,7 @@ private let surfacePreeditChanged: @MainActor @convention(c) (OpaquePointer?, gp
 }
 private let surfaceClicked: @MainActor @convention(c) (OpaquePointer?, Int32, Double, Double, gpointer?) -> Void = { gesture, _, x, y, data in
     MainActor.assumeIsolated {
-        wrap(data)?.grabFocus()
+        wrap(data)?.grabFocus(supersedingPopoverCapture: true)
         wrap(data)?.mouseButton(gesture, pressed: true, x: x, y: y)
     }
 }
@@ -910,7 +917,7 @@ private let surfaceDropString: @MainActor @convention(c) (OpaquePointer?, Unsafe
         if UUID(uuidString: payload) != nil { return 0 }
         if payload.hasPrefix("w:"), UUID(uuidString: String(payload.dropFirst(2))) != nil { return 0 }
         guard let text = ShellEscape.dropPayload(payload) else { return 0 }
-        surface.grabFocus()
+        surface.grabFocus(supersedingPopoverCapture: true)
         surface.inject(text: text)
         return 1
     }
@@ -942,7 +949,7 @@ private let surfaceDropFiles: @MainActor @convention(c) (OpaquePointer?, UnsafeP
 
         let text = parts.filter { !$0.isEmpty }.joined(separator: " ")
         guard !text.isEmpty else { return 0 }
-        surface.grabFocus()
+        surface.grabFocus(supersedingPopoverCapture: true)
         surface.inject(text: text)
         return 1
     }

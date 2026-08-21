@@ -416,7 +416,9 @@ extension AppController: ControlActions {
                 store.toggleSplit(id)
             }
             reconcile(rebuildSidebar: false)
-            sessionFocusTarget(for: id)?.grabFocus()
+            if store.selectedSessionID == id {
+                sessionFocusTarget(for: id)?.grabFocus(supersedingPopoverCapture: true)
+            }
             return ok(id)
         }
     }
@@ -449,7 +451,10 @@ extension AppController: ControlActions {
             syncSplit(session)
             rebuildSidebar()
             updateTitle()
-            sessionFocusTarget(for: id, wantSplit: toSplit)?.grabFocus()
+            if store.selectedSessionID == id {
+                sessionFocusTarget(for: id, wantSplit: toSplit)?
+                    .grabFocus(supersedingPopoverCapture: true)
+            }
             return ok(id)
         }
     }

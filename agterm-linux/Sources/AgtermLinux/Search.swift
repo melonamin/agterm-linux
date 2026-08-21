@@ -78,7 +78,7 @@ extension AppController {
         searchSessionID = nil
         searchSurface = nil
         gtk_widget_set_visible(W(searchBar), 0)
-        owner?.grabFocus()
+        owner?.grabFocus(supersedingPopoverCapture: true)
     }
 
     func searchDidReportTotal(_ id: UUID, total: Int?) { searchTotal = total; updateSearchLabel() }

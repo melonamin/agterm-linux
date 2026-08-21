@@ -3971,7 +3971,8 @@ def keyboard_owner(marker_path, process_id):
     deliberately carries only the window id (`SurfaceEnvironment.quickTerminal`); and `AGTERM_PANE`
     names the surface's slot within its session (`left` for the main pane, `scratch` for the scratch
     terminal, absent for the quick terminal). So the marker's CONTENT —
-    `owner=<session>/<window>/left` vs `owner=/<window>/` vs `owner=<session>/<window>/scratch` —
+    `owner=<session>/<window>/left` vs `owner=<session>/<window>/right` vs
+    `owner=/<window>/` vs `owner=<session>/<window>/scratch` —
     identifies the answering surface POSITIVELY rather than by an absence. Existence alone would not
     identify anything: after the quick terminal is hidden, GTK leaves focus on its unmapped GLArea, and
     typing that still reached the quick shell would write the file just as happily as the wanted session
@@ -4040,6 +4041,7 @@ class ChromeFocus:
             (session["id"] for session in self.sessions() if session.get("active")), None)
         assert self.session_id, "the launched window has no active session to assert against"
         self.session_owner = f"owner={self.session_id}/{self.window_id}/left"
+        self.split_owner = f"owner={self.session_id}/{self.window_id}/right"
         self.quick_owner = f"owner=/{self.window_id}/"
         self.scratch_owner = f"owner={self.session_id}/{self.window_id}/scratch"
 
@@ -4588,6 +4590,8 @@ def verify_chrome_focus_popovers(env):
         # The session picker needs a second session to become sensitive, and the selection is put back so
         # the marker still names the session this scenario asserts against.
         control_json(env, "session", "new", "--json")
+        background_session_id = next(
+            session["id"] for session in ctx.sessions() if session["id"] != ctx.session_id)
         ctx.select_session(ctx.session_id,
                            "the original session did not become active again over the control socket")
 
@@ -4645,6 +4649,50 @@ def verify_chrome_focus_popovers(env):
         wait_for(lambda: actionable(ctx.app, "Next match (Enter)") is None,
                  "the search bar did not close after the popover-over-search step")
 
+        # A rejected transfer cannot supersede the captured owner. Splitting a background session asks its
+        # newly realized right pane to take focus, but GTK refuses because that deck page is not mapped.
+        # The still-open picker must therefore restore the live search entry when it dismisses.
+        ctx.open_counted_query("for the rejected-background-transfer step")
+        ctx.open_session_picker("before the rejected background transfer")
+        control_json(env, "session", "split", "on", "--target", background_session_id, "--json")
+        wait_for(
+            lambda: any(session["id"] == background_session_id and session.get("split")
+                        for session in ctx.sessions()),
+            "the background session split did not become active",
+        )
+        press_escape(ctx.process.pid)
+        wait_for(lambda: ctx.picker_row() is None,
+                 "Escape did not dismiss the picker after the rejected background transfer")
+        ctx.assert_typing_reaches_query(
+            "a rejected focus grab on a background split erased the picker capture instead of restoring "
+            "the live search entry")
+        press_escape(ctx.process.pid)
+        wait_for(lambda: actionable(ctx.app, "Next match (Enter)") is None,
+                 "the search bar did not close after the rejected-background-transfer step")
+        control_json(env, "session", "split", "off", "--target", background_session_id, "--json")
+
+        # A pane shell exiting is an implicit repair, not a newer keyboard-owner decision. Keep the
+        # capture while the right pane tears down so the picker's dismissal can restore the live query.
+        control_json(env, "session", "split", "on", "--target", ctx.session_id, "--json")
+        control_json(env, "session", "focus", "left", "--target", ctx.session_id, "--json")
+        ctx.open_counted_query("for the automatic-split-exit step")
+        ctx.open_session_picker("before the automatic split exit")
+        control_json(env, "session", "type", "exit\n", "--target", ctx.session_id,
+                     "--pane", "right", "--json")
+        wait_for(
+            lambda: any(session["id"] == ctx.session_id and not session.get("hasSplit")
+                        for session in ctx.sessions()),
+            "the right pane did not exit while the search picker was open",
+        )
+        press_escape(ctx.process.pid)
+        wait_for(lambda: ctx.picker_row() is None,
+                 "Escape did not dismiss the picker after the automatic split exit")
+        ctx.assert_typing_reaches_query(
+            "automatic split-exit focus repair erased the picker capture instead of restoring the query")
+        press_escape(ctx.process.pid)
+        wait_for(lambda: actionable(ctx.app, "Next match (Enter)") is None,
+                 "the search bar did not close after the automatic-split-exit step")
+
         # A deliberate competing transfer supersedes the search owner captured by the picker. Quick
         # invalidates that capture before its grab, so the picker's ordinary Escape dismissal cannot
         # restore the entry behind the visible Quick card.
@@ -4664,6 +4712,34 @@ def verify_chrome_focus_popovers(env):
         wait_for(lambda: not ctx.tree().get("quickVisible"),
                  "quick terminal did not hide after the competing-dismissal step")
         ctx.close_search("after the competing-quick dismissal step")
+
+        # The same ownership rule applies to every deliberate terminal transfer, not only Quick.
+        # `session split on` reconciles the new pane layout and explicitly grabs the active surface while
+        # the search-opened picker still owns the keyboard. Dismissing that picker must not resurrect the
+        # older search-entry owner over the newer terminal focus.
+        ctx.open_counted_query("for the competing-split dismissal step")
+        ctx.open_session_picker("before the competing split transfer")
+        control_json(env, "session", "split", "on", "--target", ctx.session_id, "--json")
+        wait_for(
+            lambda: any(session["id"] == ctx.session_id and session.get("split")
+                        for session in ctx.sessions()),
+            "session split did not become active while the search picker was up",
+        )
+        press_escape(ctx.process.pid)
+        wait_for(lambda: ctx.picker_row() is None,
+                 "Escape did not dismiss the picker after the split transfer")
+        owner = ctx.owner_after("search-picker-split-dismiss")
+        assert owner in {ctx.session_owner, ctx.split_owner}, (
+            "dismissing a picker after session split deliberately focused the terminal restored the "
+            f"older search-entry owner instead (marker read {owner!r})")
+        control_json(env, "session", "focus", "left", "--target", ctx.session_id, "--json")
+        control_json(env, "session", "split", "off", "--target", ctx.session_id, "--json")
+        wait_for(
+            lambda: any(session["id"] == ctx.session_id and not session.get("split")
+                        for session in ctx.sessions()),
+            "session split did not close after the competing-dismissal step",
+        )
+        ctx.close_search("after the competing-split dismissal step")
 
         # The row-activation repair consumes the same capture independently of `detachPopover`'s normal
         # dismissal leg. Keep the selected session and search alive, activate its attention row after

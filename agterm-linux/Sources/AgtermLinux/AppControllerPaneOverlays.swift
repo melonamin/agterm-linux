@@ -25,7 +25,8 @@ extension AppController {
         updatePaneDim(session)
         if allowFocus, session.id == store.selectedSessionID,
            let pane = session.focusedOverlayPane {
-            paneOverlaySurface(session.id, pane: pane)?.grabFocus()
+            paneOverlaySurface(session.id, pane: pane)?
+                .grabFocus(supersedingPopoverCapture: true)
         }
     }
 

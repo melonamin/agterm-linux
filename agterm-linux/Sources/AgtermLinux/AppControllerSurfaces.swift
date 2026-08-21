@@ -192,11 +192,13 @@ extension AppController {
                     updateFloatingOverlayFrame(s, frame: frame, overlay: overlay, fallbackPercent: percent)
                 }
                 if allowFocus, !s.hudActive, s.id == store.selectedSessionID {
-                    overlaySurfaces[s.id]?.grabFocus()
+                    overlaySurfaces[s.id]?.grabFocus(supersedingPopoverCapture: true)
                 }
             } else {
                 "overlay".withCString { gtk_stack_set_visible_child_name(stack, $0) }
-                if allowFocus, !s.hudActive, s.id == store.selectedSessionID { overlaySurfaces[s.id]?.grabFocus() }
+                if allowFocus, !s.hudActive, s.id == store.selectedSessionID {
+                    overlaySurfaces[s.id]?.grabFocus(supersedingPopoverCapture: true)
+                }
             }
         } else if let ov = overlaySurfaces[s.id], s.overlaySurface == nil {
             if let frame = floatingOverlayFrames[s.id] {

@@ -251,8 +251,13 @@ paths:
   purpose, because under a reactivating WM the keyboard has already left the popover by the time they run,
   so testing ownership there declines and drops the user into the shell under a live search bar — measured,
   both covering `chrome-focus-popovers` steps fail when it is applied to them.
-  A deliberate competing transfer instead invalidates the capture AT ITS OWNERSHIP SEAM before grabbing;
-  `setQuick(true)` calls `invalidatePopoverSearchEntryCapture()` before the Quick surface takes focus.
+  A deliberate competing transfer instead invalidates the capture AT ITS OWNERSHIP SEAM before grabbing.
+  Every intentional terminal transfer calls `GhosttySurface.grabFocus(supersedingPopoverCapture: true)`,
+  which runs `invalidatePopoverSearchEntryCapture()` after GTK accepts the grab on a mapped target; this
+  covers Quick, split/pane control, notification reveal, zoom/overlay transitions, pointer clicks, and drops
+  without a hidden/background surface erasing the live owner (GTK can accept a focus child on an unmapped
+  deck page). Implicit repair grabs keep the default `false`, because a window-manager reactivation while a
+  popover is open must not erase the search owner that dismissal still owes.
   This keeps the unconditional dismissal repair needed by reactivating WMs while making the explicit
   transfer win without timing or dismissal-time focus inference.
 - **A path that hands the keyboard back after a MODE CHANGE goes through `focusActiveSurface()`, never

@@ -99,7 +99,7 @@ extension AppController {
         zoomHost = host
         zoomHeader = header
         zoomTitleLabel = titleLabel
-        surface.grabFocus()
+        surface.grabFocus(supersedingPopoverCapture: true)
         surface.refresh()
         g_object_unref(RAW(surface.rootWidget))
         return true

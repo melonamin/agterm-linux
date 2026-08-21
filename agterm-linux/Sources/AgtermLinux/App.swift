@@ -356,11 +356,12 @@ private let onRevealAction: @MainActor @convention(c) (OpaquePointer?, OpaquePoi
     controller.selectSession(id)
     if focus == .overlay,
        let cover = session.programOverlayActive ? controller.overlaySurfaces[id] : controller.scratchSurfaces[id] {
-        cover.grabFocus()
+        cover.grabFocus(supersedingPopoverCapture: true)
     } else if session.hasSplit {
         controller.focusPane(left: !wantSplit)
     } else {
-        controller.sessionFocusTarget(for: id, wantSplit: false)?.grabFocus()
+        controller.sessionFocusTarget(for: id, wantSplit: false)?
+            .grabFocus(supersedingPopoverCapture: true)
     }
 }
 

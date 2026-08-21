@@ -477,7 +477,9 @@ final class AppController {
         let sid = id
         survivor.promoteToPrimary(onExit: { [weak self] in self?.closePrimaryPane(sid) })
         survivor.queueRender()
-        survivor.grabFocus()
+        if store.selectedSessionID == id {
+            survivor.grabFocus()
+        }
         reconcile()
         resumeTerminalZoomAfterPrimaryPanePromotion(zoomTarget)
     }
@@ -526,8 +528,7 @@ final class AppController {
         gtk_widget_set_visible(W(frame), visible ? 1 : 0)
         updateAllPaneDimming()
         if visible {
-            invalidatePopoverSearchEntryCapture()
-            quickSurface?.grabFocus()
+            quickSurface?.grabFocus(supersedingPopoverCapture: true)
         } else {
             refocusIfStranded()
         }
@@ -666,7 +667,7 @@ final class AppController {
         renameEntry = nil
         resumeAutoFollow()
         rebuildAfterRename()
-        sessionFocusTarget()?.grabFocus()
+        sessionFocusTarget()?.grabFocus(supersedingPopoverCapture: true)
     }
 
     /// A name label (session or workspace) when not renaming: a plain GtkLabel that selects on single
@@ -720,19 +721,21 @@ final class AppController {
         if session.scratchActive {
             store.toggleScratch(id)
             reconcile(); updateToggleIcons()
-            sessionFocusTarget(for: id)?.grabFocus()
+            sessionFocusTarget(for: id)?.grabFocus(supersedingPopoverCapture: true)
             return
         }
         store.toggleSplit(id)
         reconcile(rebuildSidebar: false)
         updateToggleIcons()
-        sessionFocusTarget(for: id)?.grabFocus()
+        sessionFocusTarget(for: id)?.grabFocus(supersedingPopoverCapture: true)
     }
 
     func closeSplitPane(_ id: UUID) {
         store.closeSplitPane(id)
         reconcile()
-        sessionFocusTarget(for: id, wantSplit: false)?.grabFocus()
+        if store.selectedSessionID == id {
+            sessionFocusTarget(for: id, wantSplit: false)?.grabFocus()
+        }
     }
 
     func toggleScratch() {
@@ -745,7 +748,7 @@ final class AppController {
     /// Move keyboard focus between the two split panes of the active session.
     func focusPane(left: Bool) {
         guard let id = store.selectedSessionID, store.session(withID: id)?.hasSplit == true else { return }
-        sessionFocusTarget(for: id, wantSplit: !left)?.grabFocus()
+        sessionFocusTarget(for: id, wantSplit: !left)?.grabFocus(supersedingPopoverCapture: true)
     }
 
     /// Ctrl+Tab: jump to the most-recently-used OTHER session. Selecting re-pushes recency,
