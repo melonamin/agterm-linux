@@ -399,13 +399,12 @@ extension AppController {
     }
 
     /// Map a rebindable `BuiltinAction` to its AppController method. EXHAUSTIVE: adding a BuiltinAction
-    /// case fails to compile until it's wired, the Linux analogue of the macOS menu keep-in-sync. Actions
-    /// with no Linux surface are no-ops (and never reach here unless the user explicitly `map`s them).
+    /// case fails to compile until it's wired, the Linux analogue of the macOS menu keep-in-sync.
     private func dispatchBuiltin(_ action: BuiltinAction, sessionID: UUID) {
         switch action {
         case .newWindow: openNewWindow()
-        case .renameWindow: break          // no inline window rename on Linux yet
-        case .deleteWindow: break          // window close is via the titlebar / window.close control
+        case .renameWindow: renameWindowDialog(windowID)
+        case .deleteWindow: confirmDeleteWindow(windowID)
         case .newWorkspace: newWorkspace()
         case .renameWorkspace: if let ws = store.currentWorkspaceID { beginRename(id: ws, isWorkspace: true) }
         case .deleteWorkspace: if store.canRemoveWorkspace, let ws = store.currentWorkspaceID { store.removeWorkspace(ws); reconcile() }

@@ -1195,6 +1195,86 @@ def verify_normal_toolbar(env, state, home):
         stop(process)
 
 
+def verify_window_key_dispatch(env):
+    """Mapped window actions drive the current GTK window's existing dialogs."""
+    config = os.path.join(env["AGTERM_STATE_DIR"], "config")
+    os.makedirs(config)
+    with open(os.path.join(config, "keymap.conf"), "w", encoding="utf-8") as target:
+        target.write(
+            "map ctrl+alt+r rename_window\n"
+            "map ctrl+alt+x delete_window\n"
+        )
+
+    process, app = launch(env)
+    try:
+        initial_id = next(item["id"] for item in window_list(env) if item["open"])
+        control_json(env, "session", "rename", "key-window-session",
+                     "--window", initial_id, "--json")
+        survivor_id = control_json(
+            env, "window", "new", "key-window-survivor", "--json"
+        )["result"]["id"]
+        select_window(env, initial_id)
+
+        press_x11_key("ctrl+alt+r", process.pid, window_title="key-window-session")
+        window = wait_for(
+            lambda: named(app, "key-window-session", role="frame"),
+            "key dispatch window disappeared",
+        )
+        wait_for(
+            lambda: named(window, "Rename Window"),
+            "mapped rename_window did not open the rename dialog",
+        )
+        rename_entry = wait_for(
+            lambda: editable_descendant(window),
+            "window rename dialog has no editable entry",
+        )
+        assert rename_entry.get_editable_text_iface().set_text_contents("key-window-renamed")
+        wait_for(
+            lambda: actionable(window, "Rename"),
+            "window rename dialog has no Rename action",
+        )
+        mouse_click(
+            lambda: actionable(window, "Rename"),
+            process.pid,
+            window_title="key-window-session",
+            button="left",
+        )
+        wait_for(
+            lambda: next(
+                (item for item in window_list(env) if item["id"] == initial_id), {}
+            ).get("name") == "key-window-renamed",
+            "mapped rename_window did not rename its window",
+        )
+
+        press_x11_key("ctrl+alt+x", process.pid, window_title="key-window-session")
+        wait_for(
+            lambda: named(window, "Delete Window?"),
+            "mapped delete_window did not open the delete confirmation",
+        )
+        wait_for(
+            lambda: actionable(window, "Delete"),
+            "window delete dialog has no Delete action",
+        )
+        mouse_click(
+            lambda: actionable(window, "Delete"),
+            process.pid,
+            window_title="key-window-session",
+            button="left",
+        )
+        wait_for(
+            lambda: all(item["id"] != initial_id for item in window_list(env)),
+            "mapped delete_window did not delete its window",
+        )
+        assert any(item["id"] == survivor_id for item in window_list(env))
+        assert process.poll() is None, "mapped delete_window terminated the application"
+        print("OK: mapped rename_window and delete_window drive current-window dialogs")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
 def verify_upstream_control_parity(env):
     """Round-trip the upstream v0.16 control additions through the real Linux socket and GTK host."""
     process, app = launch(env)
@@ -4998,6 +5078,7 @@ def main():
         failures = []
         for child_scenario in (
             "normal", "upstream-controls", "dashboard-modal", "context-menu",
+            "window-key-dispatch",
             "split-exit", "window-ownership", "preferences-pages",
             "notification-reveal", "notification-focus", "session-pickers", "child-gdk-env",
             "child-gdk-env-inverted",
@@ -5065,6 +5146,8 @@ def main():
         Atspi.init()
         if scenario == "normal":
             verify_normal_toolbar(env, state, home)
+        elif scenario == "window-key-dispatch":
+            verify_window_key_dispatch(env)
         elif scenario == "upstream-controls":
             verify_upstream_control_parity(env)
         elif scenario == "dashboard-modal":
