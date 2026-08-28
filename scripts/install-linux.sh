@@ -49,8 +49,9 @@ fi
 
 install -Dm644 "packaging/linux/io.github.melonamin.agterm.desktop" \
   "$APP_DIR/io.github.melonamin.agterm.desktop"
-# point Exec at the installed absolute path.
-sed -i "s|^Exec=.*|Exec=$BIN_DIR/agterm-linux|" "$APP_DIR/io.github.melonamin.agterm.desktop"
+# Point every launcher Exec at the installed absolute path while preserving Desktop Action arguments.
+sed -i "s|^Exec=agterm-linux\\(.*\\)$|Exec=$BIN_DIR/agterm-linux\\1|" \
+  "$APP_DIR/io.github.melonamin.agterm.desktop"
 # Remove desktop metadata from pre-migration personal installs so launchers do not show two entries.
 rm -f "$APP_DIR/com.umputun.agterm.linux.desktop"
 

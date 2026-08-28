@@ -5,9 +5,40 @@ Name=agterm
 GenericName=Terminal
 Comment=Native terminal with a workspace → session sidebar, on libghostty
 Exec=agterm-linux
+Actions=NewSession;NewWindow;QuickTerminal;Dashboard;RecentSessions;Attention;
 Icon=io.github.melonamin.agterm
 Terminal=false
 Categories=System;TerminalEmulator;
 Keywords=terminal;shell;command;ghostty;
 StartupNotify=true
 StartupWMClass=io.github.melonamin.agterm
+
+[Desktop Action NewSession]
+Name=New Session
+Icon=agterm-new-session-symbolic
+Exec=agterm-linux --desktop-action=new-session
+
+[Desktop Action NewWindow]
+Name=New Window
+Icon=window-new-symbolic
+Exec=agterm-linux --desktop-action=new-window
+
+[Desktop Action QuickTerminal]
+Name=Quick Terminal
+Icon=agterm-quick-symbolic
+Exec=agterm-linux --desktop-action=quick-terminal
+
+[Desktop Action Dashboard]
+Name=Dashboard
+Icon=agterm-grid-symbolic
+Exec=agterm-linux --desktop-action=dashboard
+
+[Desktop Action RecentSessions]
+Name=Recent Sessions
+Icon=document-open-recent-symbolic
+Exec=agterm-linux --desktop-action=recent-sessions
+
+[Desktop Action Attention]
+Name=Sessions Needing Attention
+Icon=emblem-important-symbolic
+Exec=agterm-linux --desktop-action=attention

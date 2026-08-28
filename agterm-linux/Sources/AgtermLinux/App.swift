@@ -36,11 +36,14 @@ struct AgtermApp {
         // the session bus and runs ALONGSIDE a deployed one (the Linux analogue of the macOS .debug
         // bundle id) instead of forwarding its launch to the running instance.
         let appID = ProcessInfo.processInfo.environment["AGTERM_APP_ID"] ?? LinuxAppMetadata.applicationID
-        // HANDLES_OPEN (1<<2): route a dir/file arg to the `open` signal (agterm-linux <dir> → a session
-        // there) instead of erroring on unknown args; no-arg launches still fire `activate`.
-        let app = OpaquePointer(adw_application_new(appID, GApplicationFlags(rawValue: 4)))
+        // HANDLES_COMMAND_LINE forwards both freedesktop Desktop Entry Actions and ordinary path launches
+        // to the primary instance. HANDLES_OPEN remains set because the command-line adapter deliberately
+        // calls g_application_open(), preserving the existing open-signal path and relative-path semantics.
+        let flags = GApplicationFlags(rawValue: (1 << 2) | (1 << 3))
+        let app = OpaquePointer(adw_application_new(appID, flags))
         connect(app, "activate", unsafeBitCast(onActivate, to: GCallback.self), nil)
         connect(app, "open", unsafeBitCast(onOpen, to: GCallback.self), nil)
+        connect(app, "command-line", unsafeBitCast(onCommandLine, to: GCallback.self), nil)
         connect(app, "shutdown", unsafeBitCast(onShutdown, to: GCallback.self), nil)
         let status = g_application_run(GAPP(app), CommandLine.argc, CommandLine.unsafeArgv)
         exit(status)
@@ -49,6 +52,71 @@ struct AgtermApp {
 
 private let onActivate: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { app, _ in
     MainActor.assumeIsolated { activateApplication(app) }
+}
+
+private let onCommandLine: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> gint = { app, commandLine, _ in
+    MainActor.assumeIsolated {
+        handleApplicationCommandLine(app: app, commandLine: commandLine)
+    }
+}
+
+/// Classifies the invocation in the primary process, then reuses GApplication's existing activate/open
+/// signals so a cold launcher action and a warm second process take exactly the same setup path.
+@MainActor private func handleApplicationCommandLine(
+    app: OpaquePointer?, commandLine: OpaquePointer?
+) -> gint {
+    guard let commandLine else { return 2 }
+    let cmd = UnsafeMutablePointer<GApplicationCommandLine>(commandLine)
+    var argc: gint = 0
+    guard let argv = g_application_command_line_get_arguments(cmd, &argc) else { return 2 }
+    defer { g_strfreev(argv) }
+    let arguments = (1..<Int(argc)).compactMap { index in
+        argv[index].map { String(cString: $0) }
+    }
+
+    switch LinuxApplicationInvocation.parse(arguments: arguments) {
+    case .activate:
+        g_application_activate(GAPP(app))
+    case .open(let paths):
+        var files = paths.map { path in
+            path.withCString { g_application_command_line_create_file_for_arg(cmd, $0) }
+        }
+        defer {
+            files.compactMap { $0 }.forEach { g_object_unref(UnsafeMutableRawPointer($0)) }
+        }
+        files.withUnsafeMutableBufferPointer { buffer in
+            g_application_open(GAPP(app), buffer.baseAddress, gint(buffer.count), "")
+        }
+    case .desktopAction(let action):
+        g_application_activate(GAPP(app))
+        performDesktopAction(action)
+    case .invalid(let message):
+        (message + "\n").withCString { g_application_command_line_printerr_literal(cmd, $0) }
+        return 2
+    }
+    return 0
+}
+
+/// Runs one static launcher action against the frontmost live window. Dynamic session identities stay in
+/// the GTK recent/attention palettes because freedesktop Desktop Entry Actions themselves are static.
+@MainActor private func performDesktopAction(_ action: LinuxDesktopAction) {
+    guard let id = gLibrary.frontmostWindowID ?? gLibrary.windows.first?.id,
+          let controller = gWindows[id] else { return }
+    switch action {
+    case .newSession:
+        controller.newSession()
+    case .newWindow:
+        controller.openNewWindow()
+    case .quickTerminal:
+        controller.toggleQuick()
+    case .dashboard:
+        controller.toggleDashboard()
+    case .recentSessions:
+        controller.showRecentPalette()
+    case .attention:
+        guard !controller.store.attentionSessions.isEmpty else { return }
+        controller.showAttentionPalette()
+    }
 }
 
 /// The `open` signal (G_APPLICATION_HANDLES_OPEN): `agterm-linux <dir> [<dir>…]` — first launch OR a

@@ -838,10 +838,11 @@ def app_stderr_sink():
     return sink
 
 
-def launch(env):
+def launch(env, arguments=None):
     sink = app_stderr_sink()
     try:
-        process = subprocess.Popen([BIN], env=env, stdout=subprocess.DEVNULL, stderr=sink)
+        process = subprocess.Popen(
+            [BIN, *(arguments or [])], env=env, stdout=subprocess.DEVNULL, stderr=sink)
     finally:
         if sink is not subprocess.DEVNULL:
             sink.close()
@@ -5131,7 +5132,7 @@ def main():
             "sidebar-click-rename", "sidebar-session-drag", "sidebar-workspace-drag",
             "sidebar-multiselect",
             "chrome-focus-buttons", "chrome-focus-sidebar", "chrome-focus-popovers",
-            "recent-clear", "auto-follow", "hidden-toolbar",
+            "recent-clear", "auto-follow", "hidden-toolbar", "desktop-actions",
         ):
             child_env = dict(os.environ, AGTERM_ATSPI_SCENARIO=child_scenario)
             result = subprocess.run([sys.executable, __file__], env=child_env)
@@ -5251,6 +5252,9 @@ def main():
             verify_session_pickers(env, state)
         elif scenario == "hidden-toolbar":
             verify_hidden_toolbar(env, state)
+        elif scenario == "desktop-actions":
+            from atspi_desktop_actions import verify_desktop_actions
+            verify_desktop_actions(env)
         else:
             raise ValueError(f"unknown AT-SPI scenario: {scenario}")
         print(f"PASS: {scenario}")

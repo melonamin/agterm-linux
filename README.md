@@ -56,6 +56,12 @@ The same app-wide cleanup is available as `agtermctl recent clear`.
 Linux uses desktop conventions: key labels are Ctrl/Shift rather than Command/Option, native chrome is
 provided by libadwaita, and local `file://` links open their containing folder in the default file manager.
 Its desktop, notification, and Flatpak application ID is `io.github.melonamin.agterm`, owned by this Linux fork.
+Launchers that implement freedesktop Desktop Entry Actions expose **New Session**, **New Window**,
+**Quick Terminal**, **Dashboard**, **Recent Sessions**, and **Sessions Needing Attention** when the app icon
+is right-clicked.
+The first four drive the frontmost GTK window directly; the static Recent and Attention entries open live
+in-app palettes because the desktop-entry format cannot publish dynamic session submenus.
+Launchers that do not implement the optional actions continue to expose the ordinary app launch unchanged.
 Quick Terminal remains an in-window surface with an app-local shortcut on Linux.
 The shared `global-hotkey` keymap verb is parsed for configuration compatibility but is only registered
 system-wide by the macOS host; Linux does not install compositor-specific global shortcut integration.
