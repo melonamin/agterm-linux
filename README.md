@@ -68,6 +68,8 @@ and **Reveal in Files** opens a session's focused working directory in the defau
 Preferences has a status-driven Integrations page for the CLI, Claude Code hooks, Codex hooks, and the bundled
 agent skill.
 It shows the exact file plan before a write and never replaces unrelated hooks, skills, or executables.
+Linux follows the desktop Reduce Motion preference and the older GTK animation switch:
+agent-status glyphs remain visible but stop pulsing while reduced motion is requested.
 Before GTK initializes, agterm sets `GDK_DISABLE=gles-api,vulkan` on itself (`GDK_DEBUG=gl-disable-gles,vulkan-disable`
 on GTK 4.14–4.15), printing one line whenever it makes the assignment: the bundled Ghostty renderer is desktop-OpenGL-only, and GTK 4.16+
 otherwise prefers OpenGL ES for its own paint context, which leaves every terminal on a "needs OpenGL" overlay.

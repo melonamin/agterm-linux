@@ -127,6 +127,10 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
             connect(desktopSettings, signal,
                     unsafeBitCast(onDesktopSidebarMetricsChanged, to: GCallback.self), nil)
         }
+        for signal in ["notify::gtk-enable-animations", "notify::gtk-interface-reduced-motion"] {
+            connect(desktopSettings, signal,
+                    unsafeBitCast(onReducedMotionChanged, to: GCallback.self), nil)
+        }
     }
     let ids = gLibrary.openIDs()
     let toOpen = ids.isEmpty ? [gLibrary.windows.first?.id].compactMap { $0 } : ids
@@ -180,10 +184,17 @@ private let onShutdown: @MainActor @convention(c) (OpaquePointer?, gpointer?) ->
     }
 }
 
+private let onReducedMotionChanged: @MainActor @convention(c) (
+    OpaquePointer?, OpaquePointer?, gpointer?
+) -> Void = { _, _, _ in
+    MainActor.assumeIsolated { refreshAppCSS() }
+}
+
 /// The app-wide stylesheet `installAppCSS` loads — internal (not private) so the tests can pin that
-/// interpolated policy constants (the sidebar hover rule) actually reach the installed string.
-let appCSS = """
-    .agterm-blink { animation: agterm-blink-pulse 1.2s ease-in-out infinite; }
+/// interpolated policy constants actually reach the installed string.
+func appCSS(prefersReducedMotion: Bool) -> String {
+    """
+    \(LinuxReduceMotionPolicy.blinkCSS(prefersReducedMotion: prefersReducedMotion))
     /* one selector per keyframe: GTK 4.14's _gtk_css_keyframes_parse takes a single progress value and then
        expects the block, so a `0%, 100%` list is a parse error there - and GTK drops @keyframes silently */
     @keyframes agterm-blink-pulse { 0% { opacity: 1; } 50% { opacity: 0.25; } 100% { opacity: 1; } }
@@ -205,17 +216,26 @@ let appCSS = """
     /* trailing inset inside the selection highlight (the row's content box paints it, so a box margin would indent the highlight itself) */
     .agterm-session-row-content { padding-right: 6px; }
     """
+}
 
-/// Install the app-wide CSS once: the `.agterm-blink` keyframe animation that pulses an in-progress
-/// agent-status glyph (the `AgentIndicator.blink` cue). Added at the application priority so it layers
-/// over the theme without overriding user CSS.
+/// Install the app-wide CSS once. The reloadable provider lets a desktop Reduce Motion change stop or
+/// restore the decorative agent-status pulse immediately on every existing glyph.
+@MainActor private var gAppCSSProvider: OpaquePointer?
+
+@MainActor private func refreshAppCSS() {
+    guard let provider = gAppCSSProvider else { return }
+    let css = appCSS(prefersReducedMotion: linuxPrefersReducedMotion(gtk_settings_get_default()))
+    css.withCString { gtk_css_provider_load_from_string(cast(provider), $0) }
+}
+
 @MainActor private func installAppCSS() {
     guard let display = gdk_display_get_default() else { return }
-    let provider = gtk_css_provider_new()
-    appCSS.withCString { gtk_css_provider_load_from_string(provider, $0) }
+    let provider = OpaquePointer(gtk_css_provider_new())
+    gAppCSSProvider = provider
+    refreshAppCSS()
     // GTK_STYLE_PROVIDER_PRIORITY_APPLICATION = 600; the macro cast isn't available in Swift, the
     // GtkCssProvider pointer is passed straight through as the GtkStyleProvider.
-    gtk_style_context_add_provider_for_display(display, OpaquePointer(provider), 600)
+    gtk_style_context_add_provider_for_display(display, provider, 600)
 }
 
 @MainActor private var gStatusColorProvider: OpaquePointer?

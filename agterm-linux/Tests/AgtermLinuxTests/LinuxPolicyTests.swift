@@ -743,6 +743,6 @@ struct SidebarHoverCSSTests {
     func appCSSInstallsHoverRule() {
         // The hover constant only takes effect once `installAppCSS` interpolates it into the
         // installed stylesheet — pin the composed string, not just the constant.
-        #expect(appCSS.contains(LinuxSidebarPolicy.sidebarHoverCSS))
+        #expect(appCSS(prefersReducedMotion: false).contains(LinuxSidebarPolicy.sidebarHoverCSS))
     }
 }
