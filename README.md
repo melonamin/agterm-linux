@@ -63,6 +63,8 @@ Dashboard and terminal-zoom views use stripped native headers: `Dashboard` or th
 shown with a custom window name when one exists, beside the matching exit button.
 These buttons and titles are presentation for the existing `dashboard` and `surface zoom` control paths and
 their tree read-back; they do not require another control command.
+Closed persisted windows appear as **Open Window: _name_** entries in the command palette and reopen with
+their saved workspaces and sessions.
 Dropping directories from the file manager onto a workspace or session row opens one session per directory,
 and **Reveal in Files** opens a session's focused working directory in the default file manager.
 Preferences has a status-driven Integrations page for the CLI, Claude Code hooks, Codex hooks, and the bundled

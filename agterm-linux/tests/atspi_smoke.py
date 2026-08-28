@@ -1837,6 +1837,25 @@ def verify_window_callback_ownership(env):
             "background Preferences dialog did not close through its owning window",
         )
 
+        # Closing a window keeps its persisted library entry. The Linux palette must expose that entry
+        # explicitly as "Open Window", and activating it must lazily reload and present the same id.
+        persisted_id = control_json(
+            env, "window", "new", "persisted-reopen", "--json"
+        )["result"]["id"]
+        control_json(env, "window", "close", persisted_id, "--json")
+        wait_for(
+            lambda: not next(item for item in window_list(env) if item["id"] == persisted_id)["open"],
+            "persisted test window did not close",
+        )
+        run_palette_action(
+            app, process.pid, "primary-session", "Open Window: persisted-reopen"
+        )
+        wait_for(
+            lambda: next(item for item in window_list(env) if item["id"] == persisted_id)["open"],
+            "Open Window palette action did not reopen the persisted window",
+        )
+        control_json(env, "window", "close", persisted_id, "--json")
+
         # Repeatedly close secondary windows with a fresh split restore and palette/window callbacks in
         # flight. The application and the surviving primary controller must remain usable.
         for index in range(4):

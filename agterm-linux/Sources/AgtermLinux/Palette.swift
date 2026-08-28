@@ -48,11 +48,13 @@ extension AppController {
         items.append((row: LinuxPaletteRow(title: "Copy Selection"), run: { self.activeSurface()?.performBindingAction("copy_to_clipboard") }))
         items.append((row: LinuxPaletteRow(title: "Paste"), run: { self.activeSurface()?.performBindingAction("paste_from_clipboard") }))
         items.append((row: LinuxPaletteRow(title: "Select All"), run: { self.activeSurface()?.performBindingAction("select_all") }))
-        // Dynamic: switch to (open/raise) any other window — the Linux window-menu equivalent. New Window
-        // is a fixed command above; rename/delete live on the window itself.
+        // Dynamic: explicitly reopen persisted closed windows, matching upstream's "Open Window" palette
+        // rows. Other live windows remain available as Linux-only switch targets. Both paths use
+        // `openWindow`, which raises an attached window or lazily loads and presents a closed one.
         for w in gLibrary.windows where w.id != windowID {
             let target = w.id
-            items.append((row: LinuxPaletteRow(title: "Switch to Window: \(w.name)"), run: { openWindow(target) }))
+            let row = LinuxPaletteRow.window(name: w.name, isOpen: gLibrary.isOpen(target))
+            items.append((row: row, run: { openWindow(target) }))
             items.append((row: LinuxPaletteRow(title: "Rename Window: \(w.name)"), run: { self.renameWindowDialog(target) }))
             if gLibrary.canRemoveWindow {
                 items.append((row: LinuxPaletteRow(title: "Delete Window: \(w.name)"), run: { self.confirmDeleteWindow(target) }))

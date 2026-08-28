@@ -38,6 +38,12 @@ struct PalettePresentationTests {
                                        chord: nil).title == "Show All Sessions")
     }
 
+    @Test("a closed persisted window is offered as Open Window, not Switch to Window")
+    func persistedWindowTitleFollowsOpenState() {
+        #expect(LinuxPaletteRow.window(name: "archive", isOpen: false).title == "Open Window: archive")
+        #expect(LinuxPaletteRow.window(name: "active", isOpen: true).title == "Switch to Window: active")
+    }
+
     @Test("a custom command is badged and shows its own chord")
     func customWithShortcut() {
         let row = LinuxPaletteRow.custom(

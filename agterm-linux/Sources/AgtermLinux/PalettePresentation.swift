@@ -87,6 +87,12 @@ extension LinuxPaletteRow {
         LinuxPaletteRow(title: command.title(in: context), shortcut: chord?.displayString)
     }
 
+    /// A persisted window target. Closed entries use the same explicit "Open Window" wording as macOS;
+    /// open entries are a Linux-only switcher convenience and are raised by the same `openWindow` path.
+    static func window(name: String, isOpen: Bool) -> LinuxPaletteRow {
+        LinuxPaletteRow(title: "\(isOpen ? "Switch to" : "Open") Window: \(name)")
+    }
+
     /// A `keymap.conf` custom command: its name, the `custom` badge, and its own bound chord if any.
     ///
     /// `CustomCommand.shortcut` is the RAW keybind token the user typed, passed through verbatim (the
