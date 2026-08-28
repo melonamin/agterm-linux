@@ -1307,6 +1307,11 @@ struct ControlProtocolTests {
         #expect(try roundTrip(request) == request)
     }
 
+    @Test func recentClearRoundTrips() throws {
+        let request = ControlRequest(cmd: .recentClear)
+        #expect(try roundTrip(request) == request)
+    }
+
     @Test func sessionFocusRoundTripsWithPane() throws {
         let request = ControlRequest(cmd: .sessionFocus, target: "active", args: ControlArgs(pane: "right"))
         let decoded = try roundTrip(request)

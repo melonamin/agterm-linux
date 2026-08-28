@@ -96,7 +96,7 @@ struct SurfaceTargetOptions: ParsableArguments {
 public enum AgtermctlCommandCatalog {
     public static var subcommands: [ParsableCommand.Type] {
         [Tree.self, Events.self, Workspace.self, Session.self, Surface.self, Dashboard.self, Window.self, Quick.self,
-         Sidebar.self, Notify.self, Font.self, Keymap.self, Config.self, Theme.self, Pick.self, Restore.self]
+         Sidebar.self, Notify.self, Font.self, Keymap.self, Config.self, Theme.self, Pick.self, Restore.self, Recent.self]
     }
 
     public static func rootConfiguration(

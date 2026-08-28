@@ -197,7 +197,7 @@ final class ControlServer: @unchecked Sendable {
              .windowNew, .windowList, .windowSelect, .windowClose, .windowRename, .windowDelete,
              .windowResize, .windowMove, .windowZoom, .windowFullscreen, .windowMinimize,
              .keymapReload, .keymapList, .configReload, .themeSet, .themeList,
-             .pickOpen, .pickResult, .pickCancel, .restoreClear, .debugAppearance:
+             .pickOpen, .pickResult, .pickCancel, .restoreClear, .recentClear, .debugAppearance:
             return .controller(gController)
         }
     }

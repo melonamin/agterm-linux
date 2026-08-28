@@ -28,6 +28,10 @@ struct CommandsTests {
         #expect(try request(["tree"]) == ControlRequest(cmd: .tree))
     }
 
+    @Test func recentClear() throws {
+        #expect(try request(["recent", "clear"]) == ControlRequest(cmd: .recentClear))
+    }
+
     @Test func workspaceNewWithName() throws {
         #expect(try request(["workspace", "new", "Work"]) == ControlRequest(cmd: .workspaceNew, args: ControlArgs(name: "Work")))
     }

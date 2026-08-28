@@ -1466,6 +1466,18 @@ struct ControlDispatcherTests {
         #expect(actions.calls == [.restoreClear])
     }
 
+    @Test func recentClearRoutesThroughActions() async {
+        let actions = MockControlActions()
+        let dispatcher = ControlDispatcher(actions: actions)
+        let expected = ControlResponse(ok: true, result: ControlResult(affected: 2))
+        actions.nextRecentClearResponse = expected
+
+        let response = await dispatcher.dispatch(ControlRequest(cmd: .recentClear))
+
+        #expect(response == expected)
+        #expect(actions.calls == [.recentClear])
+    }
+
     @Test func quickRoutesRawModeAndKeepsActionResponse() async {
         let actions = MockControlActions()
         let dispatcher = ControlDispatcher(actions: actions)

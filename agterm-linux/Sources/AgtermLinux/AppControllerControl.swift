@@ -120,6 +120,10 @@ extension AppController {
         if library.reopenLatestRecentClosed(into: store) { reconcile() }
     }
 
+    func clearRecentHistory() {
+        library.clearRecentClosedItems()
+    }
+
     func undoPendingClose() {
         if store.undoPendingClose() { reconcile() }
     }

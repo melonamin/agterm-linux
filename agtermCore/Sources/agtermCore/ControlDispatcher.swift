@@ -119,6 +119,7 @@ public protocol ControlActions {
     /// Cancel a native picker. The host owns window resolution, registry lookup, and dismissal.
     func cancelPick(_ target: String, window: String?) -> ControlResponse
     func clearRestoreCommands() -> ControlResponse
+    func clearRecentClosedItems() -> ControlResponse
 }
 
 public extension ControlActions {
@@ -228,7 +229,7 @@ public struct ControlDispatcher {
             return dispatchWorkspaceCommand(request)
         case .quick, .fontInc, .fontDec, .fontReset, .keymapReload, .keymapList,
                 .configReload, .notify, .themeSet, .themeList, .sidebar, .sidebarMode, .sidebarExpand,
-                .sidebarCollapse, .restoreClear:
+                .sidebarCollapse, .restoreClear, .recentClear:
             return dispatchAppCommand(request)
         case .quickType, .quickText:
             return await dispatchQuickCommand(request)
@@ -729,6 +730,8 @@ public struct ControlDispatcher {
             return actions.collapseSidebar(window: request.args?.window)
         case .restoreClear:
             return actions.clearRestoreCommands()
+        case .recentClear:
+            return actions.clearRecentClosedItems()
         default:
             preconditionFailure("unexpected app command: \(request.cmd.rawValue)")
         }

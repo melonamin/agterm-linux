@@ -141,7 +141,7 @@ renumbering. Do not reintroduce a count anywhere.
 - `font.inc`, `font.dec`, `font.reset`
 - `window.new`, `.list`, `.select`, `.close`, `.rename`, `.delete`, `.resize`, `.move`, `.zoom`,
   `.fullscreen`, `.minimize`
-- `keymap.reload`, `keymap.list`, `config.reload`, `theme.set`, `theme.list`, `restore.clear`
+- `keymap.reload`, `keymap.list`, `config.reload`, `theme.set`, `theme.list`, `restore.clear`, `recent.clear`
 
 `debug.appearance` is a private `Command` case, absent from the list above, used only by `AppearanceFlipUITests`.
 It accepts light/dark, sets `NSApp.appearance`, posts `.agtermSystemAppearanceChanged`, echoes the effective

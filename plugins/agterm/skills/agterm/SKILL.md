@@ -21,7 +21,7 @@ when_to_use: >
   session.flag, session.seen, session.reveal, session.duplicate, session.background, session.overlay,
   session.hud, hud panel, show a message over a session, workspace.new, workspace.select, workspace.go, workspace.move, workspace.focus, workspace.filter, window.new, window.list,
   window.select, window.resize, window.move, window.zoom, window.fullscreen, window.minimize, quick terminal, sidebar, sidebar.mode, sidebar.expand, sidebar.collapse, flagged, notify, font.inc, keymap.reload, keymap.list, config.reload,
-  theme.set, theme.list, events, events.read, event subscription, select theme, edit keymap, show an image, display an image inline, show-image,
+  theme.set, theme.list, recent.clear, clear recent items, events, events.read, event subscription, select theme, edit keymap, show an image, display an image inline, show-image,
   AGTERM_SESSION_ID, AGTERM_SOCKET, and asks to drive or script agterm. Also: troubleshoot agterm,
   keymap editor won't open, custom action / custom command not working, agterm logs, file an agterm
   bug, report an agterm issue, open an agterm discussion / feature request.
@@ -491,6 +491,9 @@ appearance automatically; `theme set --dark none` stops tracking. The app defaul
 
 **restore** — `restore clear` — clear every session's saved foreground command (the
 restore-running-command capture) so the next restart restores plain shells.
+
+**recent** — `recent clear` — clear the app-wide list of recently closed sessions and workspaces.
+Returns `result.affected`, the number of entries removed.
 
 ## Displaying an image inline
 

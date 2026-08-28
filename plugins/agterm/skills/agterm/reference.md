@@ -1206,6 +1206,13 @@ output prints `ok`. App-global (no `--window`). The GUI's live-preview picker (V
 is keyboard-only — committing it replaces the CURRENT appearance's side when syncing (the pair is
 kept); over the socket `theme set` is the commit, with no preview.
 
+## recent
+
+`agtermctl recent clear` — clear the app-wide list of recently closed sessions and workspaces.
+The same operation is available as **Clear Recent Items** in the Linux command palette and
+**File ▸ Open Recent ▸ Clear Menu** on macOS.
+Returns `result.affected`, the number of entries removed; app-global (no `--window`).
+
 ## restore
 
 `agtermctl restore clear` — clear every session's saved CAPTURED foreground command and persist, so the

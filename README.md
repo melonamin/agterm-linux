@@ -50,6 +50,8 @@ collapse state, workspace focus sets, native script-driven pickers, window minim
 and Ctrl/Shift multi-session selection with batch move, close, flag, status, and drag/drop actions.
 The GTK frontend keeps the content toolbar focused on terminal controls.
 Preferences opens with Ctrl+, while Integrations, Keyboard Shortcuts, and About remain available from the command palette.
+The Linux command palette offers **Clear Recent Items** whenever recently closed sessions or workspaces exist.
+The same app-wide cleanup is available as `agtermctl recent clear`.
 
 Linux uses desktop conventions: key labels are Ctrl/Shift rather than Command/Option, native chrome is
 provided by libadwaita, and local `file://` links open their containing folder in the default file manager.
@@ -497,7 +499,7 @@ To open a terminal at a directory without the CLI, run `agterm-linux <path>` on 
 agterm adds a session in that directory to the last-active window.
 The socket equivalent, and the way to place the session precisely, is `agtermctl session new --cwd <path>`.
 
-The sections below cover the common cases. All 74 commands, with every argument, return value, and error, are documented in the **[Command reference](https://agterm.com/commands)**.
+The sections below cover the common cases. Every command, with its arguments, return value, and errors, is documented in the **[Command reference](https://agterm.com/commands)**.
 
 The macOS app bundles `agtermctl` inside `agterm.app`; upstream's **Help ▸ Install Command Line Tool…** action puts it on `PATH`.
 Linux package and portable-build behavior is described under [Optional integrations](#optional-integrations).

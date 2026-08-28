@@ -202,6 +202,7 @@
             <a href="#theme" style="color: #bfbab0; padding: 7px 12px; border-radius: 7px" class="hv9">theme</a>
             <a href="#keymap" style="color: #bfbab0; padding: 7px 12px; border-radius: 7px" class="hv9">keymap</a>
             <a href="#config" style="color: #bfbab0; padding: 7px 12px; border-radius: 7px" class="hv9">config</a>
+            <a href="#recent" style="color: #bfbab0; padding: 7px 12px; border-radius: 7px" class="hv9">recent</a>
             <a href="#restore" style="color: #bfbab0; padding: 7px 12px; border-radius: 7px" class="hv9">restore</a>
             <div style="height: 16px"></div>
             <span style="color: #4a5158; font-size: 11px; letter-spacing: 0.12em; padding: 4px 12px">HELP</span>
@@ -2583,6 +2584,37 @@
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">ghostty.conf</span> — libghostty diagnostics do not
                 record which file they came from — so do not read a non-zero count as proof that
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">ghostty.conf</span> is the culprit.
+              </p>
+            </div>
+          </section>
+
+          <!-- RECENT -->
+          <section id="recent" style="scroll-margin-top: 88px; padding-top: 56px">
+            <h2
+              style="
+                font-family: &quot;JetBrains Mono&quot;, monospace;
+                font-weight: 700;
+                font-size: 28px;
+                letter-spacing: -0.02em;
+                margin: 0 0 16px;
+                padding-bottom: 12px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+              "
+            >
+              recent
+            </h2>
+
+            <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
+                agtermctl recent clear
+              </div>
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">recent.clear</div>
+              <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
+                Clear the app-wide list of recently closed sessions and workspaces.
+                <strong style="color: #bfbab0">Returns</strong>
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">result.affected</span> — the number of entries removed.
+                The same operation is available as <em>Clear Recent Items</em> in the Linux command palette and
+                <em>File ▸ Open Recent ▸ Clear Menu</em> on macOS.
               </p>
             </div>
           </section>

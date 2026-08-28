@@ -5016,6 +5016,47 @@ def verify_chrome_focus_popovers(env):
         stop(ctx.process)
 
 
+def verify_recent_clear(env):
+    """The Linux palette and control socket clear the same app-wide recent-closed store."""
+    process, app = launch(env)
+    try:
+        created = control_json(env, "session", "new", "--json")["result"]["id"]
+        control_json(env, "session", "close", "--target", created, "--json")
+
+        palette, search = open_palette(app, process.pid)
+        assert search.get_editable_text_iface().set_text_contents("Clear Recent Items")
+        wait_for(
+            lambda: ["Clear Recent Items"] in palette_row_labels(palette),
+            "Clear Recent Items did not appear after closing a session",
+        )
+        press_return(process.pid, window_title="Command Palette")
+        wait_for(
+            lambda: not named(app, "Command Palette", role="frame"),
+            "the palette did not close after clearing recent items",
+        )
+
+        palette, search = open_palette(app, process.pid)
+        assert search.get_editable_text_iface().set_text_contents("Clear Recent Items")
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert ["Clear Recent Items"] not in palette_row_labels(palette), (
+            "Clear Recent Items remained visible after it cleared the history"
+        )
+        press_escape(process.pid, window_title="Command Palette")
+
+        created = control_json(env, "session", "new", "--json")["result"]["id"]
+        control_json(env, "session", "close", "--target", created, "--json")
+        response = control_json(env, "recent", "clear", "--json")
+        assert response["result"]["affected"] == 1, (
+            "recent clear did not report the one item it removed"
+        )
+        print("OK: palette and control clear recently closed items")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
 def verify_auto_follow(env, state):
     auto_state = state + "-auto-follow"
     os.makedirs(auto_state)
@@ -5090,7 +5131,7 @@ def main():
             "sidebar-click-rename", "sidebar-session-drag", "sidebar-workspace-drag",
             "sidebar-multiselect",
             "chrome-focus-buttons", "chrome-focus-sidebar", "chrome-focus-popovers",
-            "auto-follow", "hidden-toolbar",
+            "recent-clear", "auto-follow", "hidden-toolbar",
         ):
             child_env = dict(os.environ, AGTERM_ATSPI_SCENARIO=child_scenario)
             result = subprocess.run([sys.executable, __file__], env=child_env)
@@ -5204,6 +5245,8 @@ def main():
             verify_chrome_focus_popovers(env)
         elif scenario == "auto-follow":
             verify_auto_follow(env, state)
+        elif scenario == "recent-clear":
+            verify_recent_clear(env)
         elif scenario == "session-pickers":
             verify_session_pickers(env, state)
         elif scenario == "hidden-toolbar":

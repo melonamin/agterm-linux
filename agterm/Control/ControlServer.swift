@@ -492,6 +492,12 @@ final class ControlServer {
         return ControlResponse(ok: true)
     }
 
+    func clearRecentClosedItems() -> ControlResponse {
+        let affected = library.recentClosedItems.count
+        library.clearRecentClosedItems()
+        return ControlResponse(ok: true, result: ControlResult(affected: affected))
+    }
+
     /// Open or close the target window's dashboard overlay — the app side of the host-free `dashboard`
     /// command (the dispatcher validated the args and built `fontMode`, but does not cap the ids). Resolves
     /// `window ?? frontmost` to an OPEN window's store. `mru` takes up to `DashboardLayout.maxCells` of that

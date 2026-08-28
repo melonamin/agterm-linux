@@ -38,6 +38,9 @@ extension AppController {
             let row = LinuxPaletteRow.action(cmd, in: paletteContext, chord: cmd.builtinAction.flatMap(resolvedChord(for:)))
             return (row: row, run: run(for: cmd))
         }
+        if !library.recentClosedItems.isEmpty {
+            items.append((row: LinuxPaletteRow(title: "Clear Recent Items"), run: { self.clearRecentHistory() }))
+        }
         // Preferences… (the Linux Settings surface; macOS uses the Settings scene / Cmd+,).
         // These Linux-only rows have no BuiltinAction, so no chord resolves and they render title-only.
         items.append((row: LinuxPaletteRow(title: "Preferences…"), run: { self.showSettings() }))

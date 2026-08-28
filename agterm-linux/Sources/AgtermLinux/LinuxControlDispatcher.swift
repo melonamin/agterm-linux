@@ -40,7 +40,7 @@ struct LinuxControlDispatcher {
             return dispatchWorkspaceCommand(request)
         case .fontInc, .fontDec, .fontReset, .keymapReload, .keymapList, .configReload, .notify,
                 .themeSet, .themeList, .sidebar, .sidebarMode, .sidebarExpand,
-                .sidebarCollapse, .restoreClear:
+                .sidebarCollapse, .restoreClear, .recentClear:
             return dispatchAppCommand(request)
         case .windowRename, .windowResize, .windowMove, .windowZoom, .windowFullscreen, .windowMinimize:
             return dispatchWindowCommand(request)
@@ -609,6 +609,8 @@ struct LinuxControlDispatcher {
             return actions.collapseSidebar(window: request.args?.window)
         case .restoreClear:
             return actions.clearRestoreCommands()
+        case .recentClear:
+            return actions.clearRecentClosedItems()
         default:
             preconditionFailure("unexpected app command: \(request.cmd.rawValue)")
         }

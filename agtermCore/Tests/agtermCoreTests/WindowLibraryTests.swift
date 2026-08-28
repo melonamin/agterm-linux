@@ -112,6 +112,21 @@ final class WindowLibraryTests {
         #expect(library.recentClosedItems.isEmpty)
     }
 
+    @Test func clearingRecentItemsDropsMemoryAndPersistedHistory() {
+        let library = WindowLibrary(directory: directory)
+        let store = try! #require(library.activeStore)
+        let workspace = store.addWorkspace(name: "project")
+        let session = try! #require(store.addSession(toWorkspace: workspace.id, cwd: "/project", name: "api"))
+        store.closeSession(session.id)
+        store.removeWorkspace(workspace.id)
+        #expect(library.recentClosedItems.count == 2)
+
+        library.clearRecentClosedItems()
+
+        #expect(library.recentClosedItems.isEmpty)
+        #expect(WindowLibrary(directory: directory).recentClosedItems.isEmpty)
+    }
+
     @Test func reopeningRecentSessionRecreatesMissingOriginalWorkspace() {
         let library = WindowLibrary(directory: directory)
         let store = try! #require(library.activeStore)

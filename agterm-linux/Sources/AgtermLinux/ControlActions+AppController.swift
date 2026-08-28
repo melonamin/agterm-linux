@@ -979,6 +979,12 @@ extension AppController: ControlActions {
         }
     }
 
+    func clearRecentClosedItems() -> ControlResponse {
+        let affected = gLibrary.recentClosedItems.count
+        gLibrary.clearRecentClosedItems()
+        return ControlResponse(ok: true, result: ControlResult(affected: affected))
+    }
+
     func clearRestoreCommands() -> ControlResponse {
         for ctl in gWindows.values {
             for session in ctl.store.workspaces.flatMap(\.sessions) {

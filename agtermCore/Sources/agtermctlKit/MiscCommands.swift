@@ -77,6 +77,23 @@ struct Restore: ParsableCommand {
     }
 }
 
+// MARK: - recent
+
+struct Recent: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Recently closed item commands.",
+        subcommands: [Clear.self]
+    )
+
+    struct Clear: RequestCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Clear the app-wide list of recently closed sessions and workspaces.")
+        @OptionGroup var options: BasicOptions
+
+        func makeRequest() throws -> ControlRequest { ControlRequest(cmd: .recentClear) }
+    }
+}
+
 // MARK: - theme
 
 struct Theme: ParsableCommand {
