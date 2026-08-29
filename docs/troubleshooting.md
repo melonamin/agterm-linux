@@ -13,11 +13,11 @@ Paths assume the defaults. When `AGTERM_STATE_DIR` is set, the state files and t
 - **Control socket**: `<state>/agterm.sock` (or `$AGTERM_CONTROL_SOCKET` when set). A spawned shell sees the bound path in `$AGTERM_SOCKET`.
 - **macOS state**: `~/Library/Application Support/agterm`.
 - **Linux state**: the Foundation application-support directory for the current user; run `printf '%s\n' "$AGTERM_SOCKET"` inside agterm to see the active directory, or set `AGTERM_STATE_DIR` for an isolated instance.
-- **Logs**: macOS uses unified logging under `com.umputun.agterm`; the Linux development build writes diagnostics to its process journal or stderr.
+- **Logs**: macOS uses unified logging under `com.umputun.agterm`; Linux uses GLib structured logging, which writes to journald when the process is journal-connected and to stderr otherwise.
 
 ## Reading the logs
 
-agterm logs to the unified logging system, so use `log` or Console:
+On macOS, agterm logs to the unified logging system under `com.umputun.agterm`, so use `log` or Console:
 
 ```bash
 # the last 30 minutes, all categories
@@ -30,13 +30,18 @@ log stream --predicate 'subsystem == "com.umputun.agterm"' --info
 log show --predicate 'subsystem == "com.umputun.agterm" && category == "CustomCommandRunner"' --info --last 30m
 ```
 
-The categories are `GhosttyApp`, `GhosttySurfaceView`, `WatermarkRenderer`, `NotificationManager`, `SettingsView`, `SettingsModel`, `CustomCommandRunner`, and `ControlServer`. In Console.app, filter on the same subsystem.
+The categories are `GhosttyApp`, `GhosttySurfaceView`, `WatermarkRenderer`, `NotificationManager`, `SettingsView`, `SettingsModel`, `CustomCommandRunner`, and `ControlServer`.
+In Console.app, filter on the same subsystem.
 
-On Linux, launch the development binary from a terminal to retain stderr, or inspect the desktop-session journal:
+On Linux, agterm logs through GLib structured logging.
+When the desktop process is journal-connected, journald stores the structured fields; otherwise GLib writes to stderr, so launching the binary from a terminal keeps the entries visible.
 
 ```bash
-journalctl --user --since "30 minutes ago" | grep -i agterm
+# ControlServer diagnostics from the last 30 minutes
+journalctl --user -t agterm GLIB_DOMAIN=ControlServer --since "30 minutes ago"
 ```
+
+Drop the `GLIB_DOMAIN=ControlServer` match to see all agterm entries.
 
 ## Checking Linux integrations
 

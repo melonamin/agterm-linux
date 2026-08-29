@@ -30,12 +30,18 @@ You are inside agterm (`AGTERM_ENABLED=1`). Use:
   `macos-option-as-alt`. Most keys apply to open panes on reload, but layout keys (`window-padding-*`)
   and spawn-time keys (`term`, `shell-integration-features`) only take effect in a new session/window
   or after a relaunch. Full reference: https://ghostty.org/docs/config
-- **Logs** (unified logging, subsystem `com.umputun.agterm`):
+- **Logs** — split by platform.
+  macOS: unified logging, subsystem `com.umputun.agterm`;
   ```bash
   log show --predicate 'subsystem == "com.umputun.agterm"' --info --last 30m
   ```
   Categories: `GhosttyApp`, `GhosttySurfaceView`, `WatermarkRenderer`, `NotificationManager`,
   `SettingsView`, `SettingsModel`, `CustomCommandRunner`, `ControlServer`.
+  Linux: GLib structured logging — journald stores the fields when the process is journal-connected;
+  otherwise GLib writes to stderr (launch agterm from a terminal to keep it). ControlServer diagnostics:
+  ```bash
+  journalctl --user -t agterm GLIB_DOMAIN=ControlServer --since "30 minutes ago"
+  ```
 - **Files** — keymap `~/.config/agterm/keymap.conf`; agterm-scoped ghostty config
   `~/.config/agterm/ghostty.conf`; settings in the platform application-support directory
   (`~/Library/Application Support/agterm/settings.json` on macOS); socket path in `$AGTERM_SOCKET`.
