@@ -203,6 +203,10 @@ paths:
   Known limitation, accepted: because the unmapped disjunct is qualified by the TOPLEVEL being mapped, a
   HIDE performed while the window itself is unmapped (`agtermctl quick hide` on a minimized window) is
   never repaired; the destroy case still works, since the `focus == nil` disjunct carries no such qualifier.
+- **A terminal blur ends the half-finished keyboard interactions that surface owns.**
+  `surfaceFocusLeave` (`GhosttySurface.swift`) abandons a typed custom-command leader AND an in-flight
+  Ctrl-Tab cycle. Why the cancel is broader than the blur that triggers it:
+  `agterm-linux/docs/menu-actions.md`.
 - **A GtkPopover takes the keyboard on popup and does NOT give it back — the dismissal has to.**
   Measured (GTK 4.22): `gtk_popover_popup` moves the window's focus widget onto the popover's first item
   WHETHER OR NOT that item sets `focus-on-click`, and `gtk_popover_popdown` hands focus to the popover's

@@ -61,7 +61,7 @@ extension AppController {
         if quickVisible { setQuick(false) }
         if paletteWindow != nil { closePalette() }
         searchSurface?.endSearch()
-        if sessionSwitcher.isActive { endSessionSwitch() }
+        cancelSessionSwitch()
         dashboard.open(members: members, fontMode: fontMode)
         refreshPaneOverlayCoverage()
         suppressAutoFollow()

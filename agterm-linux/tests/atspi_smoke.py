@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """AT-SPI smoke coverage for the real GTK frontend, always under isolated state and HOME."""
 
+import contextlib
 import json
 import os
 import re
@@ -217,6 +218,42 @@ def type_x11_text(value, process_id, window_title=None):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+@contextlib.contextmanager
+def ctrl_held(process_id, hold="ctrl"):
+    """Hold `hold` (Ctrl by default) across several taps, yielding a `tap(key)` that keeps modifiers.
+
+    `press_x11_key` cannot express this at all: `--clearmodifiers` lifts every held modifier around the
+    tap, and the Ctrl-Tab switcher commits on the Ctrl RELEASE, so a cleared hold would commit on every
+    tap and never cycle. The `keyup` is in `finally` because a failed assertion inside the block would
+    otherwise leave Ctrl down for the rest of the run, turning every later keystroke into a chord — and it
+    does not `check`, so it cannot mask that assertion; a release that itself failed raises once the body
+    completes, since every later scenario would otherwise misfire with no attributable cause.
+    Nesting a second hold is how the two-Ctrl commit case is driven.
+    """
+    focus_window(process_id)
+    time.sleep(0.5)
+
+    def xdotool(*args, check=True):
+        return subprocess.run(
+            ["xdotool", *args],
+            check=check,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def tap(key):
+        xdotool("key", key)
+        time.sleep(0.4)
+
+    xdotool("keydown", hold)
+    try:
+        yield tap
+    finally:
+        released = xdotool("keyup", hold, check=False)
+        time.sleep(0.4)
+    assert released.returncode == 0, f"xdotool could not release {hold}; it is still held"
 
 
 def press_ctrl_comma(process_id, window_title=None):
@@ -924,6 +961,26 @@ def activate_reveal_action(env, identity):
         stderr=subprocess.DEVNULL,
         env=env,
     )
+
+
+def switcher_overlay_names(app):
+    """Session names the Ctrl-Tab overlay card lists, top to bottom, or [] when no card is up.
+
+    The card carries no accessible name of its own (GTK 4.22 does not expose an accessible LABEL as the
+    AT-SPI name of a scroll pane — measured, it stays empty), so it is identified by shape: a scrolled
+    window of bare labels and nothing else. The sidebar is the only other scroller listing session names,
+    and it always holds the rows' list items and its workspace "+" buttons alongside them. A second match
+    is a fault, not a candidate to pick from: the abort and teardown legs assert the EMPTY answer, which a
+    helper that quietly stopped matching would satisfy for the wrong reason.
+    """
+    cards = [
+        scroller for scroller in collect(app, role="scroll pane")
+        if descendants(scroller, role="label")
+        and not descendants(scroller, role="list item")
+        and not descendants(scroller, role="button")
+    ]
+    assert len(cards) <= 1, f"{len(cards)} widgets match the switcher card"
+    return [label.get_name() or "" for label in collect(cards[0], role="label")] if cards else []
 
 
 def palette_row_labels(palette):
@@ -4307,7 +4364,179 @@ def verify_session_pickers(env, state):
             ),
             "Attention popover did not expose a session row",
         )
-        print("OK: recent-session and attention popovers expose actionable rows")
+
+        def recent_row_titles():
+            """Session names the open picker lists; its rows pair a name with `workspace · detail`.
+
+            The popover is parented to the Recent Sessions button, so while it is up GTK folds the rows'
+            labels into that anchor's own subtree — and its name with them. A row is therefore the
+            matching button that holds no further button; without that test the anchor doubles every row.
+            """
+            titles = []
+            for button in collect(app, role="button"):
+                if descendants(button, role="button"):
+                    continue
+                labels = [item.get_name() or "" for item in collect(button, role="label")]
+                if any("workspace 1 ·" in label for label in labels):
+                    titles.append(labels[0])
+            return titles
+
+        # Flagged mode is where the popover's `navigableRecentSessions` scope becomes visible.
+        control_json(env, "session", "rename", "picker-current", "--target", original_id, "--json")
+        control_json(env, "session", "flag", "on", "--target", original_id, "--json")
+        flagged_id = control_json(
+            env, "session", "new", "--name", "picker-flagged", "--json"
+        )["result"]["id"]
+        control_json(env, "session", "flag", "on", "--target", flagged_id, "--json")
+        control_json(env, "sidebar", "mode", "flagged", "--json")
+        control_json(env, "session", "select", "--target", original_id, "--json")
+        wait_for(
+            lambda: control_json(env, "tree", "--json")["result"]["tree"].get("sidebarMode") == "flagged",
+            "the sidebar did not switch to flagged mode",
+        )
+        activate(wait_for(
+            lambda: actionable(app, "Recent Sessions (Ctrl+Tab)"),
+            "Recent Sessions button is missing or not actionable in flagged mode",
+        ))
+        wait_for(
+            lambda: recent_row_titles() == ["picker-flagged"],
+            "the flagged popover did not list exactly the flagged, non-current session",
+        )
+
+        def recent_button_insensitive():
+            button = named(app, "Recent Sessions (Ctrl+Tab)", role="button")
+            return button is not None and not button.get_state_set().contains(Atspi.StateType.SENSITIVE)
+
+        control_json(env, "session", "flag", "off", "--target", flagged_id, "--json")
+        wait_for(
+            recent_button_insensitive,
+            "the Recent Sessions button stayed enabled with no navigable recent session",
+        )
+        print("OK: recent-session and attention popovers expose actionable rows, "
+              "and the recent popover follows the navigable scope")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
+def verify_session_switch_commit(env):
+    """Ctrl-Tab cycles WITHOUT selecting; the Ctrl release commits exactly once (macOS parity).
+
+    `SessionSwitcherModel` unit tests pin the commit DECISION, but the AppController wiring — no
+    selection while Ctrl is held, one on release, none after an Esc abort, a blur or a dashboard open —
+    has no host-free seam, so this scenario is its only guard. The MRU order it pins is what makes a
+    second Ctrl-Tab toggle back: selecting per step instead would leave `[C,B,A]` and walk the list away
+    from the previous session.
+    """
+    process, app = launch(env)
+    try:
+        window_id = window_list(env)[0]["id"]
+
+        def selected():
+            for workspace in window_tree(env, window_id)["workspaces"]:
+                for session in workspace["sessions"]:
+                    if session["active"]:
+                        return session["name"]
+            return None
+
+        first_id = control_json(env, "tree", "--json")["result"]["tree"]["workspaces"][0]["sessions"][0]["id"]
+        control_json(env, "session", "rename", "switch-a", "--target", first_id, "--json")
+        second_id = control_json(env, "session", "new", "--name", "switch-b", "--json")["result"]["id"]
+        third_id = control_json(env, "session", "new", "--name", "switch-c", "--json")["result"]["id"]
+        # Selecting in this order leaves the MRU `[c, b, a]`, so `a` is two cycle steps away from `c`.
+        for target in (first_id, second_id, third_id):
+            control_json(env, "session", "select", "--target", target, "--json")
+        assert selected() == "switch-c", f"the setup left {selected()!r} selected"
+
+        # The hold outlasts the auto-follow idle tick; it is safe only because this scenario writes no
+        # settings.json, so `LinuxAutoFollowCoordinator.timeout` is nil and no reconcile blurs the surface.
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            if not poll(lambda: switcher_overlay_names(app) == ["switch-c", "switch-b", "switch-a"], 12):
+                raise AssertionError(f"the Ctrl-Tab overlay did not list the MRU: {switcher_overlay_names(app)}")
+            tap("Tab")
+            time.sleep(NEGATIVE_SETTLE_SECONDS)
+            assert selected() == "switch-c", "a Ctrl-Tab press selected a session before the Ctrl release"
+        wait_for(
+            lambda: selected() == "switch-a",
+            "the Ctrl release did not commit the highlighted session",
+        )
+        wait_for(lambda: not switcher_overlay_names(app), "the switcher overlay outlived the commit")
+
+        # The commit pushed recency exactly once, leaving `[a, c, b]`.
+        for expected in ("switch-c", "switch-a"):
+            with ctrl_held(process.pid) as tap:
+                tap("Tab")
+            if not poll(lambda: selected() == expected, 12):
+                raise AssertionError(f"a single Ctrl-Tab did not toggle to {expected}, it stayed on {selected()}")
+
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            wait_for(
+                lambda: switcher_overlay_names(app),
+                "the Ctrl-Tab overlay never appeared for the Esc leg",
+            )
+            tap("Escape")
+            wait_for(lambda: not switcher_overlay_names(app), "Esc left the switcher overlay up")
+            assert selected() == "switch-a", "Esc committed a selection"
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert selected() == "switch-a", "the Ctrl release after an Esc abort still selected a session"
+
+        # Reverse walks the same hold forward twice and back once, so the commit lands on the MIDDLE
+        # candidate of `[a, c, b]`; a forward-only shift+Tab would wrap onto the current session instead.
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            tap("Tab")
+            tap("shift+Tab")
+        if not poll(lambda: selected() == "switch-c", 12):
+            raise AssertionError(f"Ctrl+Shift+Tab did not step back to switch-c, it left {selected()}")
+
+        # A focus move to another surface must abandon the cycle: nothing would deliver its Ctrl release
+        # to the surface that started it, and the frozen candidate list would commit on the NEXT release.
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            wait_for(lambda: switcher_overlay_names(app), "the Ctrl-Tab overlay never appeared for the blur leg")
+            control_json(env, "session", "split", "on", "--target", third_id, "--json")
+            wait_for(lambda: not switcher_overlay_names(app),
+                     "focus moving to the split pane left the switcher overlay up")
+        # Ctrl+C runs the same commit path with no cycle in flight, so one settle covers both releases.
+        press_x11_key("ctrl+c", process.pid)
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert selected() == "switch-c", "a Ctrl release with no cycle in flight selected a session"
+        control_json(env, "session", "split", "off", "--target", third_id, "--json")
+
+        # Opening the dashboard discards the cycle rather than committing it — it takes the keyboard.
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            wait_for(lambda: switcher_overlay_names(app),
+                     "the Ctrl-Tab overlay never appeared for the dashboard leg")
+            control_json(env, "dashboard", "--mru", "--window", window_id, "--json")
+            wait_for(lambda: not switcher_overlay_names(app), "opening the dashboard left the switcher overlay up")
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert selected() == "switch-c", "the dashboard-cancelled cycle still committed on the Ctrl release"
+        control_json(env, "dashboard", "--close", "--window", window_id, "--json")
+
+        # With BOTH Ctrl keys down the commit waits for the modifier to clear, not for the first key up:
+        # macOS reads `.control` off the post-change flags, while a GDK release reports the state before it.
+        # Control_R has to be the OUTER hold — `xdotool keyup Control_R` lifts Control_L with it, so the
+        # reverse nesting releases both at once and can never observe the case.
+        held = selected()
+        with ctrl_held(process.pid, hold="Control_R") as tap:
+            tap("Tab")
+            names = wait_for(lambda: switcher_overlay_names(app) or None,
+                             "the Ctrl-Tab overlay never appeared for the two-Ctrl leg")
+            with ctrl_held(process.pid) as tap_both:
+                tap_both("Tab")
+            time.sleep(NEGATIVE_SETTLE_SECONDS)
+            assert selected() == held, "releasing one of two held Ctrl keys committed the cycle early"
+            assert switcher_overlay_names(app) == names, "releasing one of two held Ctrl keys ended the cycle"
+        wait_for(lambda: selected() == names[2],
+                 "the release of the last held Ctrl key did not commit the two-step cycle")
+
+        print("OK: Ctrl-Tab cycles without selecting, commits once the last Ctrl comes up, reverses, "
+              "and Esc / a blur / the dashboard abort")
     except AssertionError:
         describe_tree(app)
         raise
@@ -5308,7 +5537,8 @@ def main():
             "normal", "upstream-controls", "dashboard-modal", "context-menu",
             "window-key-dispatch",
             "split-exit", "split-primary-exit", "window-ownership", "preferences-pages",
-            "notification-reveal", "notification-focus", "session-pickers", "child-gdk-env",
+            "notification-reveal", "notification-focus", "session-pickers",
+            "session-switch-commit", "child-gdk-env",
             "child-gdk-env-inverted",
             "custom-command-failures", "surface-lifetimes", "surface-failures",
             "background-overlay-grid",
@@ -5441,6 +5671,8 @@ def main():
             verify_recent_clear(env)
         elif scenario == "session-pickers":
             verify_session_pickers(env, state)
+        elif scenario == "session-switch-commit":
+            verify_session_switch_commit(env)
         elif scenario == "hidden-toolbar":
             verify_hidden_toolbar(env, state)
         elif scenario == "desktop-actions":

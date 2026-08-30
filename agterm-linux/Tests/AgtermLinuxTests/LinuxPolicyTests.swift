@@ -145,13 +145,77 @@ struct LinuxPolicyTests {
         let second = UUID()
         let third = UUID()
         var switcher = SessionSwitcherModel()
-        #expect(switcher.begin([first]) == nil)
-        #expect(switcher.begin([first, second, third]) == second)
-        #expect(switcher.advance(reverse: true) == first)
-        #expect(switcher.advance(reverse: true) == third)
-        #expect(switcher.advance() == first)
+        switcher.begin([first])
+        #expect(!switcher.isActive)
+        switcher.begin([first, second, third])
+        #expect(switcher.current == second)
+        switcher.advance(reverse: true)
+        #expect(switcher.current == first)
+        switcher.advance(reverse: true)
+        #expect(switcher.current == third)
+        switcher.advance()
+        #expect(switcher.current == first)
         switcher.end()
         #expect(!switcher.isActive)
+    }
+
+    @Test("Ctrl release commits the highlighted candidate, or nothing")
+    func sessionSwitcherCommitTarget() {
+        let first = UUID()
+        let second = UUID()
+        let third = UUID()
+        let live: Set<UUID> = [first, second, third]
+        var switcher = SessionSwitcherModel()
+        #expect(switcher.commitTarget(liveIDs: live) == nil)
+        switcher.begin([first])
+        #expect(switcher.commitTarget(liveIDs: live) == nil)
+
+        switcher.begin([first, second, third])
+        #expect(switcher.commitTarget(liveIDs: live) == second)
+        switcher.advance()
+        #expect(switcher.commitTarget(liveIDs: live) == third)
+        #expect(switcher.commitTarget(liveIDs: live.subtracting([third])) == nil)
+        switcher.advance(reverse: true)
+        #expect(switcher.commitTarget(liveIDs: live) == second)
+
+        switcher.end()
+        switcher.end()
+        #expect(!switcher.isActive)
+        #expect(switcher.commitTarget(liveIDs: live) == nil)
+    }
+
+    @Test("the commit waits for the last held Ctrl key")
+    func heldControlKeys() {
+        let left: UInt32 = 37
+        let right: UInt32 = 105
+        let tab: UInt32 = 23
+        let control = ModifierKeyMods.controlBit
+        var held = HeldControlKeys()
+
+        held.pressed(keyval: 0xFFE3, keycode: left, state: 0)
+        held.pressed(keyval: 0xFFE4, keycode: right, state: control)
+        held.pressed(keyval: 0xFF09, keycode: tab, state: control)
+        var commits = held.released(keycode: right)
+        #expect(!commits)
+        commits = held.released(keycode: left)
+        #expect(commits)
+
+        // A key up lost to a blur strands `left`; the next press without Ctrl resyncs it away.
+        held.pressed(keyval: 0xFFE3, keycode: left, state: 0)
+        held.pressed(keyval: 0xFF09, keycode: tab, state: 0)
+        held.pressed(keyval: 0xFFE4, keycode: right, state: 0)
+        commits = held.released(keycode: right)
+        #expect(commits)
+    }
+
+    @Test("the switcher cycles at most ten candidates")
+    func sessionSwitcherCandidateCap() {
+        let ids = (0..<12).map { _ in UUID() }
+        var recency = RecencyStack<UUID>()
+        for id in ids { recency.push(id) }
+        var switcher = SessionSwitcherModel()
+        switcher.begin(recency.top(SessionSwitcherModel.maxCandidates, in: Set(ids)))
+        #expect(switcher.ordered.count == 10)
     }
 
     @Test("delete prompts use native Linux wording")

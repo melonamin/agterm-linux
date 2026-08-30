@@ -234,8 +234,8 @@ paths:
   below 1000 lines. They use
   `SessionPopoverRow`: optional status glyph, hover selection color, full-row hit target, terminal
   background, and chrome text.
-- Clock lists up to `maxCandidates` recent visible sessions excluding active and enables only with at
-  least two sessions. Selection records activity, selects, and focuses.
+- Clock lists up to `maxCandidates` recent visible sessions excluding active and enables only while that
+  list is non-empty. Selection records activity, selects, and focuses.
 - Bell lists all non-idle sessions including current. Selection uses pane-aware reveal.
 - Popover opens are keep-in-sync exempt. Synthesized XCUITest clicks inside `NSPopover` do not fire the
   SwiftUI button, though real clicks do; tests verify open/list contents, while selection is manual plus

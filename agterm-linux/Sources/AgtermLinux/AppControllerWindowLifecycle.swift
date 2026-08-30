@@ -92,6 +92,7 @@ extension AppController {
         store.finalizeAllPendingCloses()
         cancelPendingWorkspaceToggle()
         cancelLeaderDeadlineForWindowClose()
+        cancelSessionSwitch()
         splitRatioRestore.cancelAll()
         cancelFullscreenTransitionTimeout()
         setTerminalZoom(.off, target: nil)

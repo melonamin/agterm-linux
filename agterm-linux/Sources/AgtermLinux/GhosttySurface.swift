@@ -871,14 +871,15 @@ private let surfaceKeyPressed: @MainActor @convention(c) (OpaquePointer?, UInt32
         ) ?? false) ? 1 : 0
     }
 }
-/// Ctrl release commits the Ctrl-Tab session-switch cycle; modifier-only releases also reach
-/// libghostty (macOS `flagsChanged` parity) so its hover/cursor state tracks the transition itself.
+/// Modifier-only releases reach libghostty (macOS `flagsChanged` parity) BEFORE the Ctrl-Tab commit: the
+/// commit moves focus and rebuilds widgets, and this surface's own release must not queue behind it.
 private let surfaceKeyReleased: @MainActor @convention(c) (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> Void = { _, keyval, keycode, state, data in
-    if keyval == 0xFFE3 || keyval == 0xFFE4 {   // Control_L / Control_R
-        MainActor.assumeIsolated { wrap(data)?.controller?.endSessionSwitch() }
-    }
-    if ModifierKeyMods.modifierBit(forKeyval: keyval) != nil {
+    let bit = ModifierKeyMods.modifierBit(forKeyval: keyval)
+    if bit != nil {
         MainActor.assumeIsolated { wrap(data)?.modifierKeyReleased(keyval: keyval, keycode: keycode, state: state) }
+    }
+    if bit == ModifierKeyMods.controlBit {
+        MainActor.assumeIsolated { wrap(data)?.controller?.commitSessionSwitch(releasing: keycode) }
     }
 }
 private let surfaceFocusEnter: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { _, data in
@@ -896,7 +897,8 @@ private let surfaceFocusLeave: @MainActor @convention(c) (OpaquePointer?, gpoint
     MainActor.assumeIsolated {
         wrap(data)?.setFocus(false)
         wrap(data)?.imFocus(false)
-        wrap(data)?.controller?.resetLeader()   // abandon any half-typed custom-command leader when the terminal blurs
+        wrap(data)?.controller?.resetLeader()
+        wrap(data)?.controller?.cancelSessionSwitch()
     }
 }
 /// The IM context committed composed text (dead-key / compose / CJK result).

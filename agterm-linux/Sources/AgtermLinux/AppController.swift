@@ -159,6 +159,7 @@ final class AppController {
     var confirmedClose = false                       // set once the quit-confirm is accepted
     var badgeEnabled = linuxSettingsStore().load().notificationBadgeEnabled ?? true   // gates the unseen-count pill
     var sessionSwitcher = SessionSwitcherModel()                                  // Ctrl-Tab hold-to-cycle state
+    var heldControlKeys = HeldControlKeys()                      // which Ctrl keys are down (the commit signal)
     var contextMenuPopover: OpaquePointer?                       // live row context menu
     var popoverTookKeyboardFromSearchEntry = false               // set at popup: it took the keyboard from a live search
     var pendingWorkspaceToggle: UUID?
@@ -761,51 +762,6 @@ final class AppController {
     func focusPane(left: Bool) {
         guard let id = store.selectedSessionID else { return }
         focusPane(wantSplit: primaryInEndSlot(id) ? left : !left)
-    }
-
-    /// Ctrl+Tab: jump to the most-recently-used OTHER session. Selecting re-pushes recency,
-    /// so a second Ctrl+Tab toggles back (Alt-Tab-between-two).
-    /// Ctrl-Tab: begin (or advance) the hold-to-cycle MRU switch via the shared SessionSwitcherModel. The
-    /// first press lands on the most-recent OTHER session; further presses (while Ctrl is held) walk the
-    /// MRU; releasing Ctrl commits (endSessionSwitch). The snapshot insulates the cycle from the recency
-    /// reordering each in-cycle selection triggers.
-    func quickSwitchSession(reverse: Bool = false) {
-        if sessionSwitcher.isActive {
-            if let id = sessionSwitcher.advance(reverse: reverse) { selectSession(id) }
-        } else {
-            let valid = Set(store.navigableSessions.map(\.id))
-            let mru = store.sessionRecency.top(min(10, valid.count), in: valid)
-            if let id = sessionSwitcher.begin(mru) { selectSession(id) }
-        }
-        if sessionSwitcher.isActive { showSwitcherOverlay() }
-    }
-
-    /// Ctrl released → commit the cycle so the next Ctrl-Tab starts fresh from the new MRU order.
-    func endSessionSwitch() { sessionSwitcher.end(); hideSwitcherOverlay() }
-
-    /// Show/refresh the MRU switch overlay: a centered card listing the cycle's sessions (most-recent
-    /// first) with the current one highlighted. A GtkOverlay child over the deck, rebuilt on each advance.
-    private func showSwitcherOverlay() {
-        hideSwitcherOverlay()
-        guard let overlay = deckOverlay, let box = op(gtk_box_new(GTK_ORIENTATION_VERTICAL, 2)),
-              let scroller = sessionSwitcherScroller(containing: box) else { return }
-        gtk_widget_add_css_class(W(box), "agterm-switcher")
-        gtk_widget_add_css_class(W(box), "agterm-interface-panel")
-        for id in sessionSwitcher.ordered {
-            guard let s = store.session(withID: id), let label = op(gtk_label_new(s.displayName)) else { continue }
-            gtk_widget_set_margin_start(W(label), 18); gtk_widget_set_margin_end(W(label), 18)
-            gtk_label_set_xalign(label, 0)
-            gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_END)
-            if id == sessionSwitcher.current { gtk_widget_add_css_class(W(label), "agterm-switcher-current") }
-            gtk_box_append(cast(box), W(label))
-        }
-        switcherBox = scroller
-        gtk_overlay_add_overlay(overlay, W(scroller))
-    }
-
-    private func hideSwitcherOverlay() {
-        if let overlay = deckOverlay, let box = switcherBox { gtk_overlay_remove_overlay(overlay, W(box)) }
-        switcherBox = nil
     }
 
     /// Show a persistent, centered message when the GtkGLArea can't create a GL context (VM/headless/

@@ -70,11 +70,23 @@ let onEmptyWindowKeyPressed: @MainActor @convention(c)
     }
 }
 
+/// A restore that drops a dangling selected id leaves `activeSession == nil` over live sessions, so
+/// `onEmptyWindowKeyPressed` can start a cycle with no surface focused and no surface release to end it.
+let onEmptyWindowKeyReleased: @MainActor @convention(c)
+    (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> Void = { controller, keyval, keycode, _, _ in
+        guard ModifierKeyMods.modifierBit(forKeyval: keyval) == ModifierKeyMods.controlBit else { return }
+        MainActor.assumeIsolated {
+            controllerForEventController(controller)?.commitSessionSwitch(releasing: keycode)
+        }
+}
+
 @MainActor
 func installEmptyWindowKeyController(on window: OpaquePointer?) {
     let keys = gtk_event_controller_key_new()
     connect(keys, "key-pressed", unsafeBitCast(onEmptyWindowKeyPressed as @convention(c)
         (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> gboolean, to: GCallback.self))
+    connect(keys, "key-released", unsafeBitCast(onEmptyWindowKeyReleased as @convention(c)
+        (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> Void, to: GCallback.self))
     gtk_widget_add_controller(W(window), keys)
 }
 

@@ -291,16 +291,19 @@ extension AppController {
 
     /// The single entry point for a terminal key press (called by GhosttySurface.keyPressed). Returns
     /// true when the key was consumed as an app shortcut / custom command; false to let libghostty encode
-    /// it for the terminal. Dispatch order: Esc leader-abort → reserved host chord → custom command
-    /// matcher → built-in → fixed shortcut → raw arrow/page navigation.
+    /// it for the terminal. Dispatch order: Esc switcher-cancel → Esc leader-abort → reserved host chord →
+    /// custom command matcher → built-in → fixed shortcut → raw arrow/page navigation.
     func handleKey(keyval: UInt32, keycode: UInt32, state: UInt32, sessionID: UUID,
                    origin: GhosttySurface? = nil,
                    context: @autoclosure () -> ShortcutKeyContext? = nil) -> Bool {
         // Reset the leader deadline to the FINAL armed state on every exit: a fresh leader (re)starts the
         // 1.5s timer, a fired/aborted leader cancels it (macOS-parity leader timeout — see syncLeaderDeadline).
         defer { syncLeaderDeadline() }
-        // Escape: abort a half-typed leader (consumed); otherwise pass through to the terminal.
+        // Both press paths funnel here, so this is where the Ctrl-Tab commit signal tracks the Ctrl keys.
+        heldControlKeys.pressed(keyval: keyval, keycode: keycode, state: state)
+        // Esc fires on the keyval alone, ahead of chord parsing, so no modifier test is needed.
         if keyval == 0xFF1B {
+            if sessionSwitcher.isActive { cancelSessionSwitch(); return true }
             if customCommandEngine.isArmed { customCommandEngine.reset(); return true }
             return false
         }
