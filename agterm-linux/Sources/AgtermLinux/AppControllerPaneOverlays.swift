@@ -159,10 +159,10 @@ extension AppController {
         guard let host = paneHost(sessionID, pane: pane), let wash = paneOverlayWash(sessionID, pane: pane) else {
             return
         }
-        _ = g_object_ref(RAW(wash))
-        gtk_overlay_remove_overlay(host, W(wash))
-        gtk_overlay_add_overlay(host, W(wash))
-        g_object_unref(RAW(wash))
+        withWidgetRefHeld(wash) {
+            gtk_overlay_remove_overlay(host, W(wash))
+            gtk_overlay_add_overlay(host, W(wash))
+        }
     }
 
     func paneHost(_ sessionID: UUID, pane: OverlayPane) -> OpaquePointer? {

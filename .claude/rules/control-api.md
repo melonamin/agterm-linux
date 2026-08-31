@@ -191,7 +191,9 @@ side, and reads `lastAppliedIsDark` when bare. Refuse it outside XCUITest; provi
   hiding, recreates after exit, and renders as a full translucent cover below overlay. It has no session
   PWD/title link but a weak watermark link. GUI surfaces are Command-J, titlebar, View, and palette.
 - `session.focus primary|split|left|right|top|bottom|other` requires an existing split and works shown or
-  hidden. The pane is positional; read `splitFocused`.
+  hidden. The pane is positional against the MODEL — `left`/`top` is the primary and `right`/`bottom` the
+  split, which on Linux can hold the opposite physical side after a promotion ([[libghostty]]); read
+  `splitFocused`.
 - `session.resize` accepts exactly one absolute ratio or one relative
   `--grow-left|right|primary|split|top|bottom` delta, defaulting an unset ratio to 0.5. Require a split,
   clamp through store limits, persist, then post the object-scoped live-divider notification. Hidden split

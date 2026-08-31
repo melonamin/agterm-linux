@@ -25,6 +25,14 @@ import agtermCore
 /// non-optional `UnsafeMutablePointer<GtkWidget>`) to the `OpaquePointer?` we store.
 @inline(__always) func op(_ p: UnsafeMutablePointer<GtkWidget>?) -> OpaquePointer? { p.map { OpaquePointer($0) } }
 
+/// GTK4 parents own the sole reference to a sunk child: detaching one without a held
+/// reference frees it, and re-adding it links freed memory into the tree.
+func withWidgetRefHeld<T>(_ widget: OpaquePointer, _ body: () throws -> T) rethrows -> T {
+    _ = g_object_ref(RAW(widget))
+    defer { g_object_unref(RAW(widget)) }
+    return try body()
+}
+
 /// Connect a GObject signal, passing `data` to the handler's trailing argument.
 /// `handler` is a non-capturing `@convention(c)` function cast to `GCallback`.
 func connect(_ instance: OpaquePointer?, _ signal: String, _ handler: GCallback?, _ data: UnsafeMutableRawPointer? = nil) {

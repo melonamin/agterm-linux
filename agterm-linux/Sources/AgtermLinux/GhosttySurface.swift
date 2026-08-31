@@ -190,6 +190,12 @@ final class GhosttySurface: TerminalSurface {
     // MARK: - Lifecycle
 
     func realize() {
+        // A second realize over a live surface means the GLArea was reparented; the pane is blank from
+        // here on ([[libghostty]]) and only this line can say so, since AT-SPI cannot see a blank pane.
+        if surface != nil {
+            FileHandle.standardError.write(
+                Data("agterm: GLArea re-realized over a live surface (\(role)); the pane is blank\n".utf8))
+        }
         if LinuxSurfaceFailureInjection.failure(for: role) == .glContext {
             reportGLContextFailure(message: "injected by AGTERM_ATSPI_SURFACE_FAILURE")
             return

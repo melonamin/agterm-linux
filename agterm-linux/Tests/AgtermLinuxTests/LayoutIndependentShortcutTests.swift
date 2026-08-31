@@ -146,7 +146,7 @@ struct LayoutIndependentShortcutTests {
         #expect(linuxFixedShortcut(for: Chord(mods: [.control], key: "+")) == .fontIncrease)
         #expect(linuxFixedShortcut(for: Chord(mods: [.control], key: "_")) == .fontDecrease)
         #expect(linuxFixedShortcut(for: Chord(mods: [.control], key: "1"))
-            == .focusPane(left: true))
+            == .focusPane(split: false))
     }
 
     @Test("keymap lookup stays off the plain typing path")

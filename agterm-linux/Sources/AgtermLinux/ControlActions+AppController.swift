@@ -502,9 +502,10 @@ extension AppController: ControlActions {
             if let paned = sessionPanes[id] {
                 let extent = session.splitAxis == .topBottom
                     ? gtk_widget_get_height(W(paned)) : gtk_widget_get_width(W(paned))
+                let applied = session.splitRatio ?? AppStore.splitRatioDefault
                 gtk_paned_set_position(
                     paned,
-                    Int32(Double(max(1, extent)) * (session.splitRatio ?? AppStore.splitRatioDefault))
+                    Int32(Double(max(1, extent)) * panedFraction(applied, session: id))
                 )
             }
             return ok(id)

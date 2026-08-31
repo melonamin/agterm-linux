@@ -197,6 +197,17 @@ fi
 fail_on_log_pattern -E 'Unrecognized value .*Try GDK_(DISABLE|DEBUG)=help' \
   "GDK rejected a token agterm set; see $APP_LOG"
 
+# A GTK typecheck assertion on a widget means the app is still touching an instance GLib has finalized --
+# the surviving-but-corrupt half of the reparent-without-a-held-reference fault that split-primary-exit
+# covers in its crashing half. GTK logs it and returns, so every scenario stays green over a dead tree.
+# Narrowed to the one spelling the finalized-widget fault produces, for the reason the CSS tripwire is
+# `<data>`-scoped: GTK, libadwaita and at-spi emit `GTK_IS_*` typecheck assertions from their own code
+# inside this process, and the zero-hit baseline behind the wider pattern was measured only on the
+# maintainer's GTK 4.22.4, never on the CI image's 4.14. split-primary-exit keeps the unnarrowed check
+# scoped to its own stderr window, where a library assertion cannot be mistaken for the app's.
+fail_on_log_pattern -F "assertion 'GTK_IS_WIDGET (widget)' failed" \
+  "GTK typecheck assertion on a finalized widget; see $APP_LOG"
+
 if [[ "$status" -ne 0 ]]; then
   cp "$LOG" "$ARTIFACT_DIR/accessibility-tree.txt"
   echo "Linux UI smoke failed; diagnostics are in $ARTIFACT_DIR" >&2

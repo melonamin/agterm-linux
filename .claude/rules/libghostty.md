@@ -20,6 +20,22 @@ paths:
   surface and invalidates its GL context. Keep one stable `GtkOverlay` child per session, map pages for
   Dashboard without accepting input, and mirror each source through `GtkWidgetPaintable` + `GtkPicture`
   beneath an opaque input-owning Dashboard host.
+- That GL-context invalidation is PERMANENT: `GhosttySurface` connects `realize` but no `unrealize` and
+  `realize()`'s `createSurface()` no-ops on an existing surface, so a re-add realizes a NEW context while
+  libghostty keeps drawing into the destroyed one, and `refresh()` cannot repair it. `realize()` logs
+  `GLArea re-realized over a live surface` for exactly that, since no AT-SPI assertion can see a blank pane.
+  So a pane host's GtkPaned slot is fixed for its LIFETIME: promoting the survivor of a primary-pane exit
+  clears the DEAD pane's slot and leaves the survivor where it is, and `layoutSplit` is the single
+  placement authority that gives the next split the freed one.
+  Everything role-named stays keyed to the MODEL across that inversion — `AppControllerSurfaces`
+  `primaryInEndSlot` converts the divider fraction so `splitRatio` is always the primary's share, and
+  only `focusPane(left:)` follows the slots, because the arrow keys alone name a physical direction; a
+  caller naming a pane ROLE takes `focusPane(wantSplit:)`.
+  The one accepted consequence is placement: a split taken after a promotion appears on the freed SIDE
+  rather than beside the survivor.
+  `AppControllerZoom` is the one site that still moves a live GLArea subtree; its surface blanks on zoom
+  and stays blank after the exit (`docs/backlog/linux-zoom-blanks-the-surface.md`) — precedent to fix, not
+  to follow.
 
 ## Rendering
 

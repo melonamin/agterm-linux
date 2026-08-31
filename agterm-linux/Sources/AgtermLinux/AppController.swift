@@ -463,13 +463,9 @@ final class AppController {
             reconcile()   // no split → the store closed the session; reconcile drops its widgets
             return
         }
-        // Promote the survivor to the single pane: detach the dead primary (the store already freed its
-        // ghostty surface; teardown never touches the glArea) and reparent the survivor from the end
-        // slot to the start slot, so it fills the page and a future re-split has a free end slot.
-        // Removing a child from a GtkPaned does NOT free the survivor's glArea, so its shell lives on.
-        gtk_paned_set_start_child(paned, nil)
-        gtk_paned_set_end_child(paned, nil)
-        gtk_paned_set_start_child(paned, W(survivorHost))
+        // The store already freed the dead primary's ghostty surface; teardown never touches its glArea.
+        // GtkPaned gives the survivor, which never moves, the full allocation.
+        collapseSplit(paned, dropping: primaryPaneHosts[id], showing: survivorHost)
         surfaces[id] = survivor
         splitSurfaces[id] = nil
         primaryPaneHosts[id] = survivorHost
@@ -480,6 +476,7 @@ final class AppController {
         let sid = id
         survivor.promoteToPrimary(onExit: { [weak self] in self?.closePrimaryPane(sid) })
         survivor.queueRender()
+        survivor.refresh()
         if store.selectedSessionID == id {
             survivor.grabFocus()
         }
@@ -753,10 +750,17 @@ final class AppController {
         updateToggleIcons()
     }
 
-    /// Move keyboard focus between the two split panes of the active session.
-    func focusPane(left: Bool) {
+    /// Focus the active session's primary or split pane — the MODEL entry point, for role-named callers.
+    func focusPane(wantSplit: Bool) {
         guard let id = store.selectedSessionID, store.session(withID: id)?.hasSplit == true else { return }
-        sessionFocusTarget(for: id, wantSplit: !left)?.grabFocus(supersedingPopoverCapture: true)
+        sessionFocusTarget(for: id, wantSplit: wantSplit)?.grabFocus(supersedingPopoverCapture: true)
+    }
+
+    /// PHYSICAL: the arrow keys and `focusLeftPane`/`focusRightPane` name a direction on screen, so this
+    /// follows the paned slots, which invert after a promotion ([[libghostty]]).
+    func focusPane(left: Bool) {
+        guard let id = store.selectedSessionID else { return }
+        focusPane(wantSplit: primaryInEndSlot(id) ? left : !left)
     }
 
     /// Ctrl+Tab: jump to the most-recently-used OTHER session. Selecting re-pushes recency,

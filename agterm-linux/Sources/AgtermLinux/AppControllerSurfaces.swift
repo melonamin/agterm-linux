@@ -49,8 +49,8 @@ extension AppController {
     }
 
     /// Each session's deck page is an outer GtkStack ("main" = a GtkPaned holding the
-    /// pane(s), "scratch" = the full-overlay scratch shell). The primary pane is the
-    /// paned's start child.
+    /// pane(s), "scratch" = the full-overlay scratch shell). The primary pane starts in the paned's start
+    /// child and keeps whatever slot it is given for its lifetime (`primaryInEndSlot`).
     private func ensurePrimary(_ s: Session) {
         guard surfaces[s.id] == nil,
               let paned = OpaquePointer(gtk_paned_new(GTK_ORIENTATION_HORIZONTAL)),
@@ -427,7 +427,9 @@ extension AppController {
                if case .session(let id, _) = $0 { return id == s.id }
                return false
            }) { return }
-        guard let paned = sessionPanes[s.id] else { return }
+        // `layoutSplit` is the only site that parents a pane host and needs both; without the primary a
+        // freshly created split host would stay unparented and floating forever.
+        guard let paned = sessionPanes[s.id], let primaryHost = primaryPaneHosts[s.id] else { return }
         if s.isSplit, splitSurfaces[s.id] == nil {
             let capturedInput = restoreInput(from: s.takePendingForegroundCommand(pane: .right))
             let restoreInput = CommandRestore.restoreInput(
@@ -446,15 +448,10 @@ extension AppController {
             let paneHost = OpaquePointer(gtk_overlay_new())
             gtk_overlay_set_child(paneHost, W(split.rootWidget))
             splitPaneHosts[s.id] = paneHost
-            gtk_paned_set_end_child(paned, W(paneHost))
         }
         if let split = splitSurfaces[s.id] {
             if s.splitSurface == nil {
-                if let primary = primaryPaneHosts[s.id], gtk_paned_get_start_child(paned) != W(primary) {
-                    gtk_paned_set_start_child(paned, nil)
-                    gtk_paned_set_start_child(paned, W(primary))
-                }
-                gtk_paned_set_end_child(paned, nil)
+                collapseSplit(paned, dropping: splitPaneHosts[s.id], showing: primaryHost)
                 splitSurfaces[s.id] = nil
                 splitPaneHosts[s.id] = nil
             } else {
@@ -469,6 +466,34 @@ extension AppController {
         updatePaneDim(s)
     }
 
+    /// Collapse a split onto its surviving host: free the DEAD host's slot, leaving the survivor's — and so
+    /// its realization — untouched ([[libghostty]]), then show it. The show is not redundant: a tmux-style
+    /// maximization hid one host, and no `layoutSplit` pass runs for this session again.
+    func collapseSplit(_ paned: OpaquePointer, dropping dead: OpaquePointer?,
+                       showing survivor: OpaquePointer) {
+        if let dead {
+            let widget = W(dead)
+            if gtk_paned_get_start_child(paned) == widget { gtk_paned_set_start_child(paned, nil) }
+            if gtk_paned_get_end_child(paned) == widget { gtk_paned_set_end_child(paned, nil) }
+        }
+        gtk_widget_set_visible(W(survivor), 1)
+    }
+
+    /// True once the session's primary pane host holds the paned's END slot — the state a primary-pane
+    /// promotion leaves behind ([[libghostty]]). Physical left/right and the divider fraction both invert
+    /// with it.
+    func primaryInEndSlot(_ id: UUID) -> Bool {
+        guard let paned = sessionPanes[id], let primary = primaryPaneHosts[id] else { return false }
+        return gtk_paned_get_end_child(paned) == W(primary)
+    }
+
+    /// Converts between a session's stored `splitRatio` (always the PRIMARY pane's share) and a GtkPaned
+    /// position fraction (always the START child's). The two invert once the primary holds the end slot;
+    /// the mapping is its own inverse, so one call serves both directions.
+    func panedFraction(_ ratio: Double, session id: UUID) -> Double {
+        primaryInEndSlot(id) ? 1 - ratio : ratio
+    }
+
     private func layoutSplit(_ s: Session, paned: OpaquePointer, split: GhosttySurface) {
         guard let primary = primaryPaneHosts[s.id], let splitHost = splitPaneHosts[s.id] else { return }
         let primaryWidget = W(primary)
@@ -480,18 +505,22 @@ extension AppController {
             gtk_orientable_set_orientation(paned, orientation)
             splitAxisTransitions.remove(s.id)
         }
-        // Keep both GtkGLAreas in stable paned slots for the split's entire lifetime. Unparenting a
-        // GtkGLArea unrealizes it and invalidates the GL context that libghostty's surface was created
-        // against; reattaching the same widget then leaves its terminal buffer alive but the pane blank.
-        // GtkPaned gives the sole visible child the full allocation, so visibility alone implements the
-        // tmux-style hidden-split maximization without rehosting either renderer.
-        let startWidget = layout.startSlot == .primary ? primaryWidget : splitWidget
-        let endWidget = layout.endSlot == .primary ? primaryWidget : splitWidget
-        if gtk_paned_get_start_child(paned) != startWidget {
-            gtk_paned_set_start_child(paned, startWidget)
-        }
-        if gtk_paned_get_end_child(paned) != endWidget {
-            gtk_paned_set_end_child(paned, endWidget)
+        // The only placement site: the primary keeps the slot it already holds and the split fills the
+        // other. GtkPaned gives the sole visible child the full allocation, so the tmux-style hidden-split
+        // maximization is visibility alone, with no rehosting. Both hosts are held because a slot setter
+        // unparents whatever occupies the slot it writes, and either host can be that occupant.
+        let inEnd = primaryInEndSlot(s.id)
+        let startWidget = inEnd ? splitWidget : primaryWidget
+        let endWidget = inEnd ? primaryWidget : splitWidget
+        withWidgetRefHeld(primary) {
+            withWidgetRefHeld(splitHost) {
+                if gtk_paned_get_start_child(paned) != startWidget {
+                    gtk_paned_set_start_child(paned, startWidget)
+                }
+                if gtk_paned_get_end_child(paned) != endWidget {
+                    gtk_paned_set_end_child(paned, endWidget)
+                }
+            }
         }
         gtk_widget_set_visible(primaryWidget, layout.primaryVisible ? 1 : 0)
         gtk_widget_set_visible(splitWidget, layout.splitVisible ? 1 : 0)
@@ -504,7 +533,7 @@ extension AppController {
         let extent = session.splitAxis == .topBottom
             ? gtk_widget_get_height(W(paned)) : gtk_widget_get_width(W(paned))
         guard extent > 0 else { return }
-        let ratio = Double(gtk_paned_get_position(paned)) / Double(extent)
+        let ratio = panedFraction(Double(gtk_paned_get_position(paned)) / Double(extent), session: sid)
         guard ratio > AppStore.splitRatioMin, ratio < AppStore.splitRatioMax else { return }
         if let cur = session.splitRatio, abs(cur - ratio) < 0.004 { return }
         session.splitRatio = ratio
@@ -561,7 +590,7 @@ extension AppController {
         let extent = session.splitAxis == .topBottom
             ? gtk_widget_get_height(W(paned)) : gtk_widget_get_width(W(paned))
         guard extent > 0 else { return 1 }
-        gtk_paned_set_position(paned, Int32(ratio * Double(extent)))
+        gtk_paned_set_position(paned, Int32(panedFraction(ratio, session: sessionID) * Double(extent)))
         splitRatioRestore.complete(sessionID: sessionID, generation: generation)
         return 0
     }

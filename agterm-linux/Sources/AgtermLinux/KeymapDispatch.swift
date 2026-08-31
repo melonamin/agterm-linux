@@ -15,7 +15,7 @@ private let linuxPreferencesChord = Chord(mods: [.control], key: ",")
 
 enum LinuxFixedShortcut: Equatable {
     case preferences
-    case focusPane(left: Bool)
+    case focusPane(split: Bool)
     case fontIncrease
     case fontDecrease
     case fontReset
@@ -30,9 +30,9 @@ func linuxFixedShortcut(for chord: Chord) -> LinuxFixedShortcut? {
     case linuxPreferencesChord:
         return .preferences
     case Chord(mods: [.control], key: "1"):
-        return .focusPane(left: true)
+        return .focusPane(split: false)
     case Chord(mods: [.control], key: "2"):
-        return .focusPane(left: false)
+        return .focusPane(split: true)
     case Chord(mods: [.control], key: "+"), Chord(mods: [.control], key: "="),
          Chord(mods: [.control, .shift], key: "="):
         return .fontIncrease
@@ -355,8 +355,8 @@ extension AppController {
         switch shortcut {
         case .preferences:
             showSettings()
-        case .focusPane(let left):
-            focusPane(left: left)
+        case .focusPane(let split):
+            focusPane(wantSplit: split)
         case .fontIncrease:
             (origin ?? focusedSurface())?.performBindingAction(FontBindingAction.increase)
         case .fontDecrease:

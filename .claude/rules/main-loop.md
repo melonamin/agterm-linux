@@ -298,6 +298,24 @@ paths:
   genuinely open — which is what lets `sidebarInteractionInProgress` defer the two deferred rebuilds
   whenever a menu is up, making the context-menu half of `rebuildSidebar()`'s tail repair unreachable from
   a deferred job.
+- **A GTK4 container holds the ONLY reference to a sunk child, so detaching one FREES it — every reparent
+  goes through `withWidgetRefHeld` (`GtkInterop.swift`).**
+  Except its FOCUS CHILD, which carries a second reference: a reparent that survives may only have been
+  holding the keyboard, which is why the fault is intermittent and why a repro must focus the pane it is
+  about to destroy.
+  `gtk_paned_set_start_child(paned, nil)` finalizes the host that slot held, and re-adding it links freed
+  memory into the live tree: the next frame-clock layout calls through the class pointer
+  `g_type_free_instance` NULLed, so the fault lands as a SIGSEGV or a `GTK_IS_WIDGET` assertion spray a
+  frame away from the code that caused it. `scripts/test-linux-ui.sh` trips every scenario on the one
+  spelling GTK gives that spray for a finalized widget; `split-primary-exit` carries the unnarrowed check,
+  scoped to its own stderr window, for the call sites that spell the parameter `child` or `self`.
+  `grep -rn withWidgetRefHeld agterm-linux/Sources` is the site inventory, rather than a list here that
+  goes stale at the next seam.
+  The remaining `g_object_ref` sites are not reparents and stay: an async-hop hold and a probe sink,
+  plus a standalone `g_object_unref` releasing a constructor ref.
+  A detach with no re-add is a teardown, not a reparent, and needs no hold.
+  The hold keeps the widget ALIVE but not REALIZED, so a subtree containing a `GtkGLArea` must not be
+  moved at all ([[libghostty]]).
 - **A teardown path clears its own zoom target BEFORE freeing the surface.**
   While zoomed, the surface's `GtkGLArea` lives in `zoomHost` and `splitView` is hidden, so a surface torn down
   under the host stays MAPPED (the refocus guard correctly declines) over a deck nothing can reach.

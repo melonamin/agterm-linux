@@ -3,7 +3,7 @@ import Testing
 
 @Suite("Linux split-pane layout")
 struct SplitPaneLayoutTests {
-    @Test("both renderers keep stable slots through every visibility state")
+    @Test("both panes stay hosted through every visibility state")
     func stableSlots() {
         let cases = [
             (isSplit: true, splitFocused: false, primaryVisible: true, splitVisible: true),
@@ -15,8 +15,6 @@ struct SplitPaneLayoutTests {
         for item in cases {
             let layout = SplitPaneLayout(isSplit: item.isSplit, splitFocused: item.splitFocused)
 
-            #expect(layout.startSlot == .primary)
-            #expect(layout.endSlot == .split)
             #expect(layout.primaryVisible == item.primaryVisible)
             #expect(layout.splitVisible == item.splitVisible)
         }

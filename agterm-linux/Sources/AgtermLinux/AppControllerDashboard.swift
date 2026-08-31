@@ -112,7 +112,7 @@ extension AppController {
             session.splitFocused = member.surface == .split
         }
         closeDashboard(refocus: false)
-        if member.surface == .split { focusPane(left: false) } else { focusPane(left: true) }
+        focusPane(wantSplit: member.surface == .split)
     }
 
     func moveDashboardHighlight(_ direction: DashboardLayout.Direction) {
