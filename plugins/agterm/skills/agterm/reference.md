@@ -115,13 +115,13 @@ session unattended; `agtermctl tree` also tags the row `(not realized)`),
 read THIS to decide whether a session has a split, because a hidden split reports `split: false` while
 its pane stays alive, and it is present exactly when `splitRatio`/`splitFocused` can be),
 `splitAxis` (`vertical` for left/right or `horizontal` for top/bottom; omitted when there is no split),
-`splitRatio` (the primary-pane fraction 0.05-0.95, left or top, of a session that HAS a split,
+`splitRatio` (the primary-role pane fraction 0.05-0.95 of a session that HAS a split,
 shown or hidden; omitted when there's no split or the ratio was never explicitly set (divider at the
 default 0.5) — the read side
 of `session resize`, record it to restore the exact divider position),
-`splitFocused` (which pane holds focus in a session that HAS a split: `true` = the split/right/bottom pane,
-`false` = the primary/left/top pane; omitted when there's no split; the read side of `session focus`, record it
-to restore focus via `session focus left|right`),
+`splitFocused` (which MODEL role holds focus in a session that HAS a split: `true` = split, `false` = primary;
+omitted when there's no split; the read side of `session focus`, record it to restore focus via
+`session focus primary|split`),
 `commandWait` (whether a `--command` session was created with `--wait` to hold open after the command
 exits — the read side of `session new --wait`; omitted for a plain or non-holding session),
 `overlay` (overlay shown),
@@ -460,13 +460,14 @@ error keeps those names for compatibility.
   persisted. Unknown mode errors. The tree's `scratch` flag tracks visibility.
 - `session focus [primary|split|left|right|top|bottom|other] [--target] [--window W]` - move keyboard focus between the two
   split panes (`other` toggles, the default). Errors when the session has no split. Works whether the
-  split is shown in either orientation or hidden (maximized). When hidden, focusing a pane swaps which one shows.
+  split is shown in either orientation or hidden (maximized). When hidden, focusing a pane swaps which one
+  shows. Primary/split address model roles; left/right/top/bottom address physical sides.
 - `session resize (--split-ratio R | --grow-left D | --grow-right D | --grow-primary D | --grow-split D | --grow-top D | --grow-bottom D) [--target] [--window W]` - move the
   split DIVIDER (the divider is otherwise mouse-only: drag it, or double-click it for an even split. No
   GUI/menu/keymap action reaches any other fraction, so bind a key by mapping a
   `command "agtermctl session resize …"` custom action). Provide exactly one form:
-  `--split-ratio` sets the absolute primary-pane fraction (`0..1`, left or top). The grow options are
-  equivalent role/position aliases: primary/left/top versus split/right/bottom. The result is clamped to
+  `--split-ratio` sets the absolute primary-role pane fraction (`0..1`). Primary/split grow selectors
+  follow model roles; left/right/top/bottom follow physical sides. The result is clamped to
   `0.05..0.95` and persisted, and the applied (clamped) fraction is printed (and returned as `result.ratio`
   under `--json`). Errors when the session has no split. Resizing a hidden split updates the stored
   fraction; it takes effect when the split is next shown.

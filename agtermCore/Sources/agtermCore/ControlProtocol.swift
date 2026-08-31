@@ -167,7 +167,9 @@ public struct ControlArgs: Codable, Sendable, Equatable {
     public var position: String?
     /// The `background-image-repeat` flag for `session.background`; nil = false.
     public var repeats: Bool?
-    /// Which split pane to focus for `session.focus` (`left`|`right`|`other`, `other` toggles); to read for
+    /// Which split pane to focus for `session.focus` (`primary`|`split` roles, physical
+    /// `left`|`right`|`top`|`bottom`, or `other`, which toggles); which pane a `session.resize`
+    /// `ratioDelta` grows (`primary`|`split` roles or the same four physical positions); to read for
     /// `session.text` (`left`|`right`, omitted = the focused pane, no `other`); `session.type` injects into
     /// (`left`|`right`, omitted = left/main); set `session.status` (`left`|`right`|`scratch`, omitted =
     /// `left`/main, parsed to `StatusPane`); and `session.restore` pins (same `StatusPane` spelling, omitted
@@ -191,9 +193,10 @@ public struct ControlArgs: Codable, Sendable, Equatable {
     /// Absolute primary-pane split fraction (0...1) for `session.resize`, clamped server-side to
     /// `AppStore.splitRatioMin...splitRatioMax`. Mutually exclusive with `ratioDelta`.
     public var ratio: Double?
-    /// Signed relative split-divider nudge for `session.resize`: a positive fraction grows the PRIMARY
-    /// pane, negative grows the split pane. Applied to the session's
-    /// current fraction (0.5 when never moved). Mutually exclusive with `ratio`.
+    /// Relative split-divider nudge for `session.resize`. With a resize `pane`, its signed magnitude grows
+    /// that role or physical position; without `pane`, the legacy form remains a signed PRIMARY-pane
+    /// delta. Applied to the session's current fraction (0.5 when never moved). Mutually exclusive with
+    /// `ratio`.
     public var ratioDelta: Double?
     /// For `session.text` / `quick.text`: read the full screen + scrollback instead of just the visible screen.
     public var all: Bool?

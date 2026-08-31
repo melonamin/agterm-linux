@@ -191,13 +191,16 @@ side, and reads `lastAppliedIsDark` when bare. Refuse it outside XCUITest; provi
   hiding, recreates after exit, and renders as a full translucent cover below overlay. It has no session
   PWD/title link but a weak watermark link. GUI surfaces are Command-J, titlebar, View, and palette.
 - `session.focus primary|split|left|right|top|bottom|other` requires an existing split and works shown or
-  hidden. The pane is positional against the MODEL — `left`/`top` is the primary and `right`/`bottom` the
-  split, which on Linux can hold the opposite physical side after a promotion ([[libghostty]]); read
-  `splitFocused`.
+  hidden. `primary`/`split` select model roles; `left`/`right`/`top`/`bottom` select physical sides, using
+  the live GtkPaned slot order after a Linux promotion ([[libghostty]]). Read `splitFocused`, whose boolean
+  remains role-based.
 - `session.resize` accepts exactly one absolute ratio or one relative
   `--grow-left|right|primary|split|top|bottom` delta, defaulting an unset ratio to 0.5. Require a split,
   clamp through store limits, persist, then post the object-scoped live-divider notification. Hidden split
-  stores for next show. Return clamped ratio as `%.3f`; read `splitRatio`.
+  stores for next show. `splitRatio` and primary/split grow selectors are model-role based; the four
+  directional grow selectors follow physical GtkPaned slots. The wire carries their selector in `pane`
+  beside a positive `ratioDelta`; a selector-less signed `ratioDelta` remains the legacy primary-role form.
+  Return clamped ratio as `%.3f`; read `splitRatio`.
 - `session.go --to next|prev|first|last|next-attention|prev-attention` operates on current selection in
   the placement store, wraps within filtered scope, and returns selected ID. It has no target.
 - `notify` requires body, defaults title and session, skips OSC focus suppression, increments unseen, and

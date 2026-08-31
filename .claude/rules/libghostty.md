@@ -29,8 +29,9 @@ paths:
   placement authority that gives the next split the freed one.
   Everything role-named stays keyed to the MODEL across that inversion — `AppControllerSurfaces`
   `primaryInEndSlot` converts the divider fraction so `splitRatio` is always the primary's share, and
-  only `focusPane(left:)` follows the slots, because the arrow keys alone name a physical direction; a
-  caller naming a pane ROLE takes `focusPane(wantSplit:)`.
+  role-based focus/resize requests resolve to the model pane. Directional focus and resize requests follow
+  the live slots through that same `primaryInEndSlot` fact, as do `focusPane(left:)` and the arrow keys.
+  A caller naming a pane ROLE takes `focusPane(wantSplit:)`.
   The one accepted consequence is placement: a split taken after a promotion appears on the freed SIDE
   rather than beside the survivor.
   `AppControllerZoom` is the one site that still moves a live GLArea subtree; its surface blanks on zoom

@@ -422,22 +422,33 @@ struct CommandsTests {
         #expect(try request(["session", "resize", "--split-ratio", "0.7"]) == expected)
     }
 
-    @Test func sessionResizeGrowLeftIsPositiveDelta() throws {
-        let expected = ControlRequest(cmd: .sessionResize, target: "active", args: ControlArgs(ratioDelta: 0.05))
+    @Test func sessionResizeGrowLeftPreservesPhysicalIntent() throws {
+        let expected = ControlRequest(
+            cmd: .sessionResize,
+            target: "active",
+            args: ControlArgs(pane: "left", ratioDelta: 0.05)
+        )
         #expect(try request(["session", "resize", "--grow-left", "0.05"]) == expected)
     }
 
-    @Test func sessionResizeGrowRightIsNegativeDelta() throws {
-        let expected = ControlRequest(cmd: .sessionResize, target: "active", args: ControlArgs(ratioDelta: -0.05))
+    @Test func sessionResizeGrowRightPreservesPhysicalIntent() throws {
+        let expected = ControlRequest(
+            cmd: .sessionResize,
+            target: "active",
+            args: ControlArgs(pane: "right", ratioDelta: 0.05)
+        )
         #expect(try request(["session", "resize", "--grow-right", "0.05"]) == expected)
     }
 
-    @Test func sessionResizeRoleAndAxisAliasesKeepThePrimaryFractionConvention() throws {
-        for option in ["--grow-primary", "--grow-top"] {
-            #expect(try request(["session", "resize", option, "0.05"]).args?.ratioDelta == 0.05)
-        }
-        for option in ["--grow-split", "--grow-bottom"] {
-            #expect(try request(["session", "resize", option, "0.05"]).args?.ratioDelta == -0.05)
+    @Test func sessionResizePreservesEveryRoleAndPositionSelector() throws {
+        let cases = [
+            ("--grow-primary", "primary"), ("--grow-split", "split"),
+            ("--grow-top", "top"), ("--grow-bottom", "bottom"),
+        ]
+        for (option, pane) in cases {
+            let args = try request(["session", "resize", option, "0.05"]).args
+            #expect(args?.pane == pane)
+            #expect(args?.ratioDelta == 0.05)
         }
     }
 

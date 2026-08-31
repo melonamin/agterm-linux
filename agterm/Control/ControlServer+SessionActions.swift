@@ -327,7 +327,7 @@ extension ControlServer: ControlActions {
         }
     }
 
-    /// Move keyboard focus to a split session's pane: `pane` is `left`|`right`|`other` (`other` toggles).
+    /// Move keyboard focus to a split session pane by model role or physical position (`other` toggles).
     func focusSessionPane(_ target: String?, window: String?, pane: String?) -> ControlResponse {
         return resolver.resolveSession(target, window: window) { store, id in
             guard let session = store.session(withID: id) else {
@@ -339,7 +339,10 @@ extension ControlServer: ControlActions {
             guard let parsedPane = ControlPaneFocusMode.parse(pane) else {
                 return ControlResponse(ok: false, error: "invalid pane: \(pane ?? "other")")
             }
-            let toSplit = parsedPane.wantsSplit(currentSplitFocused: session.splitFocused)
+            let toSplit = parsedPane.wantsSplit(
+                currentSplitFocused: session.splitFocused,
+                primaryInEndSlot: false
+            )
             actions.setSplitFocus(toSplit, of: session)
             return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
         }
@@ -366,6 +369,9 @@ extension ControlServer: ControlActions {
                 requested = ratio
             case .delta(let delta):
                 requested = (session.splitRatio ?? AppStore.splitRatioDefault) + delta
+            case .paneDelta(let target, let delta):
+                requested = (session.splitRatio ?? AppStore.splitRatioDefault)
+                    + target.primaryRatioDelta(delta, primaryInEndSlot: false)
             }
             guard let applied = store.applySplitRatio(requested, forSession: id) else {
                 return ControlResponse(ok: false, error: "no such session: \(target ?? "active")")

@@ -194,8 +194,9 @@ command "grow right pane" cmd+ctrl+h agtermctl session resize --grow-right 0.05
 command "even split"      cmd+ctrl+0 agtermctl session resize --split-ratio 0.5
 ```
 
-`--split-ratio` is absolute (0..1); `--grow-left`/`--grow-right` are relative nudges. All clamp to
-0.05..0.95 and print the applied fraction.
+`--split-ratio` is the absolute primary-role share (0..1); `--grow-left`/`--grow-right` are relative
+physical-side nudges. Use `--grow-primary`/`--grow-split` when the model role matters. All clamp to
+0.05..0.95 and print the applied primary fraction.
 
 ## Run a program in a blocking overlay and read its status
 

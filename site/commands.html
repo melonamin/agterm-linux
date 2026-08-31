@@ -1195,7 +1195,9 @@
                 Move keyboard focus between the two split panes;
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">other</span> toggles and is the default. Errors when
                 the session has no split. It works whether the split is shown in either orientation or hidden. When hidden, focusing a pane
-                swaps which one shows maximized. Read back via the session node's
+                swaps which one shows maximized. <span style="font-family: &quot;JetBrains Mono&quot;, monospace">primary</span> and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">split</span> address model roles; left/right/top/bottom
+                address physical sides, including after a survivor promotion changes slot order. Read back via the session node's
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">splitFocused</span>.
               </p>
             </div>
@@ -1208,7 +1210,9 @@
               <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
                 Move the split divider. Provide exactly one form:
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--split-ratio</span> sets the absolute primary-pane
-                fraction (left or top, 0-1); the grow options are role and position aliases that nudge it by the fraction D. The
+                role fraction (0-1). <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--grow-primary</span> and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--grow-split</span> follow model roles; the four
+                directional grow options follow physical sides. Each nudges the selected pane by the fraction D. The
                 result is clamped to 0.05–0.95 and persisted.
                 <strong style="color: #bfbab0">Returns</strong> the applied fraction as
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">result.ratio</span>. Errors when the session has no

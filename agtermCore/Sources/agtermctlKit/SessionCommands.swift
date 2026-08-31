@@ -267,7 +267,7 @@ struct Session: ParsableCommand {
 
     struct Focus: RequestCommand {
         static let configuration = CommandConfiguration(abstract: "Focus a split session's pane by position or role.")
-        @Argument(help: "Pane: primary/left/top, split/right/bottom, or other (toggle, default).") var pane: String = "other"
+        @Argument(help: "Pane role (primary/split), physical position (left/right/top/bottom), or other (toggle, default).") var pane: String = "other"
         @OptionGroup var target: TargetOptions
         @OptionGroup var options: ClientOptions
 
@@ -279,17 +279,17 @@ struct Session: ParsableCommand {
     struct Resize: RequestCommand {
         static let configuration = CommandConfiguration(
             abstract: "Resize a split session's divider (set or nudge the primary-pane fraction).")
-        @Option(name: .customLong("split-ratio"), help: "Absolute primary-pane fraction 0..1 (left or top; e.g. 0.7). Clamped to 0.05..0.95.") var splitRatio: Double?
+        @Option(name: .customLong("split-ratio"), help: "Absolute primary-role pane fraction 0..1 (e.g. 0.7). Clamped to 0.05..0.95.") var splitRatio: Double?
         @Option(name: .customLong("grow-left"), help: "Grow the left pane by this fraction (e.g. 0.05); shrinks the right.") var growLeft: Double?
         @Option(name: .customLong("grow-right"), help: "Grow the right pane by this fraction (e.g. 0.05); shrinks the left.") var growRight: Double?
         @Option(name: .customLong("grow-primary"), help: "Grow the primary pane by this fraction.") var growPrimary: Double?
         @Option(name: .customLong("grow-split"), help: "Grow the split pane by this fraction.") var growSplit: Double?
-        @Option(name: .customLong("grow-top"), help: "Alias for --grow-primary in a horizontal split.") var growTop: Double?
-        @Option(name: .customLong("grow-bottom"), help: "Alias for --grow-split in a horizontal split.") var growBottom: Double?
+        @Option(name: .customLong("grow-top"), help: "Grow the physical top pane by this fraction in a horizontal split.") var growTop: Double?
+        @Option(name: .customLong("grow-bottom"), help: "Grow the physical bottom pane by this fraction in a horizontal split.") var growBottom: Double?
         @OptionGroup var target: TargetOptions
         @OptionGroup var options: ClientOptions
 
-        // exactly one of the three forms must be set; reject neither/multiple at parse time so it's a clean
+        // Exactly one form must be set; reject neither/multiple at parse time so it's a clean
         // usage error, unit-testable without a socket. Prints the applied (clamped) fraction.
         func validate() throws {
             let values = [splitRatio, growLeft, growRight, growPrimary, growSplit, growTop, growBottom].compactMap { $0 }
@@ -304,14 +304,16 @@ struct Session: ParsableCommand {
         }
 
         func makeRequest() throws -> ControlRequest {
-            // legacy left/right and role/axis aliases map to the same signed primary-pane delta.
             let args: ControlArgs
             if let splitRatio {
                 args = ControlArgs(ratio: splitRatio)
-            } else if let grow = growLeft ?? growPrimary ?? growTop {
-                args = ControlArgs(ratioDelta: grow)
+            } else if let growLeft { args = ControlArgs(pane: "left", ratioDelta: growLeft)
+            } else if let growRight { args = ControlArgs(pane: "right", ratioDelta: growRight)
+            } else if let growPrimary { args = ControlArgs(pane: "primary", ratioDelta: growPrimary)
+            } else if let growSplit { args = ControlArgs(pane: "split", ratioDelta: growSplit)
+            } else if let growTop { args = ControlArgs(pane: "top", ratioDelta: growTop)
             } else {
-                args = ControlArgs(ratioDelta: -(growRight ?? growSplit ?? growBottom ?? 0))
+                args = ControlArgs(pane: "bottom", ratioDelta: growBottom ?? 0)
             }
             return ControlRequest(cmd: .sessionResize, target: target.target, args: options.withWindow(args))
         }

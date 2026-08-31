@@ -1848,8 +1848,12 @@ def verify_split_primary_exit(env):
         def exit_primary_pane():
             # Focus the pane about to exit, as a user typing `exit` there does. GTK holds a SECOND
             # reference on a container's focus child, so a survivor that still owns the keyboard survives
-            # the unparent by accident and the promotion reads as healthy.
-            control_json(env, "session", "focus", "left", "--target", session_id, "--json")
+            # the unparent by accident and the promotion reads as healthy. Use the MODEL role: after the
+            # first promotion, physical left is the newly split pane in the freed start slot.
+            control_json(
+                env, "session", "focus", "primary", "--target", session_id,
+                "--window", window_id, "--json",
+            )
             wait_for(
                 lambda: session_state().get("splitFocused") is False,
                 "the primary pane never took keyboard focus",
@@ -1899,14 +1903,61 @@ def verify_split_primary_exit(env):
         )
         resplit_id = pane_reports("right", os.path.join(state, "resplit-right"), "$AGTERM_PANE_ID")
         assert resplit_id, "the re-split pane shell never answered input"
-        # `splitRatio` is the PRIMARY's share on both sides of the conversion the inverted slots need, so
-        # a half-applied conversion mirrors the value on the way back.
+
+        def assert_focus(pane, split_focused, message):
+            control_json(
+                env, "session", "focus", pane, "--target", session_id,
+                "--window", window_id, "--json",
+            )
+            wait_for(
+                lambda: session_state().get("splitFocused") is split_focused,
+                message,
+            )
+
+        def resize(option, amount, expected, message):
+            control_json(
+                env, "session", "resize", option, str(amount), "--target", session_id,
+                "--window", window_id, "--json",
+            )
+            wait_for(
+                lambda: abs((session_state().get("splitRatio") or 0) - expected) < 0.001,
+                message,
+            )
+
+        # The promoted primary is fixed in the END slot and the new split is in the START slot. Physical
+        # selectors must therefore resolve opposite the model roles rather than retaining their historical
+        # aliases. Exercise both focus and relative resizing before and after transposing the GtkPaned.
+        assert_focus("left", True, "physical left did not focus the start-slot split pane")
+        assert_focus("right", False, "physical right did not focus the end-slot primary pane")
+        assert_focus("split", True, "the split role did not focus its start-slot pane")
+        assert_focus("primary", False, "the primary role did not focus its end-slot pane")
+        resize("--split-ratio", 0.5, 0.5, "the inverted split did not reset to an even primary share")
+        resize("--grow-left", 0.1, 0.4, "growing physical left did not grow the start-slot split")
+        resize("--grow-right", 0.1, 0.5, "growing physical right did not grow the end-slot primary")
+        resize("--grow-primary", 0.1, 0.6, "growing primary did not follow its end-slot role")
+        resize("--grow-split", 0.1, 0.5, "growing split did not follow its start-slot role")
+
         control_json(
-            env, "session", "resize", "--split-ratio", "0.25", "--target", session_id,
+            env, "session", "split", "on", "--axis", "horizontal", "--target", session_id,
             "--window", window_id, "--json",
         )
         wait_for(
-            lambda: abs((session_state().get("splitRatio") or 0) - 0.25) < 0.001,
+            lambda: session_state().get("splitAxis") == "horizontal",
+            "the inverted split did not transpose to top/bottom",
+        )
+        resize(
+            "--split-ratio", 0.5, 0.5,
+            "the transposed inverted split did not settle at an even primary share",
+        )
+        assert_focus("top", True, "physical top did not focus the start-slot split pane")
+        assert_focus("bottom", False, "physical bottom did not focus the end-slot primary pane")
+        resize("--grow-top", 0.1, 0.4, "growing physical top did not grow the start-slot split")
+        resize("--grow-bottom", 0.1, 0.5, "growing physical bottom did not grow the end-slot primary")
+
+        # `splitRatio` is the PRIMARY's share on both sides of the conversion the inverted slots need, so
+        # a half-applied conversion mirrors the value on the way back.
+        resize(
+            "--split-ratio", 0.25, 0.25,
             "the primary's split ratio did not read back in the inverted slot state",
         )
         exit_primary_pane()

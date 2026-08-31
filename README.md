@@ -611,7 +611,7 @@ agtermctl workspace move --to top                # reorder a workspace among its
 agtermctl workspace new work --collapsed          # create a workspace closed in the sidebar (fill it with session new --no-select without it opening)
 agtermctl workspace collapse --target "$ws"       # collapse one workspace in the sidebar tree; workspace expand re-opens it (per-workspace, unlike sidebar expand/collapse)
 agtermctl session split toggle                   # split the active session
-agtermctl session resize --split-ratio 0.7       # set the split divider (left-pane fraction); or --grow-left/--grow-right D
+agtermctl session resize --split-ratio 0.7       # set the primary-role fraction; directional grow options follow physical sides
 agtermctl session scratch toggle                 # show/hide the active session's scratch terminal (on|off|toggle)
 agtermctl session flag on                        # flag the active session for the flagged working-set view (on|off|toggle|clear)
 agtermctl session reveal --target 9f3c           # reveal the focused pane's cwd in Finder

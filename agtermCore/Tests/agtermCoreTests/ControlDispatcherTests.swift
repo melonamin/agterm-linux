@@ -1053,6 +1053,14 @@ struct ControlDispatcherTests {
             cmd: .sessionResize,
             args: ControlArgs(ratio: 0.7, ratioDelta: 0.1)
         ))
+        let ratioPane = await dispatcher.dispatch(ControlRequest(
+            cmd: .sessionResize,
+            args: ControlArgs(pane: "left", ratio: 0.7)
+        ))
+        let invalidPane = await dispatcher.dispatch(ControlRequest(
+            cmd: .sessionResize,
+            args: ControlArgs(pane: "other", ratioDelta: 0.1)
+        ))
 
         #expect(missingResize == ControlResponse(
             ok: false,
@@ -1062,7 +1070,33 @@ struct ControlDispatcherTests {
             ok: false,
             error: "session.resize: --split-ratio is mutually exclusive with --grow-left/--grow-right"
         ))
+        #expect(ratioPane == ControlResponse(
+            ok: false,
+            error: "session.resize: --split-ratio does not accept a pane selector"
+        ))
+        #expect(invalidPane == ControlResponse(
+            ok: false,
+            error: "invalid resize pane: other (primary|split|left|right|top|bottom)"
+        ))
         #expect(actions.calls.isEmpty)
+    }
+
+    @Test func resizeRoutesEveryRoleAndPhysicalPositionWithoutCollapsingIt() async {
+        let actions = MockControlActions()
+        let dispatcher = ControlDispatcher(actions: actions)
+        let cases: [(String, ControlSplitResizeTarget)] = [
+            ("primary", .primary), ("split", .split), ("left", .left),
+            ("right", .right), ("top", .top), ("bottom", .bottom),
+        ]
+
+        for (pane, _) in cases {
+            let response = await dispatcher.dispatch(ControlRequest(
+                cmd: .sessionResize,
+                args: ControlArgs(pane: pane, ratioDelta: 0.1)
+            ))
+            #expect(response == ControlResponse(ok: true))
+        }
+        #expect(actions.calls == cases.map { .sessionResize(target: nil, window: nil, .paneDelta($0.1, 0.1)) })
     }
 
     @Test func fontCommandsRouteActionsWithTargetAndWindow() async {
