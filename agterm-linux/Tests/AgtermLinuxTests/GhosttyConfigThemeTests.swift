@@ -62,7 +62,7 @@ struct GhosttyConfigThemeTests {
         .agterm-selected { background-color: #333333; }
         .agterm-sidebar label { color: #222222; }
         /* child combinator: a row-parented popover must not inherit the selection foreground */
-        .agterm-selected > label { color: #444444; }
+        .agterm-selected > label, .agterm-selected > image { color: #444444; }
         .agterm-sidebar button { color: #222222; }
         .agterm-sidebar separator { background-color: alpha(#222222, 0.22); }
         toolbarview.agterm-sidebar-column > .top-bar,
@@ -77,7 +77,7 @@ struct GhosttyConfigThemeTests {
             selectionForeground: "#444444", sidebarBackground: "#555555")
 
         #expect(css == expected)
-        #expect(css.contains("\n.agterm-selected > label {"))
+        #expect(css.contains("\n.agterm-selected > label, .agterm-selected > image {"))
         #expect(!css.contains("\n.agterm-selected label {"))
     }
 }

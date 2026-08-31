@@ -126,7 +126,7 @@ enum ThemeColorResolver {
         .agterm-selected { background-color: \(selectionBackground); }
         .agterm-sidebar label { color: \(foreground); }
         /* child combinator: a row-parented popover must not inherit the selection foreground */
-        .agterm-selected > label { color: \(selectionForeground); }
+        .agterm-selected > label, .agterm-selected > image { color: \(selectionForeground); }
         .agterm-sidebar button { color: \(foreground); }
         .agterm-sidebar separator { background-color: alpha(\(foreground), 0.22); }
         toolbarview.agterm-sidebar-column > .top-bar,
