@@ -34,6 +34,52 @@ struct GhosttyConfigThemeTests {
         #expect(ThemeColorResolver.selectionHighlight(background: "#303030", preferred: nil) == "#555555")
         #expect(ThemeColorResolver.selectionHighlight(background: "#FFFCF0", preferred: nil) == "#DBD9CE")
     }
+
+    @Test("window theme CSS emits the chrome palette and the row-scoped selection tint")
+    func windowThemeCSS() {
+        // Five distinct sentinels, so a transposed parameter cannot emit the same string.
+        let expected = """
+        @define-color window_bg_color #111111;
+        @define-color window_fg_color #222222;
+        @define-color view_bg_color #111111;
+        @define-color view_fg_color #222222;
+        @define-color headerbar_bg_color #111111;
+        @define-color headerbar_backdrop_color #111111;
+        @define-color headerbar_fg_color #222222;
+        @define-color dialog_bg_color #111111;
+        @define-color dialog_fg_color #222222;
+        @define-color card_bg_color alpha(#222222, 0.08);
+        @define-color card_fg_color #222222;
+        @define-color card_shade_color alpha(#000000, 0.25);
+        @define-color popover_bg_color #111111;
+        @define-color popover_fg_color #222222;
+        @define-color popover_shade_color alpha(#000000, 0.25);
+        @define-color shade_color alpha(#000000, 0.25);
+        @define-color sidebar_bg_color #555555;
+        @define-color sidebar_fg_color #222222;
+        .agterm-sidebar { background-color: #555555; }
+        .agterm-sidebar list, .agterm-sidebar row { background-color: transparent; }
+        .agterm-selected { background-color: #333333; }
+        .agterm-sidebar label { color: #222222; }
+        /* child combinator: a row-parented popover must not inherit the selection foreground */
+        .agterm-selected > label { color: #444444; }
+        .agterm-sidebar button { color: #222222; }
+        .agterm-sidebar separator { background-color: alpha(#222222, 0.22); }
+        toolbarview.agterm-sidebar-column > .top-bar,
+        toolbarview.agterm-sidebar-column > .bottom-bar { background-color: #555555; color: #222222; }
+        paned.agterm-sidebar-split > separator {
+            min-width: 1px; padding: 0 4px; background-color: alpha(#222222, 0.18); background-clip: content-box; box-shadow: none;
+        }
+        """
+
+        let css = ThemeColorResolver.windowThemeCSS(
+            background: "#111111", foreground: "#222222", selectionBackground: "#333333",
+            selectionForeground: "#444444", sidebarBackground: "#555555")
+
+        #expect(css == expected)
+        #expect(css.contains("\n.agterm-selected > label {"))
+        #expect(!css.contains("\n.agterm-selected label {"))
+    }
 }
 
 /// The theme-picker preview override: the builder both the preview and the commit path share, and the

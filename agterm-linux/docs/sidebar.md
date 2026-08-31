@@ -2,8 +2,9 @@
 
 How the GTK sidebar's rows and column negotiate width.
 Nothing auto-loads this document — read it before editing `AppController.swift` (`makeNameWidget`),
-`AppControllerSidebar.swift` (`makeRow`), `LinuxStatusGlyph.swift` (`makeStatusGlyph`), or the sidebar
-scenarios in `agterm-linux/tests/atspi_smoke.py`.
+`AppControllerSidebar.swift` (`makeRow`), `LinuxStatusGlyph.swift` (`makeStatusGlyph`),
+`LinuxThemePolicy.swift` (`windowThemeCSS`), or the sidebar scenarios in
+`agterm-linux/tests/atspi_smoke.py`.
 
 ## Label sizing
 
@@ -157,6 +158,12 @@ scenarios in `agterm-linux/tests/atspi_smoke.py`.
   owns BOTH selection surfaces.
   Paint: `syncSidebarSelection` mirrors the model into the `agterm-selected` CSS class, the ONLY
   selection visual (libadwaita suppresses `:selected` under `navigation-sidebar` anyway).
+  The tint rule is `.agterm-selected > label` (`ThemeColorResolver.windowThemeCSS`, whose CSS
+  comment owns why; string-pinned in `GhosttyConfigThemeTests`), so `makeRow` must keep every row
+  label a DIRECT child of the content box — a wrapper drops the tint silently.
+  The sibling rules stay descendant matches and keep cascading into row popovers —
+  `.agterm-sidebar label`/`button` deliberately, since `popover_fg_color` is the same value, and
+  `LinuxSidebarPolicy.sidebarCSS`'s font size incidentally.
   Accessibility: the same call publishes `GTK_ACCESSIBLE_STATE_SELECTED` on the ROW accessible
   (`publishRowAccessibleSelected`) — with native selection off, GTK publishes no selection state of
   its own, so screen readers only see what is set here.

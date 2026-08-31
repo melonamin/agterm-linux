@@ -93,4 +93,47 @@ enum ThemeColorResolver {
         let dark = ThemeBrightness.isDark(red: red, green: green, blue: blue)
         return shiftedHex(trimmed, amount: dark ? -0.18 : 0.14)
     }
+
+    /// Overriding libadwaita's named colors (`@window_bg_color`, `@headerbar_bg_color`, `@view_bg_color`, …)
+    /// re-themes the whole Adwaita stylesheet at once; the explicit `.agterm-sidebar` rules carry the
+    /// shifted sidebar tint. Loaded by `AppController.applyWindowThemeColors` into the display-wide
+    /// provider (priority 650); string-pinned in `GhosttyConfigThemeTests`.
+    static func windowThemeCSS(
+        background: String, foreground: String, selectionBackground: String,
+        selectionForeground: String, sidebarBackground: String
+    ) -> String {
+        """
+        @define-color window_bg_color \(background);
+        @define-color window_fg_color \(foreground);
+        @define-color view_bg_color \(background);
+        @define-color view_fg_color \(foreground);
+        @define-color headerbar_bg_color \(background);
+        @define-color headerbar_backdrop_color \(background);
+        @define-color headerbar_fg_color \(foreground);
+        @define-color dialog_bg_color \(background);
+        @define-color dialog_fg_color \(foreground);
+        @define-color card_bg_color alpha(\(foreground), 0.08);
+        @define-color card_fg_color \(foreground);
+        @define-color card_shade_color alpha(#000000, 0.25);
+        @define-color popover_bg_color \(background);
+        @define-color popover_fg_color \(foreground);
+        @define-color popover_shade_color alpha(#000000, 0.25);
+        @define-color shade_color alpha(#000000, 0.25);
+        @define-color sidebar_bg_color \(sidebarBackground);
+        @define-color sidebar_fg_color \(foreground);
+        .agterm-sidebar { background-color: \(sidebarBackground); }
+        .agterm-sidebar list, .agterm-sidebar row { background-color: transparent; }
+        .agterm-selected { background-color: \(selectionBackground); }
+        .agterm-sidebar label { color: \(foreground); }
+        /* child combinator: a row-parented popover must not inherit the selection foreground */
+        .agterm-selected > label { color: \(selectionForeground); }
+        .agterm-sidebar button { color: \(foreground); }
+        .agterm-sidebar separator { background-color: alpha(\(foreground), 0.22); }
+        toolbarview.agterm-sidebar-column > .top-bar,
+        toolbarview.agterm-sidebar-column > .bottom-bar { background-color: \(sidebarBackground); color: \(foreground); }
+        paned.agterm-sidebar-split > separator {
+            min-width: 1px; padding: 0 4px; background-color: alpha(\(foreground), 0.18); background-clip: content-box; box-shadow: none;
+        }
+        """
+    }
 }

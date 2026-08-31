@@ -922,10 +922,8 @@ final class AppController {
 
     /// Theme the WHOLE window chrome — header bars, content area, popovers, and the sidebar — to the
     /// terminal theme, so a theme change (and the live picker preview) re-colors the entire window, not
-    /// just the terminal. Overriding libadwaita's named colors (`@window_bg_color`, `@headerbar_bg_color`,
-    /// `@view_bg_color`, …) re-themes the whole Adwaita stylesheet at once; the explicit `.agterm-sidebar`
-    /// rules carry the shifted sidebar tint. Display-wide provider above the app CSS, re-applied on every
-    /// theme/preview. A theme with no background drops the override so the Adwaita defaults return.
+    /// just the terminal. Display-wide provider above the app CSS, re-applied on every theme/preview; a
+    /// theme with no background drops the override so the Adwaita defaults return.
     func applyWindowThemeColors(for theme: String?, resolvedColors: ThemeColors? = nil) {
         guard let display = gdk_display_get_default() else { return }
         let colors = resolvedColors ?? Self.themeColors(for: theme)
@@ -944,38 +942,9 @@ final class AppController {
         // Sidebar tint: shift the theme background darker (>5) / lighter (<5) per the Sidebar Tint setting.
         let shift = linuxSettingsStore().load().sidebarBackgroundShift ?? AppSettings.defaultSidebarBackgroundShift
         let sidebarBg = ThemeColorResolver.shiftedHex(themeBg, amount: AppSettings.sidebarShiftAmount(strength: shift))
-        let css = """
-        @define-color window_bg_color \(themeBg);
-        @define-color window_fg_color \(fg);
-        @define-color view_bg_color \(themeBg);
-        @define-color view_fg_color \(fg);
-        @define-color headerbar_bg_color \(themeBg);
-        @define-color headerbar_backdrop_color \(themeBg);
-        @define-color headerbar_fg_color \(fg);
-        @define-color dialog_bg_color \(themeBg);
-        @define-color dialog_fg_color \(fg);
-        @define-color card_bg_color alpha(\(fg), 0.08);
-        @define-color card_fg_color \(fg);
-        @define-color card_shade_color alpha(#000000, 0.25);
-        @define-color popover_bg_color \(themeBg);
-        @define-color popover_fg_color \(fg);
-        @define-color popover_shade_color alpha(#000000, 0.25);
-        @define-color shade_color alpha(#000000, 0.25);
-        @define-color sidebar_bg_color \(sidebarBg);
-        @define-color sidebar_fg_color \(fg);
-        .agterm-sidebar { background-color: \(sidebarBg); }
-        .agterm-sidebar list, .agterm-sidebar row { background-color: transparent; }
-        .agterm-selected { background-color: \(sel); }
-        .agterm-sidebar label { color: \(fg); }
-        .agterm-selected label { color: \(selFg); }
-        .agterm-sidebar button { color: \(fg); }
-        .agterm-sidebar separator { background-color: alpha(\(fg), 0.22); }
-        toolbarview.agterm-sidebar-column > .top-bar,
-        toolbarview.agterm-sidebar-column > .bottom-bar { background-color: \(sidebarBg); color: \(fg); }
-        paned.agterm-sidebar-split > separator {
-            min-width: 1px; padding: 0 4px; background-color: alpha(\(fg), 0.18); background-clip: content-box; box-shadow: none;
-        }
-        """
+        let css = ThemeColorResolver.windowThemeCSS(
+            background: themeBg, foreground: fg, selectionBackground: sel,
+            selectionForeground: selFg, sidebarBackground: sidebarBg)
         if Self.sidebarThemeProvider == nil {
             let provider = OpaquePointer(gtk_css_provider_new())
             Self.sidebarThemeProvider = provider
