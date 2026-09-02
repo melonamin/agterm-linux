@@ -118,18 +118,22 @@ public struct RecentClosedStore: Sendable {
         save(load().filter { $0.id != id })
     }
 
-    public func clear() {
+    @discardableResult
+    public func clear() -> Bool {
         save([])
     }
 
-    private func save(_ items: [RecentClosedItem]) {
+    @discardableResult
+    private func save(_ items: [RecentClosedItem]) -> Bool {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(RecentClosedState(items: items)).write(to: fileURL, options: .atomic)
+            return true
         } catch {
             NSLog("agterm: save recent closed failed: %@", String(describing: error))
+            return false
         }
     }
 }

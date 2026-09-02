@@ -89,6 +89,7 @@ struct Recent: ParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Clear the app-wide list of recently closed sessions and workspaces.")
         @OptionGroup var options: BasicOptions
+        var affectedNoun: String { "item" }
 
         func makeRequest() throws -> ControlRequest { ControlRequest(cmd: .recentClear) }
     }

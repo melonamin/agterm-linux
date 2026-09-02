@@ -121,10 +121,28 @@ final class WindowLibraryTests {
         store.removeWorkspace(workspace.id)
         #expect(library.recentClosedItems.count == 2)
 
-        library.clearRecentClosedItems()
+        #expect(library.clearRecentClosedItems())
 
         #expect(library.recentClosedItems.isEmpty)
         #expect(WindowLibrary(directory: directory).recentClosedItems.isEmpty)
+    }
+
+    @Test func failedRecentClearPreservesTheLoadedHistory() throws {
+        let library = WindowLibrary(directory: directory)
+        let store = try #require(library.activeStore)
+        let workspace = store.addWorkspace(name: "project")
+        let session = try #require(store.addSession(toWorkspace: workspace.id, cwd: "/project", name: "api"))
+        store.closeSession(session.id)
+        #expect(library.recentClosedItems.count == 1)
+
+        let recentURL = directory.appendingPathComponent("recent-closed.json")
+        let backupURL = directory.appendingPathComponent("recent-closed-backup.json")
+        try FileManager.default.moveItem(at: recentURL, to: backupURL)
+        try FileManager.default.createDirectory(at: recentURL, withIntermediateDirectories: false)
+
+        #expect(!library.clearRecentClosedItems())
+        #expect(library.recentClosedItems.count == 1)
+        #expect(RecentClosedStore(directory: directory, fileName: "recent-closed-backup.json").load().count == 1)
     }
 
     @Test func reopeningRecentSessionRecreatesMissingOriginalWorkspace() {

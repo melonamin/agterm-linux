@@ -76,8 +76,8 @@ invoke it by absolute path.
 - `--socket` and other options go **after** the subcommand: `agtermctl tree --json`, not
   `agtermctl --json tree`.
 - Add `--json` to any command to get the raw JSON response (machine-readable). Without it, ordinary
-  mutations print `ok`, batch close/move prints the affected session count, and `tree`/`list` print a
-  human listing.
+  mutations print `ok`, batch close/move prints the affected session count, `recent clear` prints the
+  removed-item count, and `tree`/`list` print a human listing.
 - Commands other than `events` make one request per invocation. `events` polls with a fresh connection
   for each request. Mutating commands return the affected/new id; batch session mutations return the
   number actually changed. Create commands (`session new`, `session duplicate`, `workspace new`,

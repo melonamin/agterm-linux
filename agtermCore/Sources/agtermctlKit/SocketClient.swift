@@ -135,12 +135,13 @@ struct SocketClient {
 
     /// Print a response: the raw JSON line with `json: true`, otherwise a human-readable summary. An error
     /// response (`ok == false`, non-`--json`) goes to stderr; everything else to stdout.
-    static func printResponse(_ response: ControlResponse, json: Bool, echoID: Bool = false) {
+    static func printResponse(_ response: ControlResponse, json: Bool, echoID: Bool = false,
+                              affectedNoun: String = "session") {
         if !json, !response.ok {
             FileHandle.standardError.write(Data((formatResponse(response, json: false) + "\n").utf8))
             return
         }
-        print(formatResponse(response, json: json, echoID: echoID))
+        print(formatResponse(response, json: json, echoID: echoID, affectedNoun: affectedNoun))
     }
 
     /// Render the immediate `pick.open` response as the documented `{"id":"…"}` JSON object.
@@ -173,7 +174,8 @@ struct SocketClient {
     /// otherwise a human-readable summary — an `error:` line, the tree listing, the selected text, the
     /// affected id (only when `echoID`, i.e. for the create commands), or a bare `ok`. Pure so it can be
     /// unit-tested directly; `printResponse` routes it to stdout/stderr.
-    static func formatResponse(_ response: ControlResponse, json: Bool, echoID: Bool = false) -> String {
+    static func formatResponse(_ response: ControlResponse, json: Bool, echoID: Bool = false,
+                               affectedNoun: String = "session") -> String {
         if json {
             if let data = try? JSONEncoder().encode(response), let line = String(data: data, encoding: .utf8) {
                 return line
@@ -203,7 +205,8 @@ struct SocketClient {
             return "exit \(exitCode)"
         }
         if let affected = response.result?.affected {
-            return affected == 1 ? "1 session" : "\(affected) sessions"
+            let noun = affected == 1 ? affectedNoun : "\(affectedNoun)s"
+            return "\(affected) \(noun)"
         }
         if let count = response.result?.count {
             // keymap.reload reports its parse-diagnostic count; 0 reads as a clean reload.

@@ -981,7 +981,7 @@ extension AppController: ControlActions {
 
     func clearRecentClosedItems() -> ControlResponse {
         let affected = gLibrary.recentClosedItems.count
-        gLibrary.clearRecentClosedItems()
+        guard gLibrary.clearRecentClosedItems() else { return err(RecentClearError.persistenceFailed) }
         return ControlResponse(ok: true, result: ControlResult(affected: affected))
     }
 

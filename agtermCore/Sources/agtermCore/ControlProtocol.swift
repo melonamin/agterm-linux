@@ -838,8 +838,9 @@ public struct ControlResult: Codable, Sendable, Equatable {
     /// not just the agterm-scoped `ghostty.conf` — libghostty diagnostics carry no source-file attribution);
     /// and `session.search`'s total match count (whose "N of M" display string rides in `text`).
     public var count: Int?
-    /// Number of sessions actually changed by a batch mutation (`session.close` or `session.move`); separate
-    /// from `count`, whose CLI rendering is specific to diagnostics/search results.
+    /// Number of entities actually changed: sessions for a batch mutation (`session.close` or
+    /// `session.move`), or recently closed entries for `recent.clear`; separate from `count`, whose CLI
+    /// rendering is specific to diagnostics/search results.
     public var affected: Int?
     /// The current/affected theme name for `theme.set` (echo) and `theme.list` (current); nil =
     /// ghostty's built-in colors ("default ghostty"), distinct from the seeded `agterm` app default.
@@ -951,6 +952,11 @@ public enum PaneOverlayError {
 /// broken notification path (issue #286). Shared so wording and matchers cannot drift.
 public enum ControlNotify {
     public static let bannersOffNote = "badge updated, but \"Show notification banners\" is off, so no banner was posted"
+}
+
+/// Error text for `recent.clear`, shared by both host adapters so automation sees one stable failure.
+public enum RecentClearError {
+    public static let persistenceFailed = "could not clear recent items"
 }
 
 /// The single response written back per connection. `ok` gates `result` (on success) vs `error`.

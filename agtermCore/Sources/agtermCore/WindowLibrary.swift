@@ -420,9 +420,11 @@ public final class WindowLibrary {
         return reopenRecentClosed(item.id, into: targetStore)
     }
 
-    public func clearRecentClosedItems() {
-        recentClosedStore.clear()
+    @discardableResult
+    public func clearRecentClosedItems() -> Bool {
+        guard recentClosedStore.clear() else { return false }
         refreshRecentClosedItems()
+        return true
     }
 
     /// Closes a window: drops its store and persists the index. The app-target caller tears down the

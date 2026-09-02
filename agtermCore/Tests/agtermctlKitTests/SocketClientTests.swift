@@ -333,6 +333,16 @@ struct SocketClientTests {
         #expect(printed == "ok\n")
     }
 
+    @Test func recentClearRunLabelsAffectedEntriesAsItems() throws {
+        let server = StubServer(response: ControlResponse(ok: true, result: ControlResult(affected: 2)))
+        try server.start()
+        defer { server.stop() }
+
+        let command = try Recent.Clear.parse(["--socket", server.path])
+        let printed = try captureStdout { try command.run() }
+        #expect(printed == "2 items\n")
+    }
+
     /// Runs `body` with the process stdout redirected to a pipe, returning everything it printed.
     private func captureStdout(_ body: () throws -> Void) throws -> String {
         let pipe = Pipe()
@@ -780,6 +790,12 @@ struct SocketClientTests {
     func formatResponseAffectedSessions(_ affected: Int, _ expected: String) {
         let response = ControlResponse(ok: true, result: ControlResult(affected: affected))
         #expect(SocketClient.formatResponse(response, json: false) == expected)
+    }
+
+    @Test(arguments: [(1, "1 item"), (2, "2 items"), (0, "0 items")])
+    func formatResponseAffectedItems(_ affected: Int, _ expected: String) {
+        let response = ControlResponse(ok: true, result: ControlResult(affected: affected))
+        #expect(SocketClient.formatResponse(response, json: false, affectedNoun: "item") == expected)
     }
 
     @Test func formatResponseError() {

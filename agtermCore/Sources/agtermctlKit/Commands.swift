@@ -127,10 +127,14 @@ protocol RequestCommand: ParsableCommand {
     /// caller already named the target; the create commands (`*.new`) override it to true, since the new id
     /// isn't known until the command runs. The id is always present under `--json`.
     var echoesResultID: Bool { get }
+    /// Singular noun for `result.affected` in human output. Batch mutations affect sessions by default;
+    /// commands that count another entity override this without changing the wire response.
+    var affectedNoun: String { get }
 }
 
 extension RequestCommand {
     var echoesResultID: Bool { false }
+    var affectedNoun: String { "session" }
     public func run() throws { try defaultRun() }
 
     /// The default behavior: send the request once and print the response. Named separately so a command
@@ -139,7 +143,8 @@ extension RequestCommand {
         let request = try makeRequest()
         let client = SocketClient(path: options.socketPath())
         let response = try client.send(request)
-        SocketClient.printResponse(response, json: options.json, echoID: echoesResultID)
+        SocketClient.printResponse(response, json: options.json, echoID: echoesResultID,
+                                   affectedNoun: affectedNoun)
         if !response.ok { throw ExitCode.failure }
     }
 }

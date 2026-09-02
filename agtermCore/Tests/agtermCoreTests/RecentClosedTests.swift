@@ -68,6 +68,13 @@ final class RecentClosedTests {
         #expect(RecentClosedStore(directory: directory).load().isEmpty)
     }
 
+    @Test func clearReportsPersistenceFailure() throws {
+        let store = RecentClosedStore(directory: directory)
+        try FileManager.default.createDirectory(at: fileURL, withIntermediateDirectories: false)
+
+        #expect(!store.clear())
+    }
+
     @Test func workspaceEntryWithoutFocusFieldsStillDecodes() throws {
         // `focusMember` is PERSISTED, and `load()` maps any decode failure onto an EMPTY list — so a
         // required key would wipe the user's whole recent list on the first launch after the upgrade.
