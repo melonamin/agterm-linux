@@ -879,7 +879,9 @@ private let surfaceKeyReleased: @MainActor @convention(c) (OpaquePointer?, UInt3
         MainActor.assumeIsolated { wrap(data)?.modifierKeyReleased(keyval: keyval, keycode: keycode, state: state) }
     }
     if bit == ModifierKeyMods.controlBit {
-        MainActor.assumeIsolated { wrap(data)?.controller?.commitSessionSwitch(releasing: keycode) }
+        MainActor.assumeIsolated {
+            wrap(data)?.controller?.scheduleSessionSwitchCommit(releasing: keycode)
+        }
     }
 }
 private let surfaceFocusEnter: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { _, data in

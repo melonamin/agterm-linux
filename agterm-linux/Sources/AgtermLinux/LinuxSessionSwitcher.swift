@@ -41,10 +41,10 @@ struct SessionSwitcherModel: Equatable, Sendable {
     }
 }
 
-/// The Ctrl keys currently down, so a cycle commits when the Ctrl MODIFIER clears rather than on the first
-/// key up. GDK reports the state PRIOR to a release, so the event alone cannot answer that
-/// (`ModifierKeyMods`). A press arriving with Ctrl clear resyncs the set, so a key up lost to a blur or a
-/// grab heals instead of stranding a phantom that would block every later commit.
+/// The Ctrl keys observed down, retained as a fallback when GTK cannot report the live keyboard-device
+/// state. The device state is authoritative on release because the set cannot contain Ctrl keys that were
+/// already held when this controller gained focus. A press arriving with Ctrl clear resyncs the fallback,
+/// so a key up lost to a blur or grab cannot strand a phantom forever.
 struct HeldControlKeys: Equatable, Sendable {
     private var down: Set<UInt32> = []
 
@@ -54,8 +54,12 @@ struct HeldControlKeys: Equatable, Sendable {
         down.insert(keycode)
     }
 
-    mutating func released(keycode: UInt32) -> Bool {
+    mutating func released(keycode: UInt32, controlStillHeld: Bool?) -> Bool {
         down.remove(keycode)
+        if let controlStillHeld {
+            if !controlStillHeld { down.removeAll() }
+            return !controlStillHeld
+        }
         return down.isEmpty
     }
 }

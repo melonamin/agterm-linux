@@ -207,6 +207,9 @@ paths:
   `surfaceFocusLeave` (`GhosttySurface.swift`) abandons a typed custom-command leader AND an in-flight
   Ctrl-Tab cycle. Why the cancel is broader than the blur that triggers it:
   `agterm-linux/docs/menu-actions.md`.
+  A Ctrl release schedules its commit through `MainTimer.schedule(after: 0)`: GTK's keyboard-device
+  modifier state remains pre-release inside the signal callback and becomes current on the next GLib
+  turn. Reacquire the display/seat/keyboard there; never retain the event or its borrowed pointers.
 - **A GtkPopover takes the keyboard on popup and does NOT give it back — the dismissal has to.**
   Measured (GTK 4.22): `gtk_popover_popup` moves the window's focus widget onto the popover's first item
   WHETHER OR NOT that item sets `focus-on-click`, and `gtk_popover_popdown` hands focus to the popover's

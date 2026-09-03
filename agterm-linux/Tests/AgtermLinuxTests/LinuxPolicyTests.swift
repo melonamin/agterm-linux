@@ -195,16 +195,25 @@ struct LinuxPolicyTests {
         held.pressed(keyval: 0xFFE3, keycode: left, state: 0)
         held.pressed(keyval: 0xFFE4, keycode: right, state: control)
         held.pressed(keyval: 0xFF09, keycode: tab, state: control)
-        var commits = held.released(keycode: right)
+        var commits = held.released(keycode: right, controlStillHeld: true)
         #expect(!commits)
-        commits = held.released(keycode: left)
+        commits = held.released(keycode: left, controlStillHeld: false)
         #expect(commits)
 
         // A key up lost to a blur strands `left`; the next press without Ctrl resyncs it away.
         held.pressed(keyval: 0xFFE3, keycode: left, state: 0)
         held.pressed(keyval: 0xFF09, keycode: tab, state: 0)
         held.pressed(keyval: 0xFFE4, keycode: right, state: 0)
-        commits = held.released(keycode: right)
+        commits = held.released(keycode: right, controlStillHeld: false)
+        #expect(commits)
+
+        // Both Ctrl keys predate this controller's focus, so its fallback set never saw either press.
+        // GTK's live device state must still keep the first release from committing.
+        var preHeld = HeldControlKeys()
+        preHeld.pressed(keyval: 0xFF09, keycode: tab, state: control)
+        commits = preHeld.released(keycode: left, controlStillHeld: true)
+        #expect(!commits)
+        commits = preHeld.released(keycode: right, controlStillHeld: false)
         #expect(commits)
     }
 

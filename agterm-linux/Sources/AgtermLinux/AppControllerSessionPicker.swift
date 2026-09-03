@@ -36,8 +36,18 @@ extension AppController {
     /// Fires after EVERY Ctrl chord (Ctrl+C too), so it must do nothing with no cycle in flight. Ending the
     /// model BEFORE selecting is load-bearing: `selectSession` grabs focus, whose blur reaches
     /// `cancelSessionSwitch`, which must find the cycle already over.
-    func commitSessionSwitch(releasing keycode: UInt32) {
-        guard heldControlKeys.released(keycode: keycode) else { return }
+    /// GTK updates the keyboard device's modifier state only after the release signal returns. Defer one
+    /// GLib turn through MainTimer, then reacquire the device instead of retaining an event-owned pointer.
+    func scheduleSessionSwitchCommit(releasing keycode: UInt32) {
+        MainTimer.schedule(after: 0) { [weak self] in
+            self?.commitSessionSwitch(
+                releasing: keycode, controlStillHeld: ModifierKeyMods.currentControlIsHeld()
+            )
+        }
+    }
+
+    private func commitSessionSwitch(releasing keycode: UInt32, controlStillHeld: Bool?) {
+        guard heldControlKeys.released(keycode: keycode, controlStillHeld: controlStillHeld) else { return }
         guard sessionSwitcher.isActive else { return }
         let live = Set(store.workspaces.flatMap { $0.sessions.map(\.id) })
         let target = sessionSwitcher.commitTarget(liveIDs: live)

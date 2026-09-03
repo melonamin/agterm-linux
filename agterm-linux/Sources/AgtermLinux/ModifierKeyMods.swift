@@ -1,3 +1,5 @@
+import CGtk
+
 /// Synthesizes the post-event modifier state for modifier-ONLY key events.
 ///
 /// GDK (like X11) reports the modifier state PRIOR to the event: a bare Ctrl press arrives with the
@@ -35,5 +37,18 @@ enum ModifierKeyMods {
     static func adjustedState(forKeyval keyval: UInt32, state: UInt32, pressing: Bool) -> UInt32 {
         guard let bit = modifierBit(forKeyval: keyval) else { return state }
         return pressing ? state | bit : state & ~bit
+    }
+
+    /// The default seat's live Ctrl state after GTK finishes dispatching a key release. Unlike the key
+    /// event's own prior-state mask, this sees a second physical Ctrl that was already held when the
+    /// controller gained focus. Reacquire and consume every borrowed GTK pointer synchronously; only the
+    /// copied Bool escapes.
+    static func currentControlIsHeld() -> Bool? {
+        guard let display = gdk_display_get_default(),
+              let seat = gdk_display_get_default_seat(display),
+              let device = gdk_seat_get_keyboard(seat) else {
+            return nil
+        }
+        return gdk_device_get_modifier_state(device).rawValue & controlBit != 0
     }
 }

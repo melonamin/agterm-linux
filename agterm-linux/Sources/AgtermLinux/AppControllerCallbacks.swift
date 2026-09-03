@@ -76,7 +76,7 @@ let onEmptyWindowKeyReleased: @MainActor @convention(c)
     (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> Void = { controller, keyval, keycode, _, _ in
         guard ModifierKeyMods.modifierBit(forKeyval: keyval) == ModifierKeyMods.controlBit else { return }
         MainActor.assumeIsolated {
-            controllerForEventController(controller)?.commitSessionSwitch(releasing: keycode)
+            controllerForEventController(controller)?.scheduleSessionSwitchCommit(releasing: keycode)
         }
 }
 

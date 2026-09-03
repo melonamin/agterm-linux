@@ -20,14 +20,20 @@ focused surface produces is a no-op.
 
 ## The commit waits for the LAST Ctrl key
 
-`HeldControlKeys` tracks held Ctrl **keycodes**, and the commit fires only once the set empties.
-This matches macOS's `.control`-cleared test, which the GDK event cannot answer on its own: a
-release carries the modifier state from BEFORE it, so the control bit is set on every Ctrl release
-whether or not the other Ctrl key is still down (see `ModifierKeyMods`).
-Keycodes, not keyvals — a Caps-remapped Control_L reports the same keyval as the real one.
-Any press arriving with the control bit clear resyncs the set, so a release lost to a blur or a
-keyboard grab heals on the next unmodified keystroke instead of stranding a phantom that would
-block every later commit.
+The release handler schedules one zero-delay `MainTimer` turn, then reads the keyboard device's
+**current** modifier state and commits only once its Ctrl bit clears.
+This matches macOS's `.control`-cleared test, which the GDK event mask cannot answer on its own: a
+release event carries the modifier state from BEFORE it, so that mask's control bit is set whether or
+not the other Ctrl key remains down (see `ModifierKeyMods`).
+GTK's device state is also still pre-release while the signal callback runs, which is why the read is
+deferred through the installed GLib timer seam rather than performed inline.
+The device read also sees physical Ctrl keys already held when the controller gained focus.
+The deferred closure reacquires the default display, seat, and keyboard; no event-owned pointer leaves
+the callback.
+`HeldControlKeys` tracks observed Ctrl keycodes as a fallback for a backend that supplies no current
+event device.
+Any press arriving with the control bit clear resyncs that set, so a lost release heals on the next
+unmodified keystroke instead of blocking every later commit.
 
 ## A terminal blur cancels the cycle
 

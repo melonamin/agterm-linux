@@ -4434,8 +4434,8 @@ def verify_session_switch_commit(env):
     try:
         window_id = window_list(env)[0]["id"]
 
-        def selected():
-            for workspace in window_tree(env, window_id)["workspaces"]:
+        def selected(target_window=window_id):
+            for workspace in window_tree(env, target_window)["workspaces"]:
                 for session in workspace["sessions"]:
                     if session["active"]:
                         return session["name"]
@@ -4535,8 +4535,64 @@ def verify_session_switch_commit(env):
         wait_for(lambda: selected() == names[2],
                  "the release of the last held Ctrl key did not commit the two-step cycle")
 
+        # Seed BOTH physical Ctrl keys in another window, then focus a fresh controller before Tab.
+        # Its HeldControlKeys set has seen neither press, so only the keyboard device's current state can
+        # distinguish the first release from the last. No synthetic re-press reaches the new window.
+        preheld_window = control_json(
+            env, "window", "new", "preheld-controls", "--json"
+        )["result"]["id"]
+        preheld_first = window_tree(env, preheld_window)["workspaces"][0]["sessions"][0]["id"]
+        control_json(
+            env, "session", "rename", "preheld-a", "--target", preheld_first,
+            "--window", preheld_window, "--json",
+        )
+        preheld_second = control_json(
+            env, "session", "new", "--name", "preheld-b", "--window", preheld_window, "--json"
+        )["result"]["id"]
+        preheld_third = control_json(
+            env, "session", "new", "--name", "preheld-c", "--window", preheld_window, "--json"
+        )["result"]["id"]
+        for target in (preheld_first, preheld_second, preheld_third):
+            control_json(
+                env, "session", "select", "--target", target,
+                "--window", preheld_window, "--json",
+            )
+        select_window(env, window_id)
+
+        def xdotool(*args, check=True):
+            return subprocess.run(
+                ["xdotool", *args], check=check,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+
+        xdotool("keydown", "Control_R")
+        xdotool("keydown", "Control_L")
+        try:
+            select_window(env, preheld_window)
+            xdotool("key", "Tab")
+            names = wait_for(
+                lambda: switcher_overlay_names(app) or None,
+                "the pre-held Ctrl-Tab overlay never appeared",
+            )
+            xdotool("keyup", "Control_L")
+            time.sleep(NEGATIVE_SETTLE_SECONDS)
+            assert selected(preheld_window) == "preheld-c", (
+                "the first unobserved Ctrl release committed while Control_R remained held"
+            )
+            assert switcher_overlay_names(app) == names, (
+                "the first unobserved Ctrl release ended the cycle while Control_R remained held"
+            )
+            xdotool("keyup", "Control_R")
+            wait_for(
+                lambda: selected(preheld_window) == "preheld-b",
+                "the last pre-held Ctrl release did not commit the cycle",
+            )
+        finally:
+            # A failed assertion must not poison the remainder of the suite or the user's keyboard.
+            xdotool("keyup", "Control_L", "Control_R", check=False)
+
         print("OK: Ctrl-Tab cycles without selecting, commits once the last Ctrl comes up, reverses, "
-              "and Esc / a blur / the dashboard abort")
+              "survives pre-held Ctrl keys, and Esc / a blur / the dashboard abort")
     except AssertionError:
         describe_tree(app)
         raise
