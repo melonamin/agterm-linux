@@ -37,8 +37,9 @@ You are inside agterm (`AGTERM_ENABLED=1`). Use:
   ```
   Categories: `GhosttyApp`, `GhosttySurfaceView`, `WatermarkRenderer`, `NotificationManager`,
   `SettingsView`, `SettingsModel`, `CustomCommandRunner`, `ControlServer`.
-  Linux: GLib structured logging — journald stores the fields when the process is journal-connected;
-  otherwise GLib writes to stderr (launch agterm from a terminal to keep it). ControlServer diagnostics:
+  Linux ControlServer: GLib structured logging — journald stores the fields when the process is
+  journal-connected; otherwise GLib writes to stderr (launch agterm from a terminal to keep it).
+  Other Linux diagnostics may still write directly to stderr. ControlServer diagnostics:
   ```bash
   journalctl --user -t agterm GLIB_DOMAIN=ControlServer --since "30 minutes ago"
   ```

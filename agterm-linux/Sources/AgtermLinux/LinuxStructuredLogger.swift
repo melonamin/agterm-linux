@@ -14,6 +14,8 @@ struct LinuxStructuredLogger {
     private static let identifierKey: StaticString = "SYSLOG_IDENTIFIER"
     private static let noticePriority: StaticString = "5"
     private static let applicationIdentifier: StaticString = "agterm"
+    // Swift's GLib importer does not expose the G_LOG_LEVEL_MESSAGE enum case.
+    private static let messageLevel = GLogLevelFlags(rawValue: 1 << 5)
 
     let category: String
 
@@ -34,7 +36,7 @@ struct LinuxStructuredLogger {
                               value: Self.pointer(Self.applicationIdentifier), length: -1),
                 ]
                 fields.withUnsafeBufferPointer {
-                    g_log_structured_array(G_LOG_LEVEL_MESSAGE, $0.baseAddress, gsize($0.count))
+                    g_log_structured_array(Self.messageLevel, $0.baseAddress, gsize($0.count))
                 }
             }
         }

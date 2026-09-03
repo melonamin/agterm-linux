@@ -20,14 +20,21 @@ final class ControlServer: @unchecked Sendable {
     static let unavailableSuffix = ".unavailable"
 
     private let logger = LinuxStructuredLogger(category: "ControlServer")
+    private let setSocketPermissions: (String, Int32) -> Int32
 
     /// The socket path once actually bound (nil before bind / after a bind failure), so a spawned
     /// shell's `AGTERM_SOCKET` only advertises a socket that exists. Mirrors macOS `boundSocketPath`.
     var boundSocketPath: String? { listenFD >= 0 ? path : nil }
     var resolvedSocketPath: String { refused ? path + Self.unavailableSuffix : path }
 
-    init(path: String? = nil) {
+    init(
+        path: String? = nil,
+        setSocketPermissions: ((String, Int32) -> Int32)? = nil
+    ) {
         self.path = path ?? Self.defaultSocketPath()
+        self.setSocketPermissions = setSocketPermissions ?? { path, _ in
+            path.withCString { chmod($0, 0o600) }
+        }
         _ = acquireOwnership()
     }
 
@@ -71,6 +78,16 @@ final class ControlServer: @unchecked Sendable {
             close(fd)
             return
         }
+        // Secure the pathname before listen makes connections queueable. A permissive process umask can
+        // otherwise leave a short cross-user connection window, and a failed chmod must never be ignored.
+        guard setSocketPermissions(path, fd) == 0 else {
+            let errorNumber = errno
+            let reason = String(cString: strerror(errorNumber))
+            logger.notice("control chmod(\(path), 0600) failed: \(reason)")
+            close(fd)
+            unlink(path)
+            return
+        }
         guard listen(fd, 8) == 0 else {
             let reason = String(cString: strerror(errno))
             logger.notice("control listen() failed: \(reason)")
@@ -78,9 +95,6 @@ final class ControlServer: @unchecked Sendable {
             unlink(path)
             return
         }
-        // Restrict the socket to the owner (mirrors the macOS server's chmod 0600) so another local
-        // user can't drive this terminal over the control channel.
-        _ = path.withCString { chmod($0, 0o600) }
         listenFD = fd
         Thread.detachNewThread { [self] in acceptLoop(fd) }
         logger.notice("control socket at \(path)")

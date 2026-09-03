@@ -13,7 +13,7 @@ Paths assume the defaults. When `AGTERM_STATE_DIR` is set, the state files and t
 - **Control socket**: `<state>/agterm.sock` (or `$AGTERM_CONTROL_SOCKET` when set). A spawned shell sees the bound path in `$AGTERM_SOCKET`.
 - **macOS state**: `~/Library/Application Support/agterm`.
 - **Linux state**: the Foundation application-support directory for the current user; run `printf '%s\n' "$AGTERM_SOCKET"` inside agterm to see the active directory, or set `AGTERM_STATE_DIR` for an isolated instance.
-- **Logs**: macOS uses unified logging under `com.umputun.agterm`; Linux uses GLib structured logging, which writes to journald when the process is journal-connected and to stderr otherwise.
+- **Logs**: macOS uses unified logging under `com.umputun.agterm`; Linux ControlServer diagnostics use GLib structured logging, which writes to journald when the process is journal-connected and to stderr otherwise. Other Linux diagnostics may still write directly to stderr.
 
 ## Reading the logs
 
@@ -33,7 +33,7 @@ log show --predicate 'subsystem == "com.umputun.agterm" && category == "CustomCo
 The categories are `GhosttyApp`, `GhosttySurfaceView`, `WatermarkRenderer`, `NotificationManager`, `SettingsView`, `SettingsModel`, `CustomCommandRunner`, and `ControlServer`.
 In Console.app, filter on the same subsystem.
 
-On Linux, agterm logs through GLib structured logging.
+On Linux, ControlServer diagnostics use GLib structured logging.
 When the desktop process is journal-connected, journald stores the structured fields; otherwise GLib writes to stderr, so launching the binary from a terminal keeps the entries visible.
 
 ```bash
@@ -41,7 +41,7 @@ When the desktop process is journal-connected, journald stores the structured fi
 journalctl --user -t agterm GLIB_DOMAIN=ControlServer --since "30 minutes ago"
 ```
 
-Drop the `GLIB_DOMAIN=ControlServer` match to see all agterm entries.
+Other Linux diagnostics may still write directly to stderr without these structured fields.
 
 ## Checking Linux integrations
 

@@ -34,6 +34,7 @@ private enum FailureTextFixtures {
         "control socket path too long (\(tooLongPath.utf8.count) bytes): \(tooLongPath)",
         "control socket() failed: Operation not permitted",
         "control bind(/run/user/1000/agterm/agterm.sock) failed: Address already in use",
+        "control chmod(/run/user/1000/agterm/agterm.sock, 0600) failed: Permission denied",
         "control listen() failed: Protocol not supported",
         "control lock open(/run/user/1000/agterm/agterm.sock.lock) failed: Too many open files",
         "control socket /run/user/1000/agterm/agterm.sock is already served by another instance — not binding",
