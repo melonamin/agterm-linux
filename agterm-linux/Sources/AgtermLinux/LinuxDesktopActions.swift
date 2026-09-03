@@ -9,6 +9,28 @@ enum LinuxDesktopAction: String, CaseIterable, Equatable, Sendable {
     case dashboard
     case recentSessions = "recent-sessions"
     case attention
+
+    /// Whether this action can run against a window in its current modal state. New Window is app-scoped;
+    /// Dashboard is the one window action whose open grid doubles as its own escape hatch.
+    func isEnabled(in context: LinuxDesktopActionContext) -> Bool {
+        switch self {
+        case .newWindow:
+            return true
+        case .dashboard:
+            return !context.terminalZoomActive && !context.pickerActive
+        default:
+            return !context.modalActive
+        }
+    }
+}
+
+/// The three window-local covers desktop launcher actions must recheck at invocation time.
+struct LinuxDesktopActionContext: Equatable, Sendable {
+    let terminalZoomActive: Bool
+    let dashboardOpen: Bool
+    let pickerActive: Bool
+
+    var modalActive: Bool { terminalZoomActive || dashboardOpen || pickerActive }
 }
 
 /// Pure command-line classification for the `GApplication::command-line` adapter.

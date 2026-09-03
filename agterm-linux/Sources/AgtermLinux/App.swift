@@ -88,8 +88,7 @@ private let onCommandLine: @MainActor @convention(c) (OpaquePointer?, OpaquePoin
             g_application_open(GAPP(app), buffer.baseAddress, gint(buffer.count), "")
         }
     case .desktopAction(let action):
-        g_application_activate(GAPP(app))
-        performDesktopAction(action)
+        dispatchDesktopAction(action, app: app)
     case .invalid(let message):
         (message + "\n").withCString { g_application_command_line_printerr_literal(cmd, $0) }
         return 2
@@ -97,25 +96,43 @@ private let onCommandLine: @MainActor @convention(c) (OpaquePointer?, OpaquePoin
     return 0
 }
 
-/// Runs one static launcher action against the frontmost live window. Dynamic session identities stay in
-/// the GTK recent/attention palettes because freedesktop Desktop Entry Actions themselves are static.
-@MainActor private func performDesktopAction(_ action: LinuxDesktopAction) {
+/// Boots a cold primary instance, then sends one static launcher action to the frontmost live window.
+/// A warm blocked action deliberately does not activate/present the window: doing that before the
+/// window-scoped modal check would steal focus from its pending picker even though the action is inert.
+@MainActor private func dispatchDesktopAction(_ action: LinuxDesktopAction, app: OpaquePointer?) {
+    if gLibrary == nil { activateApplication(app) }
     guard let id = gLibrary.frontmostWindowID ?? gLibrary.windows.first?.id,
           let controller = gWindows[id] else { return }
-    switch action {
-    case .newSession:
-        controller.newSession()
-    case .newWindow:
-        controller.openNewWindow()
-    case .quickTerminal:
-        controller.toggleQuick()
-    case .dashboard:
-        controller.toggleDashboard()
-    case .recentSessions:
-        controller.showRecentPalette()
-    case .attention:
-        guard !controller.store.attentionSessions.isEmpty else { return }
-        controller.showAttentionPalette()
+    controller.performDesktopAction(action)
+}
+
+@MainActor extension AppController {
+    /// Central invocation point for every freedesktop action. Dynamic session identities stay in the GTK
+    /// recent/attention palettes because Desktop Entry Actions themselves are static.
+    func performDesktopAction(_ action: LinuxDesktopAction) {
+        let context = LinuxDesktopActionContext(
+            terminalZoomActive: terminalZoom.target != nil,
+            dashboardOpen: dashboard.isOpen,
+            pickerActive: pickController.pending != nil
+        )
+        guard action.isEnabled(in: context) else { return }
+        if action != .newWindow { gtk_window_present(WIN(windowPointer)) }
+
+        switch action {
+        case .newSession:
+            newSession()
+        case .newWindow:
+            openNewWindow()
+        case .quickTerminal:
+            toggleQuick()
+        case .dashboard:
+            toggleDashboard()
+        case .recentSessions:
+            showRecentPalette()
+        case .attention:
+            guard !store.attentionSessions.isEmpty else { return }
+            showAttentionPalette()
+        }
     }
 }
 

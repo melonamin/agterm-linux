@@ -32,4 +32,36 @@ struct LinuxDesktopActionsTests {
         #expect(LinuxApplicationInvocation.parse(arguments: ["--unknown"])
             == .invalid("unknown option: --unknown"))
     }
+
+    @Test("window-scoped actions are inert behind dashboard, zoom, and picker covers")
+    func modalSafety() {
+        let windowActions = LinuxDesktopAction.allCases.filter {
+            $0 != .newWindow && $0 != .dashboard
+        }
+        let dashboard = LinuxDesktopActionContext(
+            terminalZoomActive: false, dashboardOpen: true, pickerActive: false)
+        let zoom = LinuxDesktopActionContext(
+            terminalZoomActive: true, dashboardOpen: false, pickerActive: false)
+        let picker = LinuxDesktopActionContext(
+            terminalZoomActive: false, dashboardOpen: false, pickerActive: true)
+
+        for action in windowActions {
+            #expect(!action.isEnabled(in: dashboard), "\(action) ran through Dashboard")
+            #expect(!action.isEnabled(in: zoom), "\(action) ran through Terminal Zoom")
+            #expect(!action.isEnabled(in: picker), "\(action) ran through a pending picker")
+        }
+        #expect(!LinuxDesktopAction.dashboard.isEnabled(in: zoom))
+        #expect(!LinuxDesktopAction.dashboard.isEnabled(in: picker))
+    }
+
+    @Test("Dashboard closes its own grid and New Window bypasses window covers")
+    func modalExceptions() {
+        let dashboard = LinuxDesktopActionContext(
+            terminalZoomActive: false, dashboardOpen: true, pickerActive: false)
+        let everyCover = LinuxDesktopActionContext(
+            terminalZoomActive: true, dashboardOpen: true, pickerActive: true)
+
+        #expect(LinuxDesktopAction.dashboard.isEnabled(in: dashboard))
+        #expect(LinuxDesktopAction.newWindow.isEnabled(in: everyCover))
+    }
 }
