@@ -4,18 +4,20 @@ A guide to checking what agterm is doing, the most common problems, and how to r
 
 ## Where things live
 
-Paths assume the defaults. When `AGTERM_STATE_DIR` is set, the state files move under that directory instead of `~/Library/Application Support/agterm`.
+Paths assume the defaults. When `AGTERM_STATE_DIR` is set, the state files and test configuration move under that directory instead of the platform application-support directory.
 
 - **Keymap**: `~/.config/agterm/keymap.conf` (or `$AGTERM_STATE_DIR/config/keymap.conf`, or a custom directory set in Settings ▸ Key Mapping).
 - **Ghostty config**: `~/.config/agterm/ghostty.conf` (same directory as the keymap), an agterm-scoped ghostty config that overrides the bundled defaults and your global `~/.config/ghostty/config`.
-- **Settings**: `~/Library/Application Support/agterm/settings.json`.
-- **Window and session state**: `~/Library/Application Support/agterm/windows.json` plus one `windows/<id>.json` per window.
-- **Control socket**: `~/Library/Application Support/agterm/agterm.sock` (or `$AGTERM_CONTROL_SOCKET` when set). A spawned shell sees the bound path in `$AGTERM_SOCKET`.
-- **Logs**: the macOS unified logging system, under the subsystem `com.umputun.agterm`.
+- **Settings**: `<state>/settings.json`.
+- **Window and session state**: `<state>/windows.json` plus one `windows/<id>.json` per window.
+- **Control socket**: `<state>/agterm.sock` (or `$AGTERM_CONTROL_SOCKET` when set). A spawned shell sees the bound path in `$AGTERM_SOCKET`.
+- **macOS state**: `~/Library/Application Support/agterm`.
+- **Linux state**: the Foundation application-support directory for the current user; run `printf '%s\n' "$AGTERM_SOCKET"` inside agterm to see the active directory, or set `AGTERM_STATE_DIR` for an isolated instance.
+- **Logs**: macOS uses unified logging under `com.umputun.agterm`; Linux ControlServer diagnostics use GLib structured logging, which writes to journald when the process is journal-connected and to stderr otherwise. Other Linux diagnostics may still write directly to stderr.
 
 ## Reading the logs
 
-agterm logs to the unified logging system, so use `log` or Console:
+On macOS, agterm logs to the unified logging system under `com.umputun.agterm`, so use `log` or Console:
 
 ```bash
 # the last 30 minutes, all categories
@@ -28,7 +30,87 @@ log stream --predicate 'subsystem == "com.umputun.agterm"' --info
 log show --predicate 'subsystem == "com.umputun.agterm" && category == "CustomCommandRunner"' --info --last 30m
 ```
 
-The categories are `GhosttyApp`, `GhosttySurfaceView`, `WatermarkRenderer`, `NotificationManager`, `SettingsView`, `SettingsModel`, `CustomCommandRunner`, and `ControlServer`. In Console.app, filter on the same subsystem.
+The categories are `GhosttyApp`, `GhosttySurfaceView`, `WatermarkRenderer`, `NotificationManager`, `SettingsView`, `SettingsModel`, `CustomCommandRunner`, and `ControlServer`.
+In Console.app, filter on the same subsystem.
+
+On Linux, ControlServer diagnostics use GLib structured logging.
+When the desktop process is journal-connected, journald stores the structured fields; otherwise GLib writes to stderr, so launching the binary from a terminal keeps the entries visible.
+
+```bash
+# ControlServer diagnostics from the last 30 minutes
+journalctl --user -t agterm GLIB_DOMAIN=ControlServer --since "30 minutes ago"
+```
+
+Other Linux diagnostics may still write directly to stderr without these structured fields.
+
+## Checking Linux integrations
+
+The Integrations page and the local CLI use the same inspection engine.
+The CLI does not connect to the control socket, so it also works while agterm is stopped:
+
+```bash
+agtermctl integration status
+agtermctl integration status --json
+agtermctl integration install hooks --dry-run
+agtermctl integration install skill --dry-run
+```
+
+A `conflict` status means agterm found unrelated content and deliberately refused to replace it.
+For a multi-target hooks or skill install, independently safe targets can still be applied while the protected target is skipped and reported.
+Read the reported path and detail, move or merge that content yourself, then refresh the Integrations page.
+Exit status `2` is a protected conflict, `4` is a filesystem write failure, `1` is an unavailable bundled resource, and `64` is a malformed command line.
+
+Native DEB/RPM installations keep `/usr/bin/agtermctl` under package-manager ownership.
+Tar and development builds can create an agterm-owned launcher in `~/.local/bin` from Preferences ▸ Integrations.
+AppImage and Flatpak builds do not offer a host launcher because their executable paths are temporary or sandbox-local; use a native package, an extracted AppImage, or the tar archive for a persistent CLI.
+
+Hook installation preserves existing settings and writes a backup before changing Claude or Codex configuration.
+Malformed settings and pre-existing custom hook definitions are reported as conflicts for manual resolution.
+The skill installer updates only an agterm-managed `~/.claude/skills/agterm` or `~/.codex/skills/agterm` directory and refuses an unrelated directory with the same name.
+
+Pi integration is available only after Pi has created `~/.pi/agent`.
+After installing or updating hooks, restart Pi or run `/reload` so it loads
+`~/.pi/agent/extensions/agterm-status.ts`.
+An unmarked file at that path is user-owned and is reported as a conflict rather than replaced.
+
+## Checking packaged Ghostty resources on Linux
+
+Release artifacts contain the pinned Ghostty themes, shell integration, and an `xterm-ghostty` terminfo entry.
+Run `scripts/verify-linux-resources.sh <payload>/share` from a checkout to validate an extracted tar, DEB, or RPM
+payload; `scripts/verify-linux-packages.sh VERSION DIRECTORY` checks all four release formats.
+The app uses `TERM=xterm-ghostty` only when it resolves both the shell-integration tree and sibling terminfo entry.
+If either is missing, it uses the portable `TERM=xterm-256color` fallback instead of advertising an unavailable
+terminal definition.
+
+## Dashboard or notification navigation looks wrong on Linux
+
+The dashboard opens from **Ctrl+Shift+M**, the command palette, or the grid button beside Quick Terminal.
+A single click briefly highlights a cell before entering its exact pane; keyboard Enter enters immediately.
+Dashboard and terminal-zoom headers show `Dashboard` or the active session title plus a custom window name.
+
+A desktop notification is suppressed only when its exact terminal surface is focused in the active window.
+Clicking a delivered notification selects its encoded pane and reopens its source window if that window was closed.
+An explicit `agtermctl notify` request deliberately bypasses focus suppression.
+
+## Terminals show "Terminal rendering needs OpenGL" on Linux
+
+The bundled Ghostty renderer is desktop-OpenGL-only, so the terminal widget pins its GL area to desktop GL.
+When that context cannot be created, the pane shows a generic overlay and the real reason goes to stderr:
+
+```
+agterm: GtkGLArea failed to create a GL context: <driver message>
+```
+
+Capture it by launching the binary from a terminal, or with `journalctl --user` as described under **Reading the logs**.
+The known cause is GTK 4.16 and later preferring the OpenGL ES API for its own EGL paint context, which makes a desktop-GL sibling context unrealizable; agterm now prevents it by setting `GDK_DISABLE=gles-api,vulkan` (`GDK_DEBUG=gl-disable-gles,vulkan-disable` on GTK 4.14–4.15) before GTK initializes.
+That is why a launch from a terminal prints one line such as `agterm: setting GDK_DISABLE=gles-api,vulkan` — it is expected, not an error, and `agterm: failed to set …` instead means the assignment did not take.
+Nothing is printed when there is nothing to assign: on GTK below 4.14 neither spelling exists, an ordinary
+environment that already carries both tokens is left exactly as it is, and `all` already selects both flags.
+Because GDK interprets tokens after `all` as exclusions, agterm removes either required flag if it appears
+there; appending it would re-enable the feature the policy must disable.
+
+To look deeper, run with `GDK_DEBUG=opengl` and read the context decisions: a paint context reported as `es:yes` is the GLES preference, and after the fix every context should report `es:no` with a desktop GL version.
+The `vulkan` token is part of the fix, not a tuning knob: with GTK's Vulkan renderer active, GSK cannot import the desktop-GL terminal texture and falls back to a per-frame CPU readback that is retained, which shows up as steadily climbing memory under heavy terminal output.
 
 ## Checking the keymap
 
@@ -68,7 +150,7 @@ Work down this list:
 
 1. **Read the diagnostics.** Open Settings ▸ Key Mapping. A malformed `command` line is listed there and skipped.
 2. **Chord conflict.** If your chord collides with a built-in shortcut or with another custom command, the binding is dropped and the command becomes palette-only. It still runs from the action palette (`⌃⇧P`), where it is listed with a `custom` tag. Pick a free chord, or run it from the palette.
-3. **Reserved chords.** `ctrl+tab` / `ctrl+shift+tab` (the session switcher) and `ctrl+1` / `ctrl+2` (pane focus) are reserved and cannot be bound.
+3. **Reserved chords.** `ctrl+tab` / `ctrl+shift+tab` (the session switcher), `ctrl+1` / `ctrl+2` (pane focus), and Linux `ctrl+,` (Preferences) are reserved and cannot be bound.
 4. **Modifier-less keys are rejected.** A custom chord needs at least one modifier so it cannot shadow a plain terminal key. `command "x" g …` is palette-only; `command "x" cmd+g …` binds.
 5. **Focus.** A custom chord fires only while a terminal pane holds keyboard focus. When the sidebar, the inline rename field, a Settings field, or a palette has focus, the chord passes through. Click into the terminal first.
 6. **The command runs in a plain `/bin/sh -c`, not your login shell.** It does not load `~/.zshrc` or `~/.bashrc`, so shell aliases and functions are not available and `PATH` may be shorter than in your terminal. Use absolute paths, or wrap the body in `$SHELL -lc '…'`.
@@ -101,13 +183,49 @@ A reload applies most keys to your open terminals right away — colors, theme, 
 
 The full ghostty key reference is at <https://ghostty.org/docs/config>. One pair of values in it does not apply to agterm: the `ssh-env` and `ssh-terminfo` values of `shell-integration-features`. Ghostty implements both by replacing your `ssh` with a wrapper that calls the `ghostty` command-line tool absent from agterm's bundle, so in agterm the wrapper would fail on every connection. agterm forces those two values back off and keeps the rest of your `shell-integration-features` flags, so `ssh` stays the real `ssh`. If you need agterm's terminfo entry on a remote host, install it there once with `infocmp -x xterm-ghostty | ssh <host> 'tic -x -'`.
 
+## A Live session came back as a fresh shell on Linux
+
+Live mode is fixed when agterm starts.
+After selecting **Preferences ▸ General ▸ Restore sessions ▸ Live sessions**, restart the app.
+Linux requires zsh as the password-database login shell, Ghostty's bundled zsh integration, and the
+executable zmx runtime bundled by the release packages or staged by `scripts/setup-linux.sh`.
+If zmx is unavailable, agterm preserves the requested mode but safely starts ordinary shells.
+
+Use `agtermctl tree --json` to inspect `backedByZmx` and `agtermctl zmx list` to compare running daemons
+with their claimed panes.
+Only local primary and split panes are eligible; scratch, overlay, Quick, and SSH-attached panes are
+temporary or remote adapters.
+A clean app quit leaves eligible daemons alive, while explicitly deleting a session, split, workspace, or
+window kills its daemon after any undo grace period.
+A reboot removes live daemons, so agterm recreates a missing pane from its last cleanly captured command.
+
+`agtermctl zmx prune` removes only confirmed orphan daemons.
+`agtermctl zmx kill --target <session> --pane left|right --force` explicitly ends one shown live pane.
+An incomplete pane inventory reports an unknown claim and is never pruned speculatively.
+
 ## Copy/paste and shortcuts on a non-Latin or alternative layout
+
+On Linux, agterm resolves shortcuts once per active layout, matching upstream macOS behavior.
+ASCII-capable layouts remain semantic, so alternative Latin layouts and their shifted punctuation stay layout-local.
+Layouts that cannot type the complete ASCII alphabet resolve every shortcut key by its physical ANSI position.
+This keeps shortcuts such as Ctrl+Shift+J working after an English-to-Russian switch and also covers Greek or Hebrew positions that produce ASCII punctuation instead of letters.
+Ctrl+Shift+Tab reverses the active Ctrl-Tab session cycle; Ctrl+Tab with additional modifiers remains reserved for that switcher.
 
 ⌘C and ⌘V copy and paste on any keyboard layout, non-Latin ones (Russian, Greek, and so on) included, because agterm binds them to the physical key positions rather than to the character a layout prints. The physical C and V keys then work no matter what those keys produce in the active layout.
 
 The reason is that ghostty's own copy/paste binds match the produced character: on a Russian layout the physical V key yields `м`, so the built-in `super+v` bind never fires. The bundled agterm defaults add physical-key binds (`super+key_c`, `super+key_v`) that match by position instead.
 
-Those binds always consume the key, even when there is nothing to act on: ⌘C with no selection does nothing at all, rather than reaching the running program. That is deliberate. The Edit menu disables Copy without a selection and Paste without pasteable content — on every layout — so those presses fall to the terminal's own bind, and a bind that declined them would let the chord through to key encoding. A plain shell shows nothing either way, but under the kitty keyboard protocol, which Claude Code and other TUIs turn on, the program receives the chord as a key report and renders it as text — a stray `с` or `^[[1089;9u` in the prompt. If you rebind copy or paste yourself, do not add ghostty's `performable:` prefix for the same reason.
+On Linux the bundled defaults bind the terminal-convention chord the same way — `ctrl+shift+key_c`, `ctrl+shift+key_v`, and `ctrl+shift+key_a` — because bare Ctrl+C is SIGINT there. They match by physical position regardless of the produced glyph, so Ctrl+Shift+C/V/A keep working after switching to Russian, Greek, Hebrew, Arabic, or Thai.
+
+On macOS, the physical `super+key_*` fallbacks always consume the key, even when there is nothing to act on: ⌘C with no selection does nothing at all, rather than reaching the running program.
+That is deliberate.
+The Edit menu disables Copy without a selection and Paste without pasteable content — on every layout — so those presses fall to the terminal's own bind, and a bind that declined them would let the chord through to key encoding.
+A plain shell shows nothing either way, but under the kitty keyboard protocol, which Claude Code and other TUIs turn on, the program receives the chord as a key report and renders it as text — a stray `с` or `^[[1089;9u` in the prompt.
+If you rebind copy or paste on macOS, do not add ghostty's `performable:` prefix for the same reason.
+
+Linux deliberately keeps ghostty's `performable:` prefix on the bundled `ctrl+shift+key_c`, `ctrl+shift+key_v`, and `ctrl+shift+key_a` bindings.
+When copy, paste, or select all cannot run, ghostty lets the chord fall through instead of consuming it.
+Keep `performable:` on a Linux replacement if you want the same behavior; omit it only when you intentionally want an unavailable action to consume the chord.
 
 The same distinction lets you remap any shortcut for your layout:
 
@@ -121,6 +239,17 @@ keybind = super+key_c=unbind
 keybind = super+key_v=unbind
 keybind = super+c=copy_to_clipboard
 keybind = super+v=paste_from_clipboard
+```
+
+On Linux the same remap unbinds the `ctrl+shift+key_*` defaults instead. C, V, and A are three separate binds, so freeing and rebinding each one takes its own line:
+
+```
+keybind = ctrl+shift+key_c=unbind
+keybind = ctrl+shift+key_v=unbind
+keybind = ctrl+shift+key_a=unbind
+keybind = ctrl+shift+c=copy_to_clipboard
+keybind = ctrl+shift+v=paste_from_clipboard
+keybind = ctrl+shift+a=select_all
 ```
 
 Reload with **File ▸ Reload Config** or `agtermctl config reload`. The keybind syntax is at <https://ghostty.org/docs/config/keybind/reference>.

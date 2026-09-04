@@ -302,7 +302,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// restart, logout, XCUITest, auto-quit after the last window closes, or an unwired library.
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
         guard !ContentView.isUITestLaunch, let library else { return .terminateNow }
-        if QuitReason.isSystemQuit(NSAppleEventManager.shared().currentAppleEvent) { return .terminateNow }
+        // `kAEQuitReason` is an Apple Event attribute, not a parameter. Keep the AppKit extraction in the
+        // macOS host so agtermCore remains portable, then hand the plain four-character code to policy.
+        let quitEvent = NSAppleEventManager.shared().currentAppleEvent
+        let reason = quitEvent?.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason))?.typeCodeValue
+        if QuitReason.isSystemQuit(reasonTypeCode: reason) { return .terminateNow }
         let counts = library.openCounts()
         guard counts.windows > 0 else { return .terminateNow }
         let alert = NSAlert()

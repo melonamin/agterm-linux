@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 1,
+  "upstreamRange": {
+    "from": "v0.13.0",
+    "to": "v0.14.0",
+    "targetCommit": "ed0e4c6c48f1422b3e0428b46779fd6e9d46c4d8"
+  },
+  "excludedPostTagCommits": [
+    {
+      "commit": "06a5dff",
+      "subject": "docs: note setuid foreground processes are omitted from tree",
+      "disposition": "excluded-post-tag"
+    },
+    {
+      "commit": "8496d9e",
+      "subject": "test: cover keymap rebind of arrow-bound actions at launch and via live reload",
+      "disposition": "excluded-post-tag"
+    }
+  ],
+  "changes": [
+    {
+      "commit": "2a23eecc70b771f11e57c8cd4bc48015b77fbef2",
+      "subject": "feat: add Pi agent-status support to Install Agent Status Hooks (#208)",
+      "disposition": "inherited-and-linux-adaptation-required",
+      "inherited": [
+        "agtermCore Pi path, ownership marker, overwrite policy, and tests",
+        "Pi extension resource and lifecycle semantics",
+        "shell hook exclusions and shared documentation/site changes"
+      ],
+      "linuxAdaptation": [
+        "stage the Pi extension in every Linux package",
+        "add Pi status, preflight, install, rollback, CLI, and GTK preferences coverage through LinuxIntegrations"
+      ],
+      "planTask": 9
+    },
+    {
+      "commit": "45136981a70d6ffa58a19accb3397562ca4e6202",
+      "subject": "feat: dashboard single-click-to-enter, title-bar button, and modal titles",
+      "disposition": "inherited-and-linux-adaptation-required",
+      "inherited": [
+        "host-free DashboardController selection state and tests",
+        "shared user-facing documentation"
+      ],
+      "macOSOnly": [
+        "SwiftUI/AppKit dashboard view, title-bar composition, menu wiring, and XCUITests"
+      ],
+      "linuxAdaptation": [
+        "native GTK/libadwaita single-click selection flash and cancellation",
+        "content-header dashboard button and grouping",
+        "solid dashboard modal background and stripped dashboard/terminal-zoom titles",
+        "Linux unit and AT-SPI coverage"
+      ],
+      "planTask": 10
+    },
+    {
+      "commit": "309f4eac2bd8cf866f17f4da12f1e418b1b8852f",
+      "subject": "docs: note squash-merge worktree cleanup gotchas in CLAUDE.md",
+      "disposition": "inherited-documentation",
+      "planTask": 12
+    },
+    {
+      "commit": "e4e8b94a4f65ceb17eb5d127505b01121286bb47",
+      "subject": "docs: add dashboard screenshot to README and website",
+      "disposition": "inherited-documentation",
+      "notes": "Shared screenshot and website assets are inherited; Linux-specific product claims remain subject to the final parity audit.",
+      "planTask": 12
+    },
+    {
+      "commit": "760af491f01793d4cb8ccc88594b7c9b515fe6f0",
+      "subject": "fix(site): align the surfaces feature row so Dashboard shares it with Windows",
+      "disposition": "inherited-documentation",
+      "planTask": 12
+    },
+    {
+      "commit": "20ce52ea57e9bf68bd878e2c59560a2228fdf065",
+      "subject": "docs: break up the dense agent-status paragraphs",
+      "disposition": "inherited-documentation",
+      "planTask": 12
+    },
+    {
+      "commit": "298d3e2a396c2ae207de0fcdf6f7ff42e6e8f754",
+      "subject": "docs: note website carousel and grid gotchas in CLAUDE.md",
+      "disposition": "inherited-documentation",
+      "planTask": 12
+    },
+    {
+      "commit": "ed0e4c6c48f1422b3e0428b46779fd6e9d46c4d8",
+      "subject": "docs: update changelog for v0.14.0",
+      "disposition": "inherited-release-documentation",
+      "notes": "CHANGELOG.md is accepted verbatim; Linux release notes are maintained separately.",
+      "planTask": 12
+    }
+  ],
+  "sourceReconciliation": {
+    "nameStatusDiff": "git diff --name-status v0.13.0..v0.14.0",
+    "commitLog": "git log --format=%H%x09%s v0.13.0..v0.14.0",
+    "release": "https://github.com/umputun/agterm/releases/tag/v0.14.0",
+    "releasePublishedAt": "2026-07-14T22:21:56Z",
+    "changelog": "CHANGELOG.md v0.14.0 section inherited verbatim",
+    "result": "All eight tagged commits are represented above. Pi hooks and dashboard/modal UX are the only product changes requiring Linux host adaptations; the remaining six commits are inherited documentation, site, screenshot, or release-note changes."
+  },
+  "deepReviewFindings": [
+    {
+      "finding": "packaged Ghostty resources and safe TERM fallback",
+      "planTask": 3,
+      "implementation": "b00b70a",
+      "tests": ["scripts/test-linux-resources.sh", "scripts/verify-linux-resources.sh", "scripts/verify-linux-packages.sh"],
+      "validation": "Pinned theme count and known files, shell integration, and xterm-ghostty are checked in cache, staging, all package formats, and CI."
+    },
+    {
+      "finding": "length-delimited URLs and libghostty C-string lifetimes",
+      "planTask": 4,
+      "implementation": ["7e30660", "bdb45d6"],
+      "tests": ["GhosttyLifetimeTests", "AT-SPI surface-lifetimes scenario", "docs/plans/2026-07-15-linux-libghostty-callback-audit.json"],
+      "validation": "Sentinel, invalid UTF-8, partial allocation, repeated release, real command/overlay/cwd/restore buffers, the real libghostty URL action boundary, exact registered desktop-launch URI, and every borrowed callback buffer passed."
+    },
+    {
+      "finding": "per-window GTK callbacks and delayed work",
+      "planTask": 5,
+      "implementation": "bceacbd",
+      "tests": ["SplitRatioRestoreCoordinatorTests", "AT-SPI window-ownership and context-menu scenarios"],
+      "validation": "Owner generation, timer cancellation, background-window callbacks, and repeated secondary-window teardown passed."
+    },
+    {
+      "finding": "notification focus ordering, pane identity, and closed-window reveal",
+      "planTask": 6,
+      "implementation": "3a92fe5",
+      "tests": ["LinuxPolicyTests", "AT-SPI notification-focus and notification-reveal scenarios"],
+      "validation": "Focused OSC suppression precedes unseen increments; explicit control notifications bypass suppression; encoded windows and panes reopen safely."
+    },
+    {
+      "finding": "custom-command spawn and asynchronous failure routing",
+      "planTask": 7,
+      "implementation": "0aa9788",
+      "tests": ["LinuxCustomCommandProcessTests", "AT-SPI custom-command-failures scenario"],
+      "validation": "Missing executable, invalid cwd, exit status, environment, pane origins, null stdio, close, and close/reopen generations passed."
+    },
+    {
+      "finding": "Linux CLI parser and formatter drift",
+      "planTask": 8,
+      "implementation": ["0427122 on upstream-v0.14.0-agtermctlkit", "b94d536", "6bcc1e8"],
+      "tests": ["agtermctlKitTests", "agtermctlLinuxTests", "scripts/check-linux-cli-drift.sh"],
+      "validation": "Linux consumes the shared public catalog; theme slots, synchronized rendering, affected output, help, socket precedence, and integration extension passed."
+    },
+    {
+      "finding": "Swift 6 GTK compile mode and real UI CI",
+      "planTask": 11,
+      "implementation": "e817e82",
+      "tests": ["Swift 6.3.2 Debug and Release/WMO builds", "112 Linux tests", "complete AT-SPI scenario matrix"],
+      "validation": "Strict Swift 6 compilation and all isolated GTK accessibility scenarios passed locally and are required in branch and release CI."
+    },
+    {
+      "finding": "embedded Ghostty patch whitespace",
+      "planTask": 3,
+      "implementation": "b00b70a",
+      "tests": ["git diff --check v0.14.0...HEAD"],
+      "validation": "The patch is clean and both branch and release CI reject future whitespace errors."
+    }
+  ],
+  "downstreamAudit": {
+    "linuxOwnedRoots": [
+      "agterm-linux/",
+      "linux/",
+      "packaging/linux/",
+      "scripts/*-linux.sh and Linux verification helpers",
+      ".github/workflows/release-linux.yml and Linux jobs in ci.yml"
+    ],
+    "synchronizedSharedDocumentation": [
+      "README.md",
+      "docs/troubleshooting.md",
+      "agterm/Resources/agent-skill/",
+      "site/docs.html",
+      "AGENTS.md and fork maintenance guidance"
+    ],
+    "portablePackageSeams": [
+      {
+        "paths": [
+          "agtermCore/Package.swift",
+          "agtermCore/Sources/agtermctlKit/Commands.swift",
+          "agtermCore/Tests/agtermctlKitTests/CommandsTests.swift",
+          "agtermCore/Tests/agtermctlKitTests/PublicCatalogTests.swift"
+        ],
+        "purpose": "Expose the existing shared command catalog so a host can append commands without copying the parser.",
+        "hostDependencies": "none",
+        "upstreamBranchCommit": "0427122"
+      }
+    ],
+    "protectedTest": "agtermCore/Tests/agtermCoreTests/ConfigPathsTests.swift has no downstream diff",
+    "result": "No Linux UI, process, packaging, GTK, Glibc, or libghostty dependency entered agtermCore. The remaining downstream files are accumulated Linux-port ownership, synchronized product/control documentation, or fork maintenance configuration."
+  },
+  "sharedDocumentationVerification": {
+    "v0.14.0README": "Contains Pi hook installation and dashboard single-click behavior.",
+    "v0.14.0Site": "site/docs.html and site/index.html contain Pi and dashboard product updates, including the dashboard screenshot asset.",
+    "linuxSiteDisposition": "Inherited site product content is retained; only the already-published Linux command/platform notes in site/docs.html differ downstream."
+  }
+}

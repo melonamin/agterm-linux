@@ -1,7 +1,7 @@
 ---
 name: agterm
 description: >
-  Drive agterm, a native macOS terminal, through its agtermctl CLI and local control socket. Use when
+  Drive agterm, a native terminal with macOS and GTK Linux frontends, through its agtermctl CLI and local control socket. Use when
   running inside an agterm session and asked to control the terminal: create, rename, close, select or
   reorder sessions and workspaces; split panes; toggle the scratch terminal; run a program in an overlay
   and read its exit status; post a HUD panel or a desktop notification; show a native picker with
@@ -9,12 +9,11 @@ description: >
   scrollback; manage windows; change font size; set the theme; reload or edit the keymap and the
   agterm-scoped ghostty config; subscribe to status, notification, lifecycle and tree-change events.
   Covers the window/workspace/session addressing model and the AGTERM_* environment a spawned shell sees,
-  attaching a session running on another Mac, the cookbook recipes, the running version, and diagnosing
-  problems or filing an agterm bug or feature request.
+  platform-supported persistent sessions, the cookbook recipes, the running version, and diagnosing problems or filing an agterm bug or feature request.
 when_to_use: >
   Trigger on: agterm, agtermctl, AGTERM_SESSION_ID, and, from inside a session, plain requests such as
   split the pane, close the overlay, show a message over the session, show an image inline, search the
-  scrollback, attach a session from another Mac, what recipes are there, the keymap editor will not open.
+  scrollback, attach a session from another host, clear recent items, what recipes are there, the keymap editor will not open.
 allowed-tools: Bash(agtermctl *)
 ---
 
@@ -22,7 +21,7 @@ allowed-tools: Bash(agtermctl *)
 
 # Driving agterm
 
-agterm is a native macOS terminal. It exposes a programmatic control channel over a local unix
+agterm is a native desktop terminal with macOS and GTK Linux frontends. It exposes a programmatic control channel over a local unix
 socket, driven by the companion CLI `agtermctl`. Use it to build and steer terminal layouts, run
 programs in overlays, type into sessions, notify the user in the exact session you are working in,
 and subscribe to control events. Events cover status, notifications, session lifecycle, and
@@ -58,16 +57,17 @@ already-poisoned tmux server.
 
 ## Running agtermctl
 
-`agtermctl` must be on PATH (install it from agterm's **Help ▸ Install Command Line Tool…**). If it
-is not on PATH, the user can install it, or you invoke it by absolute path.
+`agtermctl` must be on PATH. On macOS, install it from agterm's **Help ▸ Install Command Line Tool…**;
+on Linux, use **Preferences ▸ Integrations**. If it is not on PATH, the user can install it, or you
+invoke it by absolute path.
 
 - The socket path auto-resolves; usually no `--socket` is needed. To be explicit, pass
   `--socket "$AGTERM_SOCKET"`.
 - `--socket` and other options go **after** the subcommand: `agtermctl tree --json`, not
   `agtermctl --json tree`.
 - Add `--json` to any command to get the raw JSON response (machine-readable). Without it, ordinary
-  mutations print `ok`, batch close/move prints the affected session count, and `tree`/`list` print a
-  human listing.
+  mutations print `ok`, batch close/move prints the affected session count, `recent clear` prints the
+  removed-item count, and `tree`/`list` print a human listing.
 - Commands other than `events` make one request per invocation. `events` polls with a fresh connection
   for each request. Mutating commands return the affected/new id; batch session mutations return the
   number actually changed. Create commands (`session new`, `session duplicate`, `workspace new`,
@@ -75,7 +75,7 @@ is not on PATH, the user can install it, or you invoke it by absolute path.
 
 ## The model
 
-A **window** is the top level: a named bundle rendered in its own on-screen macOS window. Each window
+A **window** is the top level: a named bundle rendered in its own on-screen native window. Each window
 holds a tree of **workspaces**, each holding **sessions**. A session has a primary shell and can also
 have: a **split** pane (a second shell side by side), a **scratch** terminal (a third full-coverage
 shell, toggled like the split), and an ephemeral **overlay** (runs one program on top, then vanishes).
@@ -108,6 +108,10 @@ of `window fullscreen`/`window zoom`/`window minimize`, so a script can act idem
 a closed window, but not the live `idleMs`, which is `tree`-only. A MINIMIZED window still reports its
 `geometry` (the frame it comes back to), so a re-align script can include it.
 
+On the GTK Linux frontend, window size is restored and clamped to a connected display, but `geometry`
+is omitted because GTK4 cannot reliably read and restore x/y placement. Wayland compositors own window
+positioning, and the frontend does not fabricate coordinates on X11.
+
 ## Addressing
 
 Commands that target a session or workspace take `--target` (default `active`):
@@ -135,7 +139,8 @@ you open overlays / type into whatever the user has selected, not your own sessi
 - **Fresh shells** restores the saved windows, workspaces, sessions, directories, and split layout with new shells.
 - **Re-run commands** starts each captured foreground command again. It does not reconnect to the old process.
 - **Live sessions** runs every primary and split pane through zmx and reattaches to the same process. It requires
-  zsh as the macOS login shell. Scratch, overlay, and quick terminals stay temporary.
+  zsh as the password-database login shell plus bundled zmx and zsh integration on both frontends.
+  Scratch, overlay, and quick terminals stay temporary.
 
 On a clean quit, agterm leaves live daemons running and captures each open pane's foreground command as a
 fallback. A surviving daemon ignores that payload on the next launch. If an orderly machine restart removed
@@ -235,8 +240,8 @@ rather than `split`, which is false for a split hidden with ⌘D even though its
 session that has a split — shown or hidden; omitted when there's no split or the ratio was never set (at
 the default 0.5) —
 the read side of `session resize`, record it to restore the exact divider), `splitFocused`
-(which pane holds focus in a session that has a split: `true` = split/right/bottom, `false` = primary/left/top; omitted
-when there's no split; the read side of `session focus`, record it to restore focus), and `surfaces`
+(which MODEL role holds focus in a session that has a split: `true` = split, `false` = primary; omitted
+when there's no split; the read side of `session focus`, record it and restore via the role selectors), and `surfaces`
 (`id`, `kind`, `active`, `visible`, and `backedByZmx` on primary/split entries) for `surface zoom` and
 `surface cursor`. The tree top level carries `zoomedSurface`
 (the control id of the currently zoomed surface, omitted when nothing is zoomed — the read side of
@@ -349,12 +354,12 @@ omitted when expanded).
   --command` (respawns the scratch if one is open). Target your own session with
   `--target "$AGTERM_SESSION_ID"` (see Addressing).
 - `session focus [primary|split|left|right|top|bottom|other]` - move focus between split panes. Role and position
-  aliases select the same two live terminals; readback remains `left`/`right`.
+  selectors address model roles and physical sides respectively; `other` toggles. Readback is role-based.
 - `session resize --split-ratio R | --grow-left D | --grow-right D | --grow-primary D | --grow-split D | --grow-top D | --grow-bottom D` - move the split divider (the GUI only drags
   it, or double-clicks it for an even split; bind any other fraction via a
   `command "agtermctl session resize …"` custom action). `--split-ratio` sets
-  the absolute primary-pane fraction (left or top; 0..1, clamped to 0.05..0.95). The grow options are
-  aliases for growing the primary or split pane. Prints the applied fraction.
+  the absolute primary-role pane fraction (0..1, clamped to 0.05..0.95). Primary/split grow selectors
+  follow model roles; left/right/top/bottom follow physical sides. Prints the applied primary fraction.
 - `session status <idle|active|completed|blocked> [--blink] [--auto-reset] [--sound NAME] [--color #rrggbb] [--shape SHAPE] [--pane left|right|scratch] [--pane-id TOKEN]` — set the sidebar agent glyph (`--sound default` or a system sound name plays a one-shot sound; `--color` tints the glyph for this call only, reverting on the next status set without it; `--shape` (`circle`, `square`, `triangle`, `diamond`, `capsule`, `star`) picks its silhouette for this call only and reverts the same way, read back as the tree `statusShape` field; `--pane` records which pane set it — `left`=main, `right`=split, `scratch` — so foreground typing in another pane won't clear it, and while the session is `blocked` a status from another pane that is not itself `blocked` is refused with `blocked status owned by pane <pane>` so one pane's agent cannot erase the other's request for input, `idle` included since the bundled hooks emit it unprompted; any user-initiated GUI selection (auto-follow, attention-nav ⌃⌥↑/↓, plain session nav, the command palettes, a Dock-menu session, a sidebar row click) reveals that pane when the status needs attention (`blocked`/`completed`); `active` preserves the existing pane selection; the pane reads back as the tree `statusPane` field; the socket `session go next-attention` only steps the selection, it does not itself reveal the pane; `--pane-id` is the hook-forwarded stable surface token (`$AGTERM_PANE_ID`) that resolves the pane's live slot and overrides a stale `--pane` after a promote + re-split — scripts set `--pane` directly and leave `--pane-id` to the hook).
 - `session flag [on|off|toggle|clear]` — flag a session for the flagged working-set view (`clear` unflags all).
 - `session context <TEXT|--clear> [--target] [--window W]` — set what the session is ABOUT, shown in the
@@ -494,9 +499,11 @@ honor `--window` (default frontmost). `--mru` is mutually exclusive with explici
 composes with the font flags. Read the state back from the tree's top-level `dashboardMembers`
 (pane refs `<id>:left`/`<id>:right`, in grid order) / `dashboardHighlighted` (a pane ref) /
 `dashboardFontSize`/`dashboardFontMode`. Zoom and the dashboard are mutually exclusive: opening one CLOSES
-the other. Opening/closing resizes each pane's pty to its cell, so programs may redraw — view-only
-means no input, not no process effect. The most-recently-used grid also has a GUI opener: **⌘⇧G** (the
-`dashboard` built-in action), **Navigate ▸ Dashboard**, and the command palette's **Dashboard** entry
+the other. macOS reparents each pane and resizes its pty to its cell. Linux mirrors live panes without
+reparenting, preserving their geometry unless a fixed/automatic Dashboard font temporarily changes the
+terminal grid. View-only means no input, not no process effect.
+The most-recently-used grid also has a GUI opener: **⌘⇧G** on macOS or **Ctrl⇧M** on Linux (the
+`dashboard` built-in action), **Navigate ▸ Dashboard** on macOS, and the command palette's **Dashboard** entry
 TOGGLE the frontmost window's MRU dashboard auto-sized (identical to `dashboard --mru --auto-size`); no new
 control command, the socket `dashboard` command is unchanged.
 
@@ -528,7 +535,7 @@ and reads back from the tree's top-level `sidebarWidth`).
 Visibility/mode act on the frontmost window; `sidebar expand`/`collapse`/`width` default to the frontmost but take a
 `--window` selector to target any open window.
 
-**notify** — `notify <body> [--title T]` — post a desktop notification attributed to a session. To signal that you need the user, prefer `session status` (`blocked`/`completed`), a persistent typed attention state rather than a one-shot banner; keep `notify` for a one-off nudge.
+**notify** — `notify <body> [--title T]` — post a desktop notification attributed to a session. Explicit control notifications deliver even when that session is focused; clicking one can reopen its encoded window. To signal that you need the user, prefer `session status` (`blocked`/`completed`), a persistent typed attention state rather than a one-shot banner; keep `notify` for a one-off nudge.
 
 **font** — `font inc|dec|reset [--pane left|right|scratch]` — change a session pane's font size (omitted/`left` = main pane, `right` = the split pane, `scratch` = the scratch terminal). Read the resulting size back from `tree` (`fontSize`/`splitFontSize`/`scratchFontSize` per pane).
 
@@ -538,6 +545,7 @@ Visibility/mode act on the frontmost window; `sidebar expand`/`collapse`/`width`
 
 **theme** — `theme list` (bundled themes, current marked `*`) · `theme set [name]` — set + persist the
 terminal theme app-wide, per slot: a NAME sets the light/single theme (a dark theme, if set, is kept);
+`theme set --light <name>` explicitly sets that same light slot;
 `theme set --dark <name>` sets the dark theme, which makes the terminal track the macOS Light/Dark
 appearance automatically; `theme set --dark none` stops tracking. The app default is the bundled
 **agterm** theme; omit the name for ghostty's built-in default ("default ghostty"); an unknown name errors.
@@ -558,7 +566,7 @@ refusing outright on an incomplete or conflicted inventory, and reporting each d
 stale-socket cleanup is not a kill · `zmx kill --target ID --pane left|right --force` - destroy one pane's
 daemon and the process in it; all three are required because this kills a backend process that reaches a
 pane no window is showing and every client attached to it, and none of its outcomes gets the undo grace ·
-`zmx tree [HOST]` - attachable sessions across EVERY open window, on another Mac with a HOST or this app
+`zmx tree [HOST]` - attachable sessions across EVERY open window, on another SSH host with a HOST or this app
 without one (the bare form is exactly what the remote call runs on the far side). Each row carries the id
 `zmx attach` takes plus `windowID`/`windowName`, `workspaceID`/`workspaceName` (show the names, group by
 the ids: neither is unique), `context` when set, and per-pane `foreground`; only a session whose every pane
@@ -577,6 +585,9 @@ works as a preflight from a keymap-launched script, which has no `$TERM_PROGRAM_
 socket explicitly (`--socket "$AGTERM_SOCKET"`, or `"$AGT_SOCKET"` in a keymap child): a bare call
 resolves the DEFAULT socket, which may be another app. The same identity is on the tree top level as
 `app`.
+
+**recent** — `recent clear` — clear the app-wide list of recently closed sessions and workspaces.
+Returns `result.affected`, the number of entries removed.
 
 ## Displaying an image inline
 
@@ -616,6 +627,21 @@ selection/clipboard text), and only post after an explicit go-ahead. If `gh` is 
 authenticated, hand the user the prefilled text plus the new-issue / new-discussion URL instead.
 
 Full detail, templates, and the exact `gh` commands are in **troubleshooting.md**.
+
+## Linux integration management
+
+Linux builds expose local installation inspection separately from the 60 runtime control commands.
+These commands never connect to the socket and work while agterm is stopped:
+
+```bash
+agtermctl integration status [--json]
+agtermctl integration install hooks [--dry-run] [--json]
+agtermctl integration install skill [--dry-run] [--json]
+```
+
+Use `--dry-run` before a mutation and show the user the plan when acting on their environment.
+The engine refuses unrelated executables, hooks, settings, and skills rather than overwriting them.
+See **reference.md** for the JSON shapes, states, package behavior, and exit statuses.
 
 ## Reference files
 

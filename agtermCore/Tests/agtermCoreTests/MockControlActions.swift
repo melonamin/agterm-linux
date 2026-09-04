@@ -98,6 +98,7 @@ final class MockControlActions: ControlActions {
         case pickResult(target: String, window: String?)
         case pickCancel(target: String, window: String?)
         case restoreClear
+        case recentClear
         case restoreCapture
     }
 
@@ -173,6 +174,7 @@ final class MockControlActions: ControlActions {
     var nextPickResultResponse = ControlResponse(ok: true)
     var nextPickCancelResponse = ControlResponse(ok: true)
     var nextRestoreClearResponse = ControlResponse(ok: true)
+    var nextRecentClearResponse = ControlResponse(ok: true)
     var nextRestoreCaptureResponse = ControlResponse(ok: true)
     var nextSessionRestoreResponse = ControlResponse(ok: true)
     var nextSessionSwapResponse = ControlResponse(ok: true)
@@ -638,6 +640,11 @@ final class MockControlActions: ControlActions {
     func cancelPick(_ target: String, window: String?) -> ControlResponse {
         calls.append(.pickCancel(target: target, window: window))
         return nextPickCancelResponse
+    }
+
+    func clearRecentClosedItems() -> ControlResponse {
+        calls.append(.recentClear)
+        return nextRecentClearResponse
     }
 
     func clearRestoreCommands() -> ControlResponse {

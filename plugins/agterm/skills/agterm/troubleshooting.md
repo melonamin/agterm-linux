@@ -36,15 +36,27 @@ You are inside agterm (`AGTERM_ENABLED=1`). Use:
   after reading the config and keeps every other flag. Setting either is by design a no-op, reports no
   diagnostic, and is NOT a bug. For remote terminfo, install the entry manually with
   `infocmp -x xterm-ghostty | ssh <host> 'tic -x -'`.
-- **Logs** (unified logging, subsystem `com.umputun.agterm`):
+- **Logs** — split by platform.
+  macOS uses unified logging with subsystem `com.umputun.agterm`:
   ```bash
   log show --predicate 'subsystem == "com.umputun.agterm"' --info --last 30m
   ```
   Categories: `GhosttyApp`, `GhosttySurfaceView`, `WatermarkRenderer`, `NotificationManager`,
   `SettingsView`, `SettingsModel`, `CustomCommandRunner`, `ControlServer`.
+  Linux ControlServer: GLib structured logging — journald stores the fields when the process is
+  journal-connected; otherwise GLib writes to stderr (launch agterm from a terminal to keep it).
+  Other Linux diagnostics may still write directly to stderr. ControlServer diagnostics:
+  ```bash
+  journalctl --user -t agterm GLIB_DOMAIN=ControlServer --since "30 minutes ago"
+  ```
 - **Files** — keymap `~/.config/agterm/keymap.conf`; agterm-scoped ghostty config
-  `~/.config/agterm/ghostty.conf`; settings `~/Library/Application Support/agterm/settings.json`;
-  socket path in `$AGTERM_SOCKET`.
+  `~/.config/agterm/ghostty.conf`; settings in the platform application-support directory
+  (`~/Library/Application Support/agterm/settings.json` on macOS); socket path in `$AGTERM_SOCKET`.
+- **Linux integrations** — `agtermctl integration status --json` is local and works without the app.
+  A `conflict` means agterm found unrelated content and refused to replace it. Preview repairs with
+  `agtermctl integration install hooks --dry-run --json` or `integration install skill --dry-run --json`.
+  Multi-target installs may still apply independent safe targets; the conflicting target remains untouched and exit status is `2`.
+  Pi must have created `~/.pi/agent` first; restart Pi or run `/reload` after installing or updating hooks.
 
 ### "Keymap editor won't open"
 
@@ -59,7 +71,7 @@ also no-ops with no session selected or an overlay already open.
 
 Causes, in order: a parse error (see the diagnostics); the chord conflicts with a built-in or another
 custom command and was dropped to palette-only (it still runs from `⌃⇧P`, tagged `custom`); a reserved
-chord (`ctrl+tab`, `ctrl+1`/`ctrl+2`); a modifier-less key (rejected — a custom chord needs a
+chord (`ctrl+tab`, `ctrl+1`/`ctrl+2`, or Linux `ctrl+,`); a modifier-less key (rejected — a custom chord needs a
 modifier); it does not fire while a text field (inline rename, a palette, Settings) has keyboard focus,
 though it DOES fire from a terminal pane or an empty window (every session closed); it runs in a non-interactive
 `/bin/sh -c` (no aliases/functions, a smaller `PATH` — use absolute paths or `$SHELL -lc '…'`); a
@@ -83,25 +95,39 @@ key before the terminal sees it. The items enable only when the terminal can ser
 selection, Paste needs something pasteable on the clipboard (text, or a file/web URL, which pastes as a
 shell-escaped path), Select All needs a live surface. Cut stays disabled for the terminal (it still works in
 a text field, such as the inline rename or a palette's search box). Undo and Redo are not in the menu at all:
-agterm has no undo, and ⌘Z belongs to File ▸ Reopen Closed Item. Because these are standard menu shortcuts,
-⌘C/⌘V/⌘A are NOT rebindable through `ghostty.conf`.
+agterm has no undo, and ⌘Z belongs to File ▸ Reopen Closed Item. Because these are standard macOS
+menu shortcuts, the menu's ⌘C/⌘V/⌘A equivalents are not rebindable through `ghostty.conf`. On Linux
+there is no menu layer — the bundled binds below are the only layer, and every one of them IS
+rebindable there.
 
-agterm's bundled ghostty defaults are the **fallback**, binding all three to the physical key POSITIONS
-(`super+key_c`/`super+key_v`/`super+key_a`), matched by keycode regardless of the character the layout
-prints. They fire whenever the menu equivalent does not: on a Russian/Greek/etc. layout the physical C key
-yields `с`, so the menu's ⌘C never matches and the keycode bind runs instead; likewise a ⌘C with no
-selection, or a ⌘V with nothing pasteable, leaves the menu item disabled and reaches the bind on ANY
-layout. The three binds deliberately omit ghostty's `performable:` prefix so they always consume the key,
-and one that cannot act simply does nothing. With that prefix the unperformed press fell through to key
-encoding — invisible under legacy encoding, which drops ⌘ chords on macOS, but the kitty keyboard protocol
-reports them and the program renders a stray `^[[…u` as text. This is why copy, paste, and select-all all
-keep working on a non-Latin layout. (ghostty's own
-`super+c`/`super+v`/`super+a` match the produced CHARACTER, so alone they would miss there — `super+key_a`
-in particular exists because without it ⌘A would silently do nothing on a Cyrillic layout.)
+agterm's bundled macOS ghostty defaults are the **fallback**, binding all three to the physical key
+POSITIONS (`super+key_c`/`super+key_v`/`super+key_a`), matched by keycode regardless of the character the
+layout prints. They fire whenever the menu equivalent does not: on a Russian/Greek/etc. layout the
+physical C key yields `с`, so the menu's ⌘C never matches and the keycode bind runs instead; likewise a
+⌘C with no selection, or a ⌘V with nothing pasteable, leaves the menu item disabled and reaches the
+bind on ANY layout. The three macOS fallback binds deliberately omit ghostty's `performable:` prefix so
+they always consume the key, and one that cannot act simply does nothing. With that prefix the
+unperformed press would fall through to key encoding — invisible under legacy encoding, which drops ⌘
+chords on macOS, but the kitty keyboard protocol reports them and the program renders a stray `^[[…u` as
+text. (ghostty's own `super+c`/`super+v`/`super+a` match the produced CHARACTER, so alone they would miss
+on a non-Latin layout — `super+key_a` in particular exists because without it ⌘A would silently do
+nothing on a Cyrillic layout.)
+
+On Linux there is no menu layer. The bundled layer is the ONLY layer and uses
+`performable:ctrl+shift+key_c`/`performable:ctrl+shift+key_v`/`performable:ctrl+shift+key_a`, since bare
+Ctrl+C is SIGINT. The physical-key form works across layouts when the action is available. The
+`performable:` prefix preserves ghostty's native fall-through when copy, paste, or select all cannot run.
+All three bindings are rebindable through `ghostty.conf`.
 
 To remap a shortcut ghostty still owns: a physical key name (`key_c`, `key_v`, …) matches by position on
 any layout; a bare letter (`c`, `v`) matches the produced character. Edit `~/.config/agterm/ghostty.conf`,
-then `agtermctl config reload`.
+then `agtermctl config reload`. On Linux each bundled `ctrl+shift+key_c/v/a` bind needs its own override
+line — C, V, and A are three separate binds. For example, to move copy off Ctrl+Shift+C:
+
+```
+keybind = ctrl+shift+key_c=unbind
+keybind = ctrl+shift+c=copy_to_clipboard
+```
 
 ### "My live session came back as a fresh shell"
 
@@ -109,9 +135,9 @@ Check these in order:
 
 - **Restart after selecting Live sessions.** The restore mode is fixed when agterm starts. Changing
   **Settings ▸ General ▸ Restore sessions** affects the next process, not sessions already open.
-- **Read the eligibility reason in Settings.** Live mode requires zsh as the macOS login shell and the
-  bundled zmx and zsh-integration resources. If the launch cannot use live mode, every pane starts as an
-  ordinary shell.
+- **Read the eligibility reason in Settings.** Live mode requires zsh as the password-database login shell,
+  bundled zmx, and the bundled zsh-integration resources on both frontends. If the launch cannot use live
+  mode, every pane starts as an ordinary shell.
 - **Inspect actual backing with `tree --json`.** Primary and split surfaces report `backedByZmx`; the session
   field is true only when every existing primary or split is backed. The sidebar deliberately has no zmx
   indicator.

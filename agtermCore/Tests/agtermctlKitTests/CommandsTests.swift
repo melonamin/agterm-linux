@@ -37,6 +37,10 @@ struct CommandsTests {
         #expect(try request(["tree"]) == ControlRequest(cmd: .tree))
     }
 
+    @Test func recentClear() throws {
+        #expect(try request(["recent", "clear"]) == ControlRequest(cmd: .recentClear))
+    }
+
     @Test func workspaceNewWithName() throws {
         #expect(try request(["workspace", "new", "Work"]) == ControlRequest(cmd: .workspaceNew, args: ControlArgs(name: "Work")))
     }
@@ -438,22 +442,33 @@ struct CommandsTests {
         #expect(try request(["session", "resize", "--split-ratio", "0.7"]) == expected)
     }
 
-    @Test func sessionResizeGrowLeftIsPositiveDelta() throws {
-        let expected = ControlRequest(cmd: .sessionResize, target: "active", args: ControlArgs(ratioDelta: 0.05))
+    @Test func sessionResizeGrowLeftPreservesPhysicalIntent() throws {
+        let expected = ControlRequest(
+            cmd: .sessionResize,
+            target: "active",
+            args: ControlArgs(pane: "left", ratioDelta: 0.05)
+        )
         #expect(try request(["session", "resize", "--grow-left", "0.05"]) == expected)
     }
 
-    @Test func sessionResizeGrowRightIsNegativeDelta() throws {
-        let expected = ControlRequest(cmd: .sessionResize, target: "active", args: ControlArgs(ratioDelta: -0.05))
+    @Test func sessionResizeGrowRightPreservesPhysicalIntent() throws {
+        let expected = ControlRequest(
+            cmd: .sessionResize,
+            target: "active",
+            args: ControlArgs(pane: "right", ratioDelta: 0.05)
+        )
         #expect(try request(["session", "resize", "--grow-right", "0.05"]) == expected)
     }
 
-    @Test func sessionResizeRoleAndAxisAliasesKeepThePrimaryFractionConvention() throws {
-        for option in ["--grow-primary", "--grow-top"] {
-            #expect(try request(["session", "resize", option, "0.05"]).args?.ratioDelta == 0.05)
-        }
-        for option in ["--grow-split", "--grow-bottom"] {
-            #expect(try request(["session", "resize", option, "0.05"]).args?.ratioDelta == -0.05)
+    @Test func sessionResizePreservesEveryRoleAndPositionSelector() throws {
+        let cases = [
+            ("--grow-primary", "primary"), ("--grow-split", "split"),
+            ("--grow-top", "top"), ("--grow-bottom", "bottom"),
+        ]
+        for (option, pane) in cases {
+            let args = try request(["session", "resize", option, "0.05"]).args
+            #expect(args?.pane == pane)
+            #expect(args?.ratioDelta == 0.05)
         }
     }
 
@@ -1849,24 +1864,36 @@ struct CommandsTests {
     @Test func socketPathExplicitFlagWins() throws {
         let command = try Tree.parse(["--socket", "/tmp/explicit.sock"])
         let env = ["AGTERM_STATE_DIR": "/tmp/state", "HOME": "/Users/x"]
-        #expect(command.options.socketPath(env: env) == "/tmp/explicit.sock")
+        #expect(command.options.basic.socketPath(
+            env: env, applicationSupportDirectory: "/ignored") == "/tmp/explicit.sock")
     }
 
     @Test func socketPathStateDirOverHome() throws {
         let command = try Tree.parse([])
         let env = ["AGTERM_STATE_DIR": "/tmp/state", "HOME": "/Users/x"]
-        #expect(command.options.socketPath(env: env) == "/tmp/state/agterm.sock")
+        #expect(command.options.basic.socketPath(
+            env: env, applicationSupportDirectory: "/ignored") == "/tmp/state/agterm.sock")
     }
 
-    @Test func socketPathFallsBackToHome() throws {
+    @Test func socketPathPreservesMacOSApplicationSupportLocation() throws {
         let command = try Tree.parse([])
         let env = ["HOME": "/Users/x"]
-        #expect(command.options.socketPath(env: env) == "/Users/x/Library/Application Support/agterm/agterm.sock")
+        #expect(command.options.basic.socketPath(
+            env: env, applicationSupportDirectory: "/Users/x/Library/Application Support/agterm")
+            == "/Users/x/Library/Application Support/agterm/agterm.sock")
     }
 
-    @Test func socketPathFallsBackToTmpWithoutHome() throws {
+    @Test func socketPathUsesLinuxFoundationApplicationSupportLocation() throws {
         let command = try Tree.parse([])
-        #expect(command.options.socketPath(env: [:]) == "/tmp/agterm/agterm.sock")
+        #expect(command.options.basic.socketPath(
+            env: ["HOME": "/home/x", "XDG_DATA_HOME": "/xdg/data"],
+            applicationSupportDirectory: "/xdg/data/agterm") == "/xdg/data/agterm/agterm.sock")
+    }
+
+    @Test func socketPathFallsBackToTmpWithoutFoundationLocation() throws {
+        let command = try Tree.parse([])
+        #expect(command.options.basic.socketPath(
+            env: [:], applicationSupportDirectory: nil) == "/tmp/agterm/agterm.sock")
     }
 
     // MARK: - session background

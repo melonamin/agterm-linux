@@ -28,7 +28,23 @@ report_status() {
 
 assistant_message_contains_question() {
   local message
-  message=$(/usr/bin/plutil -extract last_assistant_message raw -o - - 2>/dev/null) || return 1
+  if [ -x /usr/bin/plutil ]; then
+    message=$(/usr/bin/plutil -extract last_assistant_message raw -o - - 2>/dev/null) || return 1
+  elif command -v python3 >/dev/null 2>&1; then
+    message=$(python3 -c '
+import json
+import sys
+
+value = json.load(sys.stdin).get("last_assistant_message")
+if not isinstance(value, str):
+    raise SystemExit(1)
+sys.stdout.write(value)
+' 2>/dev/null) || return 1
+  elif command -v jq >/dev/null 2>&1; then
+    message=$(jq -er '.last_assistant_message | strings' 2>/dev/null) || return 1
+  else
+    return 1
+  fi
   [[ "$message" == *"?"* ]]
 }
 

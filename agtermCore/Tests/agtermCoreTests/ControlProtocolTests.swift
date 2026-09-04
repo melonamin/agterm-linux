@@ -483,6 +483,8 @@ struct ControlProtocolTests {
             ControlRequest(cmd: .sessionResize, target: "active", args: ControlArgs(ratio: 0.7)),
             ControlRequest(cmd: .sessionResize, target: "9f3c", args: ControlArgs(ratioDelta: 0.05)),
             ControlRequest(cmd: .sessionResize, args: ControlArgs(ratioDelta: -0.05)),
+            ControlRequest(cmd: .sessionResize, args: ControlArgs(pane: "left", ratioDelta: 0.05)),
+            ControlRequest(cmd: .sessionResize, args: ControlArgs(pane: "bottom", ratioDelta: 0.05)),
         ]
         for request in cases {
             #expect(try roundTrip(request) == request)
@@ -490,11 +492,12 @@ struct ControlProtocolTests {
     }
 
     @Test func sessionResizeRawStringMapsToCommandAndArgs() throws {
-        let raw = #"{"cmd":"session.resize","target":"active","args":{"ratio":0.7}}"#
+        let raw = #"{"cmd":"session.resize","target":"active","args":{"ratioDelta":0.05,"pane":"right"}}"#
         let decoded = try JSONDecoder().decode(ControlRequest.self, from: Data(raw.utf8))
         #expect(decoded.cmd == .sessionResize)
-        #expect(decoded.args?.ratio == 0.7)
-        #expect(decoded.args?.ratioDelta == nil)
+        #expect(decoded.args?.ratio == nil)
+        #expect(decoded.args?.ratioDelta == 0.05)
+        #expect(decoded.args?.pane == "right")
     }
 
     @Test func sessionResizeResultRoundTripsRatio() throws {
@@ -1420,6 +1423,11 @@ struct ControlProtocolTests {
 
     @Test func restoreClearRoundTrips() throws {
         let request = ControlRequest(cmd: .restoreClear)
+        #expect(try roundTrip(request) == request)
+    }
+
+    @Test func recentClearRoundTrips() throws {
+        let request = ControlRequest(cmd: .recentClear)
         #expect(try roundTrip(request) == request)
     }
 

@@ -5,7 +5,7 @@ INSTALL_DIR := $(HOME)/Applications
 RELEASE_APP := build/DerivedData/Build/Products/Release/agterm.app
 
 .DEFAULT_GOAL := help
-.PHONY: help prep generate build run release deploy test test-app lint dist clean
+.PHONY: help prep generate build run release deploy test test-app lint dist dist-linux packages-linux clean
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -44,6 +44,14 @@ lint: ## swiftlint over the tree (strict — warnings fail too)
 dist: ## signed + notarized DMG — usage: make dist VERSION=x.y.z [PUBLISH=1]
 	@test -n "$(VERSION)" || { echo "usage: make dist VERSION=x.y.z [PUBLISH=1]" >&2; exit 1; }
 	./scripts/release.sh $(VERSION) $(if $(PUBLISH),--publish,)
+
+dist-linux: ## self-contained Linux tarball (binary + Swift runtime + libghostty + launcher)
+	./scripts/dist-linux.sh
+
+packages-linux: ## Linux tar/DEB/RPM/AppImage — usage: make packages-linux VERSION=x.y.z
+	@test -n "$(VERSION)" || { echo "usage: make packages-linux VERSION=x.y.z" >&2; exit 1; }
+	./scripts/package-linux.sh "$(VERSION)"
+	./scripts/verify-linux-packages.sh "$(VERSION)"
 
 clean: ## remove build artifacts (build/)
 	rm -rf build

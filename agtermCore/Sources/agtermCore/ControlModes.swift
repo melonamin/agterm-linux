@@ -39,21 +39,34 @@ public enum ControlToggleMode: Equatable, Sendable {
 public enum ControlPaneFocusMode: Equatable, Sendable {
     case primary
     case split
+    case left
+    case right
+    case top
+    case bottom
     case toggle
 
     public static func parse(_ pane: String?) -> ControlPaneFocusMode? {
         switch pane ?? "other" {
-        case "left", "top", "primary": return .primary
-        case "right", "bottom", "split": return .split
+        case "primary": return .primary
+        case "split": return .split
+        case "left": return .left
+        case "right": return .right
+        case "top": return .top
+        case "bottom": return .bottom
         case "other", "toggle": return .toggle
         default: return nil
         }
     }
 
-    public func wantsSplit(currentSplitFocused: Bool) -> Bool {
+    /// Resolve a role or physical-position selector to the model's split pane. `primaryInEndSlot` is a
+    /// host-provided layout fact: false for the usual primary-at-left/top arrangement, true after a host
+    /// promotes a survivor without reparenting it and the primary therefore occupies right/bottom.
+    public func wantsSplit(currentSplitFocused: Bool, primaryInEndSlot: Bool) -> Bool {
         switch self {
         case .primary: return false
         case .split: return true
+        case .left, .top: return primaryInEndSlot
+        case .right, .bottom: return !primaryInEndSlot
         case .toggle: return !currentSplitFocused
         }
     }
@@ -116,10 +129,45 @@ public enum ControlSessionMove: Equatable, Sendable {
     case place(anchor: String, after: Bool)
 }
 
+/// Pane whose share a relative `session.resize` request grows. Role selectors remain attached to the
+/// model while position selectors follow the host's physical start/end slot.
+public enum ControlSplitResizeTarget: Equatable, Sendable {
+    case primary
+    case split
+    case left
+    case right
+    case top
+    case bottom
+
+    public static func parse(_ pane: String) -> ControlSplitResizeTarget? {
+        switch pane {
+        case "primary": return .primary
+        case "split": return .split
+        case "left": return .left
+        case "right": return .right
+        case "top": return .top
+        case "bottom": return .bottom
+        default: return nil
+        }
+    }
+
+    /// Convert "grow this pane" into a signed change to the model's primary-pane fraction.
+    public func primaryRatioDelta(_ amount: Double, primaryInEndSlot: Bool) -> Double {
+        switch self {
+        case .primary: return amount
+        case .split: return -amount
+        case .left, .top: return primaryInEndSlot ? -amount : amount
+        case .right, .bottom: return primaryInEndSlot ? amount : -amount
+        }
+    }
+}
+
 /// Parsed resize request for `session.resize`.
 public enum ControlSplitResize: Equatable, Sendable {
     case ratio(Double)
+    /// Legacy wire form: a signed primary-pane delta with no pane selector.
     case delta(Double)
+    case paneDelta(ControlSplitResizeTarget, Double)
 }
 
 /// Host-facing `session.new` options after dispatcher-level guard validation.

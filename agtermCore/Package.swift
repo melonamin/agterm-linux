@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "agtermCore", targets: ["agtermCore"]),
+        .library(name: "agtermctlKit", targets: ["agtermctlKit"]),
         .executable(name: "agtermctl", targets: ["agtermctl"]),
     ],
     dependencies: [

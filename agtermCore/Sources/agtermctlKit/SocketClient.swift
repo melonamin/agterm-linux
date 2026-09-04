@@ -67,9 +67,8 @@ struct SocketClient {
         guard fd >= 0 else { throw SocketClientError("socket() failed: \(String(cString: strerror(errno)))") }
 
         // a write after the server closes the connection (e.g. it rejected an oversized request) would
-        // raise the default-fatal SIGPIPE and kill the process with no output; SO_NOSIGPIPE turns it into
-        // a normal EPIPE write error, mirroring the server side of the socket. Darwin-only — Glibc has no
-        // SO_NOSIGPIPE.
+        // raise the default-fatal SIGPIPE and kill the process with no output. Darwin disables it per socket;
+        // Linux passes MSG_NOSIGNAL to each send in writeAll below.
         #if canImport(Darwin)
         var noSigPipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
@@ -104,7 +103,11 @@ struct SocketClient {
             var offset = 0
             let base = raw.bindMemory(to: UInt8.self).baseAddress!
             while offset < data.count {
+                #if canImport(Darwin)
                 let n = write(fd, base + offset, data.count - offset)
+                #elseif canImport(Glibc)
+                let n = Glibc.send(fd, base + offset, data.count - offset, Int32(MSG_NOSIGNAL))
+                #endif
                 if n <= 0 { throw SocketClientError("write failed: \(String(cString: strerror(errno)))") }
                 offset += n
             }
@@ -132,12 +135,13 @@ struct SocketClient {
 
     /// Print a response: the raw JSON line with `json: true`, otherwise a human-readable summary. An error
     /// response (`ok == false`, non-`--json`) goes to stderr; everything else to stdout.
-    static func printResponse(_ response: ControlResponse, json: Bool, echoID: Bool = false) {
+    static func printResponse(_ response: ControlResponse, json: Bool, echoID: Bool = false,
+                              affectedNoun: String = "session") {
         if !json, !response.ok {
             FileHandle.standardError.write(Data((formatResponse(response, json: false) + "\n").utf8))
             return
         }
-        print(formatResponse(response, json: json, echoID: echoID))
+        print(formatResponse(response, json: json, echoID: echoID, affectedNoun: affectedNoun))
     }
 
     /// Render the immediate `pick.open` response as the documented `{"id":"…"}` JSON object.
@@ -170,7 +174,8 @@ struct SocketClient {
     /// otherwise a human-readable summary — an `error:` line, the tree listing, the selected text, the
     /// affected id (only when `echoID`, i.e. for the create commands), or a bare `ok`. Pure so it can be
     /// unit-tested directly; `printResponse` routes it to stdout/stderr.
-    static func formatResponse(_ response: ControlResponse, json: Bool, echoID: Bool = false) -> String {
+    static func formatResponse(_ response: ControlResponse, json: Bool, echoID: Bool = false,
+                               affectedNoun: String = "session") -> String {
         if json {
             if let data = try? JSONEncoder().encode(response), let line = String(data: data, encoding: .utf8) {
                 return line
@@ -213,7 +218,8 @@ struct SocketClient {
             return "exit \(exitCode)"
         }
         if let affected = response.result?.affected {
-            return affected == 1 ? "1 session" : "\(affected) sessions"
+            let noun = affected == 1 ? affectedNoun : "\(affectedNoun)s"
+            return "\(affected) \(noun)"
         }
         if let count = response.result?.count {
             // keymap.reload reports its parse-diagnostic count; 0 reads as a clean reload.

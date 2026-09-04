@@ -11,6 +11,8 @@ agterm/Resources/zmx
 # build artifacts
 build/
 .build/
+# AT-SPI smoke diagnostics (scripts/test-linux-ui.sh; CI uploads them from here)
+artifacts/
 agterm.xcodeproj/
 .swiftpm/
 
@@ -37,3 +39,6 @@ __pycache__/
 !.claude/
 .claude/*
 !.claude/rules/
+agterm-linux-*.tar.gz
+agterm-linux-*.tar.gz.sha256
+dist-linux/

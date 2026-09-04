@@ -1,6 +1,11 @@
 import ArgumentParser
 import Foundation
 import agtermCore
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 // MARK: - keymap
 
@@ -137,6 +142,24 @@ struct Restore: ParsableCommand {
         @OptionGroup var options: BasicOptions
 
         func makeRequest() throws -> ControlRequest { ControlRequest(cmd: .restoreClear) }
+    }
+}
+
+// MARK: - recent
+
+struct Recent: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Recently closed item commands.",
+        subcommands: [Clear.self]
+    )
+
+    struct Clear: RequestCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Clear the app-wide list of recently closed sessions and workspaces.")
+        @OptionGroup var options: BasicOptions
+        var affectedNoun: String { "item" }
+
+        func makeRequest() throws -> ControlRequest { ControlRequest(cmd: .recentClear) }
     }
 }
 
@@ -727,9 +750,10 @@ struct Version: RequestCommand {
         }
     }
 
-    /// The running executable's real path. `_NSGetExecutablePath` rather than `argv[0]`, which is whatever
-    /// the caller chose to exec with, and `realpath` because the installed CLI is a symlink into the bundle.
+    /// The running executable's real path rather than `argv[0]`, which is whatever the caller chose to exec
+    /// with. Resolve symlinks because the installed CLI may be a launcher pointing into an app bundle.
     static func clientPath() -> String? {
+        #if canImport(Darwin)
         var size = UInt32(0)
         _ = _NSGetExecutablePath(nil, &size)
         var buffer = [CChar](repeating: 0, count: Int(size))
@@ -737,5 +761,11 @@ struct Version: RequestCommand {
         guard let resolved = realpath(buffer, nil) else { return String(cString: buffer) }
         defer { free(resolved) }
         return String(cString: resolved)
+        #elseif canImport(Glibc)
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
+        let count = readlink("/proc/self/exe", &buffer, buffer.count - 1)
+        guard count >= 0 else { return nil }
+        return String(decoding: buffer.prefix(Int(count)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        #endif
     }
 }

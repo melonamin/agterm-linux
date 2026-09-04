@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "scope": "agterm-linux/Sources/AgtermLinux",
+  "frontmostResolver": "gController",
+  "perWindowMigrations": [
+    {
+      "file": "AppController.swift",
+      "sites": ["inline rename completion", "close-session dialog response"],
+      "owner": "weak captured controller or dialog root context"
+    },
+    {
+      "file": "AppControllerCallbacks.swift",
+      "sites": [
+        "toolbar buttons", "session and workspace rows", "gesture controllers", "drop targets",
+        "quit/delete/rename dialogs", "context actions", "paned position notification"
+      ],
+      "owner": "originating widget or event-controller ancestry"
+    },
+    {
+      "file": "AppControllerPrimaryMenu.swift",
+      "sites": ["preferences GAction"],
+      "owner": "GObject-attached stable window identifier"
+    },
+    {
+      "file": "AppControllerSurfaces.swift",
+      "sites": ["custom-command termination", "split-ratio restore timer"],
+      "owner": "weak originating controller and source-owned window/session/paned/generation context"
+    },
+    {
+      "file": "GhosttyApp.swift",
+      "sites": ["config-change callback"],
+      "owner": "callback target surface"
+    },
+    {
+      "file": "GhosttySurface.swift",
+      "sites": ["deferred GL error", "Ctrl release"],
+      "owner": "weak surface owner and retained surface callback data"
+    },
+    {
+      "file": "KeymapDispatch.swift",
+      "sites": ["leader timeout"],
+      "owner": "GLib-source-owned weak controller context"
+    },
+    {
+      "file": "LinuxAgentIntegrations.swift",
+      "sites": ["refresh", "integration action", "preflight response"],
+      "owner": "settings widget ancestry or dialog root context"
+    },
+    {
+      "file": "Palette.swift",
+      "sites": ["palette construction", "action closures", "search", "activation", "key controller"],
+      "owner": "palette creator and palette-window context"
+    },
+    {
+      "file": "Search.swift",
+      "sites": ["query", "navigation", "close", "key controller"],
+      "owner": "originating widget or event-controller ancestry"
+    },
+    {
+      "file": "SettingsAgentStatusPage.swift",
+      "sites": ["status colors", "sound", "auto-follow", "integrations", "reset"],
+      "owner": "settings widget ancestry"
+    },
+    {
+      "file": "SettingsAppearancePage.swift",
+      "sites": ["font", "theme", "toolbar", "opacity", "sidebar", "pane mute", "reset"],
+      "owner": "settings widget ancestry"
+    },
+    {
+      "file": "SettingsGeneralPage.swift",
+      "sites": ["switches", "directory rows", "file-dialog completions"],
+      "owner": "settings widget ancestry or captured stable window identifier"
+    },
+    {
+      "file": "SettingsKeyMappingPage.swift",
+      "sites": ["config directory", "keymap edit and reload"],
+      "owner": "settings widget ancestry"
+    },
+    {
+      "file": "SettingsNotificationsPage.swift",
+      "sites": ["notification switches"],
+      "owner": "settings widget ancestry"
+    },
+    {
+      "file": "ThemePicker.swift",
+      "sites": ["filter", "preview", "commit", "cancel", "keyboard selection"],
+      "owner": "theme-picker widget or event-controller ancestry"
+    }
+  ],
+  "globalAllowlist": [
+    {
+      "file": "AppControllerWindowLifecycle.swift",
+      "sites": ["becameFrontmost assignment", "closing-frontmost replacement"],
+      "reason": "maintains the resolver itself"
+    },
+    {
+      "file": "ControlServer.swift",
+      "sites": ["unaddressed control command fallback"],
+      "reason": "the control protocol deliberately targets the frontmost window when no target resolves"
+    },
+    {
+      "file": "ClipboardPromptController.swift",
+      "sites": ["request without a live surface", "missing requester window fallback"],
+      "reason": "an app-global libghostty permission prompt still requires a presenting window"
+    },
+    {
+      "file": "StatusSoundPlayer.swift",
+      "sites": ["error-bell fallback when no GDK display is available"],
+      "reason": "the status sound is app-global and the fallback API requires an arbitrary live widget"
+    }
+  ]
+}

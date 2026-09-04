@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "upstreamRange": {
+    "from": "v0.14.0",
+    "to": "v0.15.2",
+    "targetCommit": "95926fc88fd7c6e7f3e1acf229cb2dab637fdbe0",
+    "linuxMergeCommit": "90147b8"
+  },
+  "excludedPostTagCommits": [
+    {
+      "commit": "8220978",
+      "subject": "feat: hold a command session open after its command exits (#255)",
+      "disposition": "excluded-post-tag"
+    },
+    {
+      "commit": "4075371",
+      "subject": "docs: note fetching origin master before creating a worktree",
+      "disposition": "excluded-post-tag"
+    }
+  ],
+  "changes": [
+    {
+      "commit": "06a5dff",
+      "subject": "docs: note setuid foreground processes are omitted from tree",
+      "disposition": "inherited-documentation"
+    },
+    {
+      "commit": "8496d9e",
+      "subject": "test: cover keymap rebind of arrow-bound actions at launch and via live reload",
+      "disposition": "inherited-core-linux-keymap-dispatch-verified"
+    },
+    {
+      "commit": "de8dffe",
+      "subject": "fix: scope terminal cursor to the on-screen deck pane (#228)",
+      "disposition": "macos-appkit-host-fix-linux-gtk-stack-not-affected"
+    },
+    {
+      "commit": "a6ffbae",
+      "subject": "docs: update changelog for v0.14.1",
+      "disposition": "inherited-release-documentation"
+    },
+    {
+      "commit": "6a08f51",
+      "subject": "feat: add Interface settings for window chrome",
+      "disposition": "inherited-core-implemented-in-linux-settings-and-chrome"
+    },
+    {
+      "commit": "e3e947b",
+      "subject": "docs: update changelog for v0.15.0",
+      "disposition": "inherited-release-documentation"
+    },
+    {
+      "commit": "dda1354",
+      "subject": "feat: add Duplicate Session action",
+      "disposition": "inherited-core-implemented-in-linux-gui-keymap-palette-control"
+    },
+    {
+      "commit": "4c8df6b",
+      "subject": "fix: honor OSC 11 background changes under translucency",
+      "disposition": "implemented-per-surface-linux-config-overlay"
+    },
+    {
+      "commit": "63e22d3",
+      "subject": "fix: select sessions by MRU after active close",
+      "disposition": "inherited-core-linux-close-paths-use-shared-selection"
+    },
+    {
+      "commit": "0221d6c",
+      "subject": "feat: add optional notification sound",
+      "disposition": "macos-notification-sound-platform-exemption-gnotification-has-no-sound-field"
+    },
+    {
+      "commit": "c399a28",
+      "subject": "feat: add workspace-row new-session button",
+      "disposition": "implemented-native-linux-workspace-row-button"
+    },
+    {
+      "commit": "daebf69",
+      "subject": "fix: seed flagged-sidebar rename with the bare name",
+      "disposition": "implemented-linux-flagged-rename-seed"
+    },
+    {
+      "commit": "826eb26",
+      "subject": "docs: update changelog for v0.15.1",
+      "disposition": "inherited-release-documentation"
+    },
+    {
+      "commit": "5fd5043",
+      "subject": "fix: run safe custom-command chords from an empty window",
+      "disposition": "implemented-linux-window-key-controller-with-session-token-gate"
+    },
+    {
+      "commit": "bdc3684",
+      "subject": "feat: add session.new --no-select",
+      "disposition": "implemented-linux-control-routing-with-background-selection-preservation"
+    },
+    {
+      "commit": "d4112f3",
+      "subject": "fix: consume each blocked auto-follow episode once",
+      "disposition": "implemented-linux-auto-follow-consumed-filter-and-latch"
+    },
+    {
+      "commit": "bf54c71",
+      "subject": "feat: add workspace add-session Interface toggle",
+      "disposition": "implemented-linux-interface-setting-and-sidebar-rebuild"
+    },
+    {
+      "commit": "cf19c17",
+      "subject": "feat: handle macOS open-path launch events",
+      "disposition": "macos-launch-event-platform-specific-linux-gapplication-open-existing"
+    },
+    {
+      "commit": "5d47b21",
+      "subject": "fix: improve site responsive layout",
+      "disposition": "inherited-documentation"
+    },
+    {
+      "commit": "95926fc",
+      "subject": "docs: update changelog for v0.15.2",
+      "disposition": "inherited-release-documentation"
+    }
+  ],
+  "selectionBug": {
+    "symptom": "On Linux, drag selection is rendered below the pointer.",
+    "environment": "Wayland with GDK_SCALE=2 on a 5120x2880 scale-2 monitor.",
+    "rootCause": "The initial surface-size push multiplies GTK widget-unit dimensions by the scale factor while subsequent GtkGLArea resize handling passes the same unit space through unchanged. At scale 2, libghostty initially receives a surface grid twice the visible size while pointer coordinates follow Ghostty's required content-scale conversion.",
+    "proposedFix": "Pass gtk_widget_get_width/height through unchanged in pushSize, retain content scale and pointer scaling, and correct the resize comment.",
+    "status": "root-cause-identified-awaiting-isolated-resize-confirmation"
+  }
+}

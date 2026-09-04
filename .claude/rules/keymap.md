@@ -8,6 +8,15 @@ paths:
   - "agtermCore/Sources/agtermCore/ConfigPaths.swift"
   - "agterm/Commands/CustomCommandRunner.swift"
   - "agtermUITests/KeymapUITests.swift"
+  - "agterm-linux/Sources/AgtermLinux/KeymapDispatch.swift"
+  - "agterm-linux/Sources/AgtermLinux/Palette.swift"
+  - "agterm-linux/Sources/AgtermLinux/LinuxKeyboardPolicy.swift"
+  - "agterm-linux/Sources/AgtermLinux/WindowManager.swift"
+  - "agterm-linux/Sources/AgtermLinux/AppControllerSurfaces.swift"
+  - "agterm-linux/Sources/AgtermLinux/SettingsKeyMappingPage.swift"
+  - "agterm-linux/Sources/AgtermLinux/LinuxSettingsController.swift"
+  - "agterm-linux/Sources/AgtermLinux/ControlActions+AppController.swift"
+  - "agterm-linux/Tests/AgtermLinuxTests/LinuxKeymapTests.swift"
 ---
 
 ## Keymap
@@ -212,6 +221,11 @@ paths:
 - File > Reload Keymap, the palette entry, and `keymap.reload` all call
   `AppActions.reloadKeymap()` > `SettingsModel.reloadKeymap()`, which reparses and posts
   `.agtermKeymapChanged`. Apply the Control API four-point audit.
+- Linux caches the parsed keymap per `AppController`. Every explicit reload must use
+  `reloadKeymapAllWindows(reportingIn:)`; never reload only the acting window or hand-write another
+  `gWindows` fan-out. Startup remains per-window through `loadKeymapAtStartup()`. The palette,
+  control command, Settings button, config-directory change, and Edit Keymap overlay-close path must
+  all share the app-wide seam, while caller-side reporting produces at most one toast.
 - Edit Keymap is GUI-only. `AppActions.editKeymap()` opens a 95% floating overlay with
   `ConfigPaths.editorCommand(forPath:)`:
   `${SHELL:-/bin/zsh} -ilc 'exec /bin/sh -c '\''${VISUAL:-${EDITOR:-vi}} "$1"'\'' agterm-config-edit '<path>''`.

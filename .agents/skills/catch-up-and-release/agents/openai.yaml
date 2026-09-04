@@ -1,0 +1,7 @@
+interface:
+  display_name: "Catch Up and Release"
+  short_description: "Guide upstream parity and Linux releases"
+  default_prompt: "Use $catch-up-and-release to catch this fork up with upstream and guide it through a verified Linux release."
+
+policy:
+  allow_implicit_invocation: true

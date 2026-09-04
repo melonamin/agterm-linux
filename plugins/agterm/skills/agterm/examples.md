@@ -62,7 +62,7 @@ attached to it:
 agtermctl zmx kill --target 3f2a --pane left --force
 ```
 
-## Attach a session running on another Mac
+## Attach a session running on another host
 
 List what the other machine offers across every open window, then open one here by its ID. The far side
 has to be in `live` mode, reachable over ssh with key-based auth, and carry `agtermctl` from the cask or
@@ -271,8 +271,9 @@ command "grow right pane" cmd+ctrl+h agtermctl session resize --grow-right 0.05
 command "even split"      cmd+ctrl+0 agtermctl session resize --split-ratio 0.5
 ```
 
-`--split-ratio` is absolute (0..1); `--grow-left`/`--grow-right` are relative nudges. All clamp to
-0.05..0.95 and print the applied fraction.
+`--split-ratio` is the absolute primary-role share (0..1); `--grow-left`/`--grow-right` are relative
+physical-side nudges. Use `--grow-primary`/`--grow-split` when the model role matters. All clamp to
+0.05..0.95 and print the applied primary fraction.
 
 ## Run a program in a blocking overlay and read its status
 
@@ -805,7 +806,8 @@ suffix, capped at 9 cells total. No cell takes input:
 the keyboard navigates a highlight (arrows), Enter jumps into the highlighted session AND focuses that
 exact pane then closes, Esc closes. Open it over the socket with explicit session ids, or with `--mru` to
 pull the window's most-recently-used sessions automatically. The most-recently-used grid also has a built-in
-opener: **⌘⇧G** (the `dashboard` action), **Navigate ▸ Dashboard**, or the command palette's **Dashboard**
+opener — **⌘⇧G** on macOS or **Ctrl⇧M** on Linux (the `dashboard` action), **Navigate ▸ Dashboard** on
+macOS, or the command palette's **Dashboard**
 toggle it auto-sized (the `dashboard --mru --auto-size` equivalent), so the recent-sessions view needs no
 script for the common case.
 
@@ -843,7 +845,8 @@ agtermctl tree --json | jq '.result.tree | {dashboardMembers, dashboardHighlight
 agtermctl dashboard --close
 ```
 
-The MRU grid is already on **⌘⇧G** (the built-in `dashboard` action). Rebind that chord in `keymap.conf`
+The MRU grid is already on **⌘⇧G** on macOS or **Ctrl⇧M** on Linux (the built-in `dashboard` action).
+Rebind that chord in `keymap.conf`
 with `map <chord> dashboard`. To dashboard a FIXED set of explicit ids instead, bind a `keymap.conf` custom
 action (then `agtermctl keymap reload`):
 
@@ -854,9 +857,9 @@ command "Dashboard build hosts" ctrl+a>d /usr/local/bin/agtermctl dashboard "$WE
 `--mru` is mutually exclusive with explicit ids and `--close`, and errors with `no recent sessions` when
 the window has none. The 9-cell cap counts PANES (a split session is two cells), so a set whose panes
 exceed 9 keeps the first 9 panes and the response reports the dropped-pane count; ids are deduped. The
-dashboard and terminal zoom are mutually exclusive (opening one closes the other). Opening/closing resizes
-each pane's pty to/from its cell, so a running program may redraw — view-only means no input, not no
-process effect.
+dashboard and terminal zoom are mutually exclusive (opening one closes the other). macOS reparents panes
+and resizes their ptys to/from their cells. Linux mirrors the live panes without reparenting, so it keeps
+their existing geometry unless a fixed/automatic Dashboard font changes the terminal grid temporarily.
 
 ## Ask the user to choose from a generated list
 

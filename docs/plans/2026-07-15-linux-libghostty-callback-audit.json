@@ -1,0 +1,12 @@
+{
+  "ghosttyRevision": "4dcb09ada0c0909717d92547623b26eafa50ca8a",
+  "callbacks": [
+    {"name": "action_cb", "borrowedData": "action union", "boundary": "handled synchronously on app tick", "disposition": "length-delimited URL copied before launch; other strings consumed synchronously"},
+    {"name": "close_surface_cb", "borrowedData": "surface userdata", "boundary": "GLib main queue", "disposition": "GhosttySurface retained before queue hop"},
+    {"name": "read_clipboard_cb", "borrowedData": "request state", "boundary": "GTK async clipboard", "disposition": "libghostty request state remains live by callback contract; surface retained until completion; GTK text copied immediately"},
+    {"name": "confirm_read_clipboard_cb", "borrowedData": "content and request state", "boundary": "GLib main queue and prompt completion", "disposition": "content copied synchronously; surface retained; request state returned only while retained request is live"},
+    {"name": "write_clipboard_cb", "borrowedData": "content array and MIME/data strings", "boundary": "GLib main queue and prompt completion", "disposition": "matching text copied synchronously before queue hop; surface retained"},
+    {"name": "wakeup_cb", "borrowedData": "none", "boundary": "GLib idle source", "disposition": "no borrowed callback data captured"}
+  ],
+  "result": "No borrowed C string or array crosses an actor, GLib, or asynchronous callback boundary without a synchronous Swift-owned copy."
+}

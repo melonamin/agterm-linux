@@ -52,9 +52,14 @@ struct RemoteSessionTests {
         defer { fake.cleanUp() }
         try fake.installAgtermctl(exitCodes: [0])
 
+        let shell = ["/bin/tcsh", "/usr/bin/tcsh"].first {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }
+        guard let shell else { return }
+
         // sshd runs it through the ACCOUNT's shell, and a bare VAR=value assignment is a syntax error in
         // tcsh; unwrapped, the whole read fails before the first agtermctl
-        let run = try fake.runRemote(RemoteSession.treeCommand(host: "buildbox"), shell: "/bin/tcsh")
+        let run = try fake.runRemote(RemoteSession.treeCommand(host: "buildbox"), shell: shell)
 
         #expect(run.status == 0)
         #expect(try fake.calls() == [["zmx", "tree", "--json"]])

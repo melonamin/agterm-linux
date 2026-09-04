@@ -83,6 +83,7 @@ public enum Command: String, Codable, Sendable {
     case pickResult = "pick.result"
     case pickCancel = "pick.cancel"
     case restoreClear = "restore.clear"
+    case recentClear = "recent.clear"
     case version = "version"
     case restoreCapture = "restore.capture"
     case restoreMode = "restore.mode"
@@ -183,7 +184,9 @@ public struct ControlArgs: Codable, Sendable, Equatable {
     public var position: String?
     /// The `background-image-repeat` flag for `session.background`; nil = false.
     public var repeats: Bool?
-    /// Which split pane to focus for `session.focus` (`left`|`right`|`other`, `other` toggles); to read for
+    /// Which split pane to focus for `session.focus` (`primary`|`split` roles, physical
+    /// `left`|`right`|`top`|`bottom`, or `other`, which toggles); which pane a `session.resize`
+    /// `ratioDelta` grows (`primary`|`split` roles or the same four physical positions); to read for
     /// `session.text` (`left`|`right`, omitted = the focused pane, no `other`); `session.type` injects into
     /// (`left`|`right`, omitted = left/main); set `session.status` (`left`|`right`|`scratch`, omitted =
     /// `left`/main, parsed to `StatusPane`); and `session.restore` pins (same `StatusPane` spelling, omitted
@@ -207,9 +210,10 @@ public struct ControlArgs: Codable, Sendable, Equatable {
     /// Absolute primary-pane split fraction (0...1) for `session.resize`, clamped server-side to
     /// `AppStore.splitRatioMin...splitRatioMax`. Mutually exclusive with `ratioDelta`.
     public var ratio: Double?
-    /// Signed relative split-divider nudge for `session.resize`: a positive fraction grows the PRIMARY
-    /// pane, negative grows the split pane. Applied to the session's
-    /// current fraction (0.5 when never moved). Mutually exclusive with `ratio`.
+    /// Relative split-divider nudge for `session.resize`. With a resize `pane`, its signed magnitude grows
+    /// that role or physical position; without `pane`, the legacy form remains a signed PRIMARY-pane
+    /// delta. Applied to the session's current fraction (0.5 when never moved). Mutually exclusive with
+    /// `ratio`.
     public var ratioDelta: Double?
     /// For `session.text` / `quick.text`: read the full screen + scrollback instead of just the visible screen.
     public var all: Bool?
@@ -452,8 +456,8 @@ public struct ControlResult: Codable, Sendable, Equatable {
     /// and `session.search`'s total match count (whose "N of M" display string rides in `text`).
     public var count: Int?
     /// Number of things actually changed: sessions for a batch mutation (`session.close`/`session.move`),
-    /// daemons killed for `zmx.prune`. Separate from `count`, whose CLI rendering is specific to
-    /// diagnostics/search results.
+    /// daemons killed for `zmx.prune`, or recently closed entries removed by `recent.clear`. Separate from
+    /// `count`, whose CLI rendering is specific to diagnostics/search results.
     public var affected: Int?
     /// The current/affected theme name for `theme.set` (echo) and `theme.list` (current); nil =
     /// ghostty's built-in colors ("default ghostty"), distinct from the seeded `agterm` app default.
@@ -574,4 +578,8 @@ public enum PaneOverlayError {
 /// broken notification path (issue #286). Shared so wording and matchers cannot drift.
 public enum ControlNotify {
     public static let bannersOffNote = "badge updated, but \"Show notification banners\" is off, so no banner was posted"
+}
+/// Error text for `recent.clear`, shared by both host adapters so automation sees one stable failure.
+public enum RecentClearError {
+    public static let persistenceFailed = "could not clear recent items"
 }

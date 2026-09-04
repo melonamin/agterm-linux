@@ -68,10 +68,11 @@ session drag are out of scope.
   `Debouncer`; structural mutations save synchronously and cancel pending saves.
 - Quit uses `applicationShouldTerminate` and a warning alert with host-free `openCounts` and
   `QuitPrompt.message`. Skip it for system shutdown/restart/logout, no open windows, XCUITest, or an
-  unwired library during the first roughly four seconds. The system-quit half is host-free in
-  `QuitReason.isSystemQuit` and covered by `QuitReasonTests`.
-  The keyword must come from `kAEQuitReason`, because `AEKeyword("why?")` resolves to
-  `UInt32.init?(String)` and is always nil.
+  unwired library during the first roughly four seconds. The system-quit policy is host-free in
+  `QuitReason.isSystemQuit(reasonTypeCode:)` and covered by `QuitReasonTests`.
+  The macOS host must read the Apple Event attribute with `kAEQuitReason` and pass only its plain `UInt32`
+  type code into the host-free core.
+  `AEKeyword("why?")` resolves to `UInt32.init?(String)` and is always nil.
   The reason is an attribute, not a param, despite `AERegistry.h` calling it a parameter: loginwindow
   writes it with `AEPutAttributePtr`. Never switch that read to `paramDescriptor`.
   The GUI-only prompt is keep-in-sync exempt and manually verified.

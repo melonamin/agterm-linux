@@ -245,10 +245,10 @@
               margin: 0 0 20px;
             "
           >
-            agterm
+            agterm-linux
           </h1>
           <p style="font-size: 19px; line-height: 1.6; color: #bfbab0; margin: 0 0 8px">
-            A native macOS terminal with a deliberately small interface and a full control API.
+            The GTK4/libadwaita Linux port of agterm, tracking the upstream terminal and control model.
           </p>
 
           <!-- OVERVIEW -->
@@ -281,6 +281,11 @@
               For the real terminal work — rendering, VT parsing, and shell I/O — agterm embeds
               <a href="https://ghostty.org" style="color: #6d82f3">Ghostty</a>'s engine (libghostty); everything above is agterm's
               own.
+            </p>
+            <p style="font-size: 16px; line-height: 1.7; color: #cbc6bc; margin: 0 0 24px">
+              The maintained Linux branch includes terminal zoom, multi-session batch selection, close undo, dual light/dark
+              themes, and the v0.11 control API. GTK4 restores window size but not position: Wayland compositors own placement,
+              and the Linux frontend omits unsupported x/y geometry on both Wayland and X11.
             </p>
             <div
               style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 8px"
@@ -375,14 +380,14 @@
                 line-height: 1.6;
               "
             >
-              <strong style="color: #6d82f3; font-family: &quot;JetBrains Mono&quot;, monospace">Available now</strong> — Signed,
-              notarized builds are published on the
-              <a href="https://github.com/umputun/agterm/releases" style="color: #6d82f3">releases page</a>. Install via Homebrew
-              or the direct download below; building from source is optional.
+              <strong style="color: #6d82f3; font-family: &quot;JetBrains Mono&quot;, monospace">Linux fork</strong> — Relocatable
+              Linux artifacts are published on the
+              <a href="https://github.com/melonamin/agterm-linux/releases" style="color: #6d82f3">agterm-linux releases page</a>.
+              macOS users should use the upstream agterm releases.
             </div>
             <p style="font-size: 16px; line-height: 1.7; color: #cbc6bc; margin: 0 0 20px">
-              Releases are signed and notarized for Apple Silicon (arm64) Macs running macOS 14 or later, so they open without any
-              Gatekeeper workaround.
+              Linux artifacts bundle agterm, the Swift runtime, libghostty, and Ghostty resources. GTK4 and libadwaita come from
+              the host distribution. Extract the tarball and run <code>./agterm-linux/bin/agterm-linux</code>.
             </p>
             <h3
               style="
@@ -393,7 +398,7 @@
                 margin: 28px 0 12px;
               "
             >
-              Homebrew
+              macOS upstream (Homebrew)
             </h3>
             <div
               style="
@@ -2108,7 +2113,7 @@
             >
               agtermctl session split toggle --axis horizontal<br />agtermctl session split close
               <span style="color: #6b727a">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;# vertical=left/right; horizontal=top/bottom</span><br />agtermctl session resize --split-ratio 0.7
-              <span style="color: #6b727a">&nbsp;# primary fraction; grow role/position aliases also work</span><br />agtermctl session scratch toggle
+              <span style="color: #6b727a">&nbsp;# primary-role fraction; directional grow options follow physical sides</span><br />agtermctl session scratch toggle
               <span style="color: #6b727a">&nbsp;&nbsp;&nbsp;&nbsp;# on|off|toggle</span><br />agtermctl session flag on
               <span style="color: #6b727a">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;# on|off|toggle|clear</span><br />agtermctl session seen --target 9f3c
               <span style="color: #6b727a">&nbsp;# clear the unseen badge, focus-free</span><br />agtermctl

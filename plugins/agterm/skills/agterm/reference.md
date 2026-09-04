@@ -7,17 +7,18 @@ Full detail for every `agtermctl` command. See `SKILL.md` for the model and addr
 
 - **Socket resolution** (when `--socket` is omitted): `AGTERM_SOCKET` is the path the running app
   bound; agtermctl resolves the same rendezvous: `<AGTERM_STATE_DIR>/agterm.sock`, else
-  `<$HOME>/Library/Application Support/agterm/agterm.sock`. Passing `--socket "$AGTERM_SOCKET"` is the
-  safe explicit form.
+  `<$HOME>/Library/Application Support/agterm/agterm.sock` on macOS or
+  `${XDG_DATA_HOME:-$HOME/.local/share}/agterm/agterm.sock` on Linux. Passing
+  `--socket "$AGTERM_SOCKET"` is the safe explicit form.
 - **`--json`**: prints the raw response object. Without it, ordinary mutations print `ok`, batch
   close/move prints the affected session count, and `tree`/`window list` print a human listing. Use
   `--json` when you need to read ids or values back.
 - **Response shape**: `{"ok": true, "result": {…}}` or `{"ok": false, "error": "<message>"}`.
   `result` carries one of: `id` (affected/new session/workspace/window), `text` (session copy/text),
   `exitCode` (overlay result), `count` (diagnostics/search), `restore` (the restore-mode policy),
-  `zmx` (the daemon inventory), `remote` (another Mac's attachable sessions, for `zmx tree`),
+  `zmx` (the daemon inventory), `remote` (another SSH host's attachable sessions, for `zmx tree`),
   `affected` (things actually changed: sessions
-  for a batch close/move, daemons killed for `zmx prune`), `tree` (the tree), `windows` (window list), `app` (the serving app's identity, for
+  for a batch close/move, daemons killed for `zmx prune`, or recent entries removed), `tree` (the tree), `windows` (window list), `app` (the serving app's identity, for
   `version`). The process exit code is non-zero when
   `ok` is false.
 - **Options go after the subcommand**: `agtermctl session type "ls" --target active`, never before it.
@@ -127,13 +128,13 @@ local session, and never present after a relaunch because a remote session is ne
 read THIS to decide whether a session has a split, because a hidden split reports `split: false` while
 its pane stays alive, and it is present exactly when `splitRatio`/`splitFocused` can be),
 `splitAxis` (`vertical` for left/right or `horizontal` for top/bottom; omitted when there is no split),
-`splitRatio` (the primary-pane fraction 0.05-0.95, left or top, of a session that HAS a split,
+`splitRatio` (the primary-role pane fraction 0.05-0.95 of a session that HAS a split,
 shown or hidden; omitted when there's no split or the ratio was never explicitly set (divider at the
 default 0.5) — the read side
 of `session resize`, record it to restore the exact divider position),
-`splitFocused` (which pane holds focus in a session that HAS a split: `true` = the split/right/bottom pane,
-`false` = the primary/left/top pane; omitted when there's no split; the read side of `session focus`, record it
-to restore focus via `session focus left|right`),
+`splitFocused` (which MODEL role holds focus in a session that HAS a split: `true` = split, `false` = primary;
+omitted when there's no split; the read side of `session focus`, record it to restore focus via
+`session focus primary|split`),
 `commandWait`/`splitCommandWait` (whether either pane's `--command` was created with `--wait` to hold open
 after exit, the read side of `session new --wait`; each omitted for a plain or non-holding pane),
 `overlay` (overlay shown),
@@ -511,13 +512,14 @@ error keeps those names for compatibility.
   persisted. Unknown mode errors. The tree's `scratch` flag tracks visibility.
 - `session focus [primary|split|left|right|top|bottom|other] [--target] [--window W]` - move keyboard focus between the two
   split panes (`other` toggles, the default). Errors when the session has no split. Works whether the
-  split is shown in either orientation or hidden (maximized). When hidden, focusing a pane swaps which one shows.
+  split is shown in either orientation or hidden (maximized). When hidden, focusing a pane swaps which one
+  shows. Primary/split address model roles; left/right/top/bottom address physical sides.
 - `session resize (--split-ratio R | --grow-left D | --grow-right D | --grow-primary D | --grow-split D | --grow-top D | --grow-bottom D) [--target] [--window W]` - move the
   split DIVIDER (the divider is otherwise mouse-only: drag it, or double-click it for an even split. No
   GUI/menu/keymap action reaches any other fraction, so bind a key by mapping a
   `command "agtermctl session resize …"` custom action). Provide exactly one form:
-  `--split-ratio` sets the absolute primary-pane fraction (`0..1`, left or top). The grow options are
-  equivalent role/position aliases: primary/left/top versus split/right/bottom. The result is clamped to
+  `--split-ratio` sets the absolute primary-role pane fraction (`0..1`). Primary/split grow selectors
+  follow model roles; left/right/top/bottom follow physical sides. The result is clamped to
   `0.05..0.95` and persisted, and the applied (clamped) fraction is printed (and returned as `result.ratio`
   under `--json`). Errors when the session has no split. Resizing a hidden split updates the stored
   fraction; it takes effect when the split is next shown.
@@ -799,6 +801,33 @@ Two simpler routes fail and are why the overlay is needed: emitting graphics esc
 tool stdout (the harness escapes the control bytes) and running an image viewer in the agent's tool
 shell (no controlling terminal — `/dev/tty` errors). See examples.md for usage.
 
+## Linux integration management
+
+These Linux-only commands inspect or install local files and never connect to the agterm control
+socket. They work when the app is stopped, ignore `--socket`, and are not counted among the 60 runtime
+control commands above.
+
+- `integration status [--json]` — inspect the command-line tool, Claude Code hooks, Codex hooks, and
+  agent skill in that stable order. JSON is `{"items":[...]}`; each item has `kind`, `state`, `path`,
+  optional `version`, and `detail`. `state` is `not-installed`, `installed`, `update-available`,
+  `partial`, `conflict`, or `unavailable`.
+- `integration install hooks [--dry-run] [--json]` — preview or safely apply the shared Claude/Codex
+  hook plan. It preserves settings, symlinks, file modes, and backups; malformed files or unrelated
+  custom hooks are conflicts.
+- `integration install skill [--dry-run] [--json]` — preview or safely install/update the bundled
+  skill in detected Claude Code and Codex destinations. It replaces only agterm-managed content.
+
+Install JSON contains `kind`, `steps`, `warnings`, `conflicts`, and `canApply`; applied output also
+contains structured per-operation results and protected targets skipped while independent safe targets were applied.
+`--dry-run` never writes. Exit `2` means a protected
+conflict, `4` means a write failed after preview, `1` means unavailable bundled resources, and `64`
+means a malformed command line.
+
+DEB/RPM installations report `/usr/bin/agtermctl` as package-managed and leave updates to the package
+manager. Tar and development builds can create an agterm-owned `~/.local/bin/agtermctl` launcher from
+Preferences ▸ Integrations. AppImage and Flatpak builds do not create a launcher into a temporary or
+sandbox-local executable path.
+
 ## window
 
 - `window new [name] [--minimized]` — create and open a window; returns its id. It replies only once
@@ -813,14 +842,16 @@ shell (no controlling terminal — `/dev/tty` errors). See examples.md for usage
   height, display}` in the SAME units `window move`/`window resize` take — `x`/`y` top-left relative to
   `display`, y down — omitted for a closed window; the read side of `window move`/`window resize`, so
   record it, move/resize, then restore the exact frame), plus `fullscreen`, `zoomed` and `minimized`
-  (whether the window is in native full screen / zoomed-to-screen / minimized to the Dock — the read side
+  (whether the window is in native full screen / zoomed-to-screen / minimized — the read side
   of `window fullscreen` / `window zoom` / `window minimize`, so a script can act idempotently; all omitted
-  for a closed window). A MINIMIZED window still reports its `geometry` — the frame it comes back to — so a
+  for a closed window). On macOS, a minimized window still reports its `geometry` — the frame it comes back to — so a
   re-align script can include one. The `geometry`/`fullscreen`/`zoomed`/`minimized` fields stay current —
   the cache is refreshed when a window moves/resizes/zooms/enters or exits full screen/minimizes or
   restores, so a hand-drag or GUI toggle is reflected without needing another command. (`autoFollowMs`
   still reflects the last cache refresh, since a settings change is rare; and unlike `tree`, `window.list`
   does NOT carry `idleMs` — the live idle metric would freeze in the cache.)
+  The GTK Linux frontend omits `geometry`: it restores and clamps size, but GTK4 does not provide
+  reliable restorable x/y placement on Wayland or X11.
 - `window select <id>` — raise it if open, else open it.
 - `window close <id>` — close the on-screen window (the bundle is kept; reopen with select).
 - `window rename <id> <name>`.
@@ -836,7 +867,7 @@ shell (no controlling terminal — `/dev/tty` errors). See examples.md for usage
   The window must be open. This is the control half of the double-click-on-header gesture (a plain green-button
   click does native full screen, not zoom — Option-click the green button to zoom); `resize`/`move` are
   control-native, but `zoom` mirrors a GUI action.
-- `window fullscreen <id>` — toggle NATIVE macOS full screen (a separate Space, auto-hidden menu bar),
+- `window fullscreen <id>` — toggle native full screen (a separate Space on macOS; desktop full screen on Linux),
   via `NSWindow.toggleFullScreen`. A second call exits. The window must be open. This is the control half
   of ⌃⌘F (rebindable as `toggle_fullscreen`), View ▸ Enter/Exit Full Screen, and the green
   traffic-light button — distinct from `zoom`, which only maximizes the frame in the same Space.
@@ -924,8 +955,9 @@ A cell placed by a `:right` ref FOLLOWS its pane through promotion: when a split
 exits, agterm promotes the survivor into the primary slot, and the grid rewrites that cell to `<id>:left`
 rather than dropping it, so a dashboard built to watch an agent in the split pane keeps watching it.
 
-The most-recently-used grid also has a GUI opener: **⌘⇧G** (the `dashboard` built-in action, rebindable
-in `keymap.conf`), **Navigate ▸ Dashboard**, and the command palette's **Dashboard** entry all TOGGLE the
+The most-recently-used grid also has a GUI opener — **⌘⇧G** on macOS or **Ctrl⇧M** on Linux (the
+`dashboard` built-in action, rebindable in `keymap.conf`), **Navigate ▸ Dashboard** on macOS, and the
+command palette's **Dashboard** entry all TOGGLE the
 frontmost window's dashboard: open it over the window's most-recently-used sessions auto-sized (identical to
 `dashboard --mru --auto-size`) when closed, close it when open. It is a no-op while terminal zoom is active.
 There is no new control command for it — the socket `dashboard` command is unchanged.
@@ -945,10 +977,10 @@ font untouched. The applied size and mode read back on the tree's top-level `das
 `dashboardHighlighted` (each a `<session-id>:left`/`<session-id>:right` pane ref).
 
 The dashboard and terminal zoom are **mutually exclusive**: opening a dashboard closes any active zoom,
-and a zoom becoming active while the dashboard is open closes the dashboard. Opening (and closing) the
-dashboard resizes each pane's pty to (and back from) its cell, so a running program receives a resize
-event and may redraw — "view-only" means no input reaches the cell, not that the pane's process is
-untouched.
+and a zoom becoming active while the dashboard is open closes the dashboard. On macOS, opening (and
+closing) reparents each pane and resizes its pty to (and back from) its cell. Linux instead mirrors each
+live pane at its existing geometry without reparenting its GL surface; fixed and automatic font modes can
+still resize the pane's grid temporarily. In either case, "view-only" means no input reaches a cell.
 
 Invalid invocations error (rejected at the CLI and re-checked server-side): `--font-size` with
 `--auto-size`, a non-positive `--font-size`, `--close` combined with ids, `--mru`, or a font option,
@@ -1081,10 +1113,12 @@ expect points to convert to columns without one.
 
 ## notify
 
-`agtermctl notify <body> [--title T] [--target] [--window W]` — post a macOS desktop notification
+`agtermctl notify <body> [--title T] [--target] [--window W]` — post a desktop notification
 attributed to a session (default: the active session of the frontmost window). `--title` defaults to
-the session name. Clicking the banner reveals that session. This is the only app-level way to post a
-banner (the terminal's own OSC 9/777 is the other source). Control-native (no GUI/menu equivalent).
+the session name. Clicking the banner reveals that session and reopens its encoded window if needed.
+An explicit control notification bypasses focused-pane suppression; the terminal's own OSC 9/777 is
+suppressed when its exact surface is already focused in the active window. Control-native (no
+GUI/menu equivalent).
 
 The banner is gated by **Settings ▸ Notifications ▸ Show notification banners**; the unseen badge is
 not. With banners off the command still succeeds and still raises the badge, but nothing reaches macOS
@@ -1160,19 +1194,23 @@ Key Mapping). Three verbs, line-based; blank lines and `#` comments ignored:
   marked `custom`. The quoted name may contain spaces. The post-name token is the chord only if it
   parses AND carries a modifier (a bare modifier-less key is rejected). A custom chord may be a leader
   sequence (chords joined by `>`, e.g. `ctrl+a>g`). No chord → palette-only.
-- `global-hotkey <chord>` — bind ONE system-wide chord that summons the quick terminal while any
+- `global-hotkey <chord>` — on macOS, bind ONE system-wide chord that summons the quick terminal while any
   application is frontmost. Unset unless the line is present. Exactly one chord: no alternatives, no
   leader sequence, and it must carry a modifier. A second line replaces the first. macOS registers it
   by physical key position, so it survives a layout switch. It is registered with the OS rather than
   agterm's own monitor, so it takes NO part in the collision rules below — it may share a chord with a
   menu item, and whichever application is frontmost decides who gets the key.
 
+On Linux, the verb is accepted for shared configuration compatibility but is not registered with the
+desktop or compositor.
+Quick Terminal remains in-window and its ordinary `quick_terminal` map is app-local.
+
 Either verb's chord token may hold **alternatives** joined by `|`, with no spaces around it (everything
 after the first token is the shell line): `map cmd+t|ctrl+space>s toggle_split` fires the action from
 either. A built-in's first single-chord alternative the menu can carry becomes its menu shortcut (one that
 names a reserved chord or a bare arrow is diagnosed and dropped, and the next single chord takes the slot);
 every other alternative, and every alternative of a `command`, is delivered by a key monitor and so must
-carry a modifier on its first chord. `global-hotkey` is outside all of this: the OS owns it, and it WINS —
+carry a modifier on its first chord. On macOS, `global-hotkey` is outside all of this: the OS owns it, and it WINS —
 agterm frontmost included — so a chord it shares with a menu action fires the panel and the menu binding
 never sees it. A `map` line with no single-chord alternative
 (`map ctrl+a>s toggle_split`) leaves the action with NO menu shortcut — its shipped default is gone, not
@@ -1186,7 +1224,8 @@ with Shift is written `shift+<base>` (`shift+/` = `?`, `shift+=` = `+`, `shift+5
 not the shifted glyph. `+`/`>` can't be a bare key token (they are the separators), though those keys are
 bindable via `shift+=`/`shift+.`. A `map` line may not bind a bare, modifier-less arrow (`map left …`) —
 a built-in rides an always-on menu key-equivalent, so a bare arrow would swallow the key everywhere;
-any modifier makes it bindable. Some chords are reserved (the Ctrl-Tab switcher, Ctrl-1/2 pane focus)
+any modifier makes it bindable. Some chords are reserved (the Ctrl-Tab switcher, Ctrl-1/2 pane focus,
+and Linux Ctrl+, Preferences shortcut)
 and cannot be bound.
 
 Custom-command tokens (expanded into the `/bin/sh -c` line, raw — prefer the quoted `$AGT_*` env form
@@ -1202,6 +1241,10 @@ so `{AGT_SESSION_NAME}` and `{AGT_SESSION_PWD}` are as untrusted as `{AGT_SELECT
   `scratch` (the session's scratch terminal). Feed it back as `session type --pane "$AGT_PANE"` to type
   into the very pane the shortcut was pressed in.
 - Plus the other `$AGT_*` context vars the runner exports.
+
+Linux runs custom commands detached with stdin, stdout, and stderr connected to `/dev/null`.
+A spawn error or non-zero exit appears as a transient toast only in the originating window while that
+controller incarnation remains open.
 
 Built-in action names for `map` include: `new_window`, `new_workspace`, `new_session`,
 `open_directory`, `rename_session`, `duplicate_session`, `close_session`, `reopen_recent`, `undo_close`, `clear_status`, `increase_font_size`,
@@ -1262,6 +1305,13 @@ output prints `ok`. App-global (no `--window`). The GUI's live-preview picker (V
 is keyboard-only — committing it replaces the CURRENT appearance's side when syncing (the pair is
 kept); over the socket `theme set` is the commit, with no preview.
 
+## recent
+
+`agtermctl recent clear` — clear the app-wide list of recently closed sessions and workspaces.
+The same operation is available as **Clear Recent Items** in the Linux command palette and
+**File ▸ Open Recent ▸ Clear Menu** on macOS.
+Returns `result.affected`, the number of entries removed; app-global (no `--window`).
+
 ## restore modes
 
 **Settings ▸ General ▸ Restore sessions** chooses one global launch mode. The process keeps the mode it
@@ -1270,7 +1320,8 @@ started with, so a change applies after restarting agterm.
 - **Fresh shells** restores the structural snapshot with new shells.
 - **Re-run commands** starts captured commands again. The old processes are not attached.
 - **Live sessions** wraps primary and split panes with zmx and reattaches to their running processes. Zsh
-  must be the macOS login shell. Scratch, overlay, and quick terminals remain temporary.
+  must be zsh on both frontends, with bundled zmx and zsh integration available. Scratch, overlay, and
+  quick terminals remain temporary.
 
 Closing agterm or sending it SIGTERM ends the attach clients and leaves live daemons running. A clean quit
 also captures each live pane's foreground command, so a daemon missing after an orderly machine restart is

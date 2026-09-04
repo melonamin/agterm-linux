@@ -20,7 +20,7 @@ struct Zmx: ParsableCommand {
 
     struct Attach: RequestCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Attach to a session on another Mac, as a session here.",
+            abstract: "Attach to a session on another host, as a session here.",
             discussion: """
             Takes a host and the id of one of the sessions `zmx tree` listed, and opens it in this window \
             marked as remote. A remote session with a split arrives with the same split.
@@ -47,7 +47,7 @@ struct Zmx: ParsableCommand {
 
     struct Tree: RequestCommand {
         static let configuration = CommandConfiguration(
-            abstract: "List the sessions that can be attached to, here or on another Mac.",
+            abstract: "List the sessions that can be attached to, here or on another host.",
             discussion: """
             With a HOST, runs over ssh against a machine that is also running agterm and reports what it \
             offers, across every one of its open windows. Feed the result to a picker and hand what the \

@@ -502,8 +502,8 @@ final class ControlServer {
                 .windowNew, .windowList, .windowSelect,
                 .windowClose, .windowRename, .windowDelete, .windowResize, .windowMove, .windowZoom,
                 .windowFullscreen, .windowMinimize,
-                .restoreClear, .restoreCapture, .restoreMode, .zmxList, .zmxPrune, .zmxKill, .zmxTree,
-                .zmxAttach, .dashboard, .version:
+                .restoreClear, .restoreCapture, .restoreMode, .recentClear, .zmxList, .zmxPrune,
+                .zmxKill, .zmxTree, .zmxAttach, .dashboard, .version:
             return ControlResponse(ok: false, error: "control dispatcher did not handle \(request.cmd.rawValue)")
         case .debugAppearance:
             return setDebugAppearance(args: request.args)
@@ -561,6 +561,14 @@ final class ControlServer {
                 + "failed; those windows keep their captured commands on disk until they save successfully")
         }
         return ControlResponse(ok: true)
+    }
+
+    func clearRecentClosedItems() -> ControlResponse {
+        let affected = library.recentClosedItems.count
+        guard library.clearRecentClosedItems() else {
+            return ControlResponse(ok: false, error: RecentClearError.persistenceFailed)
+        }
+        return ControlResponse(ok: true, result: ControlResult(affected: affected))
     }
 
     /// The restore-mode policy: settings, this launch's request, and what it got.

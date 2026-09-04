@@ -364,6 +364,11 @@ extension AppStore {
         return true
     }
 
+    /// Removes HUD body files before a host discards this whole store without closing its sessions one by one.
+    public func discardHudBodies() {
+        workspaces.flatMap(\.sessions).forEach { $0.discardHudBody() }
+    }
+
     /// Opens a HUD in the session's overlay slot: a passive message panel rendered by the app's bundled
     /// helper, which `command` runs and which re-reads `file` every tick. Always FLOATING and always within
     /// `HudLayout.clampSizePercent` — the app's measurement or the caller's `spec.sizePercent`, whichever
@@ -437,8 +442,8 @@ extension AppStore {
     /// on explicit close and when the program exits. No-op (false) with no overlay on that pane.
     @discardableResult public func closePaneOverlay(_ sessionID: UUID, pane: OverlayPane) -> Bool {
         guard let session = session(withID: sessionID), session.paneOverlay(pane) != nil else { return false }
-        session.setPaneOverlay(nil, pane: pane)
         session.paneOverlaySurface(pane)?.teardown()
+        session.setPaneOverlay(nil, pane: pane)
         session.setPaneOverlaySurface(nil, pane: pane)
         return true
     }

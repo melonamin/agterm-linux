@@ -1,9 +1,10 @@
 # agterm project notes
 
-agterm is a native macOS SwiftUI terminal on libghostty with a workspace-to-session sidebar.
+agterm is upstream's native macOS SwiftUI terminal on libghostty; this fork also maintains the native
+GTK4/libadwaita Linux frontend under `agterm-linux/`.
 Read `site/docs.html` for product behavior and `ARCHITECTURE.md` for modules, surface ownership, and
 C-boundary concurrency before changing the bridge.
-`README.md` is the product synopsis, not the reference.
+`README.md` is the Linux fork, installation, and maintenance synopsis, not the full product reference.
 
 ## Working norms
 
@@ -50,8 +51,8 @@ C-boundary concurrency before changing the bridge.
 
 ## Toolchain and gates
 
-- Xcodegen creates the app project; Xcode 26 builds it. Call `xcodegen`, `xcodebuild`, and `swift`
-  directly through repository scripts; `mise` is unused.
+- Upstream macOS uses Xcodegen and Xcode 26. Linux CI and releases use the workflow-pinned Swift and
+  SwiftLint versions through `mise`; repository scripts remain the source of truth.
 - Swift 6 `agtermCore` uses complete concurrency checking and has no Xcode/libghostty dependency.
 - `scripts/setup.sh` builds pinned libghostty and zmx with Homebrew `zig@0.16` and Xcode's Metal Toolchain.
   It is idempotent after artifacts exist.
@@ -222,9 +223,9 @@ C-boundary concurrency before changing the bridge.
   Edge cases, minor bugs, and other small findings never block the PR: approve and merge, leaving a note
   for the contributor. That note is where a recipe finding ends: never file it in `docs/backlog/`, which
   is for code the project owns, and never edit a recipe's prose unprompted.
-- agterm runs only on macOS, so POSIX portability is never a finding by itself. A shellcheck SC3xxx on a
-  recipe is a CI lint gate, not a runtime defect: `/bin/sh` there is bash 3.2 and `printf %q` works.
-  Never propose a bash shebang as the fix; the mac shell is zsh, and CI's `.zsh` path is `zsh -n`.
+- Upstream cookbook recipes may intentionally target macOS shells, while Linux-owned scripts and
+  adapters must meet the Linux fork's portability and packaging contracts. A shellcheck finding is a CI
+  gate, but do not change a recipe's declared shell without validating its authored platform intent.
 
 ## Website
 
@@ -256,6 +257,9 @@ spans intact, and format long catalogs as lists.
 - `notifications.md`: OSC/control notifications, suppression, reveal, badges, status.
 - `ui-tests.md`: launch isolation including FB11763863, AppKit/XCUITest traps, cadence.
 - `libghostty.md`: surfaces, rendering, AppKit, theme, overlays, cursor.
+- `main-loop.md`: pre-GTK-init GDK environment assignments, GTK/GLib deferred-work seam, main-thread hops,
+  cancellation, teardown, and Linux keyboard focus ownership across chrome construction, destructive
+  rebuilds, popovers, and terminal mode changes.
 - `app-icon.md`: adaptive Icon Composer build.
 - `ci.md`: jobs, filters, coverage, badge.
 - `release.md`: local signing, notarization, release, Homebrew, changelog.

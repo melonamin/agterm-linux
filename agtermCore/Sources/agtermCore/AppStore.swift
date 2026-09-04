@@ -120,7 +120,9 @@ public final class AppStore {
 
     @ObservationIgnored var pendingCloseRecords: [UUID: PendingCloseRecord] = [:]
     @ObservationIgnored var pendingCloseOrder: [UUID] = []
-    @ObservationIgnored var pendingCloseTasks: [UUID: Task<Void, Never>] = [:]
+    /// The armed grace finalizer per pending close, held as the `MainTimer` cancel closure it returned:
+    /// calling the stored closure disarms that record's finalization (a no-op once it has fired).
+    @ObservationIgnored var pendingCloseCancels: [UUID: @MainActor () -> Void] = [:]
 
     @ObservationIgnored private let persistence: PersistenceStore
     @ObservationIgnored let recentClosedStore: RecentClosedStore?
@@ -949,5 +951,4 @@ public final class AppStore {
         }
         return nil
     }
-
 }
