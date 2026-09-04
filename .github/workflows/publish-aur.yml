@@ -59,6 +59,8 @@ jobs:
       - name: Regenerate .SRCINFO
         run: |
           docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
             -v "$GITHUB_WORKSPACE/packaging/aur:/pkg" \
             archlinux:base-devel \
             bash -c 'cd /pkg && makepkg --printsrcinfo > .SRCINFO'

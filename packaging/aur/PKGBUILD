@@ -27,7 +27,6 @@ package() {
     install -d "$pkgdir/usr/bin"
     ln -s /usr/lib/agterm-linux/bin/agterm-linux "$pkgdir/usr/bin/agterm-linux"
     ln -s /usr/lib/agterm-linux/bin/agtermctl "$pkgdir/usr/bin/agtermctl"
-    ln -s /usr/lib/agterm-linux/bin/zmx "$pkgdir/usr/bin/zmx"
 
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 \
@@ -36,5 +35,6 @@ package() {
     install -Dm644 \
         "$pkgdir/usr/lib/agterm-linux/share/pixmaps/io.github.melonamin.agterm.png" \
         "$pkgdir/usr/share/pixmaps/io.github.melonamin.agterm.png"
+    install -d "$pkgdir/usr/share/icons"
     cp -a "$pkgdir/usr/lib/agterm-linux/share/icons/hicolor" "$pkgdir/usr/share/icons/"
 }
