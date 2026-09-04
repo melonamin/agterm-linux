@@ -1,0 +1,88 @@
+name: publish AUR package
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: startsWith(github.event.release.tag_name, 'linux-v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Download release checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "agterm-linux-${TAG#linux-}-SHA256SUMS" \
+            --dir /tmp/agterm-release
+          grep "agterm-linux-${TAG#linux-}-x86_64.tar.gz$" \
+            "/tmp/agterm-release/agterm-linux-${TAG#linux-}-SHA256SUMS" \
+            | awk '{print $1}' > /tmp/agterm-tarball.sha256
+
+      - name: Update package metadata
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${TAG#linux-v}"
+          TARBALL_SHA256="$(cat /tmp/agterm-tarball.sha256)"
+          python - "$VERSION" "$TARBALL_SHA256" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          path = Path("packaging/aur/PKGBUILD")
+          text = path.read_text()
+          text = re.sub(r"^pkgver=.*$", f"pkgver={sys.argv[1]}", text, count=1, flags=re.MULTILINE)
+          text, count = re.subn(
+              r"(^sha256sums=\(\n\s*')[0-9a-f]{64}(')",
+              rf"\g<1>{sys.argv[2]}\g<2>",
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if count != 1:
+              raise SystemExit("could not update tarball checksum")
+          path.write_text(text)
+          PY
+
+      - name: Regenerate .SRCINFO
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/packaging/aur:/pkg" \
+            archlinux:base-devel \
+            bash -c 'cd /pkg && makepkg --printsrcinfo > .SRCINFO'
+
+      - name: Publish package to AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          VERSION: ${{ github.event.release.tag_name }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes"
+
+          git clone ssh://aur@aur.archlinux.org/agterm-linux-bin.git /tmp/aur
+          cp packaging/aur/PKGBUILD packaging/aur/.SRCINFO /tmp/aur/
+          cd /tmp/aur
+          git config user.name "agterm-linux release bot"
+          git config user.email "actions@github.com"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+              echo "AUR package is already up to date"
+              exit 0
+          fi
+          git commit -m "Update to ${VERSION#linux-v}"
+          git push
