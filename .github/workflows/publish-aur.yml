@@ -71,7 +71,10 @@ jobs:
           install -d -m 700 ~/.ssh
           printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
           chmod 600 ~/.ssh/aur
-          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          AUR_HOST_KEY="$(ssh-keyscan -t ed25519 aur.archlinux.org 2>/dev/null)"
+          test "$(printf '%s\n' "$AUR_HOST_KEY" | ssh-keygen -lf - | awk '{print $2}')" = \
+            'SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4'
+          printf '%s\n' "$AUR_HOST_KEY" >> ~/.ssh/known_hosts
           export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes"
 
           git clone ssh://aur@aur.archlinux.org/agterm-linux-bin.git /tmp/aur
