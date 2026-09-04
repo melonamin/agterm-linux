@@ -289,7 +289,7 @@ extension AppController: ControlActions {
                 store.moveSession(id, toWorkspace: location.workspace, at: location.index + (after ? 1 : 0))
             }
         }
-        reconcile()
+        reconcile(preferMoving: [id])
         return ok(id)
     }
 
@@ -333,7 +333,7 @@ extension AppController: ControlActions {
                 affected = 0
             }
         }
-        reconcile()
+        reconcile(preferMoving: Set(ids))
         return ControlResponse(ok: true, result: ControlResult(affected: affected))
     }
 
@@ -342,7 +342,7 @@ extension AppController: ControlActions {
         case .failure(let response): return response
         case .success(let id):
             store.reorderWorkspace(id, direction)
-            rebuildSidebarKeepingKeyboard()
+            syncSidebar(preferMoving: [id])
             syncSidebarSelection()
             return ok(id)
         }
@@ -353,14 +353,14 @@ extension AppController: ControlActions {
         case .failure(let response): return response
         case .success(let id):
             store.applyFocusMode(mode, to: id)
-            rebuildSidebarKeepingKeyboard()
+            syncSidebar()
             return ok(id)
         }
     }
 
     func setWorkspaceFilter(window: String?, mode: ControlToggleMode) -> ControlResponse {
         store.applyWorkspaceFilter(mode)
-        rebuildSidebarKeepingKeyboard()
+        syncSidebar()
         return ok()
     }
 
@@ -375,7 +375,7 @@ extension AppController: ControlActions {
             guard let parsed = ControlToggleMode.parse(mode) else { return err("invalid flag mode: \(mode ?? "toggle")") }
             let current = store.session(withID: id)?.flagged ?? false
             store.setFlag(parsed.desiredValue(current: current), forSession: id)
-            rebuildSidebarKeepingKeyboard()
+            syncSidebar()
             return ok(id)
         }
     }
@@ -385,7 +385,7 @@ extension AppController: ControlActions {
         case .failure(let response): return response
         case .success(let id):
             store.clearUnseen(id)
-            rebuildSidebarKeepingKeyboard()
+            syncSidebar()
             return ok(id)
         }
     }
@@ -407,8 +407,7 @@ extension AppController: ControlActions {
             if let sound = update.status.effectiveSound(perCall: update.sound, blockedDefault: blockedDefault) {
                 StatusSoundPlayer.shared.play(sound)
             }
-            rebuildSidebarKeepingKeyboard()
-            updateAttentionButton()
+            syncSidebar()
             return ok(id)
         }
     }
@@ -428,7 +427,7 @@ extension AppController: ControlActions {
             case .off: store.setSplitVisibility(id, shown: false)
             case .toggle: store.toggleSplit(id, axis: axis)
             }
-            reconcile(rebuildSidebar: false)
+            reconcile(syncSidebar: false)
             if store.selectedSessionID == id {
                 sessionFocusTarget(for: id)?.grabFocus(supersedingPopoverCapture: true)
             }
@@ -477,7 +476,7 @@ extension AppController: ControlActions {
                                             primaryInEndSlot: primaryInEndSlot(id))
             store.setPaneFocus(toSplit, forSession: id)
             syncSplit(session)
-            rebuildSidebar()
+            syncSidebar()
             updateTitle()
             if store.selectedSessionID == id {
                 sessionFocusTarget(for: id, wantSplit: toSplit)?
@@ -630,7 +629,7 @@ extension AppController: ControlActions {
                                                                             title: title ?? "", body: body,
                                                                             firingIsFocused: false,
                                                                             appActive: false))
-            rebuildSidebarKeepingKeyboard()
+            syncSidebar()
         }
         let notificationTarget = id.map { TerminalNotification.identity(windowID: windowID, sessionID: $0, pane: .main) }
         if NotificationManager.bannersEnabled {
@@ -706,7 +705,7 @@ extension AppController: ControlActions {
         case .toggle: want = store.sidebarMode == .tree ? .flagged : .tree
         }
         store.setSidebarMode(want)
-        rebuildSidebarKeepingKeyboard()
+        syncSidebar()
         syncSidebarSelection()
         return ok()
     }

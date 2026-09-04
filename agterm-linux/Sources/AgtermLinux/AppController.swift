@@ -114,7 +114,7 @@ final class AppController {
     // state while rooting rebuilt rows); disarmed in `windowWillClose`.
     let selectionRepublish = SelectionRepublishCoordinator()
     var nameLabels: [OpaquePointer: (id: UUID, isWorkspace: Bool)] = [:]  // name label -> rename target (double-click)
-    var sessionNameWidgets: [UUID: OpaquePointer] = [:]
+    let sidebarRuntime = SidebarRuntime()          // rendered snapshot + the widgets it is keyed to
     var workspaceDiscButtons: [OpaquePointer: UUID] = [:]  // disclosure button -> workspace (collapse toggle)
     // The session/workspace currently being inline-renamed (nil = none). One value instead of an
     // id + is-workspace pair, so the "is-workspace" flag can't drift from the id.
@@ -157,7 +157,6 @@ final class AppController {
     var backgroundOpacityPending = false
     var backgroundSettingsSource: guint = 0
     var confirmedClose = false                       // set once the quit-confirm is accepted
-    var badgeEnabled = linuxSettingsStore().load().notificationBadgeEnabled ?? true   // gates the unseen-count pill
     var sessionSwitcher = SessionSwitcherModel()                                  // Ctrl-Tab hold-to-cycle state
     var heldControlKeys = HeldControlKeys()                      // which Ctrl keys are down (the commit signal)
     var contextMenuPopover: OpaquePointer?                       // live row context menu
@@ -310,6 +309,8 @@ final class AppController {
         connect(window, "notify::is-active", unsafeBitCast(onWindowActive as @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
         connect(window, "notify::fullscreened", unsafeBitCast(onWindowFullscreened as @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
         connect(window, "close-request", unsafeBitCast(onWindowCloseRequest as @convention(c) (OpaquePointer?, gpointer?) -> gboolean, to: GCallback.self), me)
+        connect(window, "map", unsafeBitCast(onWindowMapped as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
+        connect(window, "unmap", unsafeBitCast(onWindowUnmapped as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
 
         applyWindowTranslucency()
         applyAutoFollowSettings()
@@ -336,45 +337,25 @@ final class AppController {
         reconcile()
     }
     func selectSession(_ id: UUID, userInitiated: Bool = true) {
-        // selectSession clears the unseen badge + an auto-reset (e.g. `completed`) glyph on BOTH the
-        // visited and the previously-selected session; rebuild the sidebar when either row changes.
         let prev = store.selectedSessionID
-        let focusWasEnabled = store.focusEnabled
-        let needsRefresh = clearedRowChanges(id) || (prev.map(clearedRowChanges) ?? false)
         if prev != id { endSearchForSelectionChange() }
         if userInitiated { noteUserActivity() }
         store.selectSession(id)
-        let focusFilterChanged = focusWasEnabled != store.focusEnabled
         NotificationManager.withdraw(windowID: windowID, sessionID: id)
         showActive()
         syncSidebarSelection()
         updateTitle()
         updateRecentSessionsButton()
-        if needsRefresh || focusFilterChanged { rebuildSidebar() }
+        syncSidebar()
     }
-    /// Whether selecting `id` would change its sidebar row (an unseen badge or an auto-reset glyph clears).
-    private func clearedRowChanges(_ id: UUID) -> Bool {
-        guard let s = store.session(withID: id) else { return false }
-        return s.unseenCount > 0 || (s.agentIndicator.autoReset && s.agentIndicator.status != .idle)
-    }
-
-    /// Re-render the sidebar (public entry so cross-window notification routing can refresh a
-    /// background window's unseen badges after a bump).
-    func refreshSidebar() { rebuildSidebar() }
 
     func navigate(_ dir: SessionNavigation, userInitiated: Bool = true) {
-        let attentionBefore = Set(store.attentionSessions.map(\.id))
         if userInitiated { noteUserActivity() }
         store.navigateSession(dir)
-        let attentionChanged = attentionBefore != Set(store.attentionSessions.map(\.id))
         showActive()
         syncSidebarSelection()
         updateTitle()
-        if attentionChanged {
-            rebuildSidebar()
-        } else {
-            updateAttentionButton()
-        }
+        syncSidebar()
     }
     /// Defer scrolling until the selected sidebar row is allocated.
     func scrollRowIntoView(_ row: OpaquePointer) {
@@ -390,14 +371,12 @@ final class AppController {
             var origin = graphene_point_t()
             var translated = graphene_point_t()
             guard gtk_widget_compute_point(W(row), W(self.sidebarBox), &origin, &translated) != 0 else { return }
-            let ry = Double(translated.y)
-            let rowH = Double(gtk_widget_get_height(W(row)))
-            let value = gtk_adjustment_get_value(adj), page = gtk_adjustment_get_page_size(adj)
-            if ry < value {
-                gtk_adjustment_set_value(adj, ry)
-            } else if ry + rowH > value + page {
-                gtk_adjustment_set_value(adj, ry + rowH - page)
-            }
+            guard let offset = LinuxSidebarPolicy.scrollOffset(
+                rowMapped: gtk_widget_get_mapped(W(row)) != 0,
+                rowY: Double(translated.y), rowHeight: Double(gtk_widget_get_height(W(row))),
+                value: gtk_adjustment_get_value(adj),
+                pageSize: gtk_adjustment_get_page_size(adj)) else { return }
+            gtk_adjustment_set_value(adj, offset)
         } }
     }
 
@@ -557,26 +536,26 @@ final class AppController {
     func toggleFlagActive() {
         guard let id = store.selectedSessionID, let session = store.session(withID: id) else { return }
         store.setFlag(!session.flagged, forSession: id)
-        rebuildSidebar()
+        syncSidebar()
         syncSidebarSelection()
     }
 
     func toggleFlaggedView() {
         store.setSidebarMode(store.sidebarMode == .tree ? .flagged : .tree)
-        rebuildSidebar()
+        syncSidebar()
         syncSidebarSelection()
     }
 
     /// Unflag every session (the palette "Clear Flagged" + the `session.flag clear` control mode).
     func clearFlagged() {
         store.clearFlags()
-        rebuildSidebarKeepingKeyboard()
+        syncSidebar()
     }
 
     /// Expand every workspace (show all sessions) — the palette + `sidebar.expand` control arm.
     func expandWorkspaces() {
         store.setWorkspacesExpanded(Set(store.workspaces.map(\.id)))
-        rebuildSidebarKeepingKeyboard()
+        syncSidebar()
     }
 
     /// Toggle one workspace's collapsed state — the sidebar header disclosure triangle.
@@ -585,14 +564,14 @@ final class AppController {
         cancelPendingWorkspaceToggle()
         let isExpanded = store.workspaces.first(where: { $0.id == wsID })?.isExpanded ?? true
         store.setWorkspaceExpanded(wsID, expanded: !isExpanded)
-        rebuildSidebarKeepingKeyboard()
+        syncSidebar()
     }
 
     /// Collapse every workspace except the active one to a header — the palette + `sidebar.collapse` arm.
     func collapseOtherWorkspaces() {
         let expanded = store.currentWorkspaceID.map { Set([$0]) } ?? []
         store.setWorkspacesExpanded(expanded)
-        rebuildSidebarKeepingKeyboard()
+        syncSidebar()
         syncSidebarSelection()
     }
 
@@ -601,14 +580,14 @@ final class AppController {
         guard let session = store.session(withID: id),
               session.agentIndicator.clearedBy(pane: pane, isInterrupt: isInterrupt) else { return }
         store.setAgentIndicator(AgentIndicator(), forSession: id)
-        rebuildSidebar()
+        syncSidebar()
     }
     /// Reset the active session's agent status to idle (the palette "Clear Status", GUI half of
     /// `session.status idle`).
     func clearActiveStatus() {
         guard let id = store.selectedSessionID else { return }
         store.setAgentIndicator(AgentIndicator(), forSession: id)
-        rebuildSidebar()
+        syncSidebar()
     }
 
     /// Move the active session to another workspace (the palette "Move Session to <ws>").
@@ -623,16 +602,23 @@ final class AppController {
         if let id = store.selectedSessionID { beginRename(id: id, isWorkspace: false) }
     }
 
-    /// Enter inline-rename for a session/workspace: render its name as a GtkEntry (rebuildSidebar swaps
-    /// the label for an entry when the id matches `renaming`), then focus + select-all the entry.
+    /// Enter inline-rename for a session/workspace: render its name as a GtkEntry (the sync swaps the
+    /// label for an entry when the id matches `renaming`), then focus + select-all the entry.
     func beginRename(id: UUID, isWorkspace: Bool) {
         if isWorkspace { cancelPendingWorkspaceToggle() }
         if renaming == nil { suppressAutoFollow() }
         renaming = isWorkspace ? .workspace(id) : .session(id)
-        rebuildSidebar()
-        guard let e = renameEntry else {
+        syncSidebar()
+        // An editor the user cannot reach is refused: a collapsed workspace keeps its rows in a hidden
+        // list box (and a hidden sidebar unmaps every one of them), so no `activate`, focus-leave or
+        // Escape can ever fire for an entry built there — `renaming`, and with it
+        // `sidebarInteractionInProgress`, would stay pinned for the rest of the session. macOS declines
+        // the same gesture: `SidebarRenameController.beginEditing` bails on `row(forItem:) < 0`.
+        guard let e = renameEntry, gtk_widget_get_mapped(W(e)) != 0 else {
             renaming = nil
+            renameEntry = nil
             resumeAutoFollow()
+            syncSidebar()   // swap the unreachable entry back to a label
             return
         }
         let entryAddress = Int(bitPattern: e)
@@ -649,8 +635,8 @@ final class AppController {
         beginRename(id: target.id, isWorkspace: target.isWorkspace)
     }
 
-    /// Commit the inline rename (Enter or focus-out). `renaming` is cleared first so the focus-out that
-    /// rebuildSidebar triggers can't double-commit.
+    /// Commit the inline rename (Enter or focus-out). `renaming` is cleared first so the focus-out the
+    /// swap back to a label triggers can't double-commit.
     func commitInlineRename(_ entryRaw: UnsafeMutableRawPointer?) {
         guard let entryRaw, let target = renaming else { return }   // already committed → no-op
         let entry = OpaquePointer(entryRaw)
@@ -664,7 +650,7 @@ final class AppController {
         runOnMain { [weak self] in MainActor.assumeIsolated { self?.rebuildAfterRename() } }
     }
     /// The ENTER commit fires while the rename entry still holds focus, and the rebuild destroys it.
-    func rebuildAfterRename() { rebuildSidebar(); syncSidebarSelection(); updateTitle(); refocusIfStranded() }
+    func rebuildAfterRename() { syncSidebar(); syncSidebarSelection(); updateTitle(); refocusIfStranded() }
 
     func cancelInlineRename() {
         guard renaming != nil else { return }
@@ -709,7 +695,7 @@ final class AppController {
     func reorderActiveSession(_ dir: ReorderDirection) {
         guard let id = store.selectedSessionID else { return }
         store.reorderSession(id, dir)
-        rebuildSidebar()
+        syncSidebar(preferMoving: [id])
         syncSidebarSelection()
     }
 
@@ -717,7 +703,7 @@ final class AppController {
     func reorderActiveWorkspace(_ dir: ReorderDirection) {
         guard let id = store.currentWorkspaceID else { return }
         store.reorderWorkspace(id, dir)
-        rebuildSidebar()
+        syncSidebar(preferMoving: [id])
         syncSidebarSelection()
     }
 
@@ -731,7 +717,7 @@ final class AppController {
             return
         }
         store.toggleSplit(id, axis: axis)
-        reconcile(rebuildSidebar: false)
+        reconcile(syncSidebar: false)
         updateToggleIcons()
         sessionFocusTarget(for: id)?.grabFocus(supersedingPopoverCapture: true)
     }

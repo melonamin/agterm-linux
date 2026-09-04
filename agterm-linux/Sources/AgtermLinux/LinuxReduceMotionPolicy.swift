@@ -9,13 +9,6 @@ enum LinuxReduceMotionPolicy {
     ) -> Bool {
         interfaceReducedMotion == true || !animationsEnabled
     }
-
-    static func blinkCSS(prefersReducedMotion: Bool) -> String {
-        if prefersReducedMotion {
-            return ".agterm-blink { animation: none; }"
-        }
-        return ".agterm-blink { animation: agterm-blink-pulse 1.2s ease-in-out infinite; }"
-    }
 }
 
 @MainActor

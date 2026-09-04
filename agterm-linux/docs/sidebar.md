@@ -1,10 +1,79 @@
-# Sidebar layout contracts
+# Sidebar contracts
 
-How the GTK sidebar's rows and column negotiate width.
+How the GTK sidebar reconciles its rows and negotiates its width.
 Nothing auto-loads this document — read it before editing `AppController.swift` (`makeNameWidget`),
-`AppControllerSidebar.swift` (`makeRow`), `LinuxStatusGlyph.swift` (`makeStatusGlyph`),
-`LinuxThemePolicy.swift` (`windowThemeCSS`), or the sidebar scenarios in
+`AppControllerSidebar.swift` (`makeSessionNameWidget`, `makeRow`, `makeSection`),
+`AppControllerSidebarSync.swift`, `SidebarSnapshot.swift`, `SidebarRuntime.swift`,
+`LinuxStatusGlyph.swift` (`makeStatusGlyphLabel`), `LinuxBlinkPolicy.swift`,
+`BlinkPhaseCoordinator.swift`, `LinuxThemePolicy.swift` (`windowThemeCSS`), or the sidebar scenarios in
 `agterm-linux/tests/atspi_smoke.py`.
+
+## Incremental reconcile
+
+- `syncSidebar()` (`AppControllerSidebarSync.swift`) is the sidebar's ONE entry point: it builds the
+  desired `SidebarSnapshot` from the store and settings, diffs it against `sidebarRuntime.current`, and
+  applies only the difference.
+  Rows are keyed by session id and sections by workspace id or `.flagged`, so a status, title, badge,
+  flag, rename or selection change rewrites that row's own widgets and reaches no other row.
+- Rows and headers own every widget they may EVER show — status glyph, flag star, unseen badge,
+  add-session button — created hidden and cleared rather than added and removed, so no content change is
+  structural.
+  The sole exception is the name label ↔ rename-entry swap on a flipped `renaming` flag, which goes
+  through `makeNameWidget` in BOTH directions because that is the only place `renameEntry` is set and the
+  double-click gesture attached.
+  A hidden child is ABSENT from the accessible tree rather than merely non-showing (measured on GTK
+  4.22, and the whole subtree under a hidden list box goes with it), so the AT-SPI scenarios' exact
+  child lists still mean "the visible parts".
+- GTK does not skip an unchanged write — `gtk_label_set_markup` re-parses and
+  `gtk_widget_set_tooltip_text` always sets — so every widget set caches what it last applied and
+  compares against that itself.
+- The full rebuild survives for exactly two cases and is private to the sync engine: the planner's
+  `.rebuildAll` when the section KINDS change (tree ↔ flagged, where rows differ in kind), and
+  `syncSidebar(force: true)` from the sidebar font-size and appearance-reset settings paths and the
+  forced metadata refresh, where every label must be re-measured under new CSS.
+  A mode caller just syncs and lets the planner decide.
+- `syncSidebar` is NOT re-entrant (`SidebarSyncGate`): a nested call records itself and the owner drains
+  it afterwards, bounded, instead of planning against a half-applied tree.
+- **`detachGuard` runs on every widget about to be removed, moved or hidden.**
+  It commits an inline rename hosted there — nothing else will, because the header row is non-focusable
+  and its buttons take no focus on click, so no focus-out fires — and dismisses a context menu parented
+  to that widget or to a descendant, which would otherwise be left unrooted (the close-hang shape in
+  `.claude/rules/main-loop.md`).
+  A section MOVE is exempt: `gtk_box_reorder_child_after` on the section wrapper detaches nothing, so a
+  menu open inside it survives the move.
+  A collapse detaches no widget but still runs the guard: hiding the list box unroots a popover inside it
+  and strands a rename hosted there.
+  The rows themselves survive, so a move into a collapsed workspace is an ordinary insert and a hidden
+  row takes ordinary updates — including the header repaint that flips its disclosure arrow, which rides
+  `HeaderContent.expanded` rather than the `setExpanded` op.
+  A hidden row is never scrolled to, though: it is unallocated, so `gtk_widget_compute_point` answers with
+  the section's own origin, and selecting a session inside a collapsed workspace would jerk the sidebar to
+  that header — `LinuxSidebarPolicy.scrollOffset` declines on the row's `mapped` state.
+  An inline rename is declined on the same ground: `beginRename` refuses an entry that did not map, since
+  no `activate`, focus-leave or Escape can reach one inside a hidden list box (or a hidden sidebar), and
+  `renaming` would pin `sidebarInteractionInProgress` for the rest of the session. macOS declines the
+  gesture too — `SidebarRenameController.beginEditing` bails on `row(forItem:) < 0`.
+- A row move IS a reparent: `GtkListBox` has no reorder, so it is `gtk_list_box_remove` +
+  `gtk_list_box_insert`, and the list box holds the sole reference to a sunk row — `moveSidebarRow`
+  therefore holds its own `g_object_ref` across the pair.
+- `SidebarSnapshotDiff` moves a MINIMAL set (the ids outside a longest increasing subsequence), which
+  fixes the move COUNT but not WHICH id moves when choices tie, so the drag and reorder sites pass the
+  dragged block or the reordered id as `preferMoving` and the planner keeps hinted ids out of the
+  subsequence; unhinted callers (control commands, context-menu moves) are contracted on count alone.
+- Blink is STATE, not animation: `agterm-blink` is only the marker class the pulse scans for, and one
+  timer per window (`BlinkPhaseCoordinator`, `agterm-linux/docs/main-loop.md`) writes the phase opacity
+  onto every marked label — the sidebar's, the dashboard's and the attention picker's — at a 0.6 s half
+  period.
+  It arms only while a marked glyph is MAPPED and the desktop asks for no reduced motion
+  (`LinuxBlinkPolicy.timerShouldRun` over `linuxPrefersReducedMotion`, which reads GTK 4.22's
+  `gtk-interface-reduced-motion` and falls back to `gtk-enable-animations`): an unseen or unwanted pulse
+  is pure main-thread wakeups — which is what the replaced CSS keyframe cost, one whole-toplevel frame
+  every vblank while any glyph blinked.
+  The marker is KEPT while the timer is off, so a resync resumes the pulse with no status call, and
+  `applyStatusGlyph` restores opacity 1 whenever it drops the marker, so no glyph is left faded.
+- Status color and shape are inline Pango markup on each glyph label, not CSS, so the Settings color
+  pickers, the shape rows and the agent-status reset reach the live glyphs by syncing every window;
+  the tail carries the change into the dashboard tiles and the attention picker with the sidebar rows.
 
 ## Label sizing
 
@@ -21,8 +90,8 @@ Nothing auto-loads this document — read it before editing `AppController.swift
 - The treatment depends on the KIND of text, and getting that distinction wrong is the trap:
   - **User text ELLIPSIZES.**
     `gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_END)` on `makeNameWidget`'s plain-label branch
-    (`AppController.swift`, which covers session rows AND workspace headers) and on `makeRow`'s
-    flagged-view breadcrumb.
+    (`AppController.swift`, which covers session rows AND workspace headers) and on
+    `makeSessionNameWidget`'s flagged-view breadcrumb.
     `END`, not the `MIDDLE` that the palette rows use (`Palette.swift`): a palette title disambiguates at
     its TAIL ("Move Session to <workspace>") while a session or workspace name disambiguates at its HEAD,
     and `END` matches the macOS `.byTruncatingTail` on the very same names.
@@ -37,9 +106,10 @@ Nothing auto-loads this document — read it before editing `AppController.swift
     the sites that do need it: its natural width is part of the sidebar's chrome budget, and
     `PANGO_ELLIPSIZE_END` would collapse a `99+` badge to a bare `…`.
     The fixed `"Flagged"` section header needs nothing either; it can never be the constraint.
-    In `LinuxStatusGlyph.swift`'s `makeStatusGlyph` the ABSENCE of a sizing call is the contract.
-- In `makeRow`, label-only setters must be guarded on the FULL `flaggedView && renaming?.id != s.id`
-  condition that CHOSE the plain label, hoisted into the `breadcrumb` binding so the two cannot drift.
+    In `LinuxStatusGlyph.swift`'s `makeStatusGlyphLabel` the ABSENCE of a sizing call is the contract.
+- In `makeSessionNameWidget`, label-only setters must be guarded on the FULL
+  `sidebarMode == .flagged && !content.renaming` condition that CHOSE the plain label, hoisted into the
+  `breadcrumb` binding so the two cannot drift.
   The weaker `if flaggedView` also reaches the `GtkEntry` that `makeNameWidget` returns during a rename,
   where a `GtkLabel` setter raises `assertion 'GTK_IS_LABEL (self)' failed`.
 - No `gtk_label_set_width_chars` / `gtk_editable_set_width_chars` floor, deliberately.
@@ -79,10 +149,10 @@ Nothing auto-loads this document — read it before editing `AppController.swift
   `AppController.swift` (the scroller), `AppControllerSurfaces.swift` (`scheduleSidebarMetadataRefresh`),
   `App.swift` (the desktop-metric observers), or `Settings.swift` (`applyToolbarMode`).
 - Measure, do not model: `refreshSidebarWidthFloor` measures `sidebarBox`, the widest sidebar site by
-  construction, at the end of every `rebuildSidebar`, because the minimum depends on theme padding, the
+  construction, at the end of every `syncSidebar`, because the minimum depends on theme padding, the
   icon set, the resolved font, and the desktop text scale.
   It does not track `gtk-theme-name`, so a live theme switch leaves the floor stale until the next
-  rebuild — deliberate, since rebuilds are frequent.
+  sync — deliberate, since syncs are frequent.
   Measured on GTK 4.22.4 a decorated row runs 181-255px across fonts and text scales, so the pin holds
   for ordinary configurations; those are the numbers `LinuxPolicyTests` feeds.
 - One term is invisible to that measure and is added on top: the scroller's vertical scrollbar takes
@@ -115,9 +185,11 @@ Nothing auto-loads this document — read it before editing `AppController.swift
   `applyToolbarMode` moves the start child's minimum but NOT the content floor, so it calls
   `applySidebarWidth`, never `refreshSidebarWidthFloor`.
 - The desktop-metric observers (`gtk-xft-dpi`, `gtk-font-name`, `gtk-overlay-scrolling`) re-measure
-  through `scheduleSidebarMetadataRefresh`, never a direct `rebuildSidebar()`: that path coalesces the
-  notify burst, honors `sidebarInteractionInProgress` and re-arms, so a live "Large Text" toggle cannot
-  destroy an open context menu or an in-flight rename.
+  through `scheduleSidebarMetadataRefresh(forced: true)`, never a direct sync: that path coalesces the
+  notify burst, and its forced leg — the one deferred job that still destroys every row — honors
+  `sidebarInteractionInProgress` and re-arms, so a live "Large Text" toggle cannot destroy an open
+  context menu or an in-flight rename.
+  The unforced leg (OSC title and cwd) updates rows in place and is deliberately ungated.
   Never arm the shared `softCloseReconcile` for this — its `arm()` supersedes the pending soft-close job.
 - The gate is the AT-SPI scenario `sidebar-width-floor`, separate from `sidebar-narrow-clipping` because
   once the floor follows the rows plain containment passes vacuously.
@@ -151,7 +223,7 @@ Nothing auto-loads this document — read it before editing `AppController.swift
 ## Selection: mode NONE, one paint path, one published accessible state
 
 - The claim only existed to keep `GtkListBox`'s built-in selection from fighting the custom shift/ctrl
-  logic, so the sidebar list boxes run `GTK_SELECTION_NONE` (`appendSection`) instead — nothing left to
+  logic, so the sidebar list boxes run `GTK_SELECTION_NONE` (`makeSection`) instead — nothing left to
   fight, no native `gtk_list_box_select_row`/`unselect_all` calls anywhere in the SIDEBAR code
   (the Palette/ControlPicker/ThemePicker list boxes keep theirs — different widgets).
 - `setSidebarSelectionStyle` (`AppControllerSidebar.swift`) is the single selection choke point and
@@ -173,9 +245,12 @@ Nothing auto-loads this document — read it before editing `AppController.swift
   Accessibility: the same call publishes `GTK_ACCESSIBLE_STATE_SELECTED` on the ROW accessible
   (`publishRowAccessibleSelected`) — with native selection off, GTK publishes no selection state of
   its own, so screen readers only see what is set here.
-  Because `GtkListBoxRow` resets that published state while GTK roots a rebuilt hierarchy,
-  `rebuildSidebar` re-runs `syncSidebarSelectionStyles` on the next main-loop turn through
-  `SelectionRepublishCoordinator` (re-armed by every rebuild, disarmed in `windowWillClose`).
+  Because `GtkListBoxRow` resets that published state whenever GTK roots the row — an insert AND a
+  move, which re-roots the same row — every structural row op re-publishes on the next main-loop turn
+  through `SelectionRepublishCoordinator` (disarmed in `windowWillClose`).
+  The scope accumulates in `sidebarRuntime.selectionRepublishScope` because `arm()` supersedes a pending
+  job, so two syncs in one turn would otherwise lose the first one's rows — and the forced rebuild's
+  whole-sidebar scope, which no id set expresses, would be narrowed to a later pass's ids.
 - The state and CSS class go on the row ONLY, never its presentation-only child.
   The GValue must be built as `G_TYPE_INT` + `g_value_set_int`, never boolean: SELECTED is an
   undefined-able state, so GTK's GValue collector reads it with `g_value_get_int`, and a boolean

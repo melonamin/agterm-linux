@@ -5,7 +5,7 @@ import agtermCore
 extension AppController {
     /// Re-derive the sidebar's width floor by MEASURING `sidebarBox` — the widest sidebar site by
     /// construction — and push it onto the paned start child, which is where it is stored and read back
-    /// from. Called at the END of every `rebuildSidebar`, so the number matches the widgets that exist.
+    /// from. Called at the END of every `syncSidebar`, so the number matches the widgets that exist.
     /// Deliberately NOT tracked: `gtk-theme-name`, so a live theme switch that moved the row padding
     /// leaves the floor stale until the next rebuild.
     /// The full contract is the width-floor section of `agterm-linux/docs/sidebar.md`.
@@ -33,7 +33,7 @@ extension AppController {
 
     /// Drop the cached reservation above, from `App.swift`'s `gtk-overlay-scrolling` observer: that
     /// property is LIVE (GNOME's `org.gnome.desktop.interface overlay-scrolling`, an XSETTINGS manager,
-    /// or `gtk-4.0/settings.ini`), and the same observer's `rebuildSidebar` then re-measures through it.
+    /// or `gtk-4.0/settings.ini`), and the same observer's forced sync then re-measures through it.
     static func invalidateSidebarScrollbarOverhead() { cachedScrollbarOverhead = nil }
 
     private static func sidebarScrollbarOverhead() -> Double {
@@ -46,15 +46,7 @@ extension AppController {
     private static func measureSidebarScrollbarOverhead() -> Double {
         // Seeded TRUE, GTK's own default, so a property read that failed leaves the floor where it is
         // rather than silently widening every sidebar.
-        var overlay = true
-        if let settings = gtk_settings_get_default() {
-            var value = GValue()
-            _ = g_value_init(&value, GType(20))   // G_TYPE_BOOLEAN
-            g_value_set_boolean(&value, 1)
-            "gtk-overlay-scrolling".withCString { g_object_get_property(GOBJ(settings), $0, &value) }
-            overlay = g_value_get_boolean(&value) != 0
-            g_value_unset(&value)
-        }
+        let overlay = gtkSettingsBool("gtk-overlay-scrolling", default: true)
         if overlay, g_getenv("GTK_OVERLAY_SCROLLING").map({ String(cString: $0) }) != "0" { return 0 }
         guard let probe = OpaquePointer(gtk_scrolled_window_new()) else { return 0 }
         _ = g_object_ref_sink(RAW(probe))
@@ -149,6 +141,7 @@ extension AppController {
         guard let paned = splitView, let sidebar = gtk_paned_get_start_child(paned) else { return }
         gtk_widget_set_visible(sidebar, store.sidebarVisible ? 1 : 0)
         applySidebarWidth(paned)
+        resyncBlinkPhase()   // a hidden column unmaps every row glyph, so the pulse has nothing to show
         refocusIfStranded()   // hiding the column strands an inline rename's entry
     }
 

@@ -218,7 +218,6 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
     gSpawnRegistry.pacer.arm(order: spawnPlan.order, burst: spawnPlan.burst)
     ensureStarterFiles()
     installAppCSS()
-    installStatusColorCSS()
     installAppIcons()
     gControlServer.start()
     // Quit cleanly on SIGTERM/SIGINT (session logout, `kill`, Ctrl+C) so flushOnQuit captures the
@@ -241,6 +240,7 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
             connect(desktopSettings, signal,
                     unsafeBitCast(onDesktopSidebarMetricsChanged, to: GCallback.self), nil)
         }
+        // Separate from that array: these re-derive the blink timer, not the sidebar width floor.
         for signal in ["notify::gtk-enable-animations", "notify::gtk-interface-reduced-motion"] {
             connect(desktopSettings, signal,
                     unsafeBitCast(onReducedMotionChanged, to: GCallback.self), nil)
@@ -299,20 +299,9 @@ private let onShutdown: @MainActor @convention(c) (OpaquePointer?, gpointer?) ->
     }
 }
 
-private let onReducedMotionChanged: @MainActor @convention(c) (
-    OpaquePointer?, OpaquePointer?, gpointer?
-) -> Void = { _, _, _ in
-    MainActor.assumeIsolated { refreshAppCSS() }
-}
-
 /// The app-wide stylesheet `installAppCSS` loads — internal (not private) so the tests can pin that
-/// interpolated policy constants actually reach the installed string.
-func appCSS(prefersReducedMotion: Bool) -> String {
-    """
-    \(LinuxReduceMotionPolicy.blinkCSS(prefersReducedMotion: prefersReducedMotion))
-    /* one selector per keyframe: GTK 4.14's _gtk_css_keyframes_parse takes a single progress value and then
-       expects the block, so a `0%, 100%` list is a parse error there - and GTK drops @keyframes silently */
-    @keyframes agterm-blink-pulse { 0% { opacity: 1; } 50% { opacity: 0.25; } 100% { opacity: 1; } }
+/// interpolated policy constants (the sidebar hover rule) actually reach the installed string.
+let appCSS = """
     window.agterm-translucent { background-color: transparent; }   /* terminal translucency: ghostty's alpha reaches the compositor */
     \(LinuxQuickCardPolicy.cardCSS)
     .agterm-switcher { background-color: alpha(#1e2228, 0.96); padding: 10px; border-radius: 10px; border: 1px solid alpha(#ffffff, 0.12); }
@@ -331,46 +320,16 @@ func appCSS(prefersReducedMotion: Bool) -> String {
     /* trailing content inset inside the rounded selection row; a row margin would indent the highlight itself */
     .agterm-session-row-content { padding-right: 6px; }
     """
-}
 
-/// Install the app-wide CSS once. The reloadable provider lets a desktop Reduce Motion change stop or
-/// restore the decorative agent-status pulse immediately on every existing glyph.
-@MainActor private var gAppCSSProvider: OpaquePointer?
-
-@MainActor private func refreshAppCSS() {
-    guard let provider = gAppCSSProvider else { return }
-    let css = appCSS(prefersReducedMotion: linuxPrefersReducedMotion(gtk_settings_get_default()))
-    css.withCString { gtk_css_provider_load_from_string(cast(provider), $0) }
-}
-
+/// Install the app-wide CSS once, at the application priority so it layers over the theme without
+/// overriding user CSS.
 @MainActor private func installAppCSS() {
     guard let display = gdk_display_get_default() else { return }
     let provider = OpaquePointer(gtk_css_provider_new())
-    gAppCSSProvider = provider
-    refreshAppCSS()
+    appCSS.withCString { gtk_css_provider_load_from_string(cast(provider), $0) }
     // GTK_STYLE_PROVIDER_PRIORITY_APPLICATION = 600; the macro cast isn't available in Swift, the
     // GtkCssProvider pointer is passed straight through as the GtkStyleProvider.
     gtk_style_context_add_provider_for_display(display, provider, 600)
-}
-
-@MainActor private var gStatusColorProvider: OpaquePointer?
-
-/// Apply the agent-status glyph colors from settings (nil = the Adwaita defaults) via a dedicated,
-/// reloadable provider above the app CSS — re-callable when the Settings color pickers change them.
-@MainActor func installStatusColorCSS() {
-    guard let display = gdk_display_get_default() else { return }
-    let s = linuxSettingsStore().load()
-    let css = """
-    .agterm-status-blocked { color: \(s.blockedStatusColorHex ?? "#e5a50a"); }
-    .agterm-status-completed { color: \(s.completedStatusColorHex ?? "#2ec27e"); }
-    .agterm-status-active { color: \(s.activeStatusColorHex ?? "#DBD9E6"); }
-    """
-    if gStatusColorProvider == nil {
-        let p = OpaquePointer(gtk_css_provider_new())
-        gStatusColorProvider = p
-        gtk_style_context_add_provider_for_display(display, p, 650)   // above the app CSS (600)
-    }
-    if let p = gStatusColorProvider { css.withCString { gtk_css_provider_load_from_string(cast(p), $0) } }
 }
 
 /// Custom symbolic icon search paths, highest priority first. The dist tarball ships them under
@@ -431,20 +390,31 @@ private let onColorSchemeChanged: @MainActor @convention(c) (OpaquePointer?, Opa
     }
 }
 
-/// A desktop text-scale or UI-font change — rebuild every sidebar so its width floor is re-measured.
-/// Deferred through `scheduleSidebarMetadataRefresh`, never a direct `rebuildSidebar()`: it coalesces the
-/// notify burst and gates on `sidebarInteractionInProgress`, so it cannot land on a live inline rename.
+/// A desktop text-scale or UI-font change — FORCE a rebuild of every sidebar so every label is
+/// re-measured under the new CSS. Deferred through `scheduleSidebarMetadataRefresh`, never a direct
+/// sync: it coalesces the notify burst and gates on `sidebarInteractionInProgress`, so a rebuild
+/// cannot land on a live inline rename.
 ///
 /// IMPORTANT: never route it through the shared `AppController.softCloseReconcile` — its `arm()`
 /// supersedes the pending job, stranding held sessions' surfaces. See `agterm-linux/docs/sidebar.md`.
 private let onDesktopSidebarMetricsChanged: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, _, _ in
     MainActor.assumeIsolated {
-        // Synchronously, BEFORE the deferred rebuilds: the cached scrollbar reservation is exactly what
+        // Synchronously, BEFORE the deferred rebuild: the cached scrollbar reservation is exactly what
         // `gtk-overlay-scrolling` moves, and the rebuild below is what re-measures through it.
         AppController.invalidateSidebarScrollbarOverhead()
-        for ctl in gWindows.values { ctl.scheduleSidebarMetadataRefresh() }
+        for ctl in gWindows.values { ctl.scheduleSidebarMetadataRefresh(forced: true) }
     }
 }
+
+/// A desktop reduce-motion preference flipped (either signal feeding `linuxPrefersReducedMotion`). The
+/// `agterm-blink` marker survives while the pulse is suppressed — only the timer stops — so restoring
+/// motion resumes it with no status call.
+private let onReducedMotionChanged: @MainActor @convention(c)
+    (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, _, _ in
+        MainActor.assumeIsolated {
+            for ctl in gWindows.values { ctl.resyncBlinkPhase() }
+        }
+    }
 
 /// SIGTERM/SIGINT → quit the GApplication on the main loop so its "shutdown" handler (flushOnQuit) runs.
 /// Returns G_SOURCE_REMOVE (the signal source is one-shot — the app is on its way out).
@@ -512,7 +482,7 @@ private let onRevealAction: @MainActor @convention(c) (OpaquePointer?, OpaquePoi
     guard controller.terminalZoom.target == nil else {
         controller.syncSidebarSelection()
         controller.updateTitle()
-        controller.refreshSidebar()
+        controller.syncSidebar()
         return
     }
     // Prefer the coordinator's pre-selection snapshot. An auto-reset indicator is cleared by

@@ -15,6 +15,18 @@ enum LinuxSidebarPolicy {
             """
     }
 
+    /// Where to scroll the sidebar so a row is visible, or nil when nothing should move. A row that is
+    /// not MAPPED is never scrolled to: a collapsed workspace keeps its rows, hidden and unallocated, so
+    /// `gtk_widget_compute_point` answers with the section's own origin and a zero height — selecting
+    /// such a session (Ctrl-Tab, `session.go`, the palette) would jerk the sidebar to that header.
+    static func scrollOffset(rowMapped: Bool, rowY: Double, rowHeight: Double,
+                             value: Double, pageSize: Double) -> Double? {
+        guard rowMapped else { return nil }
+        if rowY < value { return rowY }
+        if rowY + rowHeight > value + pageSize { return rowY + rowHeight - pageSize }
+        return nil
+    }
+
     @MainActor
     static func flaggedRowLabel(for session: Session, in store: AppStore) -> String {
         if let workspace = store.workspace(forSession: session.id) {

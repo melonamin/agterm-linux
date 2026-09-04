@@ -11,6 +11,12 @@ import agtermCore
     }
 }
 
+/// Status color and shape ride inline Pango markup on each live glyph, so an appearance change reaches
+/// them only through a sync — whose tail repaints the dashboard tiles and the attention picker too.
+@MainActor private func refreshLiveStatusGlyphs() {
+    for controller in gWindows.values { controller.syncSidebar() }
+}
+
 @MainActor
 extension AppController {
     @discardableResult
@@ -96,8 +102,7 @@ extension AppController {
     func setNotificationBadge(_ enabled: Bool) {
         persist(\.notificationBadgeEnabled, enabled ? nil : false)
         for controller in gWindows.values {
-            controller.badgeEnabled = enabled
-            controller.rebuildSidebar()
+            controller.syncSidebar()
         }
     }
 
@@ -121,7 +126,7 @@ extension AppController {
         try? linuxSettingsStore().save(settings)
         for controller in gWindows.values {
             controller.applyInterfaceElements(settings: settings)
-            controller.rebuildSidebar()
+            controller.syncSidebar()
         }
     }
 
@@ -328,7 +333,7 @@ extension AppController {
         persist(\.sidebarFontSize, size == AppSettings.defaultSidebarFontSize ? nil : size)
         for controller in gWindows.values {
             controller.applySidebarFontSize()
-            controller.rebuildSidebar()
+            controller.syncSidebar(force: true)
         }
     }
 
@@ -365,7 +370,7 @@ extension AppController {
         case .blocked: persist(\.blockedStatusColorHex, hex)
         case .completed: persist(\.completedStatusColorHex, hex)
         }
-        installStatusColorCSS()
+        refreshLiveStatusGlyphs()
     }
 
     func setStatusShape(_ kind: StatusColorKind, at index: Int) {
@@ -377,10 +382,7 @@ extension AppController {
         case .blocked: persist(\.blockedStatusShape, value)
         case .completed: persist(\.completedStatusShape, value)
         }
-        for controller in gWindows.values {
-            controller.rebuildSidebar()
-            controller.updateDashboardStatusIndicators()
-        }
+        refreshLiveStatusGlyphs()
     }
 
     func setBlockedSoundAtIndex(_ index: Int) {
@@ -448,7 +450,7 @@ extension AppController {
             controller.applySidebarFontSize()
             controller.applyInterfaceFontSize()
             controller.updateAllPaneDimming()
-            controller.rebuildSidebar()
+            controller.syncSidebar(force: true)
         }
         rebuildSettings(page: .appearance)
     }
@@ -463,7 +465,7 @@ extension AppController {
         settings.completedStatusShape = nil
         settings.blockedStatusSoundName = nil
         try? linuxSettingsStore().save(settings)
-        installStatusColorCSS()
+        refreshLiveStatusGlyphs()
         rebuildSettings(page: .agentStatus)
     }
 }

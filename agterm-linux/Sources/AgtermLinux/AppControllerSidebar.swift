@@ -30,7 +30,7 @@ extension AppController {
         guard Self.workspaceRowToggleEnabled(linuxSettingsStore().load().workspaceRowClickExpands) else { return }
         let isExpanded = store.workspaces.first(where: { $0.id == workspaceID })?.isExpanded ?? true
         store.setWorkspaceExpanded(workspaceID, expanded: !isExpanded)
-        rebuildSidebarKeepingKeyboard()
+        syncSidebar()
     }
 
     static func workspaceRowToggleEnabled(_ setting: Bool?) -> Bool { setting ?? true }
@@ -57,23 +57,15 @@ extension AppController {
         }
     }
 
-    func updateSessionName(_ id: UUID) {
-        guard renaming?.id != id,
-              let session = store.session(withID: id),
-              let widget = sessionNameWidgets[id] else { return }
-        let text = store.sidebarMode == .flagged
-            ? LinuxSidebarPolicy.flaggedRowLabel(for: session, in: store)
-            : session.displayName
-        text.withCString { gtk_label_set_text(widget, $0) }
-    }
-
-    /// One pass over every live row through the effective-selection predicate, so the CSS paint and
-    /// the published accessible state always describe the same model selection (the choke-point
-    /// contract — see `setSidebarSelectionStyle`).
-    func syncSidebarSelectionStyles() {
+    /// One pass through the effective-selection predicate, so the CSS paint and the published accessible
+    /// state always describe the same model selection (the choke-point contract — see
+    /// `setSidebarSelectionStyle`). An incremental sync re-publishes just the rows GTK re-rooted; the
+    /// forced rebuild re-publishes every live row.
+    func syncSidebarSelectionStyles(ids: Set<UUID>? = nil) {
         let selection = store.sidebarSelectionIDs
-        for (row, id) in rowSession {
-            setSidebarSelectionStyle(row, selected: LinuxSidebarPolicy.sessionIsInEffectiveSelection(
+        for id in ids ?? Set(sidebarRuntime.rows.keys) {
+            guard let widgets = sidebarRuntime.rows[id] else { continue }
+            setSidebarSelectionStyle(widgets.row, selected: LinuxSidebarPolicy.sessionIsInEffectiveSelection(
                 id, selection: selection, activeID: store.selectedSessionID))
         }
     }
@@ -92,7 +84,7 @@ extension AppController {
         }
         // The width floor is NOT refreshed here: GTK revalidates a CSS node only on the next frame, so a
         // measure taken now would still report the OLD font size. Every caller follows this with
-        // `rebuildSidebar`, which measures the floor off labels rebuilt under the new CSS.
+        // `syncSidebar(force: true)`, which measures the floor off labels rebuilt under the new CSS.
     }
 
     func applyInterfaceFontSize() {
@@ -135,17 +127,16 @@ extension AppController {
 
     /// Whether a sidebar interaction is live: an inline rename, an open context menu, or parked keyboard.
     ///
-    /// `rebuildSidebar()` destroys and re-creates every row, so an ASYNC rebuild must not land here — it
-    /// would tear down the in-progress rename entry (whose disposal fires a focus-out that commits its
-    /// half-typed text) and dismiss the open menu, from a timer the user never asked for. Both deferred
-    /// rebuilds — the sidebar-metadata refresh and the trailing soft-close reconcile — gate on this ONE
-    /// predicate so they cannot drift apart. A SYNCHRONOUS rebuild is a direct consequence of a user action
-    /// and is deliberately not gated.
+    /// A FORCED sync destroys and re-creates every row, so an async one must not land here — it would tear
+    /// down the in-progress rename entry (whose disposal fires a focus-out that commits its half-typed
+    /// text) and dismiss the open menu, from a timer the user never asked for. Both deferred jobs that can
+    /// force — the sidebar-metadata refresh and the trailing soft-close reconcile — gate on this ONE
+    /// predicate so they cannot drift apart. An incremental sync destroys nothing and is not gated.
     var sidebarInteractionInProgress: Bool {
         renaming != nil || contextMenuIsOpen || sidebarHoldsKeyboardFocus
     }
 
-    /// Whether the window's focus widget is a LIVE sidebar widget — one `rebuildSidebar()` would destroy.
+    /// Whether the window's focus widget is a LIVE sidebar widget — one a forced rebuild would destroy.
     /// The `mapped` test keeps the gate self-clearing: focus inside a HIDDEN sidebar or a minimized window
     /// would otherwise stall the refresh forever.
     var sidebarHoldsKeyboardFocus: Bool {
@@ -159,72 +150,7 @@ extension AppController {
     /// that happen to defer on the same predicate, so neither owning the other's retry cadence.
     static let sidebarInteractionRetryInterval: TimeInterval = 0.25
 
-    /// For a handler that can be driven BY KEYBOARD from a sidebar widget the rebuild then destroys.
-    /// Safe from a deferred caller too: `refocusIfStranded()` is steal-proof by its own guard.
-    func rebuildSidebarKeepingKeyboard() {
-        rebuildSidebar()
-        refocusIfStranded()
-    }
-
-    func rebuildSidebar() {
-        let settings = linuxSettingsStore().load()
-        // GtkPopover is parented to the row's GtkListBox while its context menu is open. Detach it
-        // before destroying that list box: GtkListBox disposal otherwise treats the popover as a row,
-        // repeatedly fails to remove it, and starves the GTK main loop. Both dismissals below take
-        // `refocus: false` — a grab fires `surfaceDidFocus`, which RE-ENTERS this function — so the
-        // keyboard repair runs at the TAIL instead, and the capture is read BEFORE them: `detachPopover`
-        // consumes it even under `refocus: false`.
-        let popoverHeldSearchEntry = popoverTookKeyboardFromSearchEntry
-        let dismissedContextMenu = contextMenuPopover != nil
-        dismissContextMenu(refocus: false)
-        // `updateAttentionButton` may dismiss an open session picker one statement later.
-        let hadSessionPicker = sessionPickerPopover != nil
-        updateAttentionButton(settings: settings, refocusOnDismiss: false)
-        let dismissedSessionPicker = hadSessionPicker && sessionPickerPopover == nil
-        updateDashboardStatusIndicators()
-        while let child = gtk_widget_get_first_child(W(sidebarBox)) {
-            gtk_box_remove(cast(sidebarBox), child)
-        }
-        rowSession.removeAll()
-        nameLabels.removeAll()
-        sessionNameWidgets.removeAll()
-        workspaceDiscButtons.removeAll()
-        updateWorkspaceFilterButton()
-
-        if store.sidebarMode == .flagged {
-            appendSection("Flagged", store.flaggedSessions, settings: settings)
-            if store.flaggedSessions.isEmpty {
-                if let hint = op(gtk_label_new("No flagged sessions.\nRight-click a session → Flag.")) {
-                    gtk_label_set_justify(hint, GTK_JUSTIFY_CENTER)
-                    // Fixed instructional text wraps rather than ellipsizes: wrapping drops the minimum
-                    // width from the longest line to the longest word, which is all the sidebar needs.
-                    gtk_label_set_wrap(hint, 1)
-                    gtk_widget_set_margin_top(W(hint), 24)
-                    gtk_widget_add_css_class(W(hint), "dim-label")
-                    gtk_box_append(cast(sidebarBox), W(hint))
-                }
-            }
-        } else {
-            for ws in store.visibleWorkspaces {
-                appendSection(ws.name, ws.sessions, workspace: ws.id, settings: settings)
-            }
-        }
-        refreshSidebarWidthFloor()
-        // GtkListBoxRow resets the published SELECTED state while GTK roots the rebuilt hierarchy
-        // (the list intentionally stays in GTK_SELECTION_NONE, so nothing re-derives it). Re-publish
-        // from the current model on the next main-loop turn, after every row is rooted; later
-        // selection changes update synchronously. Disarmed in `windowWillClose` — a pending job
-        // must not touch a destroyed widget tree (`.claude/rules/main-loop.md`).
-        selectionRepublish.arm { [weak self] in self?.syncSidebarSelectionStyles() }
-        // Only when a dismissal above actually took a popover down, since it skipped its own grab. The
-        // `refocusIfStranded()` leg can re-enter this function through `surfaceDidFocus` — bounded, as it
-        // is the last statement and the rebuild above is complete.
-        if dismissedContextMenu || dismissedSessionPicker {
-            if !(popoverHeldSearchEntry && restoreSearchEntryFocus()) { refocusIfStranded() }
-        }
-    }
-
-    private func updateWorkspaceFilterButton() {
+    func updateWorkspaceFilterButton() {
         guard let button = footerFocusFilterButton else { return }
         let hasMembers = !store.focusedWorkspaceIDs.isEmpty
         gtk_widget_set_sensitive(W(button), hasMembers ? 1 : 0)
@@ -239,42 +165,56 @@ extension AppController {
         }
     }
 
-    private func appendSection(_ title: String, _ sessions: [Session], workspace: UUID? = nil,
-                               settings: AppSettings) {
-        if let wsID = workspace, let row = op(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4)) {
+    /// Builds one whole section — header, list box and (flagged) hint — into a transparent wrapper that is
+    /// the section's ONLY `sidebarBox` child, so a later reorder is one `gtk_box_reorder_child_after` and
+    /// detaches nothing. A collapsed section keeps its rows and hides the list box.
+    /// `includingRows: false` builds the section EMPTY — the planner emits an `insertRow` for every row
+    /// of a section it inserts, so building them here too would double them.
+    func makeSection(_ section: SidebarSnapshot.Section, selection: Set<UUID>,
+                     includingRows: Bool = true) -> SectionWidgets? {
+        // Spacing 2 is `sidebarBox`'s own, which the header, list box and hint sat under before the
+        // wrapper took them out of it.
+        guard let wrapper = op(gtk_box_new(GTK_ORIENTATION_VERTICAL, 2)) else { return nil }
+        var header: OpaquePointer?
+        var disc: OpaquePointer?
+        var icon: OpaquePointer?
+        var nameWidget: OpaquePointer?
+        var add: OpaquePointer?
+        if case .workspace(let wsID) = section.key, let content = section.header,
+           let row = op(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4)) {
+            header = row
             "workspace-row".withCString { gtk_widget_set_name(W(row), $0) }
             gtk_widget_set_margin_top(W(row), 8)
             gtk_widget_set_margin_start(W(row), 4)
-            let collapsed = !(store.workspaces.first(where: { $0.id == wsID })?.isExpanded ?? true)
-            if let disc = op(gtk_button_new_from_icon_name(collapsed ? "pan-end-symbolic" : "pan-down-symbolic")) {
-                gtk_button_set_has_frame(BUTTON(disc), 0)
-                gtk_widget_set_focus_on_click(W(disc), 0)
-                gtk_widget_add_css_class(W(disc), "flat")
-                workspaceDiscButtons[disc] = wsID
-                connect(disc, "clicked", unsafeBitCast(onWorkspaceDisclosure as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self), RAW(disc))
-                gtk_box_append(cast(row), W(disc))
+            if let button = op(gtk_button_new_from_icon_name(Self.disclosureIconName(expanded: section.expanded))) {
+                disc = button
+                gtk_button_set_has_frame(BUTTON(button), 0)
+                gtk_widget_set_focus_on_click(W(button), 0)
+                gtk_widget_add_css_class(W(button), "flat")
+                workspaceDiscButtons[button] = wsID
+                connect(button, "clicked", unsafeBitCast(onWorkspaceDisclosure as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self), RAW(button))
+                gtk_box_append(cast(row), W(button))
             }
-            let workspaceIcon = op(gtk_image_new_from_icon_name("agterm-grid-symbolic"))
-            if store.focusedWorkspaceIDs.contains(wsID) {
-                gtk_widget_add_css_class(W(workspaceIcon), "accent")
-                "In workspace focus set".withCString { gtk_widget_set_tooltip_text(W(workspaceIcon), $0) }
-            }
-            gtk_box_append(cast(row), W(workspaceIcon))
-            if let name = makeNameWidget(id: wsID, text: title, isWorkspace: true) {
+            icon = op(gtk_image_new_from_icon_name("agterm-grid-symbolic"))
+            applyWorkspaceFocusMembership(icon, member: content.focusMember)
+            gtk_box_append(cast(row), W(icon))
+            if let name = makeNameWidget(id: wsID, text: content.name, isWorkspace: true) {
+                nameWidget = name
                 gtk_widget_add_css_class(W(name), "heading")
                 gtk_box_append(cast(row), W(name))
             }
-            if !settings.isInterfaceElementHidden(.workspaceAddSession),
-               let add = op(gtk_button_new_from_icon_name("list-add-symbolic")) {
-                gtk_button_set_has_frame(BUTTON(add), 0)
-                gtk_widget_set_focus_on_click(W(add), 0)
-                gtk_widget_add_css_class(W(add), "flat")
-                gtk_widget_add_css_class(W(add), "workspace-add-session")
-                "New Session in \(title)".withCString { gtk_widget_set_tooltip_text(W(add), $0) }
-                workspaceDiscButtons[add] = wsID
-                connect(add, "clicked", unsafeBitCast(onWorkspaceAddSession as @convention(c)
+            if let button = op(gtk_button_new_from_icon_name("list-add-symbolic")) {
+                add = button
+                gtk_button_set_has_frame(BUTTON(button), 0)
+                gtk_widget_set_focus_on_click(W(button), 0)
+                gtk_widget_add_css_class(W(button), "flat")
+                gtk_widget_add_css_class(W(button), "workspace-add-session")
+                Self.applyAddSessionTooltip(button, workspace: content.name)
+                gtk_widget_set_visible(W(button), content.addVisible ? 1 : 0)
+                workspaceDiscButtons[button] = wsID
+                connect(button, "clicked", unsafeBitCast(onWorkspaceAddSession as @convention(c)
                     (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
-                gtk_box_append(cast(row), W(add))
+                gtk_box_append(cast(row), W(button))
             }
             workspaceDiscButtons[row] = wsID
             let wsLeftClick = gtk_gesture_click_new()
@@ -297,84 +237,121 @@ extension AppController {
                 (OpaquePointer?, UnsafePointer<GValue>?, Double, Double, gpointer?) -> gboolean,
                 to: GCallback.self))
             gtk_widget_add_controller(W(row), directoryDrop)
-            gtk_box_append(cast(sidebarBox), W(row))
-        } else if let header = op(gtk_label_new(title)) {
-            gtk_label_set_xalign(header, 0)
-            gtk_widget_add_css_class(W(header), "heading")
-            gtk_widget_set_margin_top(W(header), 8)
-            gtk_widget_set_margin_start(W(header), 8)
-            gtk_box_append(cast(sidebarBox), W(header))
+            gtk_box_append(cast(wrapper), W(row))
+        } else if let label = op(gtk_label_new("Flagged")) {
+            header = label
+            gtk_label_set_xalign(label, 0)
+            gtk_widget_add_css_class(W(label), "heading")
+            gtk_widget_set_margin_top(W(label), 8)
+            gtk_widget_set_margin_start(W(label), 8)
+            gtk_box_append(cast(wrapper), W(label))
         }
 
-        if let wsID = workspace, !(store.workspaces.first(where: { $0.id == wsID })?.isExpanded ?? true) { return }
-
-        guard let lb = op(gtk_list_box_new()) else { return }
-        gtk_widget_add_css_class(W(lb), "navigation-sidebar")
-        if workspace != nil { gtk_widget_set_margin_start(W(lb), 14) }
+        guard let header, let listBox = op(gtk_list_box_new()) else { return nil }
+        gtk_widget_add_css_class(W(listBox), "navigation-sidebar")
+        if case .workspace = section.key { gtk_widget_set_margin_start(W(listBox), 14) }
         // Selection mode NONE: the custom shift/ctrl logic owns selection (painted through the
         // `agterm-selected` class), which lets the session-row click gesture run WITHOUT claiming
         // the sequence — see agterm-linux/docs/sidebar.md (no claiming click gesture).
-        gtk_list_box_set_selection_mode(lb, GTK_SELECTION_NONE)
-
-        for s in sessions {
-            guard let row = makeRow(s) else { continue }
-            gtk_list_box_append(lb, W(row))
-            rowSession[row] = s.id
+        gtk_list_box_set_selection_mode(listBox, GTK_SELECTION_NONE)
+        gtk_widget_set_visible(W(listBox), section.expanded ? 1 : 0)
+        for id in includingRows ? section.rows : [] {
+            guard let content = section.content[id], let row = makeRow(id, content: content) else { continue }
+            gtk_list_box_append(listBox, W(row))
             // Publish for EVERY fresh row, not only the selected ones (an untouched row would
-            // otherwise carry an UNDEFINED accessible SELECTED state until the first sync),
-            // through the same effective-selection predicate the sync pass uses.
-            setSidebarSelectionStyle(row, selected: LinuxSidebarPolicy.sessionIsInEffectiveSelection(
-                s.id, selection: store.sidebarSelectionIDs, activeID: store.selectedSessionID))
+            // otherwise carry an UNDEFINED accessible SELECTED state until the first sync).
+            setSidebarSelectionStyle(row, selected: selection.contains(id))
         }
-        gtk_box_append(cast(sidebarBox), W(lb))
+        gtk_box_append(cast(wrapper), W(listBox))
+        let widgets = SectionWidgets(wrapper: wrapper, header: header, listBox: listBox, disc: disc,
+                                     icon: icon, name: nameWidget, add: add, hint: makeSectionHint(section, in: wrapper))
+        widgets.applied = section.header
+        sidebarRuntime.sections[section.key] = widgets
+        return widgets
     }
 
-    private func makeRow(_ s: Session) -> OpaquePointer? {
-        guard let row = op(gtk_list_box_row_new()), let box = op(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6)) else { return nil }
-        "session-row".withCString { gtk_widget_set_name(W(row), $0) }
-        gtk_widget_add_css_class(W(box), "agterm-session-row-content")
-        if let lead = op(gtk_image_new_from_icon_name("utilities-terminal-symbolic")) {
-            gtk_widget_set_margin_start(W(lead), 6)
-            gtk_box_append(cast(box), W(lead))
+    static func disclosureIconName(expanded: Bool) -> String {
+        expanded ? "pan-down-symbolic" : "pan-end-symbolic"
+    }
+
+    static func applyAddSessionTooltip(_ button: OpaquePointer, workspace: String) {
+        "New Session in \(workspace)".withCString { gtk_widget_set_tooltip_text(W(button), $0) }
+    }
+
+    func applyWorkspaceFocusMembership(_ icon: OpaquePointer?, member: Bool) {
+        guard let icon else { return }
+        if member {
+            gtk_widget_add_css_class(W(icon), "accent")
+            "In workspace focus set".withCString { gtk_widget_set_tooltip_text(W(icon), $0) }
+        } else {
+            gtk_widget_remove_css_class(W(icon), "accent")
+            gtk_widget_set_tooltip_text(W(icon), nil)
         }
-        let flaggedView = store.sidebarMode == .flagged
-        // The flagged row normally includes its workspace breadcrumb, but inline rename must edit only
-        // the session's bare display name. Reuse the normal name widget for the active rename so the
-        // entry is created and seeded without the breadcrumb.
-        let breadcrumb = flaggedView && renaming?.id != s.id
-        let label = breadcrumb
-            ? op(gtk_label_new(LinuxSidebarPolicy.flaggedRowLabel(for: s, in: store)))
-            : makeNameWidget(id: s.id, text: s.displayName, isWorkspace: false)
-        sessionNameWidgets[s.id] = label
-        gtk_widget_set_hexpand(W(label), 1)
-        gtk_widget_set_margin_top(W(label), 4)
-        gtk_widget_set_margin_bottom(W(label), 4)
-        gtk_widget_set_margin_start(W(label), 4)
-        // Guard on `breadcrumb`, not the weaker `flaggedView`: renaming in flagged view takes the
+    }
+
+    /// The flagged-empty hint, built only for the flagged section and hidden when it has rows.
+    private func makeSectionHint(_ section: SidebarSnapshot.Section,
+                                 in wrapper: OpaquePointer) -> OpaquePointer? {
+        guard section.key == .flagged,
+              let hint = op(gtk_label_new("No flagged sessions.\nRight-click a session → Flag.")) else { return nil }
+        gtk_label_set_justify(hint, GTK_JUSTIFY_CENTER)
+        // Fixed instructional text wraps rather than ellipsizes: wrapping drops the minimum
+        // width from the longest line to the longest word, which is all the sidebar needs.
+        gtk_label_set_wrap(hint, 1)
+        gtk_widget_set_margin_top(W(hint), 24)
+        gtk_widget_add_css_class(W(hint), "dim-label")
+        gtk_widget_set_visible(W(hint), section.showsHint ? 1 : 0)
+        gtk_box_append(cast(wrapper), W(hint))
+        return hint
+    }
+
+    /// The name widget of a session row: a breadcrumb label in flagged view, the shared
+    /// `makeNameWidget` otherwise — the one place `renameEntry` is set and the double-click rename
+    /// gesture is attached, so an inline rename takes that branch in both views.
+    func makeSessionNameWidget(_ id: UUID, content: SidebarSnapshot.RowContent) -> OpaquePointer? {
+        // Guard on the FULL condition, not the weaker `flaggedView`: renaming in flagged view takes the
         // makeNameWidget branch, and a GtkLabel setter on the GtkEntry it returns raises a GTK critical.
+        let breadcrumb = store.sidebarMode == .flagged && !content.renaming
+        guard let widget = breadcrumb
+            ? op(gtk_label_new(content.name))
+            : makeNameWidget(id: id, text: content.name, isWorkspace: false) else { return nil }
+        gtk_widget_set_hexpand(W(widget), 1)
+        gtk_widget_set_margin_top(W(widget), 4)
+        gtk_widget_set_margin_bottom(W(widget), 4)
+        gtk_widget_set_margin_start(W(widget), 4)
         if breadcrumb {
-            gtk_label_set_xalign(label, 0)
+            gtk_label_set_xalign(widget, 0)
             // END even though the breadcrumb ends in the workspace: the flagged view is already
             // workspace-scoped, so the tail is what can be given up first.
-            gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_END)
-            LinuxSidebarPolicy.flaggedRowLabel(for: s, in: store).withCString {
-                gtk_widget_set_tooltip_text(W(label), $0)
-            }
+            gtk_label_set_ellipsize(widget, PANGO_ELLIPSIZE_END)
+            content.name.withCString { gtk_widget_set_tooltip_text(W(widget), $0) }
         }
-        gtk_box_append(cast(box), W(label))
-        if let glyph = Self.makeStatusGlyph(
-            s.agentIndicator, settings: linuxSettingsStore().load()
-        ) {
-            gtk_box_append(cast(box), W(glyph))
-        }
-        if s.flagged, !flaggedView {
-            gtk_box_append(cast(box), W(op(gtk_image_new_from_icon_name("starred-symbolic"))))
-        }
-        if s.unseenCount > 0, badgeEnabled, let badge = op(gtk_label_new(nil)) {
-            let text = s.unseenCount > 99 ? "99+" : "\(s.unseenCount)"
-            "<span background=\"#cc3333\" foreground=\"white\"> \(text) </span>".withCString { gtk_label_set_markup(badge, $0) }
-            gtk_box_append(cast(box), W(badge))
-        }
+        return widget
+    }
+
+    func makeRow(_ id: UUID, content: SidebarSnapshot.RowContent) -> OpaquePointer? {
+        guard let row = op(gtk_list_box_row_new()), let box = op(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6)),
+              let lead = op(gtk_image_new_from_icon_name("utilities-terminal-symbolic")),
+              let name = makeSessionNameWidget(id, content: content),
+              let glyph = op(gtk_label_new(nil)), let star = op(gtk_image_new_from_icon_name("starred-symbolic")),
+              let badge = op(gtk_label_new(nil)) else { return nil }
+        "session-row".withCString { gtk_widget_set_name(W(row), $0) }
+        gtk_widget_add_css_class(W(box), "agterm-session-row-content")
+        gtk_widget_set_margin_start(W(lead), 6)
+        gtk_box_append(cast(box), W(lead))
+        gtk_box_append(cast(box), W(name))
+        Self.applyStatusGlyph(content.glyph, blink: content.blink,
+                              phase: sidebarRuntime.blinkPhase.phase, to: glyph)
+        gtk_box_append(cast(box), W(glyph))
+        gtk_widget_set_visible(W(star), content.star ? 1 : 0)
+        gtk_box_append(cast(box), W(star))
+        Self.applyRowBadge(content.badge, to: badge)
+        gtk_box_append(cast(box), W(badge))
+        let widgets = SessionRowWidgets(row: row, box: box, lead: lead, name: name,
+                                        glyph: glyph, star: star, badge: badge)
+        widgets.applied = content
+        sidebarRuntime.rows[id] = widgets
+        rowSession[row] = id
         // Keep the trailing inset inside the content box as CSS `padding-right` (installAppCSS),
         // rather than shrinking the row that paints the rounded selection background. This mirrors
         // the leading icon's margin_start on the left.
@@ -400,7 +377,7 @@ extension AppController {
         gtk_event_controller_set_propagation_phase(rightClick, GTK_PHASE_CAPTURE)
         connect(rightClick, "pressed", unsafeBitCast(onSessionRowContextClick, to: GCallback.self), RAW(row))
         gtk_widget_add_controller(W(row), rightClick)
-        if !flaggedView {
+        if store.sidebarMode != .flagged {
             let drag = gtk_drag_source_new()
             gtk_drag_source_set_actions(drag, GDK_ACTION_MOVE)
             connect(drag, "prepare", unsafeBitCast(onRowDragPrepare as @convention(c) (OpaquePointer?, Double, Double, gpointer?) -> OpaquePointer?, to: GCallback.self))
@@ -418,13 +395,11 @@ extension AppController {
     }
 
     /// The sidebar selection choke point: ONE paint path (the `agterm-selected` CSS class on the
-    /// row) and ONE a11y path (`GTK_ACCESSIBLE_STATE_SELECTED` on the row
-    /// accessible, via `publishRowAccessibleSelected`). Every selection change routes through here
-    /// — `syncSidebarSelectionStyles`' single predicate pass and the initial paint in
-    /// `appendSection`'s build loop — so the visual highlight and the published accessible state
-    /// cannot drift apart.
+    /// row) and ONE a11y path (`GTK_ACCESSIBLE_STATE_SELECTED` on the row accessible, via
+    /// `publishRowAccessibleSelected`). Every selection paint, initial or incremental, routes
+    /// through here, so the visual highlight and the published accessible state cannot drift apart.
     /// See agterm-linux/docs/sidebar.md (selection contract).
-    private func setSidebarSelectionStyle(_ row: OpaquePointer, selected: Bool) {
+    func setSidebarSelectionStyle(_ row: OpaquePointer, selected: Bool) {
         if selected {
             gtk_widget_add_css_class(W(row), "agterm-selected")
         } else {
@@ -454,7 +429,7 @@ extension AppController {
         g_value_unset(&value)
     }
 
-    /// `refocusOnDismiss: false` only from `rebuildSidebar()`, whose tail repair takes over.
+    /// `refocusOnDismiss: false` only from the sidebar sync, whose tail repair takes over.
     func updateAttentionButton(settings: AppSettings? = nil, refocusOnDismiss: Bool = true) {
         updateRecentSessionsButton(refocusOnDismiss: refocusOnDismiss)
         guard let button = attentionButton else { return }
@@ -490,7 +465,9 @@ extension AppController {
         guard let resolution = SidebarDrop.resolveSessions(sources: sources, target: dropTarget,
                                                            childIndex: slot) else { return }
         store.moveSessions(ids, toWorkspace: resolution.workspace, at: resolution.destination)
-        reconcile()
+        // The dragged block breaks the planner's LIS ties: without the hint an equally minimal plan
+        // may move the rows the block passed over instead of the rows the user dragged.
+        reconcile(preferMoving: Set(ids))
     }
 
     private func sessionClickIsModified(_ modifiers: UInt32) -> Bool {
@@ -557,6 +534,10 @@ extension AppController {
         showActive()
         syncSidebarSelection()
         updateTitle()
+        // `AppStore.selectSession` clears the visited row's unseen badge and its auto-reset indicator,
+        // so the row owes a content sync — without it a blinking auto-reset glyph survives the click
+        // and keeps the blink timer armed for the rest of the session.
+        syncSidebar()
     }
 
     func workspaceForHeader(_ header: OpaquePointer?) -> UUID? { header.flatMap { workspaceDiscButtons[$0] } }
@@ -585,7 +566,7 @@ extension AppController {
         guard let res = SidebarDrop.resolveWorkspace(sourceIndex: s, count: store.workspaces.count,
                                                      childIndex: childIndex) else { return }
         store.moveWorkspace(source, at: res.destination)
-        rebuildSidebar()
+        syncSidebar(preferMoving: [source])
     }
 
     /// A session dropped on a workspace HEADER appends — and carries its whole selected block through
@@ -603,7 +584,7 @@ extension AppController {
             target: .workspaceRow(id: workspace, sessionCount: target.sessions.count),
             childIndex: SidebarDrop.onItemIndex) else { return }
         store.moveSessions(ids, toWorkspace: resolution.workspace, at: resolution.destination)
-        reconcile()
+        reconcile(preferMoving: Set(ids))
     }
 
     func handleDirectoryDrop(_ paths: [String], onto widget: OpaquePointer) -> Bool {

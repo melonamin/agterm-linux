@@ -57,10 +57,13 @@ default.
 Each schedule becomes one one-shot `g_timeout_add_full` source (`GLibMainTimerSource`), retained as the
 source's user data and released by its destroy notify on both the fire and the cancel path.
 
-**Own a repeating or long-lived timer** — call `g_timeout_add` directly from the Linux target, as
-`LinuxAutoFollowCoordinator` (the idle tick) and `SplitRatioRestoreCoordinator` do; the latter's 50 ms
-divider-restore poll (`AppControllerSurfaces.scheduleSplitRatioRestore`) returns `G_SOURCE_CONTINUE` until
-the paned has a width, and each coordinator owns its `guint` source id plus its own `g_source_remove` cancel.
+**Own a repeating or long-lived timer** — call `g_timeout_add` directly from the Linux target, as three
+coordinators do: `LinuxAutoFollowCoordinator` (the idle tick), `SplitRatioRestoreCoordinator` (a 50 ms
+divider-restore poll, `AppControllerSurfaces.scheduleSplitRatioRestore`, returning `G_SOURCE_CONTINUE`
+until the paned has a width), and `BlinkPhaseCoordinator` (the status glyph's pulse, which
+`windowWillClose` cancels only AFTER emptying the glyph maps, so the cancel's normalizing pass and any
+later resync resolve nothing).
+Each owns its `guint` source id plus its own `g_source_remove` cancel.
 `MainTimer` is deliberately one-shot; a subsystem that owns a re-arming timer keeps that logic on the Linux
 side rather than growing the shared seam.
 

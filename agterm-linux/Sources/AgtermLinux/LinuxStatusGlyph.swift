@@ -34,40 +34,48 @@ struct LinuxStatusGlyphPresentation: Equatable {
 
 @MainActor
 extension AppController {
-    static func makeStatusGlyph(
-        _ indicator: AgentIndicator, settings: AppSettings
+    /// The glyph label a row, dashboard tile or picker row owns for its whole life, built even for an
+    /// idle indicator — which renders as hidden and cleared (`agterm-linux/docs/sidebar.md`).
+    static func makeStatusGlyphLabel(
+        _ indicator: AgentIndicator, settings: AppSettings, phase: Bool
     ) -> OpaquePointer? {
-        guard let presentation = LinuxStatusGlyphPresentation(
-            indicator: indicator, settings: settings
-        ), let label = op(gtk_label_new(nil)) else { return nil }
-        applyStatusGlyph(presentation, blink: indicator.blink, to: label)
+        guard let label = op(gtk_label_new(nil)) else { return nil }
+        applyStatusGlyph(indicator, settings: settings, phase: phase, to: label)
         return label
     }
 
     static func applyStatusGlyph(
-        _ indicator: AgentIndicator, settings: AppSettings, to label: OpaquePointer
+        _ indicator: AgentIndicator, settings: AppSettings, phase: Bool, to label: OpaquePointer
     ) {
-        guard let presentation = LinuxStatusGlyphPresentation(
-            indicator: indicator, settings: settings
-        ) else {
-            gtk_widget_set_visible(W(label), 0)
-            return
-        }
-        applyStatusGlyph(presentation, blink: indicator.blink, to: label)
-        gtk_widget_set_visible(W(label), 1)
+        applyStatusGlyph(LinuxStatusGlyphPresentation(indicator: indicator, settings: settings),
+                         blink: indicator.blink, phase: phase, to: label)
     }
 
-    private static func applyStatusGlyph(
-        _ presentation: LinuxStatusGlyphPresentation, blink: Bool, to label: OpaquePointer
+    /// The blink marker is the timer's only carrier, so this owns both ends of the opacity: a label that
+    /// starts blinking takes the pulse's CURRENT phase (the timer writes marked labels only, and not until
+    /// its next tick), and one that stops goes back to full — a label faded by the last tick would
+    /// otherwise stay dim with nothing left to un-dim it.
+    static func applyStatusGlyph(
+        _ presentation: LinuxStatusGlyphPresentation?, blink: Bool, phase: Bool,
+        to label: OpaquePointer
     ) {
+        if LinuxBlinkPolicy.shouldMark(presentation: presentation, blink: blink) {
+            gtk_widget_add_css_class(W(label), LinuxBlinkPolicy.markerClass)
+            gtk_widget_set_opacity(W(label), LinuxBlinkPolicy.opacity(phase: phase))
+        } else {
+            gtk_widget_remove_css_class(W(label), LinuxBlinkPolicy.markerClass)
+            gtk_widget_set_opacity(W(label), 1)
+        }
+        guard let presentation else {
+            gtk_widget_set_visible(W(label), 0)
+            gtk_label_set_text(label, "")
+            gtk_widget_set_tooltip_text(W(label), nil)
+            return
+        }
         "<span foreground=\"\(presentation.colorHex)\">\(presentation.glyph)</span>".withCString {
             gtk_label_set_markup(label, $0)
         }
         presentation.tooltip.withCString { gtk_widget_set_tooltip_text(W(label), $0) }
-        if blink {
-            gtk_widget_add_css_class(W(label), "agterm-blink")
-        } else {
-            gtk_widget_remove_css_class(W(label), "agterm-blink")
-        }
+        gtk_widget_set_visible(W(label), 1)
     }
 }

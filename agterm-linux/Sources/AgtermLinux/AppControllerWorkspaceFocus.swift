@@ -10,24 +10,24 @@ extension AppController {
         } else {
             store.clearFocus()
         }
-        rebuildSidebarKeepingKeyboard()
+        syncSidebar()
     }
 
     /// Replace-toggle the focus set with the active workspace.
     func focusActiveWorkspace() {
         guard let current = store.currentWorkspaceID else { return }
         store.toggleFocusedWorkspace(current)
-        rebuildSidebarKeepingKeyboard()
+        syncSidebar()
     }
 
     func addActiveWorkspaceToFocus() {
         guard let current = store.currentWorkspaceID else { return }
         store.setFocusMembership(current, member: true)
-        rebuildSidebarKeepingKeyboard()
+        syncSidebar()
     }
 
     func toggleWorkspaceFilter() {
         store.applyWorkspaceFilter(.toggle)
-        rebuildSidebarKeepingKeyboard()
+        syncSidebar()
     }
 }

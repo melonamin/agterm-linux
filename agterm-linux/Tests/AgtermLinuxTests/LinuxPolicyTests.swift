@@ -521,6 +521,28 @@ struct LinuxPolicyTests {
     }
 }
 
+@Suite("Sidebar scroll-into-view")
+struct SidebarScrollOffsetTests {
+    @Test("a row that is not on screen is never scrolled to")
+    func unmappedRowDoesNotScroll() {
+        // A collapsed workspace keeps its rows: hidden, unallocated, and reporting their section's origin.
+        #expect(LinuxSidebarPolicy.scrollOffset(rowMapped: false, rowY: 40, rowHeight: 0,
+                                                value: 300, pageSize: 200) == nil)
+        #expect(LinuxSidebarPolicy.scrollOffset(rowMapped: false, rowY: 900, rowHeight: 24,
+                                                value: 0, pageSize: 200) == nil)
+    }
+
+    @Test("a mapped row scrolls only far enough to become fully visible")
+    func mappedRowScrollsToTheNearestEdge() {
+        #expect(LinuxSidebarPolicy.scrollOffset(rowMapped: true, rowY: 40, rowHeight: 24,
+                                                value: 100, pageSize: 200) == 40)
+        #expect(LinuxSidebarPolicy.scrollOffset(rowMapped: true, rowY: 380, rowHeight: 24,
+                                                value: 100, pageSize: 200) == 204)
+        #expect(LinuxSidebarPolicy.scrollOffset(rowMapped: true, rowY: 120, rowHeight: 24,
+                                                value: 100, pageSize: 200) == nil)
+    }
+}
+
 @Suite("Sidebar drop insertion slots")
 struct SidebarDropSlotTests {
     @Test("y-midpoint maps to an insertion slot: top half before, bottom half (midpoint inclusive) after")
@@ -844,6 +866,14 @@ struct SidebarHoverCSSTests {
     func appCSSInstallsHoverRule() {
         // The hover constant only takes effect once `installAppCSS` interpolates it into the
         // installed stylesheet — pin the composed string, not just the constant.
-        #expect(appCSS(prefersReducedMotion: false).contains(LinuxSidebarPolicy.sidebarHoverCSS))
+        #expect(appCSS.contains(LinuxSidebarPolicy.sidebarHoverCSS))
+    }
+
+    @Test("the installed app CSS carries no blink animation")
+    func appCSSHasNoBlinkAnimation() {
+        // Blink is driven by BlinkPhaseCoordinator's timer; a surviving CSS animation would keep
+        // GTK's frame clock ticking for the whole toplevel.
+        #expect(!appCSS.contains("@keyframes"))
+        #expect(!appCSS.contains(".agterm-blink {"))
     }
 }

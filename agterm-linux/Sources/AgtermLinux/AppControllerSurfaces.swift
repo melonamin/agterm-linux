@@ -14,7 +14,7 @@ extension AppController {
     /// every reconcile, not only the trailing one a soft close arms. Reaping a held session would free its
     /// ghostty surfaces (killing the shells) while `undoPendingClose` still offers to bring it back, and
     /// the undo would then silently spawn a brand-new login shell in place of the user's running one.
-    func reconcile(focusActive: Bool = true, rebuildSidebar: Bool = true) {
+    func reconcile(focusActive: Bool = true, syncSidebar: Bool = true, preferMoving: Set<UUID> = []) {
         let dashboardRestore = prepareDashboardForReconcile()
         clearInvalidTerminalZoom()
         for ws in store.workspaces {
@@ -30,7 +30,7 @@ extension AppController {
         var live = Set(store.workspaces.flatMap { $0.sessions.map(\.id) })
         live.formUnion(store.pendingHeldSessionIDs())
         for id in Array(surfaces.keys) where !live.contains(id) { removeSession(id) }
-        if rebuildSidebar { self.rebuildSidebar() }
+        if syncSidebar { self.syncSidebar(preferMoving: preferMoving) }
         showActive(focus: focusActive)
         updateTitle()
         updateAttentionButton()
@@ -773,7 +773,7 @@ extension AppController {
     }
 
     /// Whether a REPLACEMENT opener may carry the capture: only while `outgoing` still OWNS the keyboard.
-    /// BOUNDARY, measured — do NOT apply this to the dismissal-time repairs (`rebuildSidebar()`'s tail,
+    /// BOUNDARY, measured — do NOT apply this to the dismissal-time repairs (the sidebar sync's tail,
     /// `activateSessionPickerRow`); both covering `chrome-focus-popovers` steps fail when it is.
     func searchEntryCaptureSurvives(_ outgoing: OpaquePointer?) -> Bool {
         guard popoverTookKeyboardFromSearchEntry, let outgoing else { return false }
@@ -858,26 +858,26 @@ extension AppController {
         scheduleSidebarMetadataRefresh()
     }
 
-    /// Coalesce OSC title/pwd churn from every session into one sidebar rebuild.
+    /// Coalesce OSC title/pwd churn from every session into one sidebar sync.
     ///
-    /// A rebuild destroys and re-creates every row, so it must NOT land while the user is interacting with
-    /// one: it would tear down an in-progress inline rename (whose entry commits its half-typed text on the
-    /// focus-out that disposal triggers) and dismiss an open context menu — both from a background shell's
-    /// prompt redraw. Those interactions are short, so the refresh re-arms itself at a slower cadence
-    /// instead of being dropped; whichever ends the interaction rebuilds anyway, and the retry is then a
-    /// cheap no-op repaint. The gate is the shared `sidebarInteractionInProgress`, so this and the trailing
-    /// soft-close reconcile defer on exactly the same condition.
+    /// Both callers share the ONE debouncer, so `forced` is ORed across a coalesced burst: a forced
+    /// refresh (a desktop font/DPI change, which must re-measure every label under new CSS) still
+    /// destroys and re-creates every row, so it keeps the `sidebarInteractionInProgress` gate and its
+    /// retry — it would otherwise tear down an in-progress rename or an open menu from a background
+    /// shell's prompt redraw. An unforced refresh updates rows in place and needs no gate.
     ///
     /// Internal rather than file-private because the app-level desktop-metrics observer in `App.swift`
-    /// routes its own notification burst through this same debouncer and interaction gate.
-    func scheduleSidebarMetadataRefresh(after delay: TimeInterval = 0.01) {
+    /// routes its own notification burst through this same debouncer.
+    func scheduleSidebarMetadataRefresh(forced: Bool = false, after delay: TimeInterval = 0.01) {
+        sidebarRuntime.metadataRefresh.request(forced: forced)
         sidebarMetadataDebouncer.schedule(after: delay) { [weak self] in
             guard let self else { return }
-            guard !self.sidebarInteractionInProgress else {
-                self.scheduleSidebarMetadataRefresh(after: AppController.sidebarInteractionRetryInterval)
-                return
+            switch sidebarRuntime.metadataRefresh.take(interacting: sidebarInteractionInProgress) {
+            case .inPlace: syncSidebar()
+            case .rebuild: syncSidebar(force: true)
+            case .retry: scheduleSidebarMetadataRefresh(
+                forced: true, after: AppController.sidebarInteractionRetryInterval)
             }
-            self.rebuildSidebar()
         }
     }
 
@@ -890,7 +890,8 @@ extension AppController {
         store.setPaneFocus(isSplit, forSession: id)
         if let s = store.session(withID: id) {
             updatePaneDim(s)
-            updateSessionName(id)
+            // Pane focus changes the row's display name; the ordinary sync is the only writer of it.
+            syncSidebar()
         }
         if id == store.selectedSessionID { updateTitle() }
     }
