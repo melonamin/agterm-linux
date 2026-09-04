@@ -54,6 +54,7 @@ extension AppController {
         let zoomed = terminalZoom.target != nil
         gtk_widget_set_visible(W(splitView), zoomed ? 0 : 1)
         if let host = zoomHost { gtk_widget_set_visible(W(host), zoomed ? 1 : 0) }
+        resyncBlinkPhase()   // zooming unmaps the sidebar with the split view
         refreshPaneOverlayCoverage()
         // Nothing here clears `quickVisible`, so the quick card can come back on screen over the deck.
         if !zoomed { showActiveFocusingVisibleSurface() }

@@ -14,7 +14,7 @@ extension AppController {
             store.clearUnseen(id)
             if hadUnseen {
                 NotificationManager.withdraw(windowID: windowID, sessionID: id)
-                rebuildSidebar()
+                syncSidebar()
             }
             // Reactivation can preempt a popover dismissal's own refocus, so it must be no coarser — and
             // must decline while a live search entry holds the keyboard.
@@ -116,6 +116,12 @@ extension AppController {
         for s in overlaySurfaces.values { s.teardown() }
         for s in leftOverlaySurfaces.values { s.teardown() }
         for s in rightOverlaySurfaces.values { s.teardown() }
+        // Last, and in this order: the maps are what a resync resolves, so emptying them first makes any
+        // later one compute "nothing blinks" and the cancel's normalization pass touch nothing.
+        sidebarRuntime.rows.removeAll()
+        sidebarRuntime.sections.removeAll()
+        sidebarRuntime.pickerGlyphs.removeAll()
+        sidebarRuntime.blinkPhase.cancel()
         library.closeWindow(windowID)
         gWindows[windowID] = nil
         if gController === self { gController = gWindows.values.first }

@@ -74,10 +74,11 @@ paths:
   hop the `@MainActor` timer seam cannot express — and unreachable under GTK.
 - **A repeating or long-lived timer stays on the Linux side** with a direct `g_timeout_add`;
   `MainTimer` is deliberately one-shot.
-  Two live here: `LinuxAutoFollowCoordinator`'s idle tick, and `SplitRatioRestoreCoordinator`'s 50 ms
+  Three live here: `LinuxAutoFollowCoordinator`'s idle tick, `SplitRatioRestoreCoordinator`'s 50 ms
   divider-restore poll (`AppControllerSurfaces.scheduleSplitRatioRestore`, whose tick returns
-  `G_SOURCE_CONTINUE` until the paned has a width), each owning its `guint` source id and its own
-  `g_source_remove` cancel.
+  `G_SOURCE_CONTINUE` until the paned has a width), and `BlinkPhaseCoordinator`'s status-glyph pulse
+  (cancelled in `windowWillClose` only AFTER the glyph maps it resolves are emptied), each owning its
+  `guint` source id and its own `g_source_remove` cancel.
 - **Derive a coupled delay from the constant it trails**, never re-hardcode it — `reconcileSoftClose`
   schedules at the soft-close `grace + 0.1` so it cannot drift from the finalizer it must follow.
 - **The grace window is a state, not a schedule — nothing that runs DURING it may reap a held session.**
@@ -125,15 +126,19 @@ paths:
   A dialog whose retained context is released by its OWN async callback and re-checked with a
   `gWindows[controller.windowID] === controller` staleness guard (the GtkFileDialog choosers) needs no
   dismissal — GTK owns the dialog and the guard is what makes the late callback a no-op.
-- **A deferred job that rebuilds the sidebar defers while the user is interacting with it — including with
+- **A deferred job that REBUILDS the sidebar defers while the user is interacting with it — including with
   the KEYBOARD.**
-  `rebuildSidebar()` destroys every row, so an async rebuild landing on a live inline rename commits its
-  half-typed text (the entry's disposal fires a focus-out) and dismisses an open context menu.
+  Only the forced path rebuilds: `syncSidebar()` updates rows in place and is deliberately ungated, while
+  `syncSidebar(force: true)` — the desktop-metrics leg of `scheduleSidebarMetadataRefresh`, where every
+  label must be re-measured under new CSS — destroys every row, so an async one landing on a live inline
+  rename commits its half-typed text (the entry's disposal fires a focus-out) and dismisses an open
+  context menu.
   Gate on the shared `AppController.sidebarInteractionInProgress` and re-arm at
   `AppController.sidebarInteractionRetryInterval` instead of dropping the rebuild; a SYNCHRONOUS rebuild is a
   direct consequence of a user action and is deliberately not gated.
-  Both live with the GATE, not with either deferred job — `SoftCloseReconcileCoordinator` takes the cadence
-  by injection so it stays independent of what its `deferWhile` reads.
+  Gate and cadence live with the GATE, not with either deferred job — `SoftCloseReconcileCoordinator`, the
+  other job reading it, takes the cadence by injection so it stays independent of what its `deferWhile`
+  reads.
   The gate's third disjunct is `sidebarHoldsKeyboardFocus` — the window's focus widget is a MAPPED
   descendant of `sidebarBox` — which covers Tab-parked focus on the disclosure, the add-session "+" or a
   session row; it is read from GTK rather than tracked, because unlike the other two it is a widget
@@ -171,7 +176,7 @@ paths:
   Leave `can-focus` ALONE — Tab reachability and screen readers depend on it — which is why
   `focus-on-click` is only HALF the invariant: it governs the CLICK, and a keyboard user can still hold
   focus ON a chrome button and press Space, so a handler that DESTROYS its own button owes the keyboard
-  repair as well (`rebuildSidebarKeepingKeyboard`, next bullet).
+  repair as well (next bullet).
 - **Hiding or destroying a focused widget strands the keyboard, and GTK will NOT fix it for you.**
   GTK4 does not clear the window's focus widget on unmap — `gtk_window_get_focus` keeps returning the same
   widget with `gtk_widget_get_mapped == 0`, and keystrokes then reach NOTHING.
@@ -185,21 +190,17 @@ paths:
   from the quick shell's exit callback, which `runOnMain` can drain after `windowWillClose`.
   `grep -rn refocusIfStranded agterm-linux/Sources` is the call-site inventory.
   The sidebar's own buttons are the KEYBOARD-only case `focus-on-click` cannot reach: `can-focus` is
-  deliberately intact, so Space on the Tab-focused disclosure runs `toggleWorkspaceCollapse`, whose
-  `rebuildSidebar()` destroys the button holding the keyboard.
-  That handler, and every other workspace-focus mutation that rebuilds the sidebar (the
-  `AppControllerWorkspaceFocus.swift` handlers, the `workspace.focus`/`workspace.filter` control arms),
-  routes through `rebuildSidebarKeepingKeyboard()` (`AppControllerSidebar.swift`).
-  Every NON-FOCUS-CHANGING control mutation that rebuilds sidebar chrome uses the same wrapper; an
-  intentional focus operation may use a bare rebuild only when it immediately grabs its explicit target.
-  The repair belongs at the HANDLERS, not at the tail of `rebuildSidebar()`: that function also runs from
-  the deferred metadata refresh, and a grab inside it re-enters it through `surfaceDidFocus`, rebuilding
-  the sidebar from inside a rebuild whose caller still holds pointers to the rows the inner one destroyed.
-  The ONE tail repair `rebuildSidebar()` carries is scoped to the popovers it dismisses itself with
-  `refocus: false` (the context menu; the session picker its
-  `updateAttentionButton`/`updateRecentSessionsButton` calls take down), and fires only when one actually
-  came down: it restores the search ENTRY if `popupPopover`'s capture — read before those dismissals
-  consume it — says the popover took the keyboard from a live search, else `refocusIfStranded()`.
+  deliberately intact, so Space on the Tab-focused disclosure runs `toggleWorkspaceCollapse`.
+  No handler owes a repair of its own any more: a collapse HIDES the section's list box and a focus change
+  repaints its header, so `syncSidebar()` leaves the parked button standing, and its tail repairs only what
+  the pass actually took away — a structural detach, or a popover it dismissed itself with `refocus: false`
+  (the context menu; the session picker its `updateAttentionButton`/`updateRecentSessionsButton` calls take
+  down).
+  That repair restores the search ENTRY if `popupPopover`'s capture — read before those dismissals consume
+  it — says the popover took the keyboard from a live search, else `refocusIfStranded()`.
+  The forced `rebuildSidebar` destroys every widget, so it repairs unconditionally — but only as its LAST
+  statement, because `refocusIfStranded()` re-enters the sidebar through `surfaceDidFocus`, which is
+  bounded there and would otherwise run against rows the outer pass had not finished replacing.
   Known limitation, accepted: because the unmapped disjunct is qualified by the TOPLEVEL being mapped, a
   HIDE performed while the window itself is unmapped (`agtermctl quick hide` on a minimized window) is
   never repaired; the destroy case still works, since the `focus == nil` disjunct carries no such qualifier.
@@ -234,19 +235,19 @@ paths:
   `becameFrontmost()` consults the same predicate and declines its own grab — which is what makes the pair
   ORDER-INDEPENDENT.
   A `refocus: false` dismissal consumes the capture along with the grab, so the two callers whose popovers
-  may genuinely have taken the keyboard from the entry — `rebuildSidebar()`'s tail and
+  may genuinely have taken the keyboard from the entry — the sidebar sync's tail and
   `activateSessionPickerRow` — read the capture BEFORE dismissing and restore the ENTRY first in their own
   repair; and an opener that CHANGES the selection ends a live search BEFORE it selects
   (`endSearchForSelectionChange()`, the `selectSession` convention it mirrors), because its own
   `showActive()` moves the keyboard off the entry before the capture would run.
   **A dismissal that is about to be replaced, or torn down, passes `refocus: false`** — the detach still
   runs and only the grab is skipped, because that grab is not free there: it lands in `surfaceDidFocus`,
-  which rebuilds the whole sidebar from inside an opener still holding the row's pointers, or from inside
+  which re-enters the sidebar sync from inside an opener still holding the row's pointers, or from inside
   `windowWillClose`.
   A new popover needs the `"closed"` seam, not a hand-rolled regrab.
   The bar is on the GRAB, not on the dismissal, so it covers every OTHER grab an opener makes too:
   `showRowContextMenu`'s select-on-right-click branch calls `showActive(focus: false)`, because that grab
-  lands in the same rebuild and frees the `GtkListBox` it is about to parent the menu to.
+  re-enters the same sidebar sync it is about to parent the menu inside.
   A REPLACEMENT opener also reads the capture before its own dismissal and hands it to
   `popupPopover(_:keepingCapture:)`, because re-reading the entry there answers `false` — the outgoing
   popover, not the entry, holds the keyboard at that moment.
@@ -302,9 +303,10 @@ paths:
   GTK does NOT emit `"closed"` during that destroy, so `windowWillClose` calls `dismissContextMenu()`
   itself alongside `dismissSessionPicker()`.
   Because `contextMenuDidClose` clears `contextMenuPopover`, the handle is non-nil only while the menu is
-  genuinely open — which is what lets `sidebarInteractionInProgress` defer the two deferred rebuilds
-  whenever a menu is up, making the context-menu half of `rebuildSidebar()`'s tail repair unreachable from
-  a deferred job.
+  genuinely open — which is what lets `sidebarInteractionInProgress` defer the forced rebuild and the
+  trailing soft-close reconcile whenever a menu is up.
+  An in-place sync takes a menu down only when it detaches the widget hosting it (`detachGuard`;
+  `agterm-linux/docs/sidebar.md`).
 - **A GTK4 container holds the ONLY reference to a sunk child, so detaching one FREES it — every reparent
   goes through `withWidgetRefHeld` (`GtkInterop.swift`).**
   Except its FOCUS CHILD, which carries a second reference: a reparent that survives may only have been

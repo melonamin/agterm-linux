@@ -17,6 +17,8 @@ paths:
 - `WorkspaceSidebar` is an AppKit `NSOutlineView`, chosen over SwiftUI `List` for native
   cross-workspace drag-and-drop. Its `@MainActor` Coordinator caches reference-type `SidebarNode`s so
   reloads retain identity, expansion, and selection.
+- The `RowContent` reload-scoping below has a GTK counterpart — a keyed snapshot diff that updates one
+  row's widgets in place — whose contract is `agterm-linux/docs/sidebar.md`.
 
 ## Drag and row actions
 

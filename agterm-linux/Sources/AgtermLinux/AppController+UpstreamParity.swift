@@ -51,7 +51,7 @@ extension AppController {
         (leftOverlayWashProviders[id], rightOverlayWashProviders[id]) =
             (rightOverlayWashProviders[id], leftOverlayWashProviders[id])
         NotificationManager.withdraw(windowID: windowID, sessionID: id)
-        refreshSidebar()
+        syncSidebar()
         updateTitle()
         sessionFocusTarget(for: id)?.grabFocus(supersedingPopoverCapture: true)
         return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
@@ -89,6 +89,6 @@ extension AppController {
     func toggleCurrentWorkspaceCollapse() {
         guard store.sidebarMode == .tree, let id = store.currentWorkspaceID else { return }
         store.setWorkspaceExpanded(id, expanded: store.isCurrentWorkspaceCollapsed)
-        rebuildSidebarKeepingKeyboard()
+        syncSidebar()
     }
 }

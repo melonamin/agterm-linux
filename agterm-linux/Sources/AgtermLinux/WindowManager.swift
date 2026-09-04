@@ -72,7 +72,7 @@ extension WindowLibrary {
         title: title, body: body, firingIsFocused: origin.firingIsFocused,
         appActive: origin.appActive))
     guard let delivery else { return }
-    controller.refreshSidebar()
+    controller.syncSidebar()
     if NotificationManager.bannersEnabled {
         NotificationManager.send(title: delivery.title, body: delivery.body, target: delivery.identity)
     }

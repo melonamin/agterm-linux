@@ -25,14 +25,11 @@ struct LinuxReduceMotionPolicyTests {
             interfaceReducedMotion: false, animationsEnabled: true))
     }
 
-    @Test("composed app CSS gates only the decorative pulse")
-    func appCSSGatesPulse() {
-        let reduced = appCSS(prefersReducedMotion: true)
-        let normal = appCSS(prefersReducedMotion: false)
+    @Test("the preference disarms the blink timer rather than a stylesheet")
+    func reducedMotionDisarmsTheBlinkTimer() {
+        let visible = [(marked: true, mapped: true)]
 
-        #expect(reduced.contains(".agterm-blink { animation: none; }"))
-        #expect(!reduced.contains("animation: agterm-blink-pulse 1.2s"))
-        #expect(normal.contains("animation: agterm-blink-pulse 1.2s"))
-        #expect(normal.contains("@keyframes agterm-blink-pulse"))
+        #expect(LinuxBlinkPolicy.timerShouldRun(glyphs: visible, prefersReducedMotion: false))
+        #expect(!LinuxBlinkPolicy.timerShouldRun(glyphs: visible, prefersReducedMotion: true))
     }
 }

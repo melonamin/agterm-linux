@@ -7,13 +7,11 @@ final class SessionPickerRowContext {
     unowned let controller: AppController
     let sessionID: UUID
     let attention: Bool
-    let statusPane: StatusPane?
 
-    init(controller: AppController, sessionID: UUID, attention: Bool, statusPane: StatusPane?) {
+    init(controller: AppController, sessionID: UUID, attention: Bool) {
         self.controller = controller
         self.sessionID = sessionID
         self.attention = attention
-        self.statusPane = statusPane
     }
 }
 
@@ -155,6 +153,9 @@ extension AppController {
         }
         gtk_widget_set_size_request(W(rows), interfacePanelWidth(320), -1)
 
+        // One read for the whole popover — `SettingsStore.load()` is an uncached file read — and only
+        // the attention palette renders glyphs at all.
+        let glyphSettings = attention ? linuxSettingsStore().load() : nil
         for session in sessions {
             guard let button = op(gtk_button_new()), let row = op(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8)),
                   let labels = op(gtk_box_new(GTK_ORIENTATION_VERTICAL, 1)) else { continue }
@@ -165,9 +166,11 @@ extension AppController {
                 gtk_widget_set_name(W(button), $0)
             }
 
-            if attention, let icon = Self.makeStatusGlyph(
-                session.agentIndicator, settings: linuxSettingsStore().load()
+            if let glyphSettings, let icon = Self.makeStatusGlyphLabel(
+                session.agentIndicator, settings: glyphSettings,
+                phase: sidebarRuntime.blinkPhase.phase
             ) {
+                sidebarRuntime.pickerGlyphs[session.id] = icon
                 gtk_box_append(cast(row), W(icon))
             }
 
@@ -185,12 +188,8 @@ extension AppController {
             gtk_box_append(cast(row), W(labels))
             gtk_button_set_child(BUTTON(button), W(row))
 
-            let context = SessionPickerRowContext(
-                controller: self,
-                sessionID: session.id,
-                attention: attention,
-                statusPane: session.agentIndicator.statusPane
-            )
+            let context = SessionPickerRowContext(controller: self, sessionID: session.id,
+                                                  attention: attention)
             sessionPickerContexts.append(context)
             connect(button, "clicked", unsafeBitCast(onSessionPickerRow as @convention(c)
                 (OpaquePointer?, gpointer?) -> Void, to: GCallback.self),
@@ -207,9 +206,20 @@ extension AppController {
             Unmanaged.passUnretained(self).toOpaque())
         gtk_popover_set_child(POPOVER(popover), W(scroller))
         popupPopover(popover, keepingCapture: heldSearchEntry)
+        resyncBlinkPhase()
     }
 
-    /// `refocusOnDismiss: false` only from inside `rebuildSidebar()`, whose tail repair takes over.
+    /// The open attention popover's glyphs are refreshed in place by the sidebar sync, so a status the
+    /// model takes while it is up shows there too instead of waiting for the popover to be rebuilt.
+    func updateSessionPickerStatusIcons(settings: AppSettings) {
+        for (id, icon) in sidebarRuntime.pickerGlyphs {
+            let indicator = store.session(withID: id)?.agentIndicator ?? AgentIndicator()
+            Self.applyStatusGlyph(indicator, settings: settings,
+                                  phase: sidebarRuntime.blinkPhase.phase, to: icon)
+        }
+    }
+
+    /// `refocusOnDismiss: false` only from inside the sidebar sync, whose tail repair takes over.
     func updateRecentSessionsButton(refocusOnDismiss: Bool = true) {
         guard let button = recentSessionsButton else { return }
         let hasOther = !store.navigableRecentSessions(limit: 1).isEmpty
@@ -223,15 +233,18 @@ extension AppController {
     func activateSessionPickerRow(_ context: SessionPickerRowContext) {
         let id = context.sessionID
         let attention = context.attention
-        let statusPane = context.statusPane
+        // Snapshotted here, not at row construction: the popover's glyphs are refreshed in place now, so a
+        // row can have gone idle — or changed pane — since it was built, and must not auto-follow to a
+        // status that is gone.
+        let indicator = store.session(withID: id)?.agentIndicator
         // Read the capture BEFORE the dismissal consumes it; unconditional, NOT through
         // `searchEntryCaptureSurvives` — see that helper's boundary note. `refocus: false` because this
         // handler re-targets focus itself below.
         let popoverHeldSearchEntry = popoverTookKeyboardFromSearchEntry
         dismissSessionPicker(refocus: false)
         selectSession(id)
-        if attention {
-            handleAutoFollow(id, statusPane: statusPane)
+        if attention, let indicator, indicator.status != .idle {
+            handleAutoFollow(id, statusPane: indicator.statusPane)
         }
         // The attention leg needs this too: `handleAutoFollow` is shared with the auto-follow timer and
         // declines to focus while a quick terminal is visible. Entry restore first.
@@ -254,6 +267,10 @@ extension AppController {
     }
 
     private func clearSessionPickerState() {
+        // Before anything pops the popover down: its glyph labels die with it, and the blink timer must
+        // stop tracking them while they are still valid to read.
+        sidebarRuntime.pickerGlyphs.removeAll()
+        resyncBlinkPhase()
         sessionPickerPopover = nil
         sessionPickerShowsAttention = false
         sessionPickerContexts.removeAll()

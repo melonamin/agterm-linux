@@ -1,8 +1,8 @@
 import Foundation
 import agtermCore
 
-/// Owns the post-rebuild accessible-selection re-publish (`AppController.rebuildSidebar` tail): ONE
-/// cancellable next-turn `MainTimer` job, re-armed by every rebuild. A coordinator for the same
+/// Owns the post-sync accessible-selection re-publish (the sidebar sync tail): ONE cancellable
+/// next-turn `MainTimer` job, re-armed by every pass that re-rooted a row. A coordinator for the same
 /// reason as `SoftCloseReconcileCoordinator`: the fire touches the freshly-built GTK rows, so
 /// `windowWillClose` must be able to disarm it (`.claude/rules/main-loop.md`) — the controller can
 /// outlive its widget tree whenever a dialog still retains it, and `[weak self]` alone cannot tell

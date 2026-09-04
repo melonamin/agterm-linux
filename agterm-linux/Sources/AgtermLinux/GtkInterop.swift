@@ -25,6 +25,18 @@ import agtermCore
 /// non-optional `UnsafeMutablePointer<GtkWidget>`) to the `OpaquePointer?` we store.
 @inline(__always) func op(_ p: UnsafeMutablePointer<GtkWidget>?) -> OpaquePointer? { p.map { OpaquePointer($0) } }
 
+/// One GtkSettings boolean, defaulted when GTK has no settings object or the read fails.
+func gtkSettingsBool(_ name: String, default fallback: Bool) -> Bool {
+    guard let settings = gtk_settings_get_default() else { return fallback }
+    var value = GValue()
+    g_value_init(&value, GType(20))   // G_TYPE_BOOLEAN
+    g_value_set_boolean(&value, fallback ? 1 : 0)
+    name.withCString { g_object_get_property(GOBJ(settings), $0, &value) }
+    let result = g_value_get_boolean(&value) != 0
+    g_value_unset(&value)
+    return result
+}
+
 /// GTK4 parents own the sole reference to a sunk child: detaching one without a held
 /// reference frees it, and re-adding it links freed memory into the tree.
 func withWidgetRefHeld<T>(_ widget: OpaquePointer, _ body: () throws -> T) rethrows -> T {

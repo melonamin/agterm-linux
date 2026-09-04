@@ -54,7 +54,7 @@ extension AppController {
             guard store.session(withID: id) != nil else { return err("no such session") }
             _ = store.setContext(context, forSession: id)
             updateTitle()
-            refreshSidebar()
+            syncSidebar()
             return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
         }
     }
@@ -70,7 +70,7 @@ extension AppController {
         case .failure(let response): return response
         case .success(let id):
             store.setWorkspaceExpanded(id, expanded: expanded)
-            rebuildSidebarKeepingKeyboard()
+            syncSidebar()
             syncSidebarSelection()
             return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
         }

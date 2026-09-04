@@ -14,8 +14,8 @@ extension AppController {
         return duplicate
     }
 
-    func showRowContextMenu(row: OpaquePointer, x: Double, y: Double) {
-        guard let sid = rowSession[row] else { return }
+    func showRowContextMenu(row clicked: OpaquePointer, x: Double, y: Double) {
+        guard let sid = rowSession[clicked] else { return }
         noteUserActivity()
         if !store.sidebarSelectionIDs.contains(sid) {
             // This path bypasses `selectSession`, so it owes its end-search convention.
@@ -23,10 +23,16 @@ extension AppController {
             store.selectSession(sid, sidebarSelection: [sid])
             sidebarSelectionAnchor = sid
             syncSidebarSelection()
-            // `focus: false`: a grab here re-enters `rebuildSidebar` and frees the row this function
+            // `focus: false`: a grab here re-enters the sidebar sync, which can free the row this function
             // parents the menu to below.
             showActive(focus: false)
+            // Selecting cleared this row's unseen badge and auto-reset glyph; only a content sync takes
+            // them off the row. Safe here: the menu is parented further down, so nothing can unroot it.
+            syncSidebar()
         }
+        // Re-resolved after the sync above: a structural op could have replaced the clicked widget, and
+        // the menu is parented to it below.
+        guard let row = sidebarRuntime.rows[sid]?.row else { return }
         // Tear down the previous popover before storing the replacement. Popping down a newly-created,
         // not-yet-mapped GtkPopover crashes inside gtk_popover_popdown. Read the capture BEFORE the
         // dismissal consumes it (see `popupPopover`).
@@ -131,7 +137,7 @@ extension AppController {
         guard let id = contextMenuSession, let ws = store.workspace(forSession: id) else { return }
         dismissContextMenu()
         store.toggleFocusedWorkspace(ws.id)
-        rebuildSidebar()
+        syncSidebar()
     }
 
     func contextMoveToWorkspace(_ data: gpointer?) {
@@ -148,7 +154,7 @@ extension AppController {
         let allFlagged = targets.compactMap { store.session(withID: $0) }.allSatisfy(\.flagged)
         dismissContextMenu()
         store.setFlag(!allFlagged, forSessions: targets)
-        rebuildSidebar()
+        syncSidebar()
     }
 
     func contextRename() {
@@ -224,14 +230,14 @@ extension AppController {
         guard let id = contextMenuWorkspace else { return }
         dismissContextMenu()
         store.toggleFocusedWorkspace(id)
-        rebuildSidebar()
+        syncSidebar()
     }
 
     func contextWorkspaceFocusMembership() {
         guard let id = contextMenuWorkspace else { return }
         dismissContextMenu()
         store.setFocusMembership(id, member: !store.focusedWorkspaceIDs.contains(id))
-        rebuildSidebar()
+        syncSidebar()
     }
 
     func contextWorkspaceDelete() {
@@ -315,7 +321,7 @@ extension AppController {
         let targets = store.sidebarSelectionTargets(forContextSession: id)
         dismissContextMenu()
         for target in targets { store.setAgentIndicator(AgentIndicator(), forSession: target) }
-        rebuildSidebar()
+        syncSidebar()
     }
 
     func contextCloseSession() {

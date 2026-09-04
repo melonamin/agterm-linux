@@ -82,6 +82,10 @@ extension AppController {
             gtk_widget_remove_controller(W(window), keys)
             dashboardRuntime.keyController = nil
         }
+        // Ahead of the overlay removal that destroys them: the blink timer resolves these labels, and a
+        // resync must not reach one GTK has already disposed.
+        dashboardRuntime.statusIcons = [:]
+        resyncBlinkPhase()
         if let host = dashboardRuntime.host, let deckOverlay {
             gtk_overlay_remove_overlay(deckOverlay, W(host))
         }
@@ -90,7 +94,6 @@ extension AppController {
         dashboardRuntime.titleLabel = nil
         dashboardRuntime.frames = [:]
         dashboardRuntime.targets = [:]
-        dashboardRuntime.statusIcons = [:]
         dashboardRuntime.clickContexts = []
         dashboard.close()
         refreshPaneOverlayCoverage()
@@ -116,6 +119,8 @@ extension AppController {
         }
         closeDashboard(refocus: false)
         focusPane(wantSplit: member.surface == .split)
+        // The selection above cleared the visited row's unseen badge and auto-reset glyph in the store.
+        syncSidebar()
     }
 
     func moveDashboardHighlight(_ direction: DashboardLayout.Direction) {
@@ -166,6 +171,7 @@ extension AppController {
 
     private func mountDashboard() {
         guard let deckOverlay else { return }
+        let settings = linuxSettingsStore().load()
         let host = OpaquePointer(adw_toolbar_view_new())
         let header = OpaquePointer(adw_header_bar_new())
         let grid = OpaquePointer(gtk_grid_new())
@@ -186,7 +192,7 @@ extension AppController {
         connect(exit, "clicked", unsafeBitCast(onDashboardExit, to: GCallback.self))
         adw_header_bar_pack_end(header, W(exit))
         adw_toolbar_view_add_top_bar(host, W(header))
-        if linuxSettingsStore().load().effectiveToolbarMode == .hidden {
+        if settings.effectiveToolbarMode == .hidden {
             gtk_widget_set_visible(W(header), 0)
         }
         gtk_grid_set_row_homogeneous(cast(grid), 1)
@@ -258,7 +264,8 @@ extension AppController {
         dashboardRuntime.titleLabel = titleLabel
         dashboardRuntime.keyController = keys
         gtk_widget_set_can_target(W(splitView), 0)
-        updateDashboardStatusIndicators()
+        updateDashboardStatusIndicators(settings: settings)
+        resyncBlinkPhase()   // the tiles just built are the only blinking glyphs an open dashboard shows
         updateDashboardHighlight()
         _ = gtk_widget_grab_focus(W(host))
     }
@@ -297,11 +304,13 @@ extension AppController {
         selectDashboardMember(context.member)
     }
 
-    func updateDashboardStatusIndicators() {
-        let settings = linuxSettingsStore().load()
+    /// `settings` is passed in rather than read: this runs on every terminal focus grab through the
+    /// sidebar sync, and `SettingsStore.load()` is an uncached file read.
+    func updateDashboardStatusIndicators(settings: AppSettings) {
         for (member, icon) in dashboardRuntime.statusIcons {
             let indicator = store.session(withID: member.session)?.agentIndicator ?? AgentIndicator()
-            Self.applyStatusGlyph(indicator, settings: settings, to: icon)
+            Self.applyStatusGlyph(indicator, settings: settings,
+                                  phase: sidebarRuntime.blinkPhase.phase, to: icon)
         }
     }
 

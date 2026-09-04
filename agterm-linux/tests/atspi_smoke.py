@@ -1850,6 +1850,8 @@ def verify_split_exit_sidebar(env):
             lambda: sidebar_row_settled(app, "split-exit-left", images=1, labels=1),
             "split exit left a stale sidebar name/status presentation",
         )
+        # A row keeps its status-glyph and unseen-badge labels for life now, but GTK drops an invisible
+        # child from the accessible tree, so an exact list still names exactly the VISIBLE parts.
         labels = [item.get_name() or "" for item in descendants(row, role="label")]
         assert labels == ["split-exit-left"], f"split exit left stale sidebar labels: {labels}"
         assert process.poll() is None, "split exit terminated the app"
@@ -2899,7 +2901,7 @@ def verify_sidebar_click_and_rename(env):
         wait_for(lambda: sidebar_session_row_label(app, "row-one"), "the row-one sidebar row is missing")
         wait_for(
             lambda: row_selected(app, "row-two") and row_deselected(app, "row-one"),
-            "the fresh sidebar rebuild did not publish SELECTED on the active row",
+            "the sidebar sync did not publish SELECTED on the active row",
         )
 
         # Single click on a session row selects it on mouse-down (calibrates the click offset,
@@ -2952,8 +2954,8 @@ def verify_sidebar_click_and_rename(env):
         )
 
         # The renamed row (its label replaced by the entry) stays the SOLE published selection:
-        # the double-click's first press selected it, and opening the entry rebuilds the row
-        # without losing the state.
+        # the double-click's first press selected it, and opening the entry swaps the label for an
+        # entry inside the SAME row, which keeps the state.
         def rename_row_is_sole_selection():
             editing_row = next(
                 (row for row in collect(app, role="list item") if editable_descendant(row)), None
@@ -3017,11 +3019,12 @@ def verify_sidebar_click_and_rename(env):
         )
         wait_for(
             lambda: row_selected(app, "row-one") and row_deselected(app, "row-two"),
-            "the rename rebuild did not preserve SELECTED on the active row",
+            "the rename did not preserve SELECTED on the active row",
         )
 
-        # A collapsed workspace removes its rows from the accessibility tree; expanding it rebuilds
-        # them and must immediately restore SELECTED on the active session without another click.
+        # A collapsed workspace hides its list box, which drops its rows from the accessibility tree;
+        # expanding it brings the same widgets back and must immediately restore SELECTED on the active
+        # session without another click.
         tree = window_tree(env, window_id)
         workspace_id = tree["workspaces"][0]["id"]
         control_json(env, "workspace", "collapse", "--target", workspace_id,
@@ -3423,13 +3426,13 @@ def verify_sidebar_multiselect_collapse(env):
                 "the block drag aborted: a row stopped resolving mid-retry")
             poll(lambda: names() != base, timeout=4)
             if names() == expected:
-                # The drop rebuilds every row; the published block must SURVIVE the rebuild —
-                # GTK resets SELECTED while rooting the new rows, so this leg pins the deferred
-                # re-publish (build-loop publication alone is wiped).
+                # The drop RE-ROOTS the dragged rows (a list-box remove + insert); GTK resets
+                # SELECTED whenever it roots a row, so this leg pins the deferred re-publish the
+                # move arms.
                 wait_for(
                     lambda: row_selected(app, "pick-one") and row_selected(app, "pick-two")
                     and row_deselected(app, "pick-three"),
-                    "AT-SPI lost the selected block while rebuilding rows after the drag",
+                    "AT-SPI lost the selected block while re-rooting the dragged rows",
                 )
                 break
             if names() != base:
@@ -3504,6 +3507,301 @@ def verify_sidebar_multiselect_collapse(env):
         print("OK: shift-click builds a block, a plain press defers its collapse to release, "
               "ctrl-click toggles a member out, and a block drag moves the whole block "
               "onto a row and onto a workspace header")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
+def sidebar_accessible_live(node, name=None):
+    """Whether a captured sidebar accessible still stands for a LIVE widget.
+
+    The incremental engine's discriminator: a full rebuild leaves every captured proxy defunct. The
+    AT-SPI cache can still answer a stale read on one, so the check is three-legged — no DEFUNCT
+    state, a parent that still owns it, and (when `name` is given) that label still resolving
+    underneath. Every leg is wrapped: a read against a destroyed widget raises rather than answering,
+    and for this predicate that is a `False`.
+    """
+    if node is None:
+        return False
+    try:
+        if node.get_state_set().contains(Atspi.StateType.DEFUNCT):
+            return False
+        if node.get_parent() is None:
+            return False
+        return name is None or named(node, name, role="label") is not None
+    except Exception:
+        return False
+
+
+def sidebar_row_name_order(app):
+    """Every VISIBLE sidebar row's name label, in tree order.
+
+    The name is the row's FIRST label: the status glyph and the unseen badge are labels too and both
+    follow it in the row box. A collapsed workspace contributes nothing — GTK drops an invisible list
+    box's whole subtree from the accessible tree.
+    """
+    order = []
+    for row in collect(app, role="list item"):
+        labels = [item.get_name() for item in descendants(row, role="label") if item.get_name()]
+        if labels:
+            order.append(labels[0])
+    return order
+
+
+def verify_sidebar_incremental(env):
+    """Sidebar rows are keyed by id and updated IN PLACE: a model change touches its own row and
+    leaves every other row and the workspace header alive.
+
+    IDENTITY is the discriminator, not content — a rebuild leaves the captured proxies defunct, so
+    every leg below reds on the pre-incremental engine. Content is asserted on the mutated row only.
+    The three structural cases the diff still performs — a row move, a collapse/expand and the
+    tree ↔ flagged switch — get their own legs; what becomes of a PROXY across those is GTK/AT-SPI
+    behaviour this scenario measures and prints, never a contract it asserts.
+    """
+    process, app = launch(env)
+    try:
+        window_id = wait_for(
+            lambda: next((item["id"] for item in window_list(env) if item["open"]), None),
+            "initial window was not registered")
+
+        def workspace():
+            return window_tree(env, window_id)["workspaces"][0]
+
+        def sessions():
+            return workspace()["sessions"]
+
+        def names():
+            return [session["name"] for session in sessions()]
+
+        # The first session keeps its auto basename: `displayName` follows an OSC title only while no
+        # manual rename has won, which is what the title leg below needs.
+        titled = wait_for(lambda: (names() or [None])[0],
+                          "the launched session never reported a name")
+        control_json(env, "session", "new", "--name", "inc-two", "--window", window_id, "--json")
+        control_json(env, "session", "new", "--name", "inc-three", "--window", window_id, "--json")
+        wait_for(lambda: names() == [titled, "inc-two", "inc-three"],
+                 "the created sessions did not settle into their creation order")
+
+        label = {"one": titled, "two": "inc-two", "three": "inc-three"}
+        ident = {key: next(s["id"] for s in sessions() if s["name"] == label[key]) for key in label}
+        for key in ("one", "two", "three"):
+            wait_for(lambda key=key: sidebar_session_row(app, label[key]),
+                     f"the {label[key]} sidebar row never appeared")
+        rows = {key: sidebar_session_row(app, label[key]) for key in label}
+        header = wait_for(lambda: named(app, "workspace 1", role="label"),
+                          "the workspace header label never appeared").get_parent()
+
+        def survived(step, order=("one", "two", "three")):
+            for key in order:
+                assert sidebar_accessible_live(rows[key], label[key]), (
+                    f"{step} recreated the {label[key]} row — an in-place update must leave every "
+                    "other row's accessible alive")
+            assert sidebar_accessible_live(header, workspace()["name"]), (
+                f"{step} recreated the workspace header")
+            assert sidebar_row_name_order(app) == [label[key] for key in order], (
+                f"{step} left the sidebar in row order {sidebar_row_name_order(app)}")
+
+        def glyphed(key):
+            return named(rows[key], "●", role="label") is not None
+
+        # A status update grows the target row's glyph label and touches nothing else.
+        control_json(env, "session", "status", "active", "--blink", "--target", ident["two"],
+                     "--json")
+        wait_for(lambda: glyphed("two"),
+                 "session.status never added the status glyph to the inc-two row IN PLACE")
+        survived("a session.status update")
+
+        # A name change reaches the SAME label the row already owns. Driven over the socket rather than
+        # by an OSC title from the session's own shell: `displayName` follows a title only while no
+        # manual rename has won, but a shell that has not yet drawn its first prompt silently drops the
+        # injected line, and nothing in the model says when that happened.
+        control_json(env, "session", "rename", "inc-titled", "--target", ident["one"], "--json")
+        wait_for(lambda: sidebar_session_row(app, "inc-titled"),
+                 "the rename never reached the sidebar")
+        assert sidebar_accessible_live(rows["one"], "inc-titled"), (
+            "the new name landed in a NEW row — the first row was rebuilt instead of updated")
+        label["one"] = "inc-titled"
+        survived("a session rename over the control socket")
+
+        # The unseen badge is a third label; the notified session must NOT be selected afterwards,
+        # since `selectSession` zeroes `unseenCount`.
+        control_json(env, "notify", "--title", "incremental", "badge", "--target", ident["three"],
+                     "--window", window_id, "--json")
+        wait_for(lambda: any((item.get_name() or "").strip() == "1"
+                             for item in descendants(rows["three"], role="label")),
+                 "notify never added the unseen badge to the inc-three row IN PLACE")
+        survived("an unseen-badge bump")
+
+        # The flag star is the row's second image (the leading terminal icon is the first).
+        control_json(env, "session", "flag", "on", "--target", ident["two"], "--json")
+        wait_for(lambda: len(descendants(rows["two"], role="image")) >= 2,
+                 "session.flag never added the star image to the inc-two row IN PLACE")
+        survived("a session.flag toggle")
+
+        # The inline rename is the one per-row structural edit: the name label is swapped for an
+        # entry inside the SAME row, survives unrelated churn, and swaps back on commit.
+        row_dy = calibrate_row_click(app, process.pid, label["two"])
+        mouse_click(lambda: sidebar_session_row_label(app, label["two"]), process.pid,
+                    button="left", count=2, dy=row_dy)
+        wait_for(lambda: editable_descendant(rows["two"]),
+                 "double-clicking the inc-two name did not open an inline rename entry in its row")
+        control_json(env, "session", "status", "blocked", "--target", ident["three"], "--json")
+        wait_for(lambda: glyphed("three"),
+                 "a status on another session never reached its row while a rename was in flight")
+        assert editable_descendant(rows["two"]) is not None, (
+            "an unrelated session.status destroyed the in-flight inline rename entry")
+        type_x11_text("inc-renamed", process.pid)
+        press_return(process.pid)
+        wait_for(lambda: "inc-renamed" in names(), "the inline rename never committed to the model")
+        wait_for(lambda: sidebar_accessible_live(rows["two"], "inc-renamed"),
+                 "the committed rename did not land back in the SAME inc-two row")
+        label["two"] = "inc-renamed"
+        survived("an inline session rename commit")
+
+        # The header takes the same swap, and `beginRename` reads the entry `makeNameWidget` sets.
+        workspace_id = workspace()["id"]
+        for dy in ABSOLUTE_DYS:
+            mouse_click(lambda: named(app, workspace()["name"], role="label"), process.pid,
+                        button="left", count=2, dy=dy)
+            if poll(lambda: editable_descendant(header) is not None, timeout=2):
+                break
+            if workspace().get("collapsed"):
+                control_json(env, "workspace", "expand", "--target", workspace_id, "--json")
+                wait_for(lambda: not workspace().get("collapsed"),
+                         "a missed header double-click collapsed the workspace for good")
+        assert editable_descendant(header) is not None, (
+            "double-clicking the workspace name never opened its inline rename entry")
+        type_x11_text("inc-workspace", process.pid)
+        press_return(process.pid)
+        wait_for(lambda: workspace()["name"] == "inc-workspace",
+                 "the workspace rename never committed to the model")
+        wait_for(lambda: sidebar_accessible_live(header, "inc-workspace"),
+                 "the committed workspace rename did not land back in the SAME header")
+        survived("an inline workspace rename commit")
+
+        # The add-session button is built once and updated in place like everything else, so the rename
+        # above owes it a new tooltip — the button is otherwise left naming a workspace that is gone.
+        wait_for(lambda: named(app, "New Session in inc-workspace", role="button"),
+                 "the workspace rename never reached the add-session button's tooltip")
+
+        # Only a structural op owes the context menu a dismissal, so an in-place update must leave it
+        # standing.
+        # The calibrated offset goes first: where the extents sit a row-fraction above the pixels, the
+        # blind dy=0 probe opens the row ABOVE's menu, and every later probe lands on that popover.
+        def menu_on_three():
+            return actionable(app, "Flag") and any(
+                s["name"] == label["three"] and s["active"] for s in sessions())
+        for dy in (row_dy, *(d for d in ABSOLUTE_DYS if d != row_dy)):
+            right_click(lambda: sidebar_session_row_label(app, label["three"]), process.pid, dy=dy)
+            if poll(menu_on_three, timeout=1):
+                break
+            if actionable(app, "Close Session"):
+                press_escape(process.pid)
+                wait_for(lambda: not actionable(app, "Close Session"), "a stray context menu never closed")
+        assert menu_on_three(), "the sidebar row context menu did not open"
+        control_json(env, "session", "status", "completed", "--target", ident["one"], "--json")
+        wait_for(lambda: glyphed("one"),
+                 "the status on the first row never landed while a context menu was open")
+        assert actionable(app, "Flag"), "an in-place row update dismissed the open context menu"
+        press_escape(process.pid)
+        wait_for(lambda: actionable(app, "Flag") is None, "Escape did not dismiss the context menu")
+        survived("an update with a context menu open")
+
+        # A one-row move re-inserts only the moved row; the others keep their proxies. The moved
+        # row's own proxy is re-rooted by a remove + insert, whose AT-SPI effect is measured.
+        control_json(env, "session", "move", "--to", "top", "--target", ident["three"], "--json")
+        wait_for(lambda: sidebar_row_name_order(app)
+                 == [label[key] for key in ("three", "one", "two")],
+                 "session.move --to top never settled the sidebar into the moved order")
+        for key in ("one", "two"):
+            assert sidebar_accessible_live(rows[key], label[key]), (
+                f"moving another row recreated the {label[key]} row")
+        moved_proxy_survived = sidebar_accessible_live(rows["three"], label["three"])
+        control_json(env, "session", "move", "--to", "bottom", "--target", ident["three"], "--json")
+        wait_for(lambda: sidebar_row_name_order(app)
+                 == [label[key] for key in ("one", "two", "three")],
+                 "moving the row back never restored the sidebar order")
+        rows["three"] = sidebar_session_row(app, label["three"])
+        survived("a one-row move")
+
+        # A collapsed workspace keeps its rows' widgets, so a status posted while it is collapsed is
+        # an ordinary in-place update that becomes visible on expansion.
+        control_json(env, "session", "status", "idle", "--target", ident["two"], "--json")
+        wait_for(lambda: not glyphed("two"),
+                 "clearing the status never removed the inc-two glyph, so the collapsed leg below "
+                 "would assert nothing")
+        control_json(env, "workspace", "collapse", "--target", workspace_id, "--json")
+        wait_for(lambda: sidebar_row_name_order(app) == [],
+                 "collapsing the workspace did not drop its rows from the accessible tree")
+        control_json(env, "session", "status", "active", "--target", ident["two"], "--json")
+        control_json(env, "workspace", "expand", "--target", workspace_id, "--json")
+        wait_for(lambda: sidebar_row_name_order(app)
+                 == [label[key] for key in ("one", "two", "three")],
+                 "expanding the workspace did not bring its rows back")
+        assert sidebar_accessible_live(rows["two"], label["two"]), (
+            "collapsing and expanding destroyed the row widgets — a collapse must only hide the "
+            "list box, or a status posted while collapsed has nowhere to land")
+        assert sidebar_accessible_live(header, workspace()["name"]), (
+            "collapsing and expanding recreated the header")
+        assert glyphed("two"), (
+            "the status posted while the workspace was collapsed never reached its hidden row")
+
+        # ...but a RENAME asked for while the workspace is collapsed is declined instead: the entry the
+        # sync would build lives in that hidden list box, where no activate, focus-leave or Escape can
+        # ever reach it, so starting one there pins `renaming` — and with it the deferred-refresh gate —
+        # for the rest of the session. Driven from the palette because Linux binds no rename chord.
+        control_json(env, "session", "select", "--target", ident["two"], "--json")
+        control_json(env, "workspace", "collapse", "--target", workspace_id, "--json")
+        wait_for(lambda: sidebar_row_name_order(app) == [],
+                 "collapsing the workspace a second time did not drop its rows")
+        run_palette_action(app, process.pid, None, "Rename Session")
+        control_json(env, "workspace", "expand", "--target", workspace_id, "--json")
+        wait_for(lambda: sidebar_row_name_order(app)
+                 == [label[key] for key in ("one", "two", "three")],
+                 "expanding the workspace after the declined rename did not bring its rows back")
+        assert editable_descendant(rows["two"]) is None, (
+            "a rename started while the workspace was collapsed left a rename entry on the hidden row "
+            "— nothing can commit or cancel it, so the sidebar stays in an interaction forever")
+        # The declined gesture left no state behind: the same rename opens once the row is back.
+        run_palette_action(app, process.pid, None, "Rename Session")
+        wait_for(lambda: editable_descendant(rows["two"]),
+                 "the rename declined while collapsed left the state stuck — asking again on the "
+                 "visible row opened no entry")
+        press_escape(process.pid)
+        wait_for(lambda: editable_descendant(rows["two"]) is None,
+                 "Escape did not close the inline rename entry")
+        survived("a rename declined while the workspace was collapsed")
+
+        # An auto-reset glyph is cleared by VISITING the session, and only a content sync takes it off
+        # the row: selecting through a click used to bypass the sidebar entirely.
+        control_json(env, "session", "status", "completed", "--auto-reset", "--target",
+                     ident["three"], "--json")
+        wait_for(lambda: glyphed("three"), "the auto-reset status never reached the inc-three row")
+        mouse_click(lambda: sidebar_session_row_label(app, label["three"]), process.pid,
+                    button="left", dy=row_dy)
+        wait_for(lambda: not glyphed("three"),
+                 "clicking the row cleared the auto-reset indicator in the model but left the glyph "
+                 "on the row")
+        survived("an auto-reset glyph cleared by a row click")
+        rows = {key: sidebar_session_row(app, label[key]) for key in label}
+
+        # The mode switch is the full rebuild the planner still emits: every row is a new widget, and
+        # the only contract is that they resolve again by name.
+        control_json(env, "session", "flag", "on", "--target", ident["one"], "--json")
+        control_json(env, "sidebar", "mode", "flagged", "--json")
+        wait_for(lambda: sorted(name.split("  —  ")[0] for name in sidebar_row_name_order(app))
+                 == sorted([label["one"], label["two"]]),
+                 "flagged mode never rendered exactly the two flagged rows")
+        control_json(env, "sidebar", "mode", "tree", "--json")
+        wait_for(lambda: sidebar_row_name_order(app)
+                 == [label[key] for key in ("one", "two", "three")],
+                 "switching back to tree mode did not restore the rows")
+
+        print("OK: sidebar rows and headers update in place across status, name, badge, flag, "
+              "rename, reorder, collapse (which declines an unreachable rename) and an auto-reset click "
+              f"(measured: a moved row's proxy survives = {moved_proxy_survived})")
     except AssertionError:
         describe_tree(app)
         raise
@@ -3659,7 +3957,7 @@ def sidebar_fits(app, box, description, column=None):
     """CONTAINMENT: fails when `box` sticks out past the sidebar column's right edge.
 
     `column` defaults to a fresh read and must never be hoisted ACROSS the scenario's steps — each goes
-    through `rebuildSidebar`, so a limit captured once would be stale for the rest. Callers measuring
+    through a sidebar sync, so a limit captured once would be stale for the rest. Callers measuring
     several parts of ONE row pass the column they resolved for it (see `sidebar_row_parts_fit`).
 
     ⚠️ Half the gate on any site — `sidebar_does_not_widen` is the other half.
@@ -3699,11 +3997,12 @@ def sidebar_does_not_widen(app, baseline, description):
 def sidebar_row_settled(app, carrying=None, images=0, labels=0):
     """The settled sidebar row PROVABLY the one under test, or None while it is not in the tree yet.
 
-    Never merely "the first list item reporting an extent": rows rebuild ASYNCHRONOUSLY while the model
-    state flips as soon as the control call returns, so a stale accessible from before a rebuild and a
-    freshly built but not-yet-decorated one both report an extent, and either would satisfy every
-    assertion downstream against the wrong row. `carrying` pins the row's TEXT, `images`/`labels` its
-    DECORATIONS; rows are SEARCHED, not indexed, so a stale sibling is skipped rather than measured.
+    Never merely "the first list item reporting an extent": the sidebar is refreshed ASYNCHRONOUSLY
+    while the model state flips as soon as the control call returns, so a not-yet-decorated row — and,
+    across a forced rebuild, a stale accessible from before it — both report an extent, and either
+    would satisfy every assertion downstream against the wrong row. `carrying` pins the row's TEXT,
+    `images`/`labels` its DECORATIONS; rows are SEARCHED, not indexed, so a stale sibling is skipped
+    rather than measured.
     """
     for row in collect(app, role="list item"):
         if not window_extents(row):
@@ -3728,7 +4027,7 @@ def sidebar_row_parts_fit(app, row, images=0, labels=0):
 
     `images`/`labels` are re-asserted on the parts collected HERE, never inherited from the
     `sidebar_row_settled` poll that found the row: that poll walked an EARLIER collection, and an async
-    `rebuildSidebar` in between leaves this one empty — the loop would then assert nothing while the
+    forced rebuild in between leaves this one empty — the loop would then assert nothing while the
     caller still printed a success line. The column is resolved once for the whole row, which is the
     limit these parts were laid out under and one AT-SPI round trip instead of one per part.
     """
@@ -3797,7 +4096,7 @@ def verify_sidebar_narrow_clipping(env):
     flagged-empty hint, each checked BOTH ways — containment (`sidebar_row_parts_fit`, `sidebar_fits`)
     and no growth (`sidebar_does_not_widen`), neither redundant with the other.
 
-    ⚠️ Driving the decorations REBUILDS the row, and GTK allocates a rebuilt widget only while the window
+    ⚠️ Driving the decorations re-allocates the row, and GTK allocates only while the window
     is being rendered — always true under Xvfb, which is how this suite runs. On a live Wayland session
     `launch()` parks the window on a silent workspace and the frame clock stalls, so the settle polls
     below time out; run it as `env -u HYPRLAND_INSTANCE_SIGNATURE AGTERM_ATSPI_SCENARIO=…` there.
@@ -3835,11 +4134,11 @@ def verify_sidebar_narrow_clipping(env):
 
         wait_for(decorated, "session never took the status, flag and unseen-badge decorations")
         # Tree mode: terminal icon and flag star are the two images; the name, the status glyph (a
-        # GtkLabel, not a GtkImage — `LinuxStatusGlyph.makeStatusGlyph`) and the unseen badge the three
-        # labels. `decorated()` polls the MODEL and the sidebar rebuild LAGS it, so wait on the parts
+        # GtkLabel, not a GtkImage — `LinuxStatusGlyph.makeStatusGlyphLabel`) and the unseen badge the
+        # three labels. `decorated()` polls the MODEL and the sidebar sync LAGS it, so wait on the parts
         # themselves: a yardstick read off the still-undecorated row would be too narrow.
         wait_for(lambda: sidebar_row_settled(app, images=2, labels=3),
-                 "the sidebar row never rebuilt with the status glyph, flag star and unseen badge")
+                 "the sidebar row never showed the status glyph, flag star and unseen badge")
         # The YARDSTICK for every `sidebar_does_not_widen` below, captured with the row FULLY decorated
         # but its name still short: the decorations are legitimate chrome a column following its content
         # may widen for, so a baseline taken before them would report that growth as a regression.
@@ -3848,7 +4147,7 @@ def verify_sidebar_narrow_clipping(env):
         # Only NOW rename, so the long name is the SINGLE variable between the baseline and the checks.
         control_json(env, "session", "rename", session_name, "--target", session_id, "--json")
         row = wait_for(lambda: sidebar_row_settled(app, session_name, images=2, labels=3),
-                       "no rebuilt sidebar row carrying the long session name reported a settled, fully "
+                       "no sidebar row carrying the long session name reported a settled, fully "
                        "decorated extent")
         tree_parts = sidebar_row_parts_fit(app, row, images=2, labels=3)
         sidebar_does_not_widen(app, baseline, "the long tree-row name")
@@ -3868,7 +4167,7 @@ def verify_sidebar_narrow_clipping(env):
 
         control_json(env, "session", "flag", "off", "--target", session_id, "--json")
         hint_box = wait_for(lambda: sidebar_settled_label(app, "No flagged sessions"),
-                            "the empty flagged view never rebuilt its hint")
+                            "the empty flagged view never showed its hint")
         sidebar_fits(app, hint_box, "the flagged-empty hint")
         # The empty view drops the rows entirely, so the column can only be NARROWER than the yardstick
         # — unless the hint stopped wrapping and started reporting its longest LINE.
@@ -4012,24 +4311,29 @@ def verify_sidebar_width_floor(env):
             "— the floor is no longer following `gtk_widget_measure` (a constant, or a measure pointed "
             "at the wrong widget: the scroller measures ~46px, the sidebar box is the widest sidebar "
             "site by construction)")
-        # Decorating the row adds two more labels the lever pins at 300px each, so the content minimum
-        # jumps and the floor has to follow it — the shared `rebuildSidebar` -> `refreshSidebarWidthFloor`
-        # path every re-measure ends in, and the only half an Xvfb session can drive.
+        # Showing the status glyph grows the row a label the lever pins at 300px, so the content
+        # minimum jumps and the floor has to follow it — the `syncSidebar` -> `refreshSidebarWidthFloor`
+        # tail every re-measure ends in, and the only half an Xvfb session can drive. Driven ALONE, and
+        # the notify only after the column has answered: batched, a floor that followed nothing but the
+        # badge would pass just as happily.
         control_json(env, "session", "status", "blocked", "--target", session_id, "--json")
-        control_json(env, "notify", "--title", "floor", "width floor",
-                     "--target", session_id, "--window", window_id, "--json")
 
-        def decorated():
-            session = window_tree(env, window_id)["workspaces"][0]["sessions"][0]
-            return session.get("status") == "blocked" and session.get("unseen", 0) > 0
+        def session_node():
+            return window_tree(env, window_id)["workspaces"][0]["sessions"][0]
 
-        wait_for(decorated, "session never took the status and unseen-badge decorations")
+        wait_for(lambda: session_node().get("status") == "blocked",
+                 "session never took the status decoration")
         regrown = wait_for(
             lambda: sidebar_column_settled(app, lambda width: width > measured),
-            f"the sidebar stayed at {measured}px after the row grew two more 300px labels — the floor "
-            "was measured once when the split was built instead of at the end of every "
-            "`rebuildSidebar`, so a desktop font or text-scale change would leave the sidebar clipped "
-            "for the rest of the session")
+            f"the sidebar stayed at {measured}px after an IN-PLACE status update grew the row a 300px "
+            "glyph label — the floor is re-measured only where rows are rebuilt, so every in-place "
+            "update leaves the sidebar clipped for the rest of the session")
+        control_json(env, "notify", "--title", "floor", "width floor",
+                     "--target", session_id, "--window", window_id, "--json")
+        wait_for(lambda: session_node().get("unseen", 0) > 0,
+                 "session never took the unseen-badge decoration")
+        wait_for(lambda: sidebar_row_settled(app, images=1, labels=3),
+                 "the unseen badge never joined the status glyph and the name on the row")
     except AssertionError:
         describe_tree(app)
         raise
@@ -4334,16 +4638,24 @@ def verify_session_pickers(env, state):
             stderr=subprocess.DEVNULL,
             env=env,
         )
-        subprocess.run(
-            [
-                CTL, "session", "status", "blocked", "--target", original_id,
-                "--socket", env["AGTERM_CONTROL_SOCKET"],
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=env,
-        )
+
+        def session_nodes():
+            return [session
+                    for workspace in control_json(env, "tree", "--json")["result"]["tree"]["workspaces"]
+                    for session in workspace["sessions"]]
+
+        # BOTH sessions carry attention, so the popover below has two rows to tell apart by name, and
+        # both start on the primary pane — the pane the last leg moves.
+        second_id = wait_for(
+            lambda: next((session["id"] for session in session_nodes()
+                          if session["id"] != original_id), None),
+            "session new never registered a second session")
+        for session_id, name in ((original_id, "picker-one"), (second_id, "picker-two")):
+            control_json(env, "session", "rename", name, "--target", session_id, "--json")
+            control_json(env, "session", "status", "blocked", "--target", session_id,
+                         "--pane", "left", "--json")
+        wait_for(lambda: all(session.get("status") == "blocked" for session in session_nodes()),
+                 "both sessions did not take the blocked status")
 
         recent = wait_for(
             lambda: actionable(app, "Recent Sessions (Ctrl+Tab)"),
@@ -4366,16 +4678,31 @@ def verify_session_pickers(env, state):
             "Attention button is missing or not actionable",
         )
         activate(actionable(app, "Show sessions that need attention (Ctrl+Shift+I)"))
-        wait_for(
-            lambda: next(
-                (
-                    item for item in collect(app, role="button")
-                    if "workspace 1 ·" in (item.get_name() or "")
-                ),
-                None,
-            ),
-            "Attention popover did not expose a session row",
-        )
+
+        def attention_row(prefix):
+            """The INNERMOST match. The attention toggle is un-labelled, so GTK4 derives its name from
+            its descendants — the popover rows included — and the outer match would be the toggle
+            itself. `collect` is depth-first, so the real row is last."""
+            rows = [item for item in collect(app, role="button")
+                    if prefix in (item.get_name() or "") and "workspace 1 ·" in (item.get_name() or "")]
+            return rows[-1] if rows else None
+
+        row = wait_for(lambda: attention_row("picker-one") if attention_row("picker-two") else None,
+                       "the attention popover did not expose both sessions that need attention")
+        # A status re-posted while the popover is UP refreshes the row's glyph in place instead of
+        # taking the popover down, so the row outlives the status it was BUILT with — and activating it
+        # must follow the pane the model carries NOW.
+        control_json(env, "session", "status", "blocked", "--target", original_id,
+                     "--pane", "scratch", "--json")
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert sidebar_accessible_live(row), (
+            "re-posting a status while the attention popover was open took its rows down instead of "
+            "refreshing their glyphs in place")
+        activate(row)
+        wait_for(lambda: any(session["id"] == original_id and session.get("scratch")
+                             for session in session_nodes()),
+                 "activating the attention row did not reveal the scratch terminal its session's "
+                 "CURRENT status names — the row auto-followed the pane it was BUILT with")
 
         def recent_row_titles():
             """Session names the open picker lists; its rows pair a name with `workspace · detail`.
@@ -4424,8 +4751,9 @@ def verify_session_pickers(env, state):
             recent_button_insensitive,
             "the Recent Sessions button stayed enabled with no navigable recent session",
         )
-        print("OK: recent-session and attention popovers expose actionable rows, "
-              "and the recent popover follows the navigable scope")
+        print("OK: recent-session and attention popovers expose actionable rows, an attention row "
+              "follows the pane its session carries at activation, and the recent popover follows "
+              "the navigable scope")
     except AssertionError:
         describe_tree(app)
         raise
@@ -4778,7 +5106,7 @@ class ChromeFocus:
         return rows[-1] if rows else None
 
     def enable_attention_button(self):
-        """Settings are re-read on every sidebar rebuild, so writing the file is enough."""
+        """Settings are re-read on every sidebar sync, so writing the file is enough."""
         settings_path = os.path.join(self.env["AGTERM_STATE_DIR"], "settings.json")
         settings = {}
         if os.path.exists(settings_path):
@@ -5012,15 +5340,14 @@ def verify_chrome_focus_buttons(env):
 
 
 def verify_chrome_focus_sidebar(env):
-    """Sidebar REBUILDS: every path that destroys or unmaps the widget the keyboard is parked on owes a
-    repair, and a rebuild the user did not ask for owes leaving the parked position alone."""
+    """Sidebar REFRESHES: every path that destroys or unmaps the widget the keyboard is parked on owes a
+    repair, and an in-place update owes leaving the parked position — and the widget itself — alone."""
     ctx = ChromeFocus(env)
     try:
         ctx.setup()
         # The workspace DISCLOSURE triangle is the seam where `focus-on-click = 0` is the only
-        # protection: `toggleWorkspaceCollapse` ends in `rebuildSidebar()`, which DESTROYS the button
-        # that took focus, so nothing masks it and the failure mode is the worst one — no focus widget at
-        # all, and a window that drops every keystroke.
+        # protection: nothing masks a click that moves the keyboard onto sidebar chrome, and every
+        # keystroke the user goes on typing then lands on a button instead of the shell.
         wait_for(ctx.sole_nameless_button,
                  "the sidebar never settled on exactly one nameless push button (the disclosure)")
         assert not ctx.workspace().get("collapsed"), (
@@ -5030,26 +5357,25 @@ def verify_chrome_focus_sidebar(env):
                  "clicking the workspace disclosure did not collapse the workspace")
         owner = ctx.owner_after("disclosure")
         assert owner == ctx.session_owner, (
-            "typing after a workspace-disclosure click did not reach the session terminal — the sidebar "
-            f"rebuild destroyed the focused button and left focus nowhere (marker read {owner!r})")
+            "typing after a workspace-disclosure click did not reach the session terminal — the click "
+            f"moved the keyboard onto the disclosure button (marker read {owner!r})")
 
         # Same button, the other INPUT PATH, where `focus-on-click = 0` is no protection: `can-focus`
         # stays intact so Tab and screen readers keep working, so a keyboard user can hold focus ON the
-        # disclosure and Space it — and the rebuild then destroys the focused button, leaving the window
-        # dropping EVERY keystroke with not even a chord left to recover.
+        # disclosure and Space it — and whatever the toggle does to the sidebar must leave that user's
+        # keyboard where he put it.
         ctx.open_search("to enter the focus chain from")
         ctx.shift_tab_until(
             ctx.disclosure_has_keyboard,
             "Shift+Tab from the search entry never landed keyboard focus on the workspace disclosure, so "
             "the activation below would not be the keyboard path this step is about")
 
-        # Same destruction, a trigger the user never asked for: `scheduleSidebarMetadataRefresh` rebuilds
-        # the sidebar on a DEBOUNCE whenever ANY session reports an OSC title/pwd. A deferred job may not
-        # answer that with a focus grab, so the rebuild WAITS (`sidebarHoldsKeyboardFocus`) and the
-        # assertion is that the parked position SURVIVES.
+        # A trigger the user never asked for: `scheduleSidebarMetadataRefresh` syncs the sidebar on a
+        # DEBOUNCE whenever ANY session reports an OSC title/pwd. That sync updates rows in place and
+        # detaches nothing, so the assertion is that the parked position SURVIVES.
         # The park has to be the ADD-SESSION button, not the disclosure, and that is what makes this step
-        # discriminate: after a rebuild detaches the focus widget GTK re-homes focus at the next frame on
-        # the FIRST focusable widget, which IS the disclosure — a probe parked there recovers onto its
+        # discriminate: where a refresh DOES detach the focus widget GTK re-homes focus at the next frame
+        # on the FIRST focusable widget, which IS the disclosure — a probe parked there recovers onto its
         # own replacement and cannot tell fixed from broken.
         press_x11_key("Tab", ctx.process.pid)
         wait_for(ctx.add_session_has_keyboard,
@@ -5086,10 +5412,13 @@ def verify_chrome_focus_sidebar(env):
         time.sleep(NEGATIVE_SETTLE_SECONDS)
         assert ctx.add_session_has_keyboard(), (
             "a background shell's pwd report moved the keyboard off the sidebar button the user had "
-            "tabbed to — the debounced metadata rebuild destroyed it, and GTK re-homed focus on the "
+            "tabbed to — the debounced metadata refresh destroyed it, and GTK re-homed focus on the "
             "first focusable widget instead of leaving the parked position alone")
 
-        # Hand the keyboard back to the disclosure for the Space assertion.
+        # Hand the keyboard back to the disclosure for the Space assertion. Expanding is a list-box
+        # SHOW now, so the disclosure survives its own activation and must KEEP the keyboard — a repair
+        # here would steal it from the button the keyboard user is standing on. No marker typing: a
+        # Space from the still-focused disclosure would toggle the workspace straight back.
         press_x11_key("shift+Tab", ctx.process.pid)
         wait_for(ctx.disclosure_has_keyboard,
                  "Shift+Tab did not return the keyboard to the workspace disclosure")
@@ -5098,10 +5427,15 @@ def verify_chrome_focus_sidebar(env):
         press_x11_key("space", ctx.process.pid)
         wait_for(lambda: not ctx.workspace().get("collapsed"),
                  "Space on the keyboard-focused disclosure did not expand the workspace")
-        owner = ctx.owner_after("kbd-disclosure")
-        assert owner == ctx.session_owner, (
-            "typing after the workspace disclosure was activated BY KEYBOARD did not reach the session "
-            f"terminal — the rebuild destroyed the button that held focus (marker read {owner!r})")
+        assert ctx.disclosure_has_keyboard(), (
+            "activating the workspace disclosure BY KEYBOARD moved the keyboard off it — an expand "
+            "destroys nothing, so nothing owes a repair here")
+        # Ctrl+Shift+F reaches no handler while a GtkButton holds focus, so the search toggle below
+        # needs the keyboard back in the terminal first.
+        mouse_click(lambda: next(iter(collect(ctx.app, role="frame")), None), ctx.process.pid,
+                    button="left", x_fraction=0.75)
+        wait_for(lambda: not ctx.disclosure_has_keyboard(),
+                 "clicking the terminal did not take the keyboard off the workspace disclosure")
         ctx.close_search("after the disclosure walks")
         # Put the workspace back the way this step found it, because the steps below park POSITIONALLY:
         # expanded, a long session row is wider than the sidebar's 240px viewport, and a later rebuild
@@ -5127,80 +5461,68 @@ def verify_chrome_focus_sidebar(env):
             "icon button kept keyboard focus")
         press_escape(ctx.process.pid)
 
-        # Seventh stranding path, and the first CONTROL-DRIVEN one: `workspace.focus` (and its
-        # `workspace.filter` sibling) rebuild the sidebar from a socket command, which fires at ANY time —
-        # including while the keyboard is Tab-parked on a sidebar button. The arm therefore routes through
-        # `rebuildSidebarKeepingKeyboard()`; a bare rebuild destroys the parked button instead.
+        # The first CONTROL-DRIVEN refresh: `workspace.focus` (and its `workspace.filter` sibling) sync
+        # the sidebar from a socket command, which fires at ANY time — including while the keyboard is
+        # Tab-parked on a sidebar button. Both repaint the header in place, so the three arms below all
+        # assert the parked button KEEPS the keyboard. No marker typing in any of them: a Space from the
+        # still-focused `+` would create a session instead of naming a surface.
         ctx.open_search("to re-enter the focus chain from")
         ctx.shift_tab_until(
             ctx.add_session_has_keyboard,
             "Shift+Tab from the search entry never parked keyboard focus on the add-session button, so "
-            "the control-driven rebuild below would not be destroying the keyboard's owner")
+            "the control-driven syncs below would not be reaching the keyboard's owner")
         # The read leg is the workspace NODE's `focused` membership, not the top-level `workspaceFilter`:
         # the Linux auto-follow projection rebuilds `ControlTree` without carrying that field, so it reads
         # nil here regardless of filter state — an upstream read-back drift, orthogonal to focus.
         workspace_id = ctx.workspace()["id"]
         control_json(env, "workspace", "focus", "on", "--target", workspace_id, "--json")
         wait_for(lambda: ctx.workspace().get("focused"), "workspace.focus on did not mark the workspace")
-        owner = ctx.owner_after("control-rebuild")
-        assert owner == ctx.session_owner, (
-            "typing after a control-driven workspace.focus rebuilt the sidebar did not reach the session "
-            "terminal — the rebuild destroyed the parked sidebar button without repairing the keyboard "
-            f"(marker read {owner!r})")
-        # The owner assert alone is not the whole discriminator: with the keyboard re-homed on the
-        # disclosure REPLACEMENT, the marker's own Space ACTIVATES it (whose collapse handler repairs the
-        # keyboard) and `keyboard_owner`'s retry loop re-types into the now-focused shell — self-healing
-        # the marker while silently expanding a workspace the user never touched.
-        assert ctx.workspace().get("collapsed"), (
-            "the marker typing expanded the collapsed workspace — the control-driven rebuild re-homed "
-            "the keyboard on the disclosure and the typed Space activated it instead of reaching the shell")
+        assert ctx.add_session_has_keyboard(), (
+            "a control-driven workspace.focus moved the keyboard off the parked add-session button — "
+            "the header is repainted in place, so nothing is destroyed and nothing owes a repair")
 
         # The GUI half of the same seam: the footer filter button. `focus-on-click = 0` keeps the CLICK
-        # from moving the keyboard, so `toggleWorkspaceFilter` fires with the keyboard still parked on the
-        # add-session button its `rebuildSidebarKeepingKeyboard()` destroys. The filter is ON here, so the
-        # button reads "Show All Workspaces", and its tooltip flip is the read-back.
-        ctx.repark_on_add_session("for the footer filter click")
+        # from moving the keyboard, so `toggleWorkspaceFilter` fires with the keyboard still parked on
+        # the add-session button — which its in-place sync must leave holding it. The filter is ON here,
+        # so the button reads "Show All Workspaces", and its tooltip flip is the read-back.
         mouse_click(lambda: actionable(ctx.app, "Show All Workspaces"), ctx.process.pid, button="left")
         wait_for(lambda: actionable(ctx.app, "Show Only Focused Workspaces"),
                  "clicking the footer filter button did not suspend the workspace filter")
-        owner = ctx.owner_after("footer-filter")
-        assert owner == ctx.session_owner, (
-            "typing after the footer filter button rebuilt the sidebar did not reach the session "
-            f"terminal — the rebuild destroyed the parked add-session button (marker read {owner!r})")
-        assert ctx.workspace().get("collapsed"), (
-            "the marker typing expanded the collapsed workspace — the footer-click rebuild re-homed the "
-            "keyboard on the disclosure instead of repairing it")
+        assert ctx.add_session_has_keyboard(), (
+            "clicking the footer filter button moved the keyboard off the parked add-session button")
 
         # And the `workspace.filter` control arm — an independent call site, not the `workspace.focus` arm
-        # wearing another name, so it gets the same park + rebuild + repair round trip.
-        ctx.repark_on_add_session("for the workspace.filter arm")
+        # wearing another name, so it gets the same parked-keyboard round trip.
         control_json(env, "workspace", "filter", "on", "--json")
         wait_for(lambda: actionable(ctx.app, "Show All Workspaces"),
                  "workspace.filter on did not re-apply the filter (footer tooltip never flipped back)")
-        owner = ctx.owner_after("control-filter")
-        assert owner == ctx.session_owner, (
-            "typing after a control-driven workspace.filter rebuilt the sidebar did not reach the "
-            f"session terminal — the arm lost its keyboard repair (marker read {owner!r})")
-        assert ctx.workspace().get("collapsed"), (
-            "the marker typing expanded the collapsed workspace — the workspace.filter rebuild re-homed "
-            "the keyboard on the disclosure instead of repairing it")
+        assert ctx.add_session_has_keyboard(), (
+            "a control-driven workspace.filter moved the keyboard off the parked add-session button")
 
-        # A status hook can fire while the user is navigating the sidebar. Unlike workspace.focus/filter,
-        # this mutation does not change focus intentionally, so its rebuild must repair the add-session
-        # button it destroys and leave the terminal ready for the next keystroke.
-        ctx.repark_on_add_session("for the session.status arm")
+        # A status hook can fire while the user is navigating the sidebar. It updates the target's row
+        # in place, so the sidebar owes no repair either: the parked button keeps the keyboard, no row
+        # is added or dropped, and the collapsed workspace stays collapsed.
+        assert ctx.add_session_has_keyboard(), (
+            "the keyboard left the add-session button before the session.status arm could park on it")
+        session_count_before = len(ctx.sessions())
         control_json(env, "session", "status", "active", "--target", ctx.session_id, "--json")
         wait_for(lambda: next((session.get("status") for session in ctx.sessions()
                               if session["id"] == ctx.session_id), None) == "active",
                  "session.status active did not update the target session")
-        owner = ctx.owner_after("control-status")
-        assert owner == ctx.session_owner, (
-            "typing after session.status rebuilt the sidebar did not reach the session terminal — the "
-            f"control arm destroyed the parked add-session button (marker read {owner!r})")
+        assert ctx.add_session_has_keyboard(), (
+            "session.status moved the keyboard off the parked add-session button — an in-place row "
+            "update must not touch the widget the keyboard is on")
+        assert len(ctx.sessions()) == session_count_before, (
+            "session.status changed the session count while updating one row in place")
         assert ctx.workspace().get("collapsed"), (
-            "the marker typing expanded the collapsed workspace — the session.status rebuild re-homed "
-            "the keyboard on the disclosure instead of repairing it")
+            "session.status expanded the collapsed workspace")
         control_json(env, "session", "status", "idle", "--target", ctx.session_id, "--json")
+        # The add-session button still OWNS the keyboard, and Ctrl+Shift+F reaches no handler from a
+        # GtkButton, so the next step's search-based re-park needs the terminal focused first.
+        mouse_click(lambda: next(iter(collect(ctx.app, role="frame")), None), ctx.process.pid,
+                    button="left", x_fraction=0.75)
+        wait_for(lambda: not ctx.add_session_has_keyboard(),
+                 "clicking the terminal did not take the keyboard off the add-session button")
 
         # HIDING the sidebar with the keyboard parked inside it is `applySidebarVisibility()`'s repair
         # leg. The parked button is unmapped, not destroyed, so this is the unmapped-focus disjunct of
@@ -5214,7 +5536,7 @@ def verify_chrome_focus_sidebar(env):
             "typing after the sidebar was hidden with the keyboard parked on one of its buttons did not "
             f"reach the session terminal — the hide left focus on an unmapped widget (marker {owner!r})")
 
-        print("OK: every sidebar rebuild repairs or preserves the keyboard's owner")
+        print("OK: every sidebar refresh repairs or preserves the keyboard's owner")
     except AssertionError:
         describe_tree(ctx.app)
         raise
@@ -5451,25 +5773,25 @@ def verify_chrome_focus_popovers(env):
                  "quick terminal did not hide after the stale-carry step")
         ctx.close_search("after the stale-carry step")
 
-        # A control-driven rebuild arriving while a picker is OPEN reaches the dismissal INSIDE
-        # `rebuildSidebar()`, which detaches with `refocus: false` (a grab there would re-enter the
-        # rebuild) and repairs at its tail. That tail must ALSO honor `popupPopover`'s search-entry
-        # capture, which the `refocus: false` detach consumes without restoring — so the capture is read
-        # BEFORE the dismissals and the tail restores the ENTRY first, falling back to the surface
-        # repair. `updateAttentionButton` is the dismissal under test: it takes an open attention picker
-        # down as soon as the attention set empties.
-        ctx.open_counted_query("for the in-rebuild-over-search step")
+        # A control-driven sidebar sync arriving while a picker is OPEN reaches the dismissal INSIDE
+        # `syncSidebar()`, which detaches with `refocus: false` (a grab there would re-enter the sync)
+        # and repairs at its tail. That tail must ALSO honor `popupPopover`'s search-entry capture,
+        # which the `refocus: false` detach consumes without restoring — so the capture is read BEFORE
+        # the dismissals and the tail restores the ENTRY first, falling back to the surface repair.
+        # `updateAttentionButton` is the dismissal under test: it takes an open attention picker down as
+        # soon as the attention set empties.
+        ctx.open_counted_query("for the in-sync-over-search step")
         ctx.open_attention_picker("over the search entry")
         control_json(env, "session", "status", "idle", "--target", ctx.session_id, "--json")
         wait_for(lambda: ctx.picker_row() is None,
-                 "a control-driven rebuild did not take down the attention picker opened over the search")
+                 "a control-driven sync did not take down the attention picker opened over the search")
         ctx.assert_typing_reaches_query(
-            "the character typed after an in-rebuild dismissal of a picker opened over a live search "
-            "never reached the search entry — the rebuild's tail repaired the keyboard into the shell "
+            "the character typed after an in-sync dismissal of a picker opened over a live search "
+            "never reached the search entry — the sync's tail repaired the keyboard into the shell "
             "instead of back to the query")
         press_escape(ctx.process.pid)
         wait_for(lambda: actionable(ctx.app, "Next match (Enter)") is None,
-                 "the search bar did not close after the in-rebuild-over-search step")
+                 "the search bar did not close after the in-sync-over-search step")
 
         # A picker ROW ACTIVATION that KEEPS the selection must honor the capture too: the attention
         # picker names the already-selected session (`attentionSessions` does not filter it out, unlike
@@ -5614,6 +5936,7 @@ def main():
             "sidebar-narrow-clipping",
             "sidebar-width-floor",
             "sidebar-click-rename", "sidebar-session-drag", "sidebar-workspace-drag",
+            "sidebar-incremental",
             "sidebar-multiselect",
             "chrome-focus-buttons", "chrome-focus-sidebar", "chrome-focus-popovers",
             "recent-clear", "auto-follow", "hidden-toolbar", "desktop-actions",
@@ -5719,6 +6042,8 @@ def main():
             verify_sidebar_width_floor(env)
         elif scenario == "sidebar-click-rename":
             verify_sidebar_click_and_rename(env)
+        elif scenario == "sidebar-incremental":
+            verify_sidebar_incremental(env)
         elif scenario == "sidebar-session-drag":
             verify_sidebar_session_drag(env)
         elif scenario == "sidebar-workspace-drag":
