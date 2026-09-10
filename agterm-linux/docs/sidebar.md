@@ -248,14 +248,16 @@ Nothing auto-loads this document — read it before editing `AppController.swift
   Paint: `syncSidebarSelection` mirrors the model into the `agterm-selected` CSS class, the ONLY
   selection visual (libadwaita suppresses `:selected` under `navigation-sidebar` anyway).
   The tint rule follows the exact row-content path from
-  `.agterm-sidebar row.agterm-selected` to its direct `label` and `image` children
+  `.agterm-sidebar row.agterm-selected` to its direct `label`, `image` and `entry` children
   (`ThemeColorResolver.windowThemeCSS`, whose CSS comment owns why; string-pinned in
   `GhosttyConfigThemeTests`). Only the row carries the class and paints the rounded background;
   tagging the content box too would cover that radius with a square fill. `makeRow` must keep every
   row label and symbolic icon a DIRECT child of the content box — a wrapper drops the tint silently.
   The `image` half is what keeps the leading
   terminal icon and the flagged star visible when a theme's selection background equals its
-  foreground; the status glyph and badge keep their pango markup colors.
+  foreground (Kanagawa Dragon), and the `entry` half does the same for the inline-rename editor,
+  whose `GtkText` otherwise inherits the window foreground and vanishes into the row; the status
+  glyph and badge keep their pango markup colors.
   The sibling rules stay descendant matches and keep cascading into row popovers —
   `.agterm-sidebar label`/`button` deliberately, since `popover_fg_color` is the same value, and
   `LinuxSidebarPolicy.sidebarCSS`'s font size incidentally.
