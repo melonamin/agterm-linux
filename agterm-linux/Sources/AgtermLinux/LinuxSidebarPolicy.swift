@@ -11,6 +11,7 @@ enum LinuxSidebarPolicy {
         let rowHeight = Int(AppSettings.sidebarRowHeight(fontSize: size))
         return """
             .agterm-sidebar label { font-size: \(size)pt; }
+            .agterm-sidebar entry.agterm-rename > text { font-size: \(size)pt; }
             .agterm-sidebar .navigation-sidebar > row { min-height: \(rowHeight)px; }
             """
     }
@@ -177,4 +178,12 @@ enum LinuxSidebarPolicy {
     /// Installed by `installAppCSS` (`App.swift`); the selector is string-pinned in `LinuxPolicyTests`.
     static let sidebarHoverCSS =
         ".agterm-sidebar .navigation-sidebar > row:hover { background-color: alpha(currentColor, 0.07); }"
+
+    /// Keeps the rename editor in the label's box: a stock Adwaita entry (34px, 8px side padding, own fill
+    /// and focus ring) grew the row and moved the text. The outline is the editing cue; native caret and
+    /// selection colors stay. Contract in `agterm-linux/docs/sidebar.md`; the font rule is in `sidebarCSS`.
+    static let sidebarRenameCSS = """
+        .agterm-sidebar entry.agterm-rename { min-height: 0; padding: 0; border: none; box-shadow: none; \
+        background: none; border-radius: 3px; outline: 1px solid alpha(currentColor, 0.5); outline-offset: 1px; }
+        """
 }

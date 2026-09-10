@@ -289,6 +289,8 @@ struct LinuxPolicyTests {
     func sidebarCSS() {
         let standard = LinuxSidebarPolicy.sidebarCSS(fontSize: 13)
         #expect(standard.contains(".agterm-sidebar label { font-size: 13.0pt; }"))
+        // The rename entry's text node is not a `label`; without its own rule it renders at the GTK default.
+        #expect(standard.contains(".agterm-sidebar entry.agterm-rename > text { font-size: 13.0pt; }"))
         // The full selector, closing brace included, pins the exact libadwaita rule being lowered.
         #expect(standard.contains(".agterm-sidebar .navigation-sidebar > row { min-height: 28px; }"))
         // Only the row rule may be emitted: Adwaita's inner-box rule is AdwSidebar-scoped and never
@@ -880,6 +882,16 @@ struct SidebarHoverCSSTests {
         // The hover constant only takes effect once `installAppCSS` interpolates it into the
         // installed stylesheet — pin the composed string, not just the constant.
         #expect(appCSS.contains(LinuxSidebarPolicy.sidebarHoverCSS))
+    }
+
+    @Test("the installed app CSS keeps the rename entry in the label's box")
+    func appCSSInstallsRenameRule() {
+        #expect(appCSS.contains(LinuxSidebarPolicy.sidebarRenameCSS))
+        let rule = LinuxSidebarPolicy.sidebarRenameCSS
+        #expect(rule.hasPrefix(".agterm-sidebar entry.agterm-rename {"))
+        for property in ["min-height: 0;", "padding: 0;", "border: none;", "background: none;", "outline-offset: 1px;"] {
+            #expect(rule.contains(property))
+        }
     }
 
     @Test("the installed app CSS carries no blink animation")

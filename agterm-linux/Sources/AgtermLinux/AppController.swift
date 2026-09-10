@@ -677,8 +677,9 @@ final class AppController {
             return
         }
         let entryAddress = Int(bitPattern: e)
-        runOnMain { MainActor.assumeIsolated {
-            guard let entry = OpaquePointer(bitPattern: entryAddress) else { return }
+        runOnMain { [weak self] in MainActor.assumeIsolated {
+            // A cancel or row removal before this idle runs frees the entry; the address alone proves nothing.
+            guard let entry = OpaquePointer(bitPattern: entryAddress), self?.renameEntry == entry else { return }
             _ = gtk_widget_grab_focus(W(entry))
             gtk_editable_select_region(entry, 0, -1)
         } }
@@ -724,6 +725,8 @@ final class AppController {
             guard let entry = op(gtk_entry_new()) else { return nil }
             text.withCString { gtk_editable_set_text(entry, $0) }
             gtk_widget_set_hexpand(W(entry), 1)
+            gtk_entry_set_alignment(UnsafeMutablePointer<GtkEntry>(entry), 0)
+            gtk_widget_add_css_class(W(entry), "agterm-rename")   // label geometry; LinuxSidebarPolicy.sidebarRenameCSS
             renameEntry = entry
             connect(entry, "activate", unsafeBitCast(onRenameCommit as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self), RAW(entry))
             let kc = gtk_event_controller_key_new()

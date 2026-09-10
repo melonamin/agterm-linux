@@ -22,6 +22,11 @@ Nothing auto-loads this document — read it before editing `AppController.swift
   The sole exception is the name label ↔ rename-entry swap on a flipped `renaming` flag, which goes
   through `makeNameWidget` in BOTH directions because that is the only place `renameEntry` is set and the
   double-click gesture attached.
+  The entry must keep the label's box, which is `LinuxSidebarPolicy.sidebarRenameCSS`'s contract: macOS
+  edits inside the very field that draws the label, so its frame cannot change, while a stock Adwaita
+  entry is 34px tall with 8px side padding and grew the row by 6px on every rename.
+  `beginRename`'s deferred focus re-checks `renameEntry` before touching the address it captured, since a
+  cancel or removal can free the entry before the idle runs.
   A hidden child is ABSENT from the accessible tree rather than merely non-showing (measured on GTK
   4.22, and the whole subtree under a hidden list box goes with it), so the AT-SPI scenarios' exact
   child lists still mean "the visible parts".
@@ -130,9 +135,10 @@ Nothing auto-loads this document — read it before editing `AppController.swift
   The weaker `if flaggedView` also reaches the `GtkEntry` that `makeNameWidget` returns during a rename,
   where a `GtkLabel` setter raises `assertion 'GTK_IS_LABEL (self)' failed`.
 - No `gtk_label_set_width_chars` / `gtk_editable_set_width_chars` floor, deliberately.
-  The rename `GtkEntry` does not need one: its minimum is a font-size-independent ~18px, because the
-  `.agterm-sidebar label` CSS matches `label` nodes while an entry is an `entry` > `text` pair — and
-  `gtk_editable_set_width_chars` RAISES that minimum monotonically, manufacturing a floor it does not have.
+  The rename `GtkEntry` does not need one: `sidebarRenameCSS` strips its padding and border, so its
+  minimum is a few pixels at any sidebar font (`sidebarCSS` sizes its `text` node, which the `label` rule
+  never matched) — and `gtk_editable_set_width_chars` RAISES that minimum monotonically, manufacturing a
+  floor it does not have.
 - The regression gate is the AT-SPI scenario `sidebar-narrow-clipping` in `agterm-linux/tests/atspi_smoke.py`,
   and it checks every site TWO ways, because a label that reports its whole text as its minimum has two
   possible symptoms depending on where the sidebar column's minimum comes from.
@@ -255,9 +261,9 @@ Nothing auto-loads this document — read it before editing `AppController.swift
   row label and symbolic icon a DIRECT child of the content box — a wrapper drops the tint silently.
   The `image` half is what keeps the leading
   terminal icon and the flagged star visible when a theme's selection background equals its
-  foreground (Kanagawa Dragon), and the `entry` half does the same for the inline-rename editor,
-  whose `GtkText` otherwise inherits the window foreground and vanishes into the row; the status
-  glyph and badge keep their pango markup colors.
+  foreground (Kanagawa Dragon), and the `entry` half does the same for the inline-rename editor, which
+  paints no fill of its own and so sits directly on that tint; the status glyph and badge keep their
+  pango markup colors.
   The sibling rules stay descendant matches and keep cascading into row popovers —
   `.agterm-sidebar label`/`button` deliberately, since `popover_fg_color` is the same value, and
   `LinuxSidebarPolicy.sidebarCSS`'s font size incidentally.

@@ -331,6 +331,7 @@ let appCSS = """
     \(LinuxSidebarPolicy.sidebarHoverCSS)   /* passive rows lose `.activatable`, so hover keys on bare `:hover` — contract + pins live on the constant; see agterm-linux/docs/sidebar.md */
     /* trailing content inset inside the rounded selection row; a row margin would indent the highlight itself */
     .agterm-session-row-content { padding-right: 6px; }
+    \(LinuxSidebarPolicy.sidebarRenameCSS)
     """
 
 /// Install the app-wide CSS once, at the application priority so it layers over the theme without
