@@ -81,6 +81,15 @@ struct CodexStatusHookTests {
         standardInput.fileHandleForWriting.write(Data(input.utf8))
         try standardInput.fileHandleForWriting.close()
         proc.waitUntilExit()
+        if worker {
+            // The hook deliberately runs watcher in background; wait for its file-backed status write.
+            for _ in 0..<100 {
+                let statusWritten = (try? Data(contentsOf: statuses))?.isEmpty == false
+                let controlWritten = (try? Data(contentsOf: controls))?.isEmpty == false
+                if statusWritten || controlWritten { break }
+                usleep(10_000)
+            }
+        }
 
         func lines(_ url: URL) -> [String] {
             ((try? String(contentsOf: url, encoding: .utf8)) ?? "")
