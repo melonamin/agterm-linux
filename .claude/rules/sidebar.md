@@ -17,6 +17,8 @@ paths:
 - `WorkspaceSidebar` is an AppKit `NSOutlineView`, chosen over SwiftUI `List` for native
   cross-workspace drag-and-drop. Its `@MainActor` Coordinator caches reference-type `SidebarNode`s so
   reloads retain identity, expansion, and selection.
+- The `RowContent` reload-scoping below has a GTK counterpart — a keyed snapshot diff that updates one
+  row's widgets in place — whose contract is `agterm-linux/docs/sidebar.md`.
 - macOS 27 reserves a wider leading strip than the disclosure triangle occupies, stranding the row icon
   mid-gap. `SidebarOutlineView.frameOfCell` trims the surplus, gated on that version; its doc comment owns
   the reasoning. Leave `frameOfOutlineCell` alone: the triangle keeps its place and `handleSingleClick`
@@ -211,6 +213,12 @@ paths:
   Both no-op under the flat flagged list. In either tree layout they apply to all workspaces, including
   those the view omits. Menus/palette target frontmost; `sidebar.expand`/`sidebar.collapse` resolve
   `--window` and can target background windows.
+- The singular toggle and its palette title read `AppStore.isCurrentWorkspaceCollapsed`, which answers
+  from `sidebarExpandedWorkspaceIDs` whenever the sidebar is visible.
+  Both frontends mirror every workspace into it, not only rendered rows
+  (`WorkspaceSidebar.swift:499-500`), so a current workspace the focus filter hid — which
+  `currentWorkspaceID`'s unfiltered `workspaces.last` fallback can name — still reads its reveal
+  instead of pinning the toggle at "Expand Workspace".
 
 ## Persistence
 
@@ -225,6 +233,11 @@ paths:
 - Persist only genuine user toggles through per-workspace `setWorkspaceExpanded` or one
   `setWorkspacesExpanded` save. Wrap programmatic expansion/collapse during restore, rebuild, selection
   reveal, and sole-focus force expansion in `suppressExpansionPersist`.
+- The GTK counterpart of `suppressExpansionPersist` is a positive-only transient overlay over
+  `Workspace.isExpanded` (`agterm-linux/docs/sidebar.md`), sufficient because every Linux visual collapse
+  is a persisted action.
+- The GTK reveal gate follows this outline's flagged mode: a listed selection advances it with no owner
+  to reveal and an unlisted one clears it, so a fold survives a flagged round trip on both platforms.
 - Force expansion only for a sole focused workspace. For a multi-workspace set, repeatedly expanding
   every member after tree changes would undo deliberate collapses and diverge from `tree` read-back.
   Revealing a session may expand visually without changing disk state; launch still reveals the active

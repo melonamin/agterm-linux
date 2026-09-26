@@ -4,6 +4,21 @@ import Testing
 
 @MainActor
 struct AppStoreHudTests {
+    @Test func discardingAStoreRemovesEveryHudBody() throws {
+        let store = makeStore()
+        let ws = store.addWorkspace(name: "work")
+        let session = try #require(store.addSession(toWorkspace: ws.id, cwd: "/repo"))
+        let file = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("agterm-hud-store-close-\(UUID().uuidString)")
+        try Data("body".utf8).write(to: URL(fileURLWithPath: file))
+        session.hudFile = file
+
+        store.discardHudBodies()
+
+        #expect(session.hudFile == nil)
+        #expect(!FileManager.default.fileExists(atPath: file))
+    }
+
     @Test func controlTreeReportsHudWithEveryField() throws {
         let store = makeStore()
         let ws = store.addWorkspace(name: "work")

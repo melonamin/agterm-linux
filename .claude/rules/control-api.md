@@ -14,10 +14,19 @@ paths:
   - "agtermCore/Sources/agtermCore/SkillInstall.swift"
   - "agtermUITests/Control*.swift"
   - "agtermUITests/SessionTextUITests.swift"
+  - "agterm-linux/Sources/AgtermLinux/Control*.swift"
+  - "agterm-linux/Sources/AgtermLinux/LinuxControlDispatcher.swift"
+  - "agterm-linux/Sources/agtermctl/*.swift"
   - "plugins/agterm/skills/agterm/**"
 ---
 
 ## Control API
+
+- The GTK frontend implements the same wire protocol through `LinuxControlDispatcher` and the
+  Linux-local `agtermctl` package. Keep host-free validation and response shaping in `agtermCore`.
+  Linux window size is restored and clamped, but GTK4 cannot reliably expose restorable x/y placement;
+  omit geometry rather than fabricating it on Wayland or X11. Fullscreen requests are serialized through
+  `notify::fullscreened` so rapid GUI, keymap, and socket toggles converge on one desired state.
 
 - `agtermctl` drives app/store actions over a local Unix socket. One-shot commands and polled
   `events.read` are in scope; terminal-output streaming is not.
@@ -134,8 +143,8 @@ paths:
   the model; the pick/ask `--no-block` id object, their result payloads and `events`' per-event lines are
   the deliberate exceptions, each printing its own nested object rather than the response.
 - Human output shows IDs only for created session/workspace/window, retains them in JSON, uses
-  `result.affected` for session counts and for `zmx.prune`'s killed-daemon count, and reserves
-  `result.count` for diagnostics/search.
+  `result.affected` for session counts, `zmx.prune`'s killed-daemon count, and removed-recent-item counts,
+  and reserves `result.count` for diagnostics/search.
   A command that reuses `count` for something else must carry its own `result.text`, which the shared
   formatter prefers over every count spelling; `restore.capture` does, or its pane total would print as
   "N diagnostic(s)".
@@ -165,8 +174,8 @@ renumbering. Do not reintroduce a count anywhere.
 - `font.inc`, `font.dec`, `font.reset`
 - `window.new`, `.list`, `.select`, `.go`, `.close`, `.rename`, `.delete`, `.resize`, `.move`, `.zoom`,
   `.fullscreen`, `.minimize`
-- `keymap.reload`, `keymap.list`, `hooks.reload`, `hooks.list`, `config.reload`, `theme.set`, `theme.list`, `restore.capture`,
-  `restore.clear`, `restore.mode`, `version`
+- `keymap.reload`, `keymap.list`, `hooks.reload`, `hooks.list`, `config.reload`, `theme.set`, `theme.list`,
+  `restore.capture`, `restore.clear`, `restore.mode`, `recent.clear`, `version`
 - `zmx.list`, `zmx.prune`, `zmx.kill`, `zmx.reset`, `zmx.tree`, `zmx.attach`, `zmx.present`
 
 `terminfo install` is a CLI-only command with no protocol counterpart, the one exemption from the
@@ -230,15 +239,19 @@ side, and reads `lastAppliedIsDark` when bare. Refuse it outside XCUITest; provi
   hiding, recreates after exit, and renders as a full translucent cover below overlay. It has no session
   PWD/title link but a weak watermark link. GUI surfaces are Command-J, titlebar, View, and palette.
 - `session.focus primary|split|left|right|top|bottom|other` requires an existing split and works shown or
-  hidden. The pane is positional; read `splitFocused`.
+  hidden. `primary`/`split` select model roles; `left`/`right`/`top`/`bottom` select physical sides, using
+  the live GtkPaned slot order after a Linux promotion ([[libghostty]]). Read `splitFocused`, whose boolean
+  remains role-based.
 - `session.resize` accepts exactly one absolute ratio or one relative
   `--grow-left|right|primary|split|top|bottom` delta, defaulting an unset ratio to 0.5. Require a split,
   clamp through store limits, persist, then post the object-scoped live-divider notification. Hidden split
-  stores for next show. Return clamped ratio as `%.3f`; read `splitRatio`.
-  The fraction is of the pane area BELOW the titlebar band, not the full split height, so an even ratio
-  renders even in every toolbar mode. Only a drag captures the live divider; `session.resize`, the
-  double-click reset and the first-layout seed set the value directly. A shown split therefore always
-  reports a ratio, so absence means no split or one never shown, never "at the default".
+  stores for next show. `splitRatio` and primary/split grow selectors are model-role based; the four
+  directional grow selectors follow physical GtkPaned slots. The wire carries their selector in `pane`
+  beside a positive `ratioDelta`; a selector-less signed `ratioDelta` remains the legacy primary-role form.
+  Return clamped ratio as `%.3f`; read `splitRatio`.
+  On macOS the fraction is of the pane area below the titlebar band. Only a drag captures the live
+  divider; `session.resize`, double-click reset, and first-layout seed set it directly. A shown split
+  always reports a ratio, so absence means no split or one never shown.
 - `session.go --to next|prev|first|last|next-attention|prev-attention` operates on current selection in
   the placement store, wraps within filtered scope, and returns selected ID. It has no target.
 - `notify` requires body, defaults title and session, skips OSC focus suppression, increments unseen, and

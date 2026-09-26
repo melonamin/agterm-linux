@@ -146,6 +146,7 @@ public protocol ControlActions {
     /// cancelAsk administratively cancels a dialog without answering a named button.
     func cancelAsk(_ target: String, window: String?) -> ControlResponse
     func clearRestoreCommands() -> ControlResponse
+    func clearRecentClosedItems() -> ControlResponse
     /// Capture every open pane's foreground command now, the same read `applicationWillTerminate` does. The
     /// host owns the `sysctl` read, the save, and the count it reports back.
     func captureRestoreCommands() -> ControlResponse
@@ -211,8 +212,9 @@ public struct ControlDispatcher {
                 .workspaceMove, .workspaceFocus, .workspaceFilter, .workspaceCollapse, .workspaceExpand:
             return dispatchWorkspaceCommand(request)
         case .quick, .fontInc, .fontDec, .fontReset, .keymapReload, .keymapList,
-                .configReload, .notify, .themeSet, .themeList, .sidebar, .sidebarMode, .sidebarFlaggedLayout,
-                .sidebarExpand, .sidebarCollapse, .sidebarWidth, .restoreClear, .restoreCapture, .version:
+                .configReload, .notify, .themeSet, .themeList, .sidebar, .sidebarMode, .sidebarExpand,
+                .sidebarCollapse, .sidebarFlaggedLayout, .sidebarWidth, .restoreClear, .restoreCapture,
+                .recentClear, .version:
             return dispatchAppCommand(request)
         case .restoreMode, .zmxList, .zmxPrune, .zmxKill, .zmxReset, .zmxTree, .zmxAttach, .zmxPresent:
             return await dispatchZmxCommand(request)
@@ -578,15 +580,29 @@ public struct ControlDispatcher {
         case .sessionFocus:
             return actions.focusSessionPane(request.target, window: request.args?.window, pane: request.args?.pane)
         case .sessionResize:
-            switch (request.args?.ratio, request.args?.ratioDelta) {
-            case (nil, nil):
+            switch (request.args?.ratio, request.args?.ratioDelta, request.args?.pane) {
+            case (nil, nil, _):
                 return ControlResponse(ok: false, error: "session.resize requires --split-ratio, --grow-left, or --grow-right")
-            case (.some, .some):
+            case (.some, .some, _):
                 return ControlResponse(ok: false, error: "session.resize: --split-ratio is mutually exclusive with --grow-left/--grow-right")
-            case (.some(let ratio), nil):
+            case (.some, nil, .some):
+                return ControlResponse(ok: false, error: "session.resize: --split-ratio does not accept a pane selector")
+            case (.some(let ratio), nil, nil):
                 return actions.resizeSplit(request.target, window: request.args?.window, resize: .ratio(ratio))
-            case (nil, .some(let delta)):
+            case (nil, .some(let delta), nil):
                 return actions.resizeSplit(request.target, window: request.args?.window, resize: .delta(delta))
+            case (nil, .some(let delta), .some(let pane)):
+                guard let target = ControlSplitResizeTarget.parse(pane) else {
+                    return ControlResponse(
+                        ok: false,
+                        error: "invalid resize pane: \(pane) (primary|split|left|right|top|bottom)"
+                    )
+                }
+                return actions.resizeSplit(
+                    request.target,
+                    window: request.args?.window,
+                    resize: .paneDelta(target, delta)
+                )
             }
         case .surfaceZoom:
             guard let mode = ControlToggleMode.parse(request.args?.mode, on: "show", off: "hide") else {
@@ -690,6 +706,8 @@ public struct ControlDispatcher {
             return actions.setSidebarWidth(points, window: request.args?.window)
         case .restoreClear:
             return actions.clearRestoreCommands()
+        case .recentClear:
+            return actions.clearRecentClosedItems()
         case .restoreCapture:
             return actions.captureRestoreCommands()
         default:

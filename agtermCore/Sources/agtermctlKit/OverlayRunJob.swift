@@ -1,6 +1,9 @@
 import ArgumentParser
 import Foundation
 import agtermCore
+#if canImport(Glibc)
+import Glibc
+#endif
 
 /// OverlayJobRunner supervises one remote overlay job on the origin: it claims the job over the app's
 /// socket, runs the program under the pty it inherited from the viewer's ssh, reports how it ended, and
@@ -101,6 +104,10 @@ final class OverlayJobRunner: @unchecked Sendable {
             if let tty, lock.withLock({ killAt == nil }), Self.hungUp(tty) { cancel() }
             let deadline = lock.withLock { killAt }
             if status != nil, deadline == nil || kill(-pid, 0) != 0 { break }
+            // An orphaned descendant can remain a zombie when PID 1 does not reap it (for example,
+            // inside a container). kill(group, 0) still finds that dead process, so stop waiting after
+            // SIGKILL has had time to reach every remaining group member.
+            if let deadline, killed, status != nil, Date() >= deadline.addingTimeInterval(0.5) { break }
             if let deadline, !killed, Date() >= deadline {
                 kill(-pid, SIGKILL)
                 killed = true
@@ -150,11 +157,19 @@ final class OverlayJobRunner: @unchecked Sendable {
     /// suspended until that handoff is done. Its signal dispositions are reset to the defaults the helper
     /// changes. `eval` keeps the command's own exit status as the shell's.
     private static func spawn(environment: [String: String], cwd: String, suspended: Bool) throws -> pid_t {
+        #if canImport(Glibc)
+        var actions = posix_spawn_file_actions_t()
+        #else
         var actions: posix_spawn_file_actions_t?
+        #endif
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
         posix_spawn_file_actions_addchdir_np(&actions, cwd)
+        #if canImport(Glibc)
+        var attributes = posix_spawnattr_t()
+        #else
         var attributes: posix_spawnattr_t?
+        #endif
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
         var defaults = sigset_t()
@@ -166,9 +181,18 @@ final class OverlayJobRunner: @unchecked Sendable {
         posix_spawnattr_setsigmask(&attributes, &empty)
         posix_spawnattr_setpgroup(&attributes, 0)
         var flags = POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETPGROUP
+        #if canImport(Darwin)
         if suspended { flags |= POSIX_SPAWN_START_SUSPENDED }
+        #endif
         posix_spawnattr_setflags(&attributes, Int16(flags))
+        #if canImport(Glibc)
+        // Linux has no POSIX_SPAWN_START_SUSPENDED. Stop the shell before it evaluates the job,
+        // then wait for that stop so the parent can hand over the foreground terminal safely.
+        let script = suspended ? #"kill -STOP $$; eval "$AGTERM_OVL_CMD""# : #"eval "$AGTERM_OVL_CMD""#
+        let argv = ["/bin/sh", "-c", script]
+        #else
         let argv = ["/bin/sh", "-c", #"eval "$AGTERM_OVL_CMD""#]
+        #endif
         let env = environment.map { "\($0.key)=\($0.value)" }
         var pid: pid_t = 0
         let result = withCStrings(argv) { argvPointers in
@@ -177,6 +201,18 @@ final class OverlayJobRunner: @unchecked Sendable {
             }
         }
         guard result == 0 else { throw SocketClientError("could not start the program: \(String(cString: strerror(result)))") }
+        #if canImport(Glibc)
+        if suspended {
+            var status: Int32 = 0
+            while waitpid(pid, &status, WUNTRACED) < 0 {
+                if errno == EINTR { continue }
+                throw SocketClientError("could not wait for the suspended program: \(String(cString: strerror(errno)))")
+            }
+            guard status & 0xff == 0x7f else {
+                throw SocketClientError("the program exited before terminal handoff")
+            }
+        }
+        #endif
         return pid
     }
 

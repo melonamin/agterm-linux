@@ -1,5 +1,8 @@
 import Foundation
 import Testing
+#if canImport(Glibc)
+import Glibc
+#endif
 @testable import agtermCore
 @testable import agtermctlKit
 
@@ -14,9 +17,13 @@ struct OverlayRunJobTests {
 
         init() {
             var pair: [Int32] = [-1, -1]
+            #if canImport(Glibc)
+            socketpair(AF_UNIX, Int32(SOCK_STREAM.rawValue), 0, &pair)
+            #else
             socketpair(AF_UNIX, SOCK_STREAM, 0, &pair)
             var noSigPipe: Int32 = 1
             for fd in pair { setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size)) }
+            #endif
             helper = pair[0]
             origin = pair[1]
         }
@@ -74,6 +81,14 @@ struct OverlayRunJobTests {
     func gone(_ pid: pid_t) -> Bool {
         for _ in 0..<100 {
             if kill(pid, 0) != 0 { return true }
+            #if canImport(Glibc)
+            // A container's PID 1 may leave a killed grandchild as a zombie. It cannot run any more.
+            if let stat = try? String(contentsOfFile: "/proc/\(pid)/stat", encoding: .utf8),
+               let commandEnd = stat.lastIndex(of: ")"),
+               stat[stat.index(after: commandEnd)...].split(whereSeparator: \.isWhitespace).first == "Z" {
+                return true
+            }
+            #endif
             usleep(20_000)
         }
         return false

@@ -1,58 +1,6 @@
 import Foundation
 import Observation
 
-/// Metadata for one window — a named bundle of workspaces + sessions in its own macOS window.
-/// Named `WindowInfo`, not `Window`, to avoid clashing with the SwiftUI/AppKit `Window` types.
-public struct WindowInfo: Codable, Sendable, Identifiable, Equatable {
-    public let id: UUID
-    public var name: String
-
-    public init(id: UUID = UUID(), name: String) {
-        self.id = id
-        self.name = name
-    }
-
-    /// Whether `name` is user-set; the title bar shows it only when true, so "window N" stays hidden.
-    public var hasCustomName: Bool { !Self.isAutoName(name) }
-
-    /// Whether `name` matches `WindowLibrary.defaultWindowName`: "window" plus a positive integer.
-    public static func isAutoName(_ name: String) -> Bool {
-        let parts = name.split(separator: " ", omittingEmptySubsequences: true)
-        guard parts.count == 2, parts[0] == "window", let number = Int(parts[1]), number >= 1 else { return false }
-        return true
-    }
-}
-
-/// One entry in the persisted window index: id, name, and open-at-quit, which drives reopen-all.
-public struct WindowEntry: Codable, Sendable, Equatable {
-    public var id: UUID
-    public var name: String
-    public var isOpen: Bool
-
-    public init(id: UUID, name: String, isOpen: Bool) {
-        self.id = id
-        self.name = name
-        self.isOpen = isOpen
-    }
-}
-
-/// The persisted `windows.json` index: ordered window list plus frontmost id. `version` is independent of
-/// `Snapshot.version` (the per-window file shape) so the two evolve separately.
-public struct WindowsIndex: Codable, Equatable, Sendable {
-    /// Bumped when the index shape changes; a mismatch makes the index count as absent.
-    public static let currentVersion = 1
-
-    public var version: Int
-    public var frontmost: UUID?
-    public var windows: [WindowEntry]
-
-    public init(version: Int = WindowsIndex.currentVersion, frontmost: UUID? = nil, windows: [WindowEntry] = []) {
-        self.version = version
-        self.frontmost = frontmost
-        self.windows = windows
-    }
-}
-
 /// The app-global owner of the window set: ordered window metadata, lazily-loaded per-window `AppStore`s,
 /// the open-set, the frontmost id, and per-window + index persistence. `@Observable` so SwiftUI tracks the
 /// window list + frontmost id; all access is main-actor isolated. A window is "open" iff its `AppStore` is
@@ -99,6 +47,7 @@ public final class WindowLibrary {
     @ObservationIgnored private let paneFinalizer: (([UUID]) -> Void)?
     @ObservationIgnored private let launchPaneDrop: (([UUID]) -> Void)?
     @ObservationIgnored private let launchInventorySink: ((Set<UUID>?) -> Void)?
+    @ObservationIgnored private let defaultSessionCwd: String
     @ObservationIgnored private var launchInventoryComplete = true
     @ObservationIgnored private var treeEventDebouncers: [UUID: Debouncer]
     @ObservationIgnored private var isBootstrapping = true
@@ -128,9 +77,10 @@ public final class WindowLibrary {
 
     /// Preserves the pre-zmx initializer symbol for source and incremental-build compatibility.
     public convenience init(directory: URL = PersistenceStore.defaultDirectory,
-                            controlEventRing: ControlEventRing? = nil) {
+                            controlEventRing: ControlEventRing? = nil,
+                            defaultSessionCwd: String = FileManager.default.homeDirectoryForCurrentUser.path) {
         self.init(directory: directory, paneFinalizer: nil, launchInventorySink: nil,
-                  controlEventRing: controlEventRing)
+                  controlEventRing: controlEventRing, defaultSessionCwd: defaultSessionCwd)
     }
 
     /// Creates the library rooted at `directory`, running migration/recovery and the strict pane inventory.
@@ -138,13 +88,15 @@ public final class WindowLibrary {
                 paneFinalizer: (([UUID]) -> Void)?,
                 launchInventorySink: ((Set<UUID>?) -> Void)? = nil,
                 launchPaneDrop: (([UUID]) -> Void)? = nil,
-                controlEventRing: ControlEventRing? = nil) {
+                controlEventRing: ControlEventRing? = nil,
+                defaultSessionCwd: String = FileManager.default.homeDirectoryForCurrentUser.path) {
         self.directory = directory
         self.recentClosedStore = RecentClosedStore(directory: directory)
         self.controlEventRing = controlEventRing ?? ControlEventRing()
         self.paneFinalizer = paneFinalizer
         self.launchInventorySink = launchInventorySink
         self.launchPaneDrop = launchPaneDrop
+        self.defaultSessionCwd = defaultSessionCwd
         self.treeEventDebouncers = [:]
         self.stores = [:]
         self.windows = []
@@ -369,15 +321,15 @@ public final class WindowLibrary {
 
     // MARK: - Mutation
 
-    /// Creates a window seeded with "workspace 1" and one $HOME session, opens it, and persists the index.
-    /// Defaults the name to "window N".
+    /// Creates a window seeded with "workspace 1" and one session at the host-provided default cwd,
+    /// opens it, and persists the index. Defaults the name to "window N".
     @discardableResult
     public func newWindow(name: String? = nil) -> WindowInfo {
         // the name feeds {AGT_WINDOW_NAME}; see TerminalText.
         let info = WindowInfo(name: name.map(TerminalText.sanitized)?.trimmedOrNil ?? defaultWindowName)
         let store = makeStore(for: info.id, persistence: persistenceStore(for: info.id))
         let workspace = store.addWorkspace(name: "workspace 1")
-        store.addSession(toWorkspace: workspace.id, cwd: FileManager.default.homeDirectoryForCurrentUser.path)
+        store.addSession(toWorkspace: workspace.id, cwd: defaultSessionCwd)
         windows.append(info)
         stores[info.id] = store
         openSetVersion += 1
@@ -969,6 +921,9 @@ public final class WindowLibrary {
     /// are real panes whose daemons would otherwise read as unclaimed. Nil when the directory itself could
     /// not be read, which is not the same answer as "no stray files".
     private func strayWindowFileIDs(indexed: Set<UUID>) -> [UUID]? {
+        guard (try? windowsDirectory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+            return nil
+        }
         guard let contents = try? FileManager.default.contentsOfDirectory(at: windowsDirectory,
                                                                           includingPropertiesForKeys: nil) else {
             return nil

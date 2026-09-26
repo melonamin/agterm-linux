@@ -1,0 +1,40 @@
+# Flatpak manifest for agterm-linux. It packages the SELF-CONTAINED tarball produced by
+# `scripts/dist-linux.sh` (the binary + the bundled Swift runtime + libghostty + ghostty resources +
+# the relocatable launcher) into the GNOME runtime, which provides GTK4/libadwaita.
+#
+# Build + run VERIFIED (GNOME 47 runtime; the GL terminal renders in-sandbox, 0 GLIBC errors). Two gotchas:
+#  (1) libghostty MUST be built against an older glibc than a rolling-release host — Arch's glibc 2.43 bakes
+#      a GLIBC_2.43 libm symbol into the .so that the runtime (glibc 2.40) lacks; setup-linux.sh now targets
+#      `x86_64-linux-gnu.2.39`, dropping the lib's max requirement to 2.38.
+#  (2) On a RE-dist, `rm -rf .flatpak-builder` first — --force-clean does NOT clear the download/extract
+#      cache, so a changed LOCAL tarball (same path, new content) is otherwise silently reused.
+#   ( cd agterm-linux && swift build -c release )
+#   scripts/dist-linux.sh
+#   rm -rf .flatpak-builder build-flatpak
+#   flatpak-builder --user --install --force-clean build-flatpak \
+#     packaging/linux/flatpak/io.github.melonamin.agterm.yml
+app-id: io.github.melonamin.agterm
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+command: agterm-linux
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri                       # GtkGLArea needs the GPU
+  - --share=ipc
+  - --filesystem=home                  # a terminal needs to run shells in the user's files
+  - --talk-name=org.freedesktop.Notifications   # GNotification banners + click-to-reveal
+modules:
+  - name: agterm-linux
+    buildsystem: simple
+    build-commands:
+      # The launcher resolves $HERE=/app and wires LD_LIBRARY_PATH=/app/lib + /app/share/ghostty.
+      - cp -r bin /app/
+      - cp -r lib /app/
+      - 'if [ -d share/ghostty ]; then cp -r share /app/; fi'
+      - install -Dm644 io.github.melonamin.agterm.desktop /app/share/applications/io.github.melonamin.agterm.desktop
+    sources:
+      - type: archive
+        path: ../../../agterm-linux-dist.tar.gz   # produced by scripts/dist-linux.sh
+        strip-components: 1

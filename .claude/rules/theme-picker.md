@@ -4,9 +4,17 @@ paths:
   - "agterm/SettingsModel.swift"
   - "agterm/SettingsCatalog.swift"
   - "agterm/AppActions*.swift"
+  - "agterm-linux/Sources/AgtermLinux/ThemePicker.swift"
+  - "agterm-linux/Sources/AgtermLinux/GhosttyConfigTheme.swift"
 ---
 
 ## Theme picker
+
+- Linux previews through the unpersisted `AppController.themePreviewSettings` override. Every preview
+  reader must resolve `preview ?? persisted`; otherwise libghostty config/color callbacks repaint chrome
+  with the old stored theme. Commit and the single teardown path clear the override. Cancel, window close,
+  and an empty-query Enter must also reapply the persisted theme before closing so terminal and chrome do
+  not diverge. GTK4 does not destroy a transient picker with its parent.
 
 - `.themes` is the live-preview `PaletteMode` beside `.actions` and `.sessions`. It reuses
   `CommandPalette`; `AppActions.paletteThemes()` supplies "default ghostty" (`nil`), catalog themes, and

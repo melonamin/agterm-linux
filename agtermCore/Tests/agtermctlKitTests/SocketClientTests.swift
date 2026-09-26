@@ -107,8 +107,8 @@ struct SocketClientTests {
         }
     }
 
-    // the server hangs up mid-request when it rejects an oversized line; without SO_NOSIGPIPE the
-    // client's next write raises the default-fatal SIGPIPE and the process dies with no output.
+    // the server hangs up mid-request when it rejects an oversized line; without SO_NOSIGPIPE on Darwin
+    // or MSG_NOSIGNAL on Linux, the client's next write raises fatal SIGPIPE and the process dies silently.
     @Test func writeToHungUpPeerThrowsInsteadOfDying() throws {
         let server = HangUpStubServer()
         try server.start()
@@ -373,6 +373,16 @@ struct SocketClientTests {
         let command = try Tree.parse(["--socket", server.path])
         let printed = try captureStdout { try command.run() }
         #expect(printed == Data("ok\n".utf8))
+    }
+
+    @Test func recentClearRunLabelsAffectedEntriesAsItems() throws {
+        let server = StubServer(response: ControlResponse(ok: true, result: ControlResult(affected: 2)))
+        try server.start()
+        defer { server.stop() }
+
+        let command = try Recent.Clear.parse(["--socket", server.path])
+        let printed = try captureStdout { try command.run() }
+        #expect(printed == Data("2 items\n".utf8))
     }
 
     /// Runs `body` with the process stdout redirected to a pipe, returning the bytes it printed.
@@ -847,6 +857,12 @@ struct SocketClientTests {
         #expect(SocketClient.formatResponse(response) == expected)
     }
 
+    @Test(arguments: [(1, "1 item"), (2, "2 items"), (0, "0 items")])
+    func formatResponseAffectedItems(_ affected: Int, _ expected: String) {
+        let response = ControlResponse(ok: true, result: ControlResult(affected: affected))
+        #expect(SocketClient.formatResponse(response, affectedNoun: "item") == expected)
+    }
+
     @Test func formatResponseError() {
         #expect(SocketClient.formatResponse(ControlResponse(ok: false, error: "boom")) == "error: boom")
     }
@@ -1115,7 +1131,11 @@ struct SocketClientTests {
         defer { close(lock) }
 
         let error = try #require(throws: SocketClientError.self) { _ = try SocketClient(path: socket.path).connect() }
+        #if os(Linux)
+        #expect(error.description.contains("agterm may be stopped or unable to accept connections"))
+        #else
         #expect(error.description.contains("the socket owner is present but not accepting connections"))
+        #endif
         #expect(error.description.contains("Connection refused"))
     }
 
@@ -1148,7 +1168,11 @@ struct SocketClientTests {
         try #require(flock(lock, LOCK_EX | LOCK_NB) == 0)
 
         let error = try #require(throws: SocketClientError.self) { _ = try SocketClient(path: path).connect() }
+        #if os(Linux)
+        #expect(error.description.contains("agterm may be stopped or unable to accept connections"))
+        #else
         #expect(error.description.contains("the socket owner is present but not accepting connections"))
+        #endif
         #expect(error.description.contains("No such file or directory"))
     }
 
@@ -1179,7 +1203,7 @@ private final class RefusedSocket {
 
     init() throws {
         path = NSTemporaryDirectory() + "agterm-refused-\(UUID().uuidString.prefix(8)).sock"
-        fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        fd = systemSocket()
         guard fd >= 0 else { throw SocketClientError("refused socket() failed") }
         unlink(path)
         var addr = sockaddr_un()

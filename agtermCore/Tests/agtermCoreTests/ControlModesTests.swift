@@ -38,12 +38,12 @@ struct ControlModesTests {
         #expect(ControlPaneFocusMode.parse(nil) == .toggle)
     }
 
-    @Test func paneFocusModeParsesAliases() {
-        #expect(ControlPaneFocusMode.parse("left") == .primary)
-        #expect(ControlPaneFocusMode.parse("top") == .primary)
+    @Test func paneFocusModePreservesRolesAndPhysicalPositions() {
+        #expect(ControlPaneFocusMode.parse("left") == .left)
+        #expect(ControlPaneFocusMode.parse("top") == .top)
         #expect(ControlPaneFocusMode.parse("primary") == .primary)
-        #expect(ControlPaneFocusMode.parse("right") == .split)
-        #expect(ControlPaneFocusMode.parse("bottom") == .split)
+        #expect(ControlPaneFocusMode.parse("right") == .right)
+        #expect(ControlPaneFocusMode.parse("bottom") == .bottom)
         #expect(ControlPaneFocusMode.parse("split") == .split)
         #expect(ControlPaneFocusMode.parse("other") == .toggle)
         #expect(ControlPaneFocusMode.parse("toggle") == .toggle)
@@ -54,12 +54,39 @@ struct ControlModesTests {
     }
 
     @Test func paneFocusModeComputesTargetPane() {
-        #expect(!ControlPaneFocusMode.primary.wantsSplit(currentSplitFocused: false))
-        #expect(!ControlPaneFocusMode.primary.wantsSplit(currentSplitFocused: true))
-        #expect(ControlPaneFocusMode.split.wantsSplit(currentSplitFocused: false))
-        #expect(ControlPaneFocusMode.split.wantsSplit(currentSplitFocused: true))
-        #expect(ControlPaneFocusMode.toggle.wantsSplit(currentSplitFocused: false))
-        #expect(!ControlPaneFocusMode.toggle.wantsSplit(currentSplitFocused: true))
+        #expect(!ControlPaneFocusMode.primary.wantsSplit(currentSplitFocused: true, primaryInEndSlot: true))
+        #expect(ControlPaneFocusMode.split.wantsSplit(currentSplitFocused: false, primaryInEndSlot: false))
+        #expect(ControlPaneFocusMode.toggle.wantsSplit(currentSplitFocused: false, primaryInEndSlot: false))
+        #expect(!ControlPaneFocusMode.toggle.wantsSplit(currentSplitFocused: true, primaryInEndSlot: true))
+        #expect(!ControlPaneFocusMode.left.wantsSplit(currentSplitFocused: true, primaryInEndSlot: false))
+        #expect(ControlPaneFocusMode.left.wantsSplit(currentSplitFocused: false, primaryInEndSlot: true))
+        #expect(!ControlPaneFocusMode.top.wantsSplit(currentSplitFocused: true, primaryInEndSlot: false))
+        #expect(ControlPaneFocusMode.top.wantsSplit(currentSplitFocused: false, primaryInEndSlot: true))
+        #expect(ControlPaneFocusMode.right.wantsSplit(currentSplitFocused: false, primaryInEndSlot: false))
+        #expect(!ControlPaneFocusMode.right.wantsSplit(currentSplitFocused: true, primaryInEndSlot: true))
+        #expect(ControlPaneFocusMode.bottom.wantsSplit(currentSplitFocused: false, primaryInEndSlot: false))
+        #expect(!ControlPaneFocusMode.bottom.wantsSplit(currentSplitFocused: true, primaryInEndSlot: true))
+    }
+
+    @Test func splitResizeTargetPreservesSelectorsAndConvertsForBothSlotOrders() {
+        #expect(ControlSplitResizeTarget.parse("primary") == .primary)
+        #expect(ControlSplitResizeTarget.parse("split") == .split)
+        #expect(ControlSplitResizeTarget.parse("left") == .left)
+        #expect(ControlSplitResizeTarget.parse("right") == .right)
+        #expect(ControlSplitResizeTarget.parse("top") == .top)
+        #expect(ControlSplitResizeTarget.parse("bottom") == .bottom)
+        #expect(ControlSplitResizeTarget.parse("other") == nil)
+
+        #expect(ControlSplitResizeTarget.primary.primaryRatioDelta(0.1, primaryInEndSlot: true) == 0.1)
+        #expect(ControlSplitResizeTarget.split.primaryRatioDelta(0.1, primaryInEndSlot: false) == -0.1)
+        for target in [ControlSplitResizeTarget.left, .top] {
+            #expect(target.primaryRatioDelta(0.1, primaryInEndSlot: false) == 0.1)
+            #expect(target.primaryRatioDelta(0.1, primaryInEndSlot: true) == -0.1)
+        }
+        for target in [ControlSplitResizeTarget.right, .bottom] {
+            #expect(target.primaryRatioDelta(0.1, primaryInEndSlot: false) == -0.1)
+            #expect(target.primaryRatioDelta(0.1, primaryInEndSlot: true) == 0.1)
+        }
     }
 
     @Test func workspaceFocusModeParsesWireTokens() {

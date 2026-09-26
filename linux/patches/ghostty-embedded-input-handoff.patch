@@ -1,0 +1,111 @@
+diff --git i/src/apprt/embedded.zig w/src/apprt/embedded.zig
+index 7310159..b3fcc80 100644
+--- i/src/apprt/embedded.zig
++++ w/src/apprt/embedded.zig
+@@ -1576,6 +1576,8 @@ pub const CAPI = struct {
+         surface: *Surface,
+         source: apprt.surface.NewSurfaceContext,
+     ) Surface.Options {
++        const demand = surface.core_surface.renderer_state.demandGuard(global.io());
++        defer demand.deinit();
+         return surface.newSurfaceOptions(source);
+     }
+
+@@ -1748,6 +1750,8 @@ pub const CAPI = struct {
+
+     /// Update the focused state of a surface.
+     export fn ghostty_surface_set_focus(surface: *Surface, focused: bool) void {
++        const demand = surface.core_surface.renderer_state.demandGuard(global.io());
++        defer demand.deinit();
+         surface.focusCallback(focused);
+     }
+
+@@ -1782,6 +1786,8 @@ pub const CAPI = struct {
+         surface: *Surface,
+         event: KeyEvent,
+     ) bool {
++        const demand = surface.core_surface.renderer_state.demandGuard(global.io());
++        defer demand.deinit();
+         return surface.app.keyEvent(
+             .{ .surface = surface },
+             event.keyEvent(),
+@@ -1820,6 +1826,8 @@ pub const CAPI = struct {
+         ptr: [*]const u8,
+         len: usize,
+     ) void {
++        const demand = surface.core_surface.renderer_state.demandGuard(global.io());
++        defer demand.deinit();
+         surface.textCallback(ptr[0..len]);
+     }
+
+@@ -1830,6 +1838,8 @@ pub const CAPI = struct {
+         ptr: [*]const u8,
+         len: usize,
+     ) void {
++        const demand = surface.core_surface.renderer_state.demandGuard(global.io());
++        defer demand.deinit();
+         surface.preeditCallback(if (len == 0) null else ptr[0..len]);
+     }
+
+@@ -1846,6 +1856,8 @@ pub const CAPI = struct {
+         button: input.MouseButton,
+         mods: c_int,
+     ) bool {
++        const demand = surface.core_surface.renderer_state.demandGuard(global.io());
++        defer demand.deinit();
+         return surface.mouseButtonCallback(
+             action,
+             button,
+@@ -1863,6 +1875,8 @@ pub const CAPI = struct {
+         y: f64,
+         mods: c_int,
+     ) void {
++        const demand = surface.core_surface.renderer_state.demandGuard(global.io());
++        defer demand.deinit();
+         surface.cursorPosCallback(
+             x,
+             y,
+@@ -1879,6 +1893,8 @@ pub const CAPI = struct {
+         y: f64,
+         scroll_mods: c_int,
+     ) void {
++        const demand = surface.core_surface.renderer_state.demandGuard(global.io());
++        defer demand.deinit();
+         surface.scrollCallback(
+             x,
+             y,
+diff --git i/src/renderer/State.zig w/src/renderer/State.zig
+index 43b5c50..6b47a89 100644
+--- i/src/renderer/State.zig
++++ w/src/renderer/State.zig
+@@ -75,6 +75,30 @@ pub fn lockDemand(self: *State, io: std.Io) void {
+ /// parked in `yieldToDemand` that the demanding waiter had its turn.
+ pub fn unlockDemand(self: *State, io: std.Io) void {
+     self.mutex.unlock(io);
++    self.finishDemand(io);
++}
++
++/// Keep demand asserted across a host callback that may take the raw mutex
++/// one or more times. Embedded hosts call core surface APIs synchronously on
++/// their UI thread, so those calls need the same handoff guarantee as the
++/// renderer or sustained PTY output can starve keyboard and focus handling.
++pub fn demandGuard(self: *State, io: std.Io) DemandGuard {
++    _ = self.demand.fetchAdd(1, .monotonic);
++    return .{ .state = self, .io = io };
++}
++
++pub const DemandGuard = struct {
++    state: *State,
++    io: std.Io,
++
++    pub fn deinit(self: DemandGuard) void {
++        const prev = self.state.demand.fetchSub(1, .monotonic);
++        assert(prev > 0);
++        self.state.finishDemand(self.io);
++    }
++};
++
++fn finishDemand(self: *State, io: std.Io) void {
+     _ = self.handoff_gen.fetchAdd(1, .monotonic);
+     io.futexWake(@TypeOf(self.handoff_gen), &self.handoff_gen, 1);
+ }

@@ -1,0 +1,51 @@
+name: agterm-linux
+arch: ${AGTERM_PACKAGE_ARCH}
+platform: linux
+version: ${AGTERM_PACKAGE_VERSION}
+version_schema: semver
+release: 1
+section: utils
+priority: optional
+maintainer: agterm-linux maintainers <melonamin@users.noreply.github.com>
+description: Native terminal with a workspace and session sidebar, built on libghostty.
+vendor: agterm-linux
+homepage: https://github.com/melonamin/agterm-linux
+license: MIT
+
+contents:
+  - src: ${AGTERM_PACKAGE_ROOT}/
+    dst: /opt/agterm-linux
+    type: tree
+    expand: true
+  - src: ${AGTERM_PACKAGE_ROOT}/share/applications/io.github.melonamin.agterm.desktop
+    dst: /usr/share/applications/io.github.melonamin.agterm.desktop
+    expand: true
+  - src: ${AGTERM_PACKAGE_ROOT}/share/pixmaps/io.github.melonamin.agterm.png
+    dst: /usr/share/pixmaps/io.github.melonamin.agterm.png
+    expand: true
+  - src: ${AGTERM_PACKAGE_ROOT}/share/icons/hicolor/
+    dst: /usr/share/icons/hicolor
+    type: tree
+    expand: true
+  - src: /opt/agterm-linux/bin/agterm-linux
+    dst: /usr/bin/agterm-linux
+    type: symlink
+  - src: /opt/agterm-linux/bin/agtermctl
+    dst: /usr/bin/agtermctl
+    type: symlink
+
+overrides:
+  deb:
+    depends:
+      - bash
+      - libc6 (>= 2.39)
+      - libgtk-4-1 (>= 4.14)
+      - libadwaita-1-0 (>= 1.5)
+      - libepoxy0
+  rpm:
+    depends:
+      - bash
+      - glibc >= 2.39
+      - gtk4 >= 4.14
+      - libadwaita >= 1.5
+      - libepoxy
