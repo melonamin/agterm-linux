@@ -130,7 +130,8 @@ enum ThemeColorResolver {
         .agterm-sidebar label { color: \(foreground); }
         /* exact row-content path: a row-parented popover must not inherit the selection foreground */
         .agterm-sidebar row.agterm-selected > .agterm-session-row-content > label,
-        .agterm-sidebar row.agterm-selected > .agterm-session-row-content > image { color: \(selectionForeground); }
+        .agterm-sidebar row.agterm-selected > .agterm-session-row-content > image,
+        .agterm-sidebar row.agterm-selected > .agterm-session-row-content > entry { color: \(selectionForeground); }
         .agterm-sidebar button { color: \(foreground); }
         .agterm-sidebar separator { background-color: alpha(\(foreground), 0.22); }
         toolbarview.agterm-sidebar-column > .top-bar,
