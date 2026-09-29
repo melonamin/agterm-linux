@@ -45,8 +45,8 @@ public enum AgentHooksInstall {
 
     /// Marker lines bracketing the agterm-managed block in a shell rc file; the opening marker is also the
     /// idempotency probe (present → already installed).
-    static let rcMarkerBegin = "# >>> agterm agent-status >>>"
-    static let rcMarkerEnd = "# <<< agterm agent-status <<<"
+    public static let rcMarkerBegin = "# >>> agterm agent-status >>>"
+    public static let rcMarkerEnd = "# <<< agterm agent-status <<<"
 
     /// The Claude Code hook events the merge installs, paired with the state (plus flags) each maps to.
     /// `UserPromptSubmit` and `PostToolUse` both set `active` — the latter after every tool run, so the status

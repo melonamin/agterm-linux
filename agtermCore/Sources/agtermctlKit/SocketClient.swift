@@ -78,9 +78,8 @@ struct SocketClient {
         guard fd >= 0 else { throw SocketClientError("socket() failed: \(String(cString: strerror(errno)))") }
 
         // a write after the server closes the connection (e.g. it rejected an oversized request) would
-        // raise the default-fatal SIGPIPE and kill the process with no output; SO_NOSIGPIPE turns it into
-        // a normal EPIPE write error, mirroring the server side of the socket. Darwin-only — Glibc has no
-        // SO_NOSIGPIPE.
+        // raise the default-fatal SIGPIPE and kill the process with no output. Darwin disables it per socket;
+        // Linux passes MSG_NOSIGNAL to each send in writeAll below.
         #if canImport(Darwin)
         var noSigPipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
@@ -112,7 +111,7 @@ struct SocketClient {
     }
 
     /// The sentence after a failed `connect`. A refusal and a missing socket are the two the ownership
-    /// lock narrows, and only to an owner being there: `ControlServer.start` keeps the lock after a failed
+    /// lock narrows on Darwin, and only to an owner being there: `ControlServer.start` keeps the lock after a failed
     /// bind, so a held lock never says how the socket came to be unreachable.
     private static func hint(forConnect failure: Int32, path: String) -> String {
         guard failure == ECONNREFUSED || failure == ENOENT else { return "is agterm running?" }
@@ -123,8 +122,8 @@ struct SocketClient {
     }
 
     /// Whether a process holds the server's ownership lock on `<socketPath>.lock`, nil when that cannot be
-    /// answered. Darwin's `F_GETLK` observes a `flock` without competing for it; taking a shared lock to
-    /// test instead would fail a starting instance's own `LOCK_EX|LOCK_NB`.
+    /// answered. Darwin's `F_GETLK` observes a `flock` without competing for it. Linux has no equivalent
+    /// non-competing probe for BSD `flock`, so its failure hint stays generic.
     private static func ownershipLockHeld(socketPath: String) -> Bool? {
         #if canImport(Darwin)
         let fd = open(ControlResolve.ownershipLockPath(forSocket: socketPath), O_RDONLY | O_CLOEXEC)
@@ -138,6 +137,8 @@ struct SocketClient {
         let queried = withUnsafeMutablePointer(to: &query) { fcntl(fd, F_GETLK, $0) }
         guard queried == 0 else { return nil }
         return query.l_type != Int16(F_UNLCK)
+        #elseif canImport(Glibc)
+        return nil
         #else
         return nil
         #endif
@@ -149,7 +150,11 @@ struct SocketClient {
             var offset = 0
             let base = raw.bindMemory(to: UInt8.self).baseAddress!
             while offset < data.count {
+                #if canImport(Darwin)
                 let n = write(fd, base + offset, data.count - offset)
+                #elseif canImport(Glibc)
+                let n = Glibc.send(fd, base + offset, data.count - offset, Int32(MSG_NOSIGNAL))
+                #endif
                 if n <= 0 { throw SocketClientError("write failed: \(String(cString: strerror(errno)))") }
                 offset += n
             }
@@ -177,7 +182,8 @@ struct SocketClient {
 
     /// Print a reply: the server's line unchanged with `json: true`, otherwise a human-readable summary. An
     /// error response (`ok == false`, non-`--json`) goes to stderr; everything else to stdout.
-    static func printResponse(_ reply: SocketReply, json: Bool, echoID: Bool = false) {
+    static func printResponse(_ reply: SocketReply, json: Bool, echoID: Bool = false,
+                              affectedNoun: String = "session") {
         if json {
             print(reply.line)
             return
@@ -186,7 +192,7 @@ struct SocketClient {
             FileHandle.standardError.write(Data((formatResponse(reply.response) + "\n").utf8))
             return
         }
-        print(formatResponse(reply.response, echoID: echoID))
+        print(formatResponse(reply.response, echoID: echoID, affectedNoun: affectedNoun))
     }
 
     /// Render a pick or ask open response as the documented `{"id":"…"}` JSON object.
@@ -235,7 +241,8 @@ struct SocketClient {
     /// a bare `ok`. Never JSON: `--json` prints the server's own line through `printResponse`, and a
     /// re-encoding here would drop every field this build does not model. Pure so it can be unit-tested
     /// directly; `printResponse` routes it to stdout/stderr.
-    static func formatResponse(_ response: ControlResponse, echoID: Bool = false) -> String {
+    static func formatResponse(_ response: ControlResponse, echoID: Bool = false,
+                               affectedNoun: String = "session") -> String {
         if !response.ok {
             return "error: " + (response.error ?? "unknown error")
         }
@@ -275,7 +282,8 @@ struct SocketClient {
             return "exit \(exitCode)"
         }
         if let affected = response.result?.affected {
-            return affected == 1 ? "1 session" : "\(affected) sessions"
+            let noun = affected == 1 ? affectedNoun : "\(affectedNoun)s"
+            return "\(affected) \(noun)"
         }
         if let count = response.result?.count {
             // keymap.reload reports its parse-diagnostic count; 0 reads as a clean reload.

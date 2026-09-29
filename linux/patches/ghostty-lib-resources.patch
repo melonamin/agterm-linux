@@ -1,0 +1,25 @@
+diff --git i/build.zig w/build.zig
+index 952b4621..be3e880a 100644
+--- i/build.zig
++++ w/build.zig
+@@ -183,6 +183,7 @@ pub fn build(b: *std.Build) !void {
+     } else if (!config.emit_lib_vt) {
++        resources.install();
+         // The macOS Ghostty Library
+         //
+         // This is NOT libghostty (even though its named that for historical
+         // reasons). It is just the glue between Ghostty GUI on macOS and
+         // the full Ghostty GUI core.
+diff --git i/src/build/GhosttyResources.zig w/src/build/GhosttyResources.zig
+index ebedfd72..7ca9f32a 100644
+--- i/src/build/GhosttyResources.zig
++++ w/src/build/GhosttyResources.zig
+@@ -17,7 +17,7 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
+         .name = "ghostty-build-data",
+         .root_module = b.createModule(.{
+             .root_source_file = b.path("src/main_build_data.zig"),
+-            .target = b.graph.host,
++            .target = cfg.target,
+             .strip = false,
+             .omit_frame_pointer = false,
+             .unwind_tables = .sync,

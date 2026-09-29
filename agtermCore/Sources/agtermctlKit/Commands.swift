@@ -28,13 +28,20 @@ struct BasicOptions: ParsableArguments, ConnectionOptions {
     @Flag(name: .long, help: "Print the raw JSON response.")
     var json = false
 
-    /// Resolve the socket path, in precedence order: `--socket` → `<AGTERM_STATE_DIR>/agterm.sock` →
-    /// `<$HOME>/Library/Application Support/agterm/agterm.sock` → `/tmp/agterm/agterm.sock`. `env` is
-    /// injectable so the precedence is unit-testable; production passes the process environment.
+    /// Resolve the socket path: explicit `--socket`, else the agtermCore rendezvous resolver. Precedence:
+    /// `--socket` → `<AGTERM_STATE_DIR>/agterm.sock` → `<platform application support>/agterm/agterm.sock` →
+    /// `/tmp/agterm/agterm.sock`. Production asks Foundation for the platform directory; the resolved
+    /// directory is injectable below so macOS and Linux path behavior remain unit-testable.
     func socketPath(env: [String: String] = ProcessInfo.processInfo.environment) -> String {
+        let directory = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first?.appendingPathComponent("agterm", isDirectory: true).path
+        return socketPath(env: env, applicationSupportDirectory: directory)
+    }
+
+    func socketPath(env: [String: String], applicationSupportDirectory: String?) -> String {
         if let socket { return socket }
-        let appSupport = (env["HOME"].map { ($0 as NSString).appendingPathComponent("Library/Application Support/agterm") })
-            ?? "/tmp/agterm"
+        let appSupport = applicationSupportDirectory ?? "/tmp/agterm"
         return ControlResolve.socketPath(stateDir: env["AGTERM_STATE_DIR"], appSupport: appSupport)
     }
 }
@@ -83,16 +90,29 @@ struct SurfaceTargetOptions: ParsableArguments {
     var target: String = "active"
 }
 
-/// The root `agtermctl` command. Subcommands mirror the control catalog 1:1, except `terminfo`, which runs
-/// locally and never opens the socket.
+/// The shared control-socket command catalog. Platform hosts can append genuinely host-owned commands
+/// without copying the common parser types; the upstream `Agtermctl` root continues to use this catalog
+/// unchanged.
+public enum AgtermctlCommandCatalog {
+    public static var subcommands: [ParsableCommand.Type] {
+        [Tree.self, Events.self, Workspace.self, Session.self, Surface.self, Dashboard.self, Window.self, Quick.self,
+         Sidebar.self, Notify.self, Font.self, Keymap.self, Hooks.self, Config.self, Theme.self, Pick.self, Ask.self,
+         Restore.self, Recent.self, Zmx.self, Terminfo.self, Version.self]
+    }
+
+    public static func rootConfiguration(
+        abstract: String = "Drive agterm over its control socket, and install its terminfo entry on other hosts.",
+        appending additionalSubcommands: [ParsableCommand.Type] = []
+    ) -> CommandConfiguration {
+        CommandConfiguration(
+            commandName: "agtermctl", abstract: abstract,
+            subcommands: subcommands + additionalSubcommands)
+    }
+}
+
+/// The root `agtermctl` command. Subcommands mirror the control catalog.
 public struct Agtermctl: ParsableCommand {
-    public static let configuration = CommandConfiguration(
-        commandName: "agtermctl",
-        abstract: "Drive agterm over its control socket, and install its terminfo entry on other hosts.",
-        subcommands: [Tree.self, Events.self, Workspace.self, Session.self, Surface.self, Dashboard.self, Window.self, Quick.self,
-                      Sidebar.self, Notify.self, Font.self, Keymap.self, Hooks.self, Config.self, Theme.self, Pick.self, Ask.self, Restore.self,
-                      Zmx.self, Terminfo.self, Version.self]
-    )
+    public static let configuration = AgtermctlCommandCatalog.rootConfiguration()
 
     public init() {}
 }
@@ -108,10 +128,14 @@ protocol RequestCommand: ParsableCommand {
     /// caller already named the target; the create commands (`*.new`) override it to true, since the new id
     /// isn't known until the command runs. The id is always present under `--json`.
     var echoesResultID: Bool { get }
+    /// Singular noun for `result.affected` in human output. Batch mutations affect sessions by default;
+    /// commands that count another entity override this without changing the wire response.
+    var affectedNoun: String { get }
 }
 
 extension RequestCommand {
     var echoesResultID: Bool { false }
+    var affectedNoun: String { "session" }
     public func run() throws { try defaultRun() }
 
     /// The default behavior: send the request once and print the response. Named separately so a command
@@ -120,7 +144,8 @@ extension RequestCommand {
         let request = try makeRequest()
         let client = SocketClient(path: options.socketPath())
         let reply = try client.send(request)
-        SocketClient.printResponse(reply, json: options.json, echoID: echoesResultID)
+        SocketClient.printResponse(reply, json: options.json, echoID: echoesResultID,
+                                   affectedNoun: affectedNoun)
         if !reply.response.ok { throw ExitCode.failure }
     }
 }

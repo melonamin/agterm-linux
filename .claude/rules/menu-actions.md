@@ -262,6 +262,8 @@ paths:
   least two sessions. Selection records activity, selects, and focuses.
 - Bell lists all non-idle sessions across open windows, current included. Selection uses the same
   pane-aware reveal as the palette; see [[notifications]] for the cross-window raise.
+- The GTK clock uses its non-empty recent-visible list as its enable condition; see
+  `agterm-linux/docs/sidebar.md` for its row update contract.
 - Popover opens are keep-in-sync exempt. Synthesized XCUITest clicks inside `NSPopover` do not fire the
   SwiftUI button, though real clicks do; tests verify open/list contents, while selection is manual plus
   host-free API coverage.

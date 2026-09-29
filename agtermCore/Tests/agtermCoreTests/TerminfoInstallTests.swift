@@ -4,6 +4,8 @@ import Testing
 
 struct TerminfoInstallTests {
     private let fixture: Fixture
+    private static let loginShells = ["/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash", "/bin/tcsh", "/bin/csh"]
+        .filter { FileManager.default.isExecutableFile(atPath: $0) }
 
     init() throws { fixture = try Fixture() }
 
@@ -98,7 +100,7 @@ struct TerminfoInstallTests {
     }
 
     // sshd hands the command to the account's login shell, so it must parse under every common one
-    @Test(arguments: ["/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash", "/bin/tcsh", "/bin/csh"])
+    @Test(arguments: loginShells)
     func theRemoteCommandCompilesTheSourceUnderEveryLoginShell(_ shell: String) throws {
         let remote = try #require(TerminfoInstall.installCommand(TerminfoInstall.Connection(destination: "buildbox")).last)
         let home = try fixture.remoteHome(withTic: true)
@@ -111,7 +113,7 @@ struct TerminfoInstallTests {
         #expect(FileManager.default.fileExists(atPath: "\(home.path)/.terminfo"))
     }
 
-    @Test(arguments: ["/bin/sh", "/bin/tcsh"])
+    @Test(arguments: ["/bin/sh", "/bin/tcsh"].filter { FileManager.default.isExecutableFile(atPath: $0) })
     func theRemoteCommandSaysSoAndExits3WhenTheHostHasNoTic(_ shell: String) throws {
         let remote = try #require(TerminfoInstall.installCommand(TerminfoInstall.Connection(destination: "buildbox")).last)
         let home = try fixture.remoteHome(withTic: false)
@@ -281,14 +283,21 @@ private struct Fixture {
         return dir.path
     }
 
-    /// The bundle shape the installed CLI resolves into: `Contents/MacOS/agtermctl` beside
-    /// `Contents/Resources/terminfo`.
+    /// The installed CLI and its sibling terminfo database on the current host.
     func bundle(layout: String) throws -> (client: String, terminfo: String) {
+        #if canImport(Glibc)
+        let prefix = root.appendingPathComponent("agterm-linux")
+        try FileManager.default.createDirectory(at: prefix.appendingPathComponent("bin"), withIntermediateDirectories: true)
+        let client = prefix.appendingPathComponent("bin/agtermctl")
+        try Data().write(to: client)
+        let terminfo = try database(name: "agterm-linux/share/terminfo", layout: layout)
+        #else
         let contents = root.appendingPathComponent("agterm.app/Contents")
         try FileManager.default.createDirectory(at: contents.appendingPathComponent("MacOS"), withIntermediateDirectories: true)
         let client = contents.appendingPathComponent("MacOS/agtermctl")
         try Data().write(to: client)
         let terminfo = try database(name: "agterm.app/Contents/Resources/terminfo", layout: layout)
+        #endif
         return (client.path, terminfo)
     }
 
@@ -348,20 +357,22 @@ private struct Fixture {
         return try #require(pid_t(text), "pgid recorded as '\(text)'")
     }
 
-    /// A stand-in for the remote account: an empty `HOME` and a `PATH` of `/bin` (mkdir, but no tic:
-    /// the real one is in `/usr/bin`) plus a fake `tic` that records its arguments and stdin, or none.
+    /// A stand-in for the remote account with a PATH containing only the tools the script needs.
+    /// On merged /usr systems, /bin also contains tic and cannot serve as a no-tic fixture.
     func remoteHome(withTic: Bool) throws -> (path: String, environment: [String: String]) {
         let home = root.appendingPathComponent("remote-home")
         let bin = root.appendingPathComponent("remote-bin")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let mkdir = bin.appendingPathComponent("mkdir")
+        try FileManager.default.createSymbolicLink(at: mkdir, withDestinationURL: URL(fileURLWithPath: "/bin/mkdir"))
         if withTic {
             try script(at: bin.appendingPathComponent("tic"), body: """
             printf '%s\\n' "$@" > '\(root.appendingPathComponent("tic.args").path)'
-            cat > '\(root.appendingPathComponent("tic.stdin").path)'
+            /bin/cat > '\(root.appendingPathComponent("tic.stdin").path)'
             """)
         }
-        return (home.path, ["HOME": home.path, "PATH": bin.path + ":/bin"])
+        return (home.path, ["HOME": home.path, "PATH": bin.path])
     }
 
     func ticArguments() throws -> [String] {

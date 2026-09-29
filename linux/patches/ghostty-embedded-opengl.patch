@@ -1,0 +1,225 @@
+diff --git i/include/ghostty.h w/include/ghostty.h
+index b099741..bfc2c5f 100644
+--- i/include/ghostty.h
++++ w/include/ghostty.h
+@@ -66,6 +66,7 @@ typedef enum {
+   GHOSTTY_PLATFORM_INVALID,
+   GHOSTTY_PLATFORM_MACOS,
+   GHOSTTY_PLATFORM_IOS,
++  GHOSTTY_PLATFORM_OPENGL,
+ } ghostty_platform_e;
+
+ typedef enum {
+@@ -453,9 +454,16 @@ typedef struct {
+   void* uiview;
+ } ghostty_platform_ios_s;
+
++typedef struct {
++  void* userdata;
++  void (*make_current)(void*);
++  void (*present)(void*);
++} ghostty_platform_opengl_s;
++
+ typedef union {
+   ghostty_platform_macos_s macos;
+   ghostty_platform_ios_s ios;
++  ghostty_platform_opengl_s opengl;
+ } ghostty_platform_u;
+
+ typedef enum {
+@@ -1125,6 +1133,7 @@ GHOSTTY_API bool ghostty_surface_key_is_binding(ghostty_surface_t,
+                                                    ghostty_input_key_s,
+                                                    ghostty_binding_flags_e*);
+ GHOSTTY_API void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
++GHOSTTY_API void ghostty_surface_feed(ghostty_surface_t, const char*, uintptr_t);
+ GHOSTTY_API void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
+ GHOSTTY_API bool ghostty_surface_mouse_captured(ghostty_surface_t);
+ GHOSTTY_API bool ghostty_surface_mouse_button(ghostty_surface_t,
+diff --git i/src/Surface.zig w/src/Surface.zig
+index 5d16f33..2dbe5ec 100644
+--- i/src/Surface.zig
++++ w/src/Surface.zig
+@@ -892,6 +892,13 @@ pub fn draw(self: *Surface) !void {
+     try self.renderer.drawFrame(true);
+ }
+
++/// Feed output bytes (e.g. an OSC escape) into the terminal as if read from the pty. Used by the
++/// embedded apprt to push theme colors the renderer otherwise won't pick up from config on this build.
++/// processOutput takes the renderer lock itself, so this is safe to call from the app thread.
++pub fn feedOutput(self: *Surface, data: []const u8) void {
++    self.io.processOutput(data);
++}
++
+ /// Activate the inspector. This will begin collecting inspection data.
+ /// This will not affect the GUI. The GUI must use performAction to
+ /// show/hide the inspector UI.
+diff --git i/src/apprt/embedded.zig w/src/apprt/embedded.zig
+index 730913e..e795ba3 100644
+--- i/src/apprt/embedded.zig
++++ w/src/apprt/embedded.zig
+@@ -14,6 +14,7 @@ const font = @import("../font/main.zig");
+ const input = @import("../input.zig");
+ const internal_os = @import("../os/main.zig");
+ const renderer = @import("../renderer.zig");
++const build_config = @import("../build_config.zig");
+ const terminal = @import("../terminal/main.zig");
+ const CoreApp = @import("../App.zig");
+ const CoreInspector = @import("../inspector/main.zig").Inspector;
+@@ -27,6 +28,14 @@ const log = std.log.scoped(.embedded_window);
+ pub const resourcesDir = internal_os.resourcesDir;
+
+ pub const App = struct {
++    /// On the embedded apprt, draws must happen on the host (app) thread when
++    /// the renderer is OpenGL: the host owns the GL context (e.g. a GtkGLArea)
++    /// and GL/glad state is threadlocal, so the render thread only requests a
++    /// draw (the `.render` action) and the host calls ghostty_surface_draw on
++    /// its own thread. Metal (macOS) renders on the render thread, so this
++    /// stays false there.
++    pub const must_draw_from_app_thread = build_config.renderer == .opengl;
++
+     /// Because we only expect the embedding API to be used in embedded
+     /// environments, the options are extern so that we can expose it
+     /// directly to a C callconv and not pay for any translation costs.
+@@ -344,6 +353,7 @@ pub const App = struct {
+ pub const Platform = union(PlatformTag) {
+     macos: MacOS,
+     ios: IOS,
++    opengl: OpenGL,
+
+     // If our build target for libghostty is not darwin then we do
+     // not include macos support at all.
+@@ -357,6 +367,21 @@ pub const Platform = union(PlatformTag) {
+         uiview: objc.Object,
+     } else void;
+
++    /// A host-provided OpenGL surface. The host owns the GL context (e.g. a
++    /// GtkGLArea); ghostty renders into whatever context is current. The host
++    /// must make its context current before any GL-touching C ABI call
++    /// (ghostty_surface_new, ghostty_surface_draw); see `make_current`.
++    pub const OpenGL = struct {
++        /// Opaque host handle passed back to the callbacks below.
++        userdata: ?*anyopaque,
++        /// Make the host GL context current on the calling thread. Called from
++        /// surfaceInit and may be called again by the host before each draw.
++        make_current: ?*const fn (?*anyopaque) callconv(.c) void,
++        /// Present/swap the host GL surface after a frame. Optional: for an
++        /// offscreen/FBO-readback host this may be null.
++        present: ?*const fn (?*anyopaque) callconv(.c) void,
++    };
++
+     // The C ABI compatible version of this union. The tag is expected
+     // to be stored elsewhere.
+     pub const C = extern union {
+@@ -367,6 +392,12 @@ pub const Platform = union(PlatformTag) {
+         ios: extern struct {
+             uiview: ?*anyopaque,
+         },
++
++        opengl: extern struct {
++            userdata: ?*anyopaque,
++            make_current: ?*const fn (?*anyopaque) callconv(.c) void,
++            present: ?*const fn (?*anyopaque) callconv(.c) void,
++        },
+     };
+
+     /// Initialize a Platform a tag and configuration from the C ABI.
+@@ -386,6 +417,12 @@ pub const Platform = union(PlatformTag) {
+                     break :ios error.UIViewMustBeSet);
+                 break :ios .{ .ios = .{ .uiview = uiview } };
+             } else error.UnsupportedPlatform,
++
++            .opengl => .{ .opengl = .{
++                .userdata = c_platform.opengl.userdata,
++                .make_current = c_platform.opengl.make_current,
++                .present = c_platform.opengl.present,
++            } },
+         };
+     }
+ };
+@@ -396,6 +433,7 @@ pub const PlatformTag = enum(c_int) {
+
+     macos = 1,
+     ios = 2,
++    opengl = 3,
+ };
+
+ pub const EnvVar = extern struct {
+@@ -774,6 +812,10 @@ pub const Surface = struct {
+         };
+     }
+
++    pub fn feed(self: *Surface, data: []const u8) void {
++        self.core_surface.feedOutput(data);
++    }
++
+     pub fn updateContentScale(self: *Surface, x: f64, y: f64) void {
+         // We are an embedded API so the caller can send us all sorts of
+         // garbage. We want to make sure that the float values are valid
+@@ -1691,6 +1733,10 @@ pub const CAPI = struct {
+         surface.draw();
+     }
+
++    export fn ghostty_surface_feed(surface: *Surface, ptr: [*]const u8, len: usize) void {
++        surface.feed(ptr[0..len]);
++    }
++
+     /// Update the size of a surface. This will trigger resize notifications
+     /// to the pty and the renderer.
+     export fn ghostty_surface_set_size(surface: *Surface, w: u32, h: u32) void {
+diff --git i/src/build/SharedDeps.zig w/src/build/SharedDeps.zig
+index b68be92..cc84677 100644
+--- i/src/build/SharedDeps.zig
++++ w/src/build/SharedDeps.zig
+@@ -589,6 +589,17 @@ pub fn add(
+         }
+     }
+
++    // libghostty built with the OpenGL renderer (e.g. the Linux embedded
++    // apprt) needs glad statically compiled into the library too. The exe
++    // path below compiles it for executables; this covers the .lib case.
++    if (step.kind == .lib and self.config.renderer == .opengl) {
++        step.root_module.addIncludePath(b.path("vendor/glad/include/"));
++        step.root_module.addCSourceFile(.{
++            .file = b.path("vendor/glad/src/gl.c"),
++            .flags = &.{},
++        });
++    }
++
+     // If we're building an exe then we have additional dependencies.
+     if (step.kind != .lib) {
+         // We always statically compile glad
+diff --git i/src/renderer/OpenGL.zig w/src/renderer/OpenGL.zig
+index 4b01da0..5148c36 100644
+--- i/src/renderer/OpenGL.zig
++++ w/src/renderer/OpenGL.zig
+@@ -160,18 +160,23 @@ fn prepareContext(getProcAddress: anytype) !void {
+
+ /// This is called early right after surface creation.
+ pub fn surfaceInit(surface: *apprt.Surface) !void {
+-    _ = surface;
+-
+     switch (apprt.runtime) {
+         else => @compileError("unsupported app runtime for OpenGL"),
+
+         // GTK uses global OpenGL context so we load from null.
+-        apprt.gtk,
+-        => try prepareContext(null),
++        apprt.gtk => try prepareContext(null),
+
++        // The host (e.g. a GtkGLArea) owns the GL context. Make it current on
++        // this (app) thread, then load glad against it. glad's context is
++        // threadlocal and all embedded-OpenGL draws run on this same host
++        // thread (must_draw_from_app_thread), so loading here is correct.
+         apprt.embedded => {
+-            // TODO(mitchellh): this does nothing today to allow libghostty
+-            // to compile for OpenGL targets but libghostty is strictly
+-            // broken for rendering on this platforms.
++            switch (surface.platform) {
++                .opengl => |gl_platform| {
++                    if (gl_platform.make_current) |f| f(gl_platform.userdata);
++                },
++                else => return error.UnsupportedPlatform,
++            }
++            try prepareContext(null);
+         },
+     }

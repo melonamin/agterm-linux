@@ -71,10 +71,10 @@ session drag are out of scope.
   `QuitPrompt.message`, which takes the launch decision's active restore mode:
   Live drops the shell clause and promises no reattachment.
   Skip it for system shutdown/restart/logout, no open windows, XCUITest, or an unwired library during
-  the first roughly four seconds. The system-quit half is host-free in
-  `QuitReason.isSystemQuit` and covered by `QuitReasonTests`.
-  The keyword must come from `kAEQuitReason`, because `AEKeyword("why?")` resolves to
-  `UInt32.init?(String)` and is always nil.
+  the first roughly four seconds. The system-quit policy is host-free in
+  `QuitReason.isSystemQuit(reasonTypeCode:)` and covered by `QuitReasonTests`.
+  The macOS host reads the Apple Event attribute with `kAEQuitReason` and passes only its plain `UInt32`
+  type code into core. `AEKeyword("why?")` resolves to `UInt32.init?(String)` and is always nil.
   The reason is an attribute, not a param, despite `AERegistry.h` calling it a parameter: loginwindow
   writes it with `AEPutAttributePtr`. Never switch that read to `paramDescriptor`.
   The GUI-only prompt is keep-in-sync exempt and manually verified.
