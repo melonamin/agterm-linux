@@ -18,19 +18,29 @@ final class SessionPickerRowContext {
 }
 
 @MainActor
+final class SwitcherRevealTickContext {
+    weak var controller: AppController?
+    var ticks = 0
+
+    init(controller: AppController) { self.controller = controller }
+}
+
+@MainActor
 extension AppController {
     // MARK: - Ctrl-Tab switcher
 
     /// Cycling moves the overlay highlight ONLY; `commitSessionSwitch` selects on Ctrl release, so one
     /// cycle pushes recency exactly once and a second Ctrl-Tab toggles back.
     func quickSwitchSession(reverse: Bool = false) {
+        guard sessionSwitchAllowed else { cancelSessionSwitch(); return }
         if sessionSwitcher.isActive {
             sessionSwitcher.advance(reverse: reverse)
+            if switcherScroller == nil { showSwitcherOverlay() } else { markSwitcherSelection() }
         } else {
             let valid = Set(store.navigableSessions.map(\.id))
             sessionSwitcher.begin(store.sessionRecency.top(SessionSwitcherModel.maxCandidates, in: valid))
+            if sessionSwitcher.isActive { showSwitcherOverlay() }
         }
-        if sessionSwitcher.isActive { showSwitcherOverlay() }
     }
 
     /// Fires after EVERY Ctrl chord (Ctrl+C too), so it must do nothing with no cycle in flight. Ending the
@@ -49,6 +59,8 @@ extension AppController {
     private func commitSessionSwitch(releasing keycode: UInt32, controlStillHeld: Bool?) {
         guard heldControlKeys.released(keycode: keycode, controlStillHeld: controlStillHeld) else { return }
         guard sessionSwitcher.isActive else { return }
+        // A zoom, pick or dialog that arrived mid-hold commits nothing, as macOS resets on `flagsChanged`.
+        guard sessionSwitchAllowed else { cancelSessionSwitch(); return }
         let live = Set(store.workspaces.flatMap { $0.sessions.map(\.id) })
         let target = sessionSwitcher.commitTarget(liveIDs: live)
         sessionSwitcher.end()
@@ -56,8 +68,17 @@ extension AppController {
         if let target { selectSession(target) }
     }
 
-    /// End the cycle WITHOUT selecting, so a blur cannot strand a frozen candidate list for the next Ctrl
-    /// release to commit.
+    private var sessionSwitchAllowed: Bool {
+        // Every `AdwDialog` presents inside this window, so one visible dialog covers them all.
+        SessionSwitcherPolicy.canSwitch(
+            zoomed: terminalZoom.target != nil, dashboardOpen: dashboard.isOpen,
+            modalPending: pickController.modalPending,
+            dialogVisible: adw_application_window_get_visible_dialog(cast(window)) != nil,
+            popoverOpen: contextMenuIsOpen || sessionPickerIsOpen
+        )
+    }
+
+    /// End the cycle and remove the card without selecting.
     func cancelSessionSwitch() {
         sessionSwitcher.end()
         hideSwitcherOverlay()
@@ -66,17 +87,15 @@ extension AppController {
     private func showSwitcherOverlay() {
         hideSwitcherOverlay()
         guard let overlay = deckOverlay, let box = op(gtk_box_new(GTK_ORIENTATION_VERTICAL, 2)),
-              let scroller = sessionSwitcherScroller(containing: box) else { return }
+              let scroller = sessionSwitcherScroller(containing: box, placement: switcherPlacement(overlay)),
+              let dim = sessionSwitcherDim() else { return }
         // Focus leaving the terminal cancels the cycle, so the card must never take the keyboard.
         gtk_widget_set_focusable(W(scroller), 0)
-        gtk_widget_add_css_class(W(box), "agterm-switcher")
-        gtk_widget_add_css_class(W(box), "agterm-interface-panel")
         for id in sessionSwitcher.ordered {
             guard let session = store.session(withID: id),
                   let row = op(gtk_box_new(GTK_ORIENTATION_VERTICAL, 1)),
                   let titleLine = op(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4)),
                   let title = op(gtk_label_new(session.displayName)) else { continue }
-            gtk_widget_set_margin_start(W(row), 18); gtk_widget_set_margin_end(W(row), 18)
             if session.remoteHost != nil, let cloud = op(gtk_image_new_from_icon_name("weather-overcast-symbolic")) {
                 gtk_widget_set_tooltip_text(W(cloud), "Remote")
                 gtk_box_append(cast(titleLine), W(cloud))
@@ -93,36 +112,128 @@ extension AppController {
                 gtk_widget_add_css_class(W(subtitle), "dim-label")
                 gtk_box_append(cast(row), W(subtitle))
             }
-            if id == sessionSwitcher.current { gtk_widget_add_css_class(W(row), "agterm-switcher-current") }
+            gtk_widget_add_css_class(W(row), "agterm-switcher-row")
             gtk_box_append(cast(box), W(row))
+            switcherRows[id] = row
         }
-        switcherBox = scroller
-        gtk_overlay_add_overlay(overlay, W(scroller))
+        switcherScroller = scroller
+        gtk_box_append(cast(dim), W(scroller))
+        gtk_overlay_add_overlay(overlay, W(dim))
+        markSwitcherSelection()
+    }
+
+    private func markSwitcherSelection() {
+        for (id, row) in switcherRows {
+            if id == sessionSwitcher.current {
+                gtk_widget_add_css_class(W(row), "agterm-switcher-current")
+            } else {
+                gtk_widget_remove_css_class(W(row), "agterm-switcher-current")
+            }
+        }
+        revealSwitcherSelection()
+    }
+
+    /// Scrolls without focusing: the card must never take the keyboard (see `showSwitcherOverlay`).
+    private func revealSwitcherSelection() {
+        guard tryRevealSwitcherSelection(ticksElapsed: 0) == .wait, switcherRevealTick == 0,
+              let scroller = switcherScroller else { return }
+        let context = SwitcherRevealTickContext(controller: self)
+        switcherRevealTick = gtk_widget_add_tick_callback(
+            W(scroller), switcherRevealTickCallback, Unmanaged.passRetained(context).toOpaque(),
+            releaseSwitcherRevealTick)
+    }
+
+    /// A pending tick reads the live highlight, so an advance while it waits needs no second one.
+    fileprivate func retrySwitcherReveal(_ context: SwitcherRevealTickContext) -> gboolean {
+        context.ticks += 1
+        guard tryRevealSwitcherSelection(ticksElapsed: context.ticks) == .wait else {
+            switcherRevealTick = 0
+            return 0
+        }
+        return 1
+    }
+
+    private func tryRevealSwitcherSelection(ticksElapsed: Int) -> SessionSwitcherReveal.Step {
+        guard let scroller = switcherScroller, let id = sessionSwitcher.current, let row = switcherRows[id],
+              let rowWidget = W(row) else { return .giveUp }
+        let step = SessionSwitcherReveal.step(rowMapped: gtk_widget_get_mapped(rowWidget) != 0,
+                                              rowHeight: Double(gtk_widget_get_height(rowWidget)),
+                                              ticksElapsed: ticksElapsed)
+        guard step == .reveal else { return step }
+        return revealVertically(rowWidget, in: scroller) ? .reveal : .giveUp
     }
 
     private func hideSwitcherOverlay() {
-        if let overlay = deckOverlay, let box = switcherBox { gtk_overlay_remove_overlay(overlay, W(box)) }
-        switcherBox = nil
+        if let scroller = switcherScroller, switcherRevealTick != 0 {
+            gtk_widget_remove_tick_callback(W(scroller), switcherRevealTick)
+        }
+        switcherRevealTick = 0
+        switcherRows.removeAll()
+        if let overlay = deckOverlay, let scroller = switcherScroller, let dim = gtk_widget_get_parent(W(scroller)) {
+            gtk_overlay_remove_overlay(overlay, dim)
+        }
+        switcherScroller = nil
     }
 
-    func sessionSwitcherScroller(containing rows: OpaquePointer) -> OpaquePointer? {
+    private func switcherPlacement(_ overlay: OpaquePointer) -> SessionSwitcherPlacement {
+        var origin = graphene_point_t(), terminalStart = graphene_point_t()
+        if let paned = splitView, let content = gtk_paned_get_end_child(paned),
+           gtk_widget_compute_point(content, W(overlay), &origin, &terminalStart) == 0 {
+            terminalStart.x = 0
+        }
+        return SessionSwitcherPlacement(
+            metrics: InterfaceMetrics(fontSize: linuxSettingsStore().load().effectiveInterfaceFontSize),
+            windowWidth: Double(max(1, gtk_widget_get_width(W(overlay)))),
+            windowHeight: Double(max(1, gtk_widget_get_height(W(overlay)))),
+            sidebarVisible: store.sidebarVisible, sidebarWidth: Double(terminalStart.x))
+    }
+
+    private func sessionSwitcherScroller(containing rows: OpaquePointer,
+                                         placement: SessionSwitcherPlacement) -> OpaquePointer? {
         guard let scroller = op(gtk_scrolled_window_new()) else { return nil }
-        let metrics = InterfaceMetrics(fontSize: linuxSettingsStore().load().effectiveInterfaceFontSize)
-        let windowHeight = Double(max(1, gtk_widget_get_height(W(window))))
-        let maxHeight = Int32(metrics.fittedPanelHeight(windowHeight: windowHeight, topFraction: 0))
-        let deckWidth = Double(max(1, gtk_widget_get_width(W(deck))))
-        let width = Int32(metrics.fittedPanelWidth(
-            idealAtDefault: 460, windowWidth: deckWidth, terminalAreaInset: 0))
-        gtk_widget_set_halign(W(scroller), GTK_ALIGN_CENTER)
-        gtk_widget_set_valign(W(scroller), GTK_ALIGN_CENTER)
-        gtk_scrolled_window_set_policy(scroller, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
-        gtk_scrolled_window_set_max_content_height(scroller, maxHeight)
+        // Chrome on this fixed frame rather than the scrolled rows keeps both rounded ends in view;
+        // GtkViewport clips the rows to the padding.
+        gtk_widget_add_css_class(W(scroller), "agterm-switcher")
+        gtk_widget_add_css_class(W(scroller), "agterm-interface-panel")
+        let width = Int32(placement.contentWidth)
+        gtk_widget_set_halign(W(scroller), GTK_ALIGN_START)
+        gtk_widget_set_valign(W(scroller), GTK_ALIGN_START)
+        gtk_widget_set_margin_start(W(scroller), Int32(placement.left.rounded()))
+        gtk_widget_set_margin_top(W(scroller), Int32(placement.marginTop.rounded()))
+        // EXTERNAL, not NEVER: GTK ignores the content-width bounds under NEVER and sizes the card to its
+        // widest row, so a long cwd pushes it off center and up to the window edge.
+        gtk_scrolled_window_set_policy(scroller, GTK_POLICY_EXTERNAL, GTK_POLICY_AUTOMATIC)
+        gtk_scrolled_window_set_max_content_height(scroller, Int32(placement.contentMaxHeight))
         gtk_scrolled_window_set_propagate_natural_height(scroller, 1)
         gtk_scrolled_window_set_min_content_width(scroller, width)
         gtk_scrolled_window_set_max_content_width(scroller, width)
-        gtk_scrolled_window_set_propagate_natural_width(scroller, 1)
         gtk_scrolled_window_set_child(scroller, W(rows))
         return scroller
+    }
+
+    /// The window-wide backdrop the card sits in, so removing it takes both. A GENERIC-role box would carry
+    /// no accessible name, so it is built as a named GROUP for the AT-SPI teardown checks.
+    private func sessionSwitcherDim() -> OpaquePointer? {
+        var role = GValue()
+        g_value_init(&role, gtk_accessible_role_get_type())
+        g_value_set_enum(&role, gint(GTK_ACCESSIBLE_ROLE_GROUP.rawValue))
+        defer { g_value_unset(&role) }
+        let built = "accessible-role".withCString { name -> UnsafeMutablePointer<GObject>? in
+            var names: [UnsafePointer<CChar>?] = [name]
+            return g_object_new_with_properties(gtk_box_get_type(), 1, &names, &role)
+        }
+        guard let built else { return nil }
+        let dim = OpaquePointer(built)
+        gtk_widget_add_css_class(W(dim), "agterm-switcher-dim")
+        gtk_widget_set_can_target(W(dim), 0)
+        gtk_widget_set_focusable(W(dim), 0)
+        var property = GTK_ACCESSIBLE_PROPERTY_LABEL
+        var label = GValue()
+        gtk_accessible_property_init_value(property, &label)
+        g_value_set_string(&label, "Session switcher")
+        gtk_accessible_update_property_value(dim, 1, &property, &label)
+        g_value_unset(&label)
+        return dim
     }
 
     // MARK: - Recent/attention popovers
@@ -131,7 +242,8 @@ extension AppController {
         guard let scroller = op(gtk_scrolled_window_new()) else { return nil }
         let metrics = InterfaceMetrics(fontSize: linuxSettingsStore().load().effectiveInterfaceFontSize)
         let windowHeight = Double(max(1, gtk_widget_get_height(W(window))))
-        let maxHeight = Int32(metrics.fittedPanelHeight(windowHeight: windowHeight, topFraction: 0.12))
+        let maxHeight = Int32(metrics.fittedPanelHeight(
+            windowHeight: windowHeight, topFraction: SessionSwitcherPlacement.topInsetFraction))
         gtk_scrolled_window_set_policy(scroller, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
         gtk_scrolled_window_set_max_content_height(scroller, maxHeight)
         gtk_scrolled_window_set_propagate_natural_height(scroller, 1)
@@ -303,6 +415,12 @@ extension AppController {
         detachPopover(popover, popdown: false)
     }
 
+    /// `contextMenuIsOpen`'s twin: visibility, not the bare handle.
+    var sessionPickerIsOpen: Bool {
+        guard let popover = sessionPickerPopover else { return false }
+        return gtk_widget_get_visible(W(popover)) != 0
+    }
+
     private func clearSessionPickerState() {
         // Before anything pops the popover down: its glyph labels die with it, and the blink timer must
         // stop tracking them while they are still valid to read.
@@ -330,5 +448,26 @@ private let onSessionPickerClosed: @MainActor @convention(c) (OpaquePointer?, gp
     guard let data else { return }
     MainActor.assumeIsolated {
         Unmanaged<AppController>.fromOpaque(data).takeUnretainedValue().sessionPickerDidClose(popover)
+    }
+}
+
+// GTK's imported tick typealiases take no actor annotation, so the retained context crosses as an address
+// (see `sidebarScrollRetryTick`).
+private let switcherRevealTickCallback: GtkTickCallback = { _, _, data in
+    guard let data else { return 0 }
+    let address = Int(bitPattern: data)
+    return MainActor.assumeIsolated {
+        guard let raw = UnsafeMutableRawPointer(bitPattern: address) else { return gboolean(0) }
+        let context = Unmanaged<SwitcherRevealTickContext>.fromOpaque(raw).takeUnretainedValue()
+        return context.controller?.retrySwitcherReveal(context) ?? 0
+    }
+}
+
+private let releaseSwitcherRevealTick: GDestroyNotify = { data in
+    guard let data else { return }
+    let address = Int(bitPattern: data)
+    MainActor.assumeIsolated {
+        guard let raw = UnsafeMutableRawPointer(bitPattern: address) else { return }
+        Unmanaged<SwitcherRevealTickContext>.fromOpaque(raw).release()
     }
 }

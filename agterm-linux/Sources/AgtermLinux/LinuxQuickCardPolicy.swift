@@ -20,7 +20,7 @@ enum LinuxQuickCardPolicy {
     /// - The border color is LIGHT polarity, not a themed `currentColor` derivation. libadwaita's `frame`
     ///   node already draws a 1px border, but it is mixed from `currentColor` and is therefore invisible
     ///   dark-on-dark — the missing contrast, not a missing border, is what made the card read as
-    ///   boundary-less. `.agterm-switcher` sets the same light-contour precedent.
+    ///   boundary-less.
     /// - The border WIDTH stays exactly 1px — the same width the theme already drew. A color swap at an
     ///   unchanged width leaves the frame's MEASURED chrome untouched, which is what keeps the
     ///   surface-sizing math that subtracts the frame chrome from the requested size valid.

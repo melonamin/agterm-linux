@@ -890,18 +890,11 @@ private let surfaceKeyPressed: @MainActor @convention(c) (OpaquePointer?, UInt32
         ) ?? false) ? 1 : 0
     }
 }
-/// Modifier-only releases reach libghostty (macOS `flagsChanged` parity) BEFORE the Ctrl-Tab commit: the
-/// commit moves focus and rebuilds widgets, and this surface's own release must not queue behind it.
+/// Modifier-only releases reach libghostty (macOS `flagsChanged` parity). The Ctrl-Tab commit this release
+/// may end waits a GLib turn (`scheduleSessionSwitchCommit`), so this forwarding lands before it moves focus.
 private let surfaceKeyReleased: @MainActor @convention(c) (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> Void = { _, keyval, keycode, state, data in
-    let bit = ModifierKeyMods.modifierBit(forKeyval: keyval)
-    if bit != nil {
-        MainActor.assumeIsolated { wrap(data)?.modifierKeyReleased(keyval: keyval, keycode: keycode, state: state) }
-    }
-    if bit == ModifierKeyMods.controlBit {
-        MainActor.assumeIsolated {
-            wrap(data)?.controller?.scheduleSessionSwitchCommit(releasing: keycode)
-        }
-    }
+    guard ModifierKeyMods.modifierBit(forKeyval: keyval) != nil else { return }
+    MainActor.assumeIsolated { wrap(data)?.modifierKeyReleased(keyval: keyval, keycode: keycode, state: state) }
 }
 private let surfaceFocusEnter: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { _, data in
     MainActor.assumeIsolated {
@@ -918,7 +911,7 @@ private let surfaceFocusLeave: @MainActor @convention(c) (OpaquePointer?, gpoint
     MainActor.assumeIsolated {
         wrap(data)?.setFocus(false)
         wrap(data)?.imFocus(false)
-        wrap(data)?.controller?.resetLeader()
+        wrap(data)?.controller?.abandonLeader()
         wrap(data)?.controller?.cancelSessionSwitch()
     }
 }

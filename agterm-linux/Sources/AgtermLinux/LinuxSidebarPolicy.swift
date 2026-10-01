@@ -31,7 +31,7 @@ enum LinuxSidebarPolicy {
 
     /// Frames a declined scroll waits for the row's allocation: a best-effort budget, not a layout bound.
     /// Attempt zero runs from the idle and the first tick may read that same geometry, so the allocation
-    /// the reveal queued normally lands within the two that follow.
+    /// the reveal queued normally lands within the two that follow. `SessionSwitcherReveal` shares it.
     static let scrollRetryTicks = 3
 
     /// What a scroll attempt should do now. `.wait` is the one case a retry buys anything: the row is on

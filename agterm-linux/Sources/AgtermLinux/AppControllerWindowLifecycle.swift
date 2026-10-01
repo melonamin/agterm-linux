@@ -97,7 +97,7 @@ extension AppController {
         // finalizer's teardown sweeps (see `.claude/rules/main-loop.md`).
         store.finalizeAllPendingCloses()
         cancelPendingWorkspaceToggle()
-        cancelLeaderDeadlineForWindowClose()
+        abandonLeader()
         cancelSessionSwitch()
         splitRatioRestore.cancelAll()
         sidebarRuntime.scrollRetry.cancelAll()

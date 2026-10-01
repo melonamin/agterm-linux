@@ -141,8 +141,8 @@ struct LayoutIndependentShortcutTests {
         #expect(linuxFixedShortcut(for: Chord(mods: [.control, .shift], key: "=")) == .fontIncrease)
         #expect(linuxFixedShortcut(
             for: Chord(mods: [.control, .shift, .option], key: "=")) == nil)
-        #expect(linuxFixedShortcut(for: Chord(mods: [.control, .shift], key: "tab"))
-            == .sessionSwitch(reverse: true))
+        #expect(isLinuxReservedChord(Chord(mods: [.control, .shift], key: "tab")))
+        #expect(linuxFixedShortcut(for: Chord(mods: [.control, .shift], key: "tab")) == nil)
         #expect(linuxFixedShortcut(for: Chord(mods: [.control], key: "+")) == .fontIncrease)
         #expect(linuxFixedShortcut(for: Chord(mods: [.control], key: "_")) == .fontDecrease)
         #expect(linuxFixedShortcut(for: Chord(mods: [.control], key: "1"))

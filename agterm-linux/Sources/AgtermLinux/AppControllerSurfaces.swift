@@ -824,7 +824,9 @@ extension AppController {
     /// in the in-terminal search entry, which is unknowable by dismissal time. `detachPopover` consumes
     /// the capture. `keepingCapture` carries a still-live one across a REPLACEMENT, where re-reading the
     /// entry answers `false` because the outgoing popover holds the keyboard.
+    /// A popover takes the keyboard, so it also ends a Ctrl-Tab cycle.
     func popupPopover(_ popover: OpaquePointer, keepingCapture: Bool = false) {
+        cancelSessionSwitch()
         popoverTookKeyboardFromSearchEntry = keepingCapture || searchEntryHoldsKeyboard()
         gtk_popover_popup(POPOVER(popover))
     }

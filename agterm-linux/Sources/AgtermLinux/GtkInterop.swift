@@ -70,6 +70,19 @@ func connect(_ instance: OpaquePointer?, _ signal: String, _ handler: GCallback?
     return launched
 }
 
+/// Scrolls `scroller` so `widget`'s border box is in view. The adjustment scrolls the auto-added viewport's
+/// child by its whole box, so a content-box origin and `get_height` fall short by the CSS padding and border.
+@MainActor @discardableResult
+func revealVertically(_ widget: UnsafeMutablePointer<GtkWidget>, in scroller: OpaquePointer) -> Bool {
+    guard let adjustment = gtk_scrolled_window_get_vadjustment(scroller),
+          let viewport = gtk_scrolled_window_get_child(scroller) else { return false }
+    var bounds = graphene_rect_t()
+    guard gtk_widget_compute_bounds(widget, viewport, &bounds) != 0 else { return false }
+    let top = gtk_adjustment_get_value(adjustment) + Double(bounds.origin.y)
+    gtk_adjustment_clamp_page(adjustment, top, top + Double(bounds.size.height))
+    return true
+}
+
 // GDK modifier bit masks (GdkModifierType).
 private let GDK_SHIFT: UInt32 = 1 << 0
 private let GDK_CONTROL: UInt32 = 1 << 2
@@ -250,7 +263,7 @@ func shortcutChord(
     return Chord(mods: mods, key: key)
 }
 
-private func shortcutModifiers(_ state: UInt32) -> Modifier {
+func shortcutModifiers(_ state: UInt32) -> Modifier {
     var mods: Modifier = []
     if state & GDK_CONTROL != 0 { mods.insert(.control) }
     if state & GDK_SHIFT != 0 { mods.insert(.shift) }
@@ -259,7 +272,7 @@ private func shortcutModifiers(_ state: UInt32) -> Modifier {
     return mods
 }
 
-private func namedShortcutChord(fromKeyval keyval: UInt32, mods: Modifier) -> Chord? {
+func namedShortcutChord(fromKeyval keyval: UInt32, mods: Modifier) -> Chord? {
     switch keyval {
     case 0xFE20, 0xFF09, 0xFF89: return Chord(mods: mods, key: "tab")
     case 0x20, 0xFF80: return Chord(mods: mods, key: "space")

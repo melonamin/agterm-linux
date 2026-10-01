@@ -24,6 +24,9 @@ let onWindowActive: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, g
         if gtk_window_is_active(WIN(window)) != 0 {
             ctl.becameFrontmost()
             ctl.applyInactiveWindowSidebarHidingIfEnabled()
+        } else {
+            // The Ctrl release lands in whichever window took over, so the cycle can never commit here.
+            ctl.cancelSessionSwitch()
         }
     }
 }
@@ -87,23 +90,11 @@ let onEmptyWindowKeyPressed: @MainActor @convention(c)
     }
 }
 
-/// A restore that drops a dangling selected id leaves `activeSession == nil` over live sessions, so
-/// `onEmptyWindowKeyPressed` can start a cycle with no surface focused and no surface release to end it.
-let onEmptyWindowKeyReleased: @MainActor @convention(c)
-    (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> Void = { controller, keyval, keycode, _, _ in
-        guard ModifierKeyMods.modifierBit(forKeyval: keyval) == ModifierKeyMods.controlBit else { return }
-        MainActor.assumeIsolated {
-            controllerForEventController(controller)?.scheduleSessionSwitchCommit(releasing: keycode)
-        }
-}
-
 @MainActor
 func installEmptyWindowKeyController(on window: OpaquePointer?) {
     let keys = gtk_event_controller_key_new()
     connect(keys, "key-pressed", unsafeBitCast(onEmptyWindowKeyPressed as @convention(c)
         (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> gboolean, to: GCallback.self))
-    connect(keys, "key-released", unsafeBitCast(onEmptyWindowKeyReleased as @convention(c)
-        (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> Void, to: GCallback.self))
     gtk_widget_add_controller(W(window), keys)
 }
 
@@ -120,9 +111,9 @@ func installEmptyWindowKeyController(on window: OpaquePointer?) {
 ///
 /// This handler answers ONLY for `quickFrame`. EVERY other `deckOverlay` child returns 0 and keeps its
 /// default placement: the per-session floating overlay frames (`AppControllerSurfaces.syncOverlay`), the
-/// dashboard host (`AppControllerDashboard`), the Ctrl-Tab switcher
-/// box, and the GL-error label (both in `AppController`). Zooming `.quick` keeps `quickFrame` in place and
-/// answers the whole content area below the zoom strip instead of the card rectangle.
+/// dashboard host (`AppControllerDashboard`), the Ctrl-Tab switcher dim (`AppControllerSessionPicker`), and
+/// the GL-error label (`AppController`). Zooming `.quick` keeps `quickFrame` in place and answers the whole
+/// content area below the zoom strip instead of the card rectangle.
 ///
 /// Coordinates. GTK documents the returned allocation as relative to the overlay's MAIN child. Here that
 /// is the same as overlay coordinates, because the main child is the sidebar `GtkPaned` sitting at 0,0 at
