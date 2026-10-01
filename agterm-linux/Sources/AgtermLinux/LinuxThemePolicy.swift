@@ -2,26 +2,12 @@ import Foundation
 import agtermCore
 
 extension AppSettings {
-    static let themeResetOSC = "\u{1B}]110\u{7}\u{1B}]111\u{7}"
-
     static let agtermThemeLines = [
         "background = #303030",
         "foreground = #ffffff",
         "selection-background = #5b5b5b",
         "selection-foreground = #dfdfff",
     ]
-
-    static func themeOSC(from lines: [String]) -> String {
-        let colors = ThemeColorResolver.colors(fromLines: lines)
-        var osc = ""
-        if let background = colors.background {
-            osc += "\u{1B}]11;\(background)\u{7}"
-        }
-        if let foreground = colors.foreground {
-            osc += "\u{1B}]10;\(foreground)\u{7}"
-        }
-        return osc
-    }
 }
 
 struct ThemeColors: Equatable, Sendable {

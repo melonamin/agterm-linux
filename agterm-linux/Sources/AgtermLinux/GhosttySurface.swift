@@ -286,7 +286,6 @@ final class GhosttySurface: PaneRoleMutableSurface {
         pushSize()
         ghostty_surface_set_focus(surface, true)
         applyColorScheme(appearanceSide)   // report the system light/dark scheme (OSC color-scheme queries)
-        feed(GhosttyApp.shared.currentThemeOSC)   // push theme colors the embedded GL renderer won't adopt from config
         reapplyWatermarkIfNeeded()
     }
 
@@ -378,14 +377,6 @@ final class GhosttySurface: PaneRoleMutableSurface {
         return true
     }
 
-    /// Feed raw bytes into the terminal as if read from the pty — used to push theme colors (OSC 11/10/4/…)
-    /// that the embedded OpenGL renderer doesn't adopt from the config. `ghostty_surface_feed` runs them
-    /// through the terminal parser under the renderer lock, so it's safe from the main thread.
-    func feed(_ bytes: String) {
-        guard let surface, !bytes.isEmpty else { return }
-        bytes.withCString { ghostty_surface_feed(surface, $0, UInt(bytes.utf8.count)) }
-    }
-
     // MARK: - In-terminal search (libghostty replies via the START/END/TOTAL/SELECTED actions)
 
     func applyWatermarkFromSession(windowOpacity: Double? = nil, settings: AppSettings? = nil) {
@@ -400,27 +391,25 @@ final class GhosttySurface: PaneRoleMutableSurface {
         guard let surface else { return }
         let session = controller?.store.session(withID: sessionID)
         let pane = role.statusPane
-        let watermark = oscBackgroundColorHex.map {
-            BackgroundWatermark(kind: .color, colorHex: $0)
-        } ?? fixedBackgroundColor.map {
-            BackgroundWatermark(kind: .color, colorHex: $0)
-        } ?? (usesSessionWatermark ? pane.flatMap { session?.effectiveBackground(for: $0) } : nil)
-        guard force || watermark != nil || dashboardFontOverride != nil || session?.fontSize != nil else { return }
+        let watermark = LinuxBackgroundOverlayPolicy.watermark(
+            oscLatch: oscBackgroundColorHex, fixedBackground: fixedBackgroundColor,
+            sessionBackground: usesSessionWatermark ? pane.flatMap { session?.effectiveBackground(for: $0) } : nil)
+        guard LinuxBackgroundOverlayPolicy.shouldReapply(
+            force: force, oscLatch: oscBackgroundColorHex, watermark: watermark,
+            hasFontOverride: dashboardFontOverride != nil || session?.fontSize != nil) else { return }
         let resolvedImagePath = session.flatMap { session in
             let paneKey = pane.flatMap { session.paneBackgrounds[$0] == nil ? nil : session.backgroundFileKey(for: $0) }
             return WatermarkRenderer.materialize(watermark, sessionID: session.id, paneKey: paneKey)
         }
         let effectiveWindowOpacity = windowOpacity ?? linuxSettingsStore().load().backgroundOpacity ?? 1
-        let overlay = WatermarkConfig.overlayText(watermark: watermark,
-                                                  resolvedImagePath: resolvedImagePath,
-                                                  fontSize: dashboardFontOverride ?? session?.fontSize ?? fontSize,
-                                                  windowOpacity: effectiveWindowOpacity)
+        let effectiveFontSize = dashboardFontOverride ?? session?.fontSize ?? fontSize
+        let overlay = LinuxBackgroundOverlayPolicy.overlayText(
+            oscLatch: oscBackgroundColorHex, watermark: watermark, resolvedImagePath: resolvedImagePath,
+            fontSize: effectiveFontSize, windowOpacity: effectiveWindowOpacity)
         guard let config = GhosttyApp.shared.configWithOverlay(overlay, settings: settings) else { return }
         ghostty_surface_update_config(surface, config)
         ownedConfigs.forEach { ghostty_config_free($0) }
         ownedConfigs = [config]
-        let osc = AppSettings.themeOSC(from: overlay.split(separator: "\n", omittingEmptySubsequences: true).map(String.init))
-        if !osc.isEmpty { feed(osc) }
         queueRender()
     }
 

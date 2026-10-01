@@ -52,13 +52,9 @@ extension AppController {
             })
         ghostty_config_free(config)
 
-        let osc = AppSettings.themeOSC(from: lines)
         let activeTheme = settings.activeTheme(isDark: side.isDark)
-        let liveOSC = osc.isEmpty && activeTheme == nil ? AppSettings.themeResetOSC : osc
-        GhosttyApp.shared.currentThemeOSC = liveOSC
         for controller in gWindows.values {
             for surface in controller.configurableSurfaces {
-                surface.feed(liveOSC)
                 surface.queueRender()
             }
             controller.applyWindowThemeColors(for: activeTheme, resolvedColors: chromeColors)

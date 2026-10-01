@@ -75,6 +75,10 @@ paths:
   for the surface renderer and sets the flag once; no later Ghostty path replaces the layer or
   rewrites the flag. A `GHOSTTY_REV` bump has to recheck both, and that the synchronous reveal draw
   still restores the intended visible-resize path.
+- On Linux the main thread is the only consumer of the 64-slot app mailbox (`ghostty_app_tick`), so
+  nothing on it may push `.forever` there: once the mailbox is full, the push waits on itself.
+  Feeding OSC into surfaces did that through `color_change` and froze the app with many sessions.
+  `PendingHealth` in `ghostty-embedded-opengl.patch` owns the non-blocking `renderer_health` contract.
 
 ## Theme and sidebar
 
@@ -236,7 +240,10 @@ paths:
 - A live OSC 11 override masks config defaults in the pinned libghostty. No embedding API clears
   it: RIS leaves colors, PTY writes bypass the parser, and COLOR_CHANGE is outbound-only.
   `session.background color` changes only the default and cannot override live OSC.
-- OSC 111 copies current default into override. Per-surface update also reseeds default from a
+- The Linux host never feeds colors into a surface, only config: `ghostty_app_update_config` and
+  per-surface overlays, so program OSC 10/11 overrides keep standard terminal semantics.
+- OSC 111 copies current default into override; the Linux pin's `DynamicRGB.reset` clears the override.
+  Either way reset shows the default. Per-surface update also reseeds default from a
   `background` key. Restating OSC color in the overlay therefore made reset permanently retain it (#309).
   Opacity-only overlay leaves theme as default, so reset returns to theme.
 - `tree.background` reports the stored specification and may differ from a live OSC-rendered color.

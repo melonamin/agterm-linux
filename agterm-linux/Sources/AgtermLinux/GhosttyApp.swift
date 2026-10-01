@@ -33,10 +33,6 @@ final class GhosttyApp: @unchecked Sendable {
     private var tickScheduled = false
     private var resolvedResources: String?
 
-    /// The current theme's colors as OSC escape sequences (OSC 11/10/4/…), fed to each surface at creation
-    /// because the embedded OpenGL renderer doesn't adopt the config's default colors from the config file.
-    /// Set at launch from the persisted theme; refreshed by AppController.previewTheme on every theme change.
-    var currentThemeOSC: String = ""
     var currentThemeBackgroundHex: String?
     var currentThemeForegroundHex: String?
     var currentThemePalette: [String] = []
@@ -50,7 +46,6 @@ final class GhosttyApp: @unchecked Sendable {
         // relaunch. Translucency is omitted: Linux has no window-level compositing yet.
         let saved = linuxSettingsStore().load()
         let lines = AppController.ghosttyLines(for: saved, isDark: appearanceSide.isDark)
-        currentThemeOSC = AppSettings.themeOSC(from: lines)
         let cfg = buildConfig(extraLines: lines)
         if let cfg {
             currentThemeBackgroundHex = GhosttyConfigTheme.colors(from: cfg).background
@@ -157,8 +152,8 @@ final class GhosttyApp: @unchecked Sendable {
     /// Build a config for one surface with a final per-session overlay (`background-image*`, solid
     /// `background`, and/or a font-size override). The returned config is owned by the caller.
     ///
-    /// Resolves through the live theme-picker preview (hence `@MainActor`): the per-surface watermark
-    /// reapply runs off the preview's own OSC color-change action, so a persisted-settings base would
+    /// Resolves through the live theme-picker preview (hence `@MainActor`): a program's OSC 11 during a
+    /// preview reapplies the overlay without explicit settings, so a persisted-settings base would
     /// rebuild the surface with the OLD theme's palette mid-preview.
     @MainActor
     func configWithOverlay(_ overlayText: String, settings: AppSettings? = nil) -> ghostty_config_t? {

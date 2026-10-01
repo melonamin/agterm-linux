@@ -22,6 +22,31 @@ struct GhosttyConfigThemeTests {
                     selectionForeground: "#205EA6"))
     }
 
+    @Test("theme file lines resolve the last assignment per key, skipping comments")
+    func themeFileLines() {
+        let lines = [
+            "# background = #000000",
+            "  background = #111111  ",
+            "foreground=#222222",
+            "background = #333333",
+            "palette = 1=#ff0000",
+            "selection-background = #444444",
+        ]
+        #expect(
+            ThemeColorResolver.colors(fromLines: lines)
+                == ThemeColors(
+                    background: "#333333", foreground: "#222222",
+                    selectionBackground: "#444444", selectionForeground: nil))
+    }
+
+    @Test("a missing theme file falls back to the supplied lines")
+    func missingThemeFallsBack() {
+        let colors = ThemeColorResolver.colors(
+            forTheme: "no-such-theme", themesDir: "/nonexistent", fallbackLines: AppSettings.agtermThemeLines)
+        #expect(colors.background == "#303030")
+        #expect(colors.foreground == "#ffffff")
+    }
+
     @Test("sidebar selection keeps a distinct supplied theme color")
     func suppliedSelectionHighlight() {
         #expect(

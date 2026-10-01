@@ -930,20 +930,20 @@ def stop(process):
     wait_for(lambda: find_app(process.pid) is None, "agterm remained in the accessibility tree after exit")
 
 
-def control_json(env, *arguments):
+def control_json(env, *arguments, timeout=10):
     output = subprocess.check_output(
         [CTL, *arguments, "--socket", env["AGTERM_CONTROL_SOCKET"]],
         env=env,
         text=True,
-        timeout=10,
+        timeout=timeout,
     )
     return json.loads(output)
 
 
-def raw_control_json(env, request):
+def raw_control_json(env, request, timeout=10):
     """Send one wire request so protocol-only commands can be exercised without a CLI polling loop."""
     client = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
-    client.settimeout(10)
+    client.settimeout(timeout)
     try:
         client.connect(env["AGTERM_CONTROL_SOCKET"])
         client.sendall(json.dumps(request).encode("utf-8") + b"\n")
@@ -6767,6 +6767,7 @@ def main():
             "sidebar-multiselect",
             "chrome-focus-buttons", "chrome-focus-sidebar", "chrome-focus-popovers",
             "recent-clear", "control-picker", "control-ask", "auto-follow", "hidden-toolbar", "desktop-actions",
+            "theme-many-sessions",
         ):
             child_env = dict(os.environ, AGTERM_ATSPI_SCENARIO=child_scenario)
             result = subprocess.run([sys.executable, __file__], env=child_env)
@@ -6912,11 +6913,14 @@ def main():
         elif scenario == "desktop-actions":
             from atspi_desktop_actions import verify_desktop_actions
             verify_desktop_actions(env)
+        elif scenario == "theme-many-sessions":
+            from atspi_theme_many_sessions import verify_theme_many_sessions
+            verify_theme_many_sessions(env)
         else:
             raise ValueError(f"unknown AT-SPI scenario: {scenario}")
         print(f"PASS: {scenario}")
         return 0
-    except (AssertionError, subprocess.CalledProcessError, OSError, ValueError) as error:
+    except (AssertionError, subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, ValueError) as error:
         print(f"FAIL: {error}")
         return 1
     finally:

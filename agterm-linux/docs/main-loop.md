@@ -134,9 +134,10 @@ Reviving the timers unmasked a second Linux-specific hazard, worth knowing befor
 preview.
 
 A preview applies settings that are deliberately **not** persisted.
-But applying them makes libghostty emit `config_change` and OSC color-change actions, and those handlers
-re-derive chrome/palette by reading settings from disk — so every preview immediately repainted itself with
+But applying them makes libghostty emit `config_change` actions, and that handler re-derives chrome colors
+by reading settings from disk — so every preview immediately repainted itself with
 the OLD persisted theme (the sidebar flashed the new theme, then reverted).
+A program's OSC 11 during a preview likewise rebuilds its surface's overlay config without explicit settings.
 
 The fix is an in-memory override that every preview-path reader resolves through:
 `AppController.themePreviewSettings` (declared in `GhosttyConfigTheme.swift` next to its readers) holds the
