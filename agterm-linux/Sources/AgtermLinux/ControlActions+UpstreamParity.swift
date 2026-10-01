@@ -20,13 +20,7 @@ extension AppController {
             return err("restore.capture requires rerun mode; configured restore mode is "
                 + configuredMode.rawValue)
         }
-        for controller in gWindows.values { controller.captureForegroundCommands() }
-        let captured = gWindows.values.reduce(into: 0) { count, controller in
-            for session in controller.store.workspaces.flatMap(\.sessions) {
-                if session.foregroundCommand != nil { count += 1 }
-                if session.splitForegroundCommand != nil { count += 1 }
-            }
-        }
+        let captured = Self.captureForegroundCommands(in: Array(gWindows.values), preserveUnconsumedPending: false)
         let paneSuffix = captured == 1 ? "" : "s"
         guard gLibrary.saveAllOpenChecked() else {
             return err("captured \(captured) pane\(paneSuffix) but at least one window's save "
@@ -206,10 +200,14 @@ extension AppController {
                 error: "failed to save the restore override, the previous value is still in effect"
             )
         }
-        var result = ControlResult(id: id.uuidString)
-        if case .pin = update.pin, linuxSettingsStore().load().effectiveRestoreMode != .rerun {
-            result.text = "saved, but \"Restore running commands on restart\" is off, so the override will not run"
-        }
+        var result = ControlResult(id: id.uuidString, pane: pane.rawValue)
+        result.text = Self.restorePinNotice(update.pin, launchMode: gRestoreLaunchDecision.active)
         return ControlResponse(ok: true, result: result)
+    }
+
+    /// Names the launch-latched mode, as upstream does, never the configured one.
+    nonisolated static func restorePinNotice(_ pin: ControlRestoreOverride, launchMode: RestoreMode) -> String? {
+        guard pin != .unpin, launchMode != .rerun else { return nil }
+        return "saved for rerun mode; active restore mode is \(launchMode.rawValue)"
     }
 }

@@ -159,7 +159,8 @@ On a clean quit, agterm leaves live daemons running and captures each open pane'
 fallback. A surviving daemon ignores that payload on the next launch. If an orderly machine restart removed
 the daemon, zmx creates it with the captured command and the pane remains live. A pane starts a fresh shell
 instead when its window was closed before quit, a hard power loss or force quit skipped capture, or the
-command is denylisted or carries a control character. SIGTERM leaves live daemons running but skips capture.
+command is denylisted or carries a control character. SIGTERM leaves live daemons running; macOS then skips
+capture, while Linux quits cleanly and captures.
 `tree --json` is the only backing indicator: primary and split entries report `surfaces[].backedByZmx`, and
 the session-level `backedByZmx` is true only when every existing primary or split is backed. The sidebar has
 no zmx glyph.

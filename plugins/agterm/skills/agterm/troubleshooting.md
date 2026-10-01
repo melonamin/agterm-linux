@@ -152,9 +152,9 @@ Check these in order:
 - **A missing daemon is recreated, running the captured command.** A reboot or a stale daemon leaves nothing
   to attach, so agterm creates one under the saved name and replays the command that pane was running at the
   last clean quit. A fresh shell instead means no capture applied: the window was closed before the quit, the
-  machine lost power or was force-quit, the process exited before quitting, SIGTERM was used, or the command
-  is refused by `restore-denylist.conf`. `agtermctl zmx kill` is not one of these — it closes a shown split
-  or promotes a primary rather than leaving a daemon to recreate. To check what was captured, read
+  machine lost power or was force-quit, the process exited before quitting, SIGTERM was used on macOS, or the
+  command is refused by `restore-denylist.conf`. `agtermctl zmx kill` is not one of these — it closes a shown
+  split or promotes a primary rather than leaving a daemon to recreate. To check what was captured, read
   `foregroundCommand` in `windows/<id>.json` while agterm is STOPPED: the next launch moves it into memory
   and rewrites the file with nil, so a running app always shows null there.
 - **A tool asks for the microphone again after every update.** The pane was created before the session
@@ -164,9 +164,12 @@ Check these in order:
   possible, and the notification afterwards says how many sessions were covered. A session whose old process
   could not be confirmed gone gets no command restarted and the reset can be run again.
 - **After an update, an attached session still needs a key press, or a zmx change seems missing.** A live
-  session keeps the zmx it was created with through app updates. `agtermctl zmx list` marks such rows
+  session keeps the zmx it was created with through app updates.
+  On macOS, `agtermctl zmx list` marks such rows
   `outdated`; Agterm ▸ Reset Live Sessions… (or `agtermctl zmx reset --force`) recreates them on the current
   zmx, with the same cost as any reset: running work stops and agent conversations need resuming.
+  Linux has neither the flag nor the reset (`zmx reset` answers unsupported); the session keeps its old zmx
+  until its daemon ends.
 - **Switching modes ends detached live processes.** Selecting Fresh shells or Re-run commands and restarting
   reaps the live daemons in this state directory. An unavailable launch that still requests Live sessions
   preserves its claimed daemons for a later eligible launch.

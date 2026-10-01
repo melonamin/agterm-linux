@@ -46,7 +46,7 @@ extension AppController {
         environment[OverlayCapture.codeEnvKey] = codePath
         let surface = GhosttySurface(
             sessionID: session.id,
-            cwd: overlay.cwd ?? session.effectiveCwd,
+            cwd: Self.overlayLaunchCwd(session, pane: pane),
             command: "sh -c " + Self.singleQuoted(OverlayCapture.shellLine),
             env: environment,
             controller: self,
@@ -73,6 +73,10 @@ extension AppController {
                 controller.store.closePaneOverlay(sessionID, pane: livePane)
                 controller.reconcile()
             } }
+        }
+        surface.onExitHeld = { [weak surface] in
+            guard let surface else { return }
+            gWindows[owner]?.remoteHeldExits.overlayHeld(surface, forSession: sessionID)
         }
         session.setPaneOverlaySurface(surface, pane: pane)
         setPaneOverlaySurface(surface, sessionID: session.id, pane: pane)

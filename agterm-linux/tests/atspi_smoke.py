@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import socket as socket_module
 import subprocess
 import sys
@@ -975,6 +976,35 @@ def window_tree(env, window_id):
     return control_json(env, "tree", "--window", window_id, "--json")["result"]["tree"]
 
 
+def window_sessions(env, window_id):
+    return [session for workspace in window_tree(env, window_id)["workspaces"]
+            for session in workspace["sessions"]]
+
+
+def active_session_name(env, window_id):
+    return next((session["name"] for session in window_sessions(env, window_id) if session["active"]), None)
+
+
+def seed_mru_sessions(env, window_id, prefix):
+    """Name the first session `<prefix>-a`, add `-b` and `-c`, and select all three in that order.
+
+    That leaves the MRU `[c, b, a]`, so `a` is two cycle steps away from the selected `c`.
+    """
+    first_id = window_tree(env, window_id)["workspaces"][0]["sessions"][0]["id"]
+    control_json(env, "session", "rename", f"{prefix}-a", "--target", first_id, "--window", window_id, "--json")
+    ids = [first_id] + [
+        control_json(
+            env, "session", "new", "--name", f"{prefix}-{suffix}", "--window", window_id, "--json"
+        )["result"]["id"]
+        for suffix in "bc"
+    ]
+    for target in ids:
+        control_json(env, "session", "select", "--target", target, "--window", window_id, "--json")
+    selected = active_session_name(env, window_id)
+    assert selected == f"{prefix}-c", f"the setup left {selected!r} selected"
+    return ids
+
+
 def session_count(tree):
     return sum(len(workspace["sessions"]) for workspace in tree["workspaces"])
 
@@ -989,8 +1019,8 @@ def activate_reveal_action(env, identity):
     )
 
 
-def switcher_overlay_names(app):
-    """Session names the Ctrl-Tab overlay card lists, top to bottom, or [] when no card is up.
+def switcher_card(app):
+    """The Ctrl-Tab overlay card's scroll pane, or None when no card is up.
 
     The card carries no accessible name of its own (GTK 4.22 does not expose an accessible LABEL as the
     AT-SPI name of a scroll pane — measured, it stays empty), so it is identified by shape: a scrolled
@@ -1006,8 +1036,76 @@ def switcher_overlay_names(app):
         and not descendants(scroller, role="button")
     ]
     assert len(cards) <= 1, f"{len(cards)} widgets match the switcher card"
+    return cards[0] if cards else None
+
+
+def switcher_dim(app):
+    """The window-wide backdrop the Ctrl-Tab card sits in, or None when no cycle is up."""
+    dims = collect(app, name="Session switcher")
+    assert len(dims) <= 1, f"{len(dims)} widgets match the switcher dim"
+    return dims[0] if dims else None
+
+
+def reports_content_box_origin(app):
+    """True on GTK before 4.16, whose AT-SPI origin is a widget's content box while its size is the border box.
+
+    4.14's `gtk_widget_accessible_get_bounds` takes the origin from `gtk_widget_compute_point(widget, parent,
+    (0, 0))`; 4.16 moved it to `gtk_widget_compute_bounds`, the same box the size already came from.
+    `app` must be the application node: libatspi answers a child only once the application has cached it.
+    """
+    try:
+        major, minor = (int(part) for part in app.get_toolkit_version().split(".")[:2])
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return (major, minor) < (4, 16)
+
+
+# `SessionSwitcherPlacement.cardPadding` plus `cardBorder`.
+SWITCHER_CARD_CHROME = 11
+
+
+def switcher_placement_error(app, sidebar):
+    """Why the card is not where macOS puts it, or None: fitted width, centered over the terminal area, 12% down.
+
+    The width is `InterfaceMetrics.fittedPanelWidth` at the default font, and the horizontal target carries
+    `panelOffset`'s clamp, which keeps the card inside the window.
+    """
+    dim_node, card_node = switcher_dim(app), switcher_card(app)
+    dim = window_extents(dim_node) if dim_node else None
+    card = window_extents(card_node) if card_node else None
+    if not dim or not card:
+        return f"the switcher dim ({dim}) or card ({card}) has no extents"
+    chrome = SWITCHER_CARD_CHROME if reports_content_box_origin(app) else 0
+    card_x, card_y = card.x - chrome, card.y - chrome
+    inset = sidebar.x + sidebar.width - dim.x
+    width = min(460, max(280, dim.width - inset - 32), dim.width - 32)
+    if abs(card.width - width) > 2:
+        return f"the card is {card.width}px wide, not the fitted {width}px"
+    offset = max(0, min(inset / 2, (dim.width - card.width) / 2))
+    center = card_x + card.width / 2
+    expected = dim.x + dim.width / 2 + offset
+    if abs(center - expected) > 8:
+        return f"the card centers at x={center}, not over the terminal area at x={expected}"
+    top = card_y - dim.y
+    if abs(top - dim.height * 0.12) > 4:
+        return f"the card starts {top}px down a {dim.height}px window, not at 12%"
+    return None
+
+
+def switcher_overlay_rows(app):
+    """(name, subtitle) per Ctrl-Tab card row, top to bottom, or [] when no card is up."""
+    card = switcher_card(app)
+    if card is None:
+        return []
     # Each row has a title and subtitle. The cloud glyph is an image, so it does not shift this pair.
-    return [label.get_name() or "" for label in collect(cards[0], role="label")][::2] if cards else []
+    labels = [label.get_name() or "" for label in collect(card, role="label")]
+    assert len(labels) % 2 == 0, f"a switcher row lacks its subtitle: {labels}"
+    return list(zip(labels[0::2], labels[1::2]))
+
+
+def switcher_overlay_names(app):
+    """Session names the Ctrl-Tab overlay card lists, top to bottom, or [] when no card is up."""
+    return [name for name, _ in switcher_overlay_rows(app)]
 
 
 def palette_row_labels(palette):
@@ -3141,9 +3239,11 @@ def verify_remote_presentation(env):
     with open(os.path.join(origin_state, "config", "ghostty.conf"), "w", encoding="utf-8") as destination:
         destination.write("title = Static Origin\n")
     ssh = os.path.join(fake_bin, "ssh")
+    ssh_down = os.path.join(root, "ssh-down")
     with open(ssh, "w", encoding="utf-8") as destination:
         destination.write(
             "#!/bin/sh\n"
+            '[ -e "$AGTERM_TEST_SSH_DOWN" ] && { echo "ssh: connect to host: Connection refused" >&2; exit 255; }\n'
             "for argument do remote=$argument; done\n"
             'export AGTERM_STATE_DIR="$AGTERM_TEST_ORIGIN_STATE"\n'
             'export AGTERM_CONTROL_SOCKET="$AGTERM_TEST_ORIGIN_SOCKET"\n'
@@ -3164,6 +3264,7 @@ def verify_remote_presentation(env):
         AGTERM_APP_ID=env["AGTERM_APP_ID"] + ".viewer",
         AGTERM_TEST_ORIGIN_STATE=origin_state,
         AGTERM_TEST_ORIGIN_SOCKET=origin_env["AGTERM_CONTROL_SOCKET"],
+        AGTERM_TEST_SSH_DOWN=ssh_down,
         PATH=fake_bin + ":" + env["PATH"],
     )
     origin_process = viewer_process = None
@@ -3213,6 +3314,46 @@ def verify_remote_presentation(env):
         wait_for(lambda: next((surface.get("lead") for surface in viewer_session().get("surfaces", [])
                                if surface.get("kind") == "left"), None) == "leader",
                  "attached viewer did not claim the primary pane lead")
+
+        def remote_row_notice():
+            """The viewer row's lead-icon tooltip, which GTK publishes as the image's accessible name."""
+            row = sidebar_session_row(viewer_app, viewer_session()["name"])
+            images = descendants(row, role="image") if row else []
+            return (images[0].get_name() or images[0].get_description() or "") if images else None
+
+        def drop_presentation_stream():
+            """SIGTERM this viewer's `zmx present` stream, scoped by its environment to this scenario."""
+            marker = ("AGTERM_TEST_ORIGIN_STATE=" + origin_state).encode()
+            dropped = 0
+            for pid in filter(str.isdigit, os.listdir("/proc")):
+                try:
+                    with open(f"/proc/{pid}/cmdline", "rb") as source:
+                        cmdline = source.read()
+                    with open(f"/proc/{pid}/environ", "rb") as source:
+                        environ = source.read().split(b"\0")
+                except OSError:
+                    continue
+                if b"zmx present" in cmdline.replace(b"\0", b" ") and marker in environ:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.kill(int(pid), signal.SIGTERM)
+                        dropped += 1
+            return dropped
+
+        # The lead icon itself is not on the accessible tree; its tooltip, the stream notice, is.
+        wait_for(lambda: remote_row_notice() == "",
+                 "the connected remote row did not settle without a stream notice")
+        with open(ssh_down, "w", encoding="utf-8"):
+            pass
+        assert drop_presentation_stream(), "found no presentation stream process to drop"
+        wait_for(lambda: viewer_session().get("presentation", {}).get("state") == "failed",
+                 "dropping the stream did not fail the viewer's presentation state")
+        wait_for(lambda: (remote_row_notice() or "").startswith("Lost the connection to local-test ("),
+                 "the disconnected remote row did not show its stream notice")
+        os.remove(ssh_down)
+        wait_for(lambda: viewer_session().get("presentation", {}).get("state") == "connected",
+                 "the viewer did not reconnect its presentation stream", timeout=30)
+        wait_for(lambda: remote_row_notice() == "",
+                 "the stream notice outlived the reconnect")
         status = raw_control_json(origin_env, {
             "cmd": "session.status", "target": origin_id, "args": {"status": "active"},
         })
@@ -3263,6 +3404,17 @@ def verify_remote_presentation(env):
                  "origin HUD withdrawal did not reach the viewer")
         wait_for(lambda: viewer_session().get("presentation", {}).get("mode") == "presenter",
                  "viewer was not granted presenter ownership")
+
+        def origin_lead(kind="left"):
+            tree = raw_control_json(origin_env, {"cmd": "tree"})["result"]["tree"]
+            session = next(item for workspace in tree["workspaces"] for item in workspace["sessions"]
+                           if item["id"] == origin_id)
+            return next((surface.get("lead") for surface in session["surfaces"]
+                         if surface["kind"] == kind), None)
+
+        # A session-wide ask is handed over only while every origin pane follows.
+        wait_for(lambda: origin_lead("left") == "follower" and origin_lead("right") == "follower",
+                 "origin panes did not both report their follower role")
         terminal_ask = raw_control_json(origin_env, {
             "cmd": "ask.open", "target": origin_id,
             "args": {"title": "Remote terminal ask",
@@ -3318,14 +3470,6 @@ def verify_remote_presentation(env):
             "cmd": "session.overlay.result", "target": origin_id,
         }).get("result", {}).get("exitCode") == 0,
                  "origin did not receive the remote overlay exit code")
-        def origin_lead():
-            tree = raw_control_json(origin_env, {"cmd": "tree"})["result"]["tree"]
-            session = next(item for workspace in tree["workspaces"] for item in workspace["sessions"]
-                           if item["id"] == origin_id)
-            return next(surface.get("lead") for surface in session["surfaces"]
-                        if surface["kind"] == "left")
-
-        wait_for(lambda: origin_lead() == "follower", "origin did not report its follower role")
         typed_marker = os.path.join(origin_state, "follower-type.marker")
         typed = raw_control_json(origin_env, {
             "cmd": "session.type", "target": origin_id,
@@ -3341,11 +3485,102 @@ def verify_remote_presentation(env):
         assert text_read["ok"], text_read
         refused = raw_control_json(origin_env, {"cmd": "session.paste", "target": origin_id})
         assert not refused["ok"] and "covered" in refused["error"], refused
+
+        def focus_origin():
+            # Both windows are titled after the same session, so `focus_window`'s title match can pick the viewer.
+            # A PID-only search must end its xdotool invocation: a following argument becomes its pattern.
+            pid = str(origin_process.pid)
+
+            def origin_active():
+                found = subprocess.run(["xdotool", "search", "--onlyvisible", "--pid", pid],
+                                       check=False, capture_output=True, text=True)
+                for window in found.stdout.split():
+                    subprocess.run(["xdotool", "windowactivate", window], check=False,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                active = subprocess.run(["xdotool", "getactivewindow", "getwindowpid"],
+                                        check=False, capture_output=True, text=True)
+                return active.returncode == 0 and active.stdout.strip() == pid
+
+            assert poll(origin_active, timeout=5), "the origin window did not take X11 focus"
+            time.sleep(0.5)
+
+        def origin_zoomed_surface():
+            return raw_control_json(origin_env, {"cmd": "tree"})["result"]["tree"].get("zoomedSurface")
+
+        def origin_zoom(slot):
+            zoomed = control_json(origin_env, "surface", "zoom", "show",
+                                  "--target", f"surface:{origin_id}:{slot}", "--json")
+            assert zoomed["ok"], zoomed
+            expected = f"surface:{origin_id}:{slot}".lower()
+            wait_for(lambda: (origin_zoomed_surface() or "").lower() == expected,
+                     f"origin {slot} zoom did not engage")
+
+        # Staged through the daemon, so only a Return that reaches the shell writes the marker.
+        leak_marker = os.path.join(origin_state, "zoom-takeover.marker")
+        staged = raw_control_json(origin_env, {
+            "cmd": "session.type", "target": origin_id,
+            "args": {"text": "printf zoom-key-leak > " + shlex.quote(leak_marker), "pane": "right"},
+        })
+        assert staged["ok"], staged
+        wait_for(lambda: "zoom-key-leak" in (raw_control_json(origin_env, {
+            "cmd": "session.text", "target": origin_id, "args": {"pane": "right", "all": True},
+        }).get("result", {}).get("text") or ""), "the staged command did not reach the covered split")
+        focus_origin()
+        origin_zoom("left")
+        origin_zoom("right")
+        assert origin_lead("left") == "follower" and origin_lead("right") == "follower", (
+            "zooming a covered pane changed its lead before any key"
+        )
+        subprocess.run(["xdotool", "keydown", "Return"], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            wait_for(lambda: origin_lead("right") == "leader",
+                     "a key on the zoomed covered split did not take its lead")
+            # Keep autorepeat running past its delay once the split is uncovered.
+            time.sleep(1.5)
+        finally:
+            released = subprocess.run(["xdotool", "keyup", "Return"], check=False,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        assert released.returncode == 0, "xdotool could not release Return; it is still held"
+        assert origin_lead("left") == "follower", "the split's takeover moved the other pane's lead"
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert not os.path.exists(leak_marker), "the takeover key or a repeat reached the shell"
+        unzoomed = control_json(origin_env, "surface", "zoom", "hide",
+                                "--target", f"surface:{origin_id}:right", "--json")
+        assert unzoomed["ok"], unzoomed
+        wait_for(lambda: not origin_zoomed_surface(), "origin zoom did not exit")
+        split_reclaimed = raw_control_json(viewer_env, {
+            "cmd": "session.lead", "target": viewer_id, "args": {"pane": "right"},
+        })
+        assert split_reclaimed["ok"], split_reclaimed
+        wait_for(lambda: origin_lead("right") == "follower", "viewer did not reclaim the split pane lead")
+        cleared = raw_control_json(origin_env, {
+            "cmd": "session.type", "target": origin_id, "args": {"text": "\x15", "pane": "right"},
+        })
+        assert cleared["ok"], cleared
         activate(wait_for(lambda: named(origin_app, "Pane in use elsewhere · Take lead", role="button"),
                           "origin did not cover its follower pane"))
         wait_for(lambda: origin_lead() == "leader", "origin did not take back the pane lead")
         wait_for(lambda: viewer_session()["surfaces"][0].get("lead") == "follower",
                  "viewer did not become a follower")
+        local_ask = raw_control_json(origin_env, {
+            "cmd": "ask.open", "target": origin_id,
+            "args": {"title": "Origin-led GUI ask", "style": "gui",
+                     "buttons": [{"id": "local", "label": "Answer while leading"}]},
+        })
+        assert local_ask["ok"], local_ask
+        local_window = wait_for(lambda: named(origin_app, "Origin-led GUI ask", role="frame"),
+                                "origin did not show a session-wide ask while it leads a pane")
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert not named(viewer_app, "Origin-led GUI ask", role="frame"), (
+            "an ask opened while the origin leads a pane reached the viewer"
+        )
+        assert not viewer_session().get("ask"), viewer_session()
+        activate(wait_for(lambda: named(local_window, "Answer while leading", role="button"),
+                          "origin did not show the local ask button"))
+        wait_for(lambda: raw_control_json(origin_env, {"cmd": "ask.result", "target": local_ask["result"]["id"]})
+                 .get("result", {}).get("ask", {}).get("result") == "answered",
+                 "origin did not answer its local ask")
         reclaimed = raw_control_json(viewer_env, {"cmd": "session.lead", "target": viewer_id})
         assert reclaimed["ok"], reclaimed
         wait_for(lambda: viewer_session()["surfaces"][0].get("lead") == "leader",
@@ -3359,12 +3594,17 @@ def verify_remote_presentation(env):
         assert closed["ok"], closed
         wait_for(lambda: viewer_session().get("hasSplit") is None,
                  "viewer did not remove the origin's closed split")
+        wait_for(lambda: origin_lead() == "follower", "the surviving origin pane did not report its follower role")
         handback = raw_control_json(origin_env, {
             "cmd": "ask.open", "target": origin_id,
             "args": {"title": "Returned GUI ask", "style": "gui",
                      "buttons": [{"id": "return", "label": "Answer at origin"}]},
         })
         assert handback["ok"], handback
+        wait_for(lambda: viewer_session().get("ask", {}).get("id") == handback["result"]["id"],
+                 "the returned GUI ask was not handed to the viewer")
+        wait_for(lambda: named(viewer_app, "Returned GUI ask", role="frame"),
+                 "viewer did not show the returned GUI ask window")
         stop(viewer_process)
         viewer_process = None
         returned_window = wait_for(lambda: named(origin_app, "Returned GUI ask", role="frame"),
@@ -5538,43 +5778,42 @@ def verify_session_switch_commit(env):
     try:
         window_id = window_list(env)[0]["id"]
 
-        def selected(target_window=window_id):
-            for workspace in window_tree(env, target_window)["workspaces"]:
-                for session in workspace["sessions"]:
-                    if session["active"]:
-                        return session["name"]
-            return None
+        _, _, third_id = seed_mru_sessions(env, window_id, "switch")
+        workspace_name = window_tree(env, window_id)["workspaces"][0]["name"]
 
-        first_id = control_json(env, "tree", "--json")["result"]["tree"]["workspaces"][0]["sessions"][0]["id"]
-        control_json(env, "session", "rename", "switch-a", "--target", first_id, "--json")
-        second_id = control_json(env, "session", "new", "--name", "switch-b", "--json")["result"]["id"]
-        third_id = control_json(env, "session", "new", "--name", "switch-c", "--json")["result"]["id"]
-        # Selecting in this order leaves the MRU `[c, b, a]`, so `a` is two cycle steps away from `c`.
-        for target in (first_id, second_id, third_id):
-            control_json(env, "session", "select", "--target", target, "--json")
-        assert selected() == "switch-c", f"the setup left {selected()!r} selected"
-
+        sidebar = wait_for(lambda: sidebar_column(app), "the sidebar column never reported an allocation")
         # The hold outlasts the auto-follow idle tick; it is safe only because this scenario writes no
         # settings.json, so `LinuxAutoFollowCoordinator.timeout` is nil and no reconcile blurs the surface.
         with ctrl_held(process.pid) as tap:
             tap("Tab")
             if not poll(lambda: switcher_overlay_names(app) == ["switch-c", "switch-b", "switch-a"], 12):
                 raise AssertionError(f"the Ctrl-Tab overlay did not list the MRU: {switcher_overlay_names(app)}")
+            if not poll(lambda: switcher_placement_error(app, sidebar) is None, 4):
+                raise AssertionError(switcher_placement_error(app, sidebar))
+            prefix = f"{workspace_name} · "
+            subtitles = [subtitle for _, subtitle in switcher_overlay_rows(app)]
+            assert all(item.startswith(prefix) and len(item) > len(prefix) for item in subtitles), (
+                f"a switcher row lacks its `workspace · detail` subtitle: {subtitles}"
+            )
             tap("Tab")
             time.sleep(NEGATIVE_SETTLE_SECONDS)
-            assert selected() == "switch-c", "a Ctrl-Tab press selected a session before the Ctrl release"
+            assert active_session_name(env, window_id) == "switch-c", (
+                "a Ctrl-Tab press selected a session before the Ctrl release"
+            )
         wait_for(
-            lambda: selected() == "switch-a",
+            lambda: active_session_name(env, window_id) == "switch-a",
             "the Ctrl release did not commit the highlighted session",
         )
         wait_for(lambda: not switcher_overlay_names(app), "the switcher overlay outlived the commit")
+        assert switcher_dim(app) is None, "the switcher dim outlived the commit"
 
         # The commit pushed recency exactly once, leaving `[a, c, b]`.
         for expected in ("switch-c", "switch-a"):
             with ctrl_held(process.pid) as tap:
                 tap("Tab")
-            if not poll(lambda: selected() == expected, 12):
-                raise AssertionError(f"a single Ctrl-Tab did not toggle to {expected}, it stayed on {selected()}")
+            if not poll(lambda: active_session_name(env, window_id) == expected, 12):
+                raise AssertionError(f"a single Ctrl-Tab did not toggle to {expected}, "
+                                     f"it stayed on {active_session_name(env, window_id)}")
 
         with ctrl_held(process.pid) as tap:
             tap("Tab")
@@ -5584,9 +5823,12 @@ def verify_session_switch_commit(env):
             )
             tap("Escape")
             wait_for(lambda: not switcher_overlay_names(app), "Esc left the switcher overlay up")
-            assert selected() == "switch-a", "Esc committed a selection"
+            assert switcher_dim(app) is None, "Esc left the switcher dim up"
+            assert active_session_name(env, window_id) == "switch-a", "Esc committed a selection"
         time.sleep(NEGATIVE_SETTLE_SECONDS)
-        assert selected() == "switch-a", "the Ctrl release after an Esc abort still selected a session"
+        assert active_session_name(env, window_id) == "switch-a", (
+            "the Ctrl release after an Esc abort still selected a session"
+        )
 
         # Reverse walks the same hold forward twice and back once, so the commit lands on the MIDDLE
         # candidate of `[a, c, b]`; a forward-only shift+Tab would wrap onto the current session instead.
@@ -5594,21 +5836,24 @@ def verify_session_switch_commit(env):
             tap("Tab")
             tap("Tab")
             tap("shift+Tab")
-        if not poll(lambda: selected() == "switch-c", 12):
-            raise AssertionError(f"Ctrl+Shift+Tab did not step back to switch-c, it left {selected()}")
+        if not poll(lambda: active_session_name(env, window_id) == "switch-c", 12):
+            raise AssertionError(
+                f"Ctrl+Shift+Tab did not step back to switch-c, it left {active_session_name(env, window_id)}")
 
-        # A focus move to another surface must abandon the cycle: nothing would deliver its Ctrl release
-        # to the surface that started it, and the frozen candidate list would commit on the NEXT release.
+        # A blur is the catch-all cancel for a focus move no gate term names: agterm-linux/docs/menu-actions.md.
         with ctrl_held(process.pid) as tap:
             tap("Tab")
             wait_for(lambda: switcher_overlay_names(app), "the Ctrl-Tab overlay never appeared for the blur leg")
             control_json(env, "session", "split", "on", "--target", third_id, "--json")
             wait_for(lambda: not switcher_overlay_names(app),
                      "focus moving to the split pane left the switcher overlay up")
+            assert switcher_dim(app) is None, "focus moving to the split pane left the switcher dim up"
         # Ctrl+C runs the same commit path with no cycle in flight, so one settle covers both releases.
         press_x11_key("ctrl+c", process.pid)
         time.sleep(NEGATIVE_SETTLE_SECONDS)
-        assert selected() == "switch-c", "a Ctrl release with no cycle in flight selected a session"
+        assert active_session_name(env, window_id) == "switch-c", (
+            "a Ctrl release with no cycle in flight selected a session"
+        )
         control_json(env, "session", "split", "off", "--target", third_id, "--json")
 
         # Opening the dashboard discards the cycle rather than committing it — it takes the keyboard.
@@ -5618,15 +5863,18 @@ def verify_session_switch_commit(env):
                      "the Ctrl-Tab overlay never appeared for the dashboard leg")
             control_json(env, "dashboard", "--mru", "--window", window_id, "--json")
             wait_for(lambda: not switcher_overlay_names(app), "opening the dashboard left the switcher overlay up")
+            assert switcher_dim(app) is None, "opening the dashboard left the switcher dim up"
         time.sleep(NEGATIVE_SETTLE_SECONDS)
-        assert selected() == "switch-c", "the dashboard-cancelled cycle still committed on the Ctrl release"
+        assert active_session_name(env, window_id) == "switch-c", (
+            "the dashboard-cancelled cycle still committed on the Ctrl release"
+        )
         control_json(env, "dashboard", "--close", "--window", window_id, "--json")
 
         # With BOTH Ctrl keys down the commit waits for the modifier to clear, not for the first key up:
         # macOS reads `.control` off the post-change flags, while a GDK release reports the state before it.
         # Control_R has to be the OUTER hold — `xdotool keyup Control_R` lifts Control_L with it, so the
         # reverse nesting releases both at once and can never observe the case.
-        held = selected()
+        held = active_session_name(env, window_id)
         with ctrl_held(process.pid, hold="Control_R") as tap:
             tap("Tab")
             names = wait_for(lambda: switcher_overlay_names(app) or None,
@@ -5634,9 +5882,11 @@ def verify_session_switch_commit(env):
             with ctrl_held(process.pid) as tap_both:
                 tap_both("Tab")
             time.sleep(NEGATIVE_SETTLE_SECONDS)
-            assert selected() == held, "releasing one of two held Ctrl keys committed the cycle early"
+            assert active_session_name(env, window_id) == held, (
+                "releasing one of two held Ctrl keys committed the cycle early"
+            )
             assert switcher_overlay_names(app) == names, "releasing one of two held Ctrl keys ended the cycle"
-        wait_for(lambda: selected() == names[2],
+        wait_for(lambda: active_session_name(env, window_id) == names[2],
                  "the release of the last held Ctrl key did not commit the two-step cycle")
 
         # Seed BOTH physical Ctrl keys in another window, then focus a fresh controller before Tab.
@@ -5645,22 +5895,7 @@ def verify_session_switch_commit(env):
         preheld_window = control_json(
             env, "window", "new", "preheld-controls", "--json"
         )["result"]["id"]
-        preheld_first = window_tree(env, preheld_window)["workspaces"][0]["sessions"][0]["id"]
-        control_json(
-            env, "session", "rename", "preheld-a", "--target", preheld_first,
-            "--window", preheld_window, "--json",
-        )
-        preheld_second = control_json(
-            env, "session", "new", "--name", "preheld-b", "--window", preheld_window, "--json"
-        )["result"]["id"]
-        preheld_third = control_json(
-            env, "session", "new", "--name", "preheld-c", "--window", preheld_window, "--json"
-        )["result"]["id"]
-        for target in (preheld_first, preheld_second, preheld_third):
-            control_json(
-                env, "session", "select", "--target", target,
-                "--window", preheld_window, "--json",
-            )
+        seed_mru_sessions(env, preheld_window, "preheld")
         select_window(env, window_id)
 
         def xdotool(*args, check=True):
@@ -5680,7 +5915,7 @@ def verify_session_switch_commit(env):
             )
             xdotool("keyup", "Control_L")
             time.sleep(NEGATIVE_SETTLE_SECONDS)
-            assert selected(preheld_window) == "preheld-c", (
+            assert active_session_name(env, preheld_window) == "preheld-c", (
                 "the first unobserved Ctrl release committed while Control_R remained held"
             )
             assert switcher_overlay_names(app) == names, (
@@ -5688,7 +5923,7 @@ def verify_session_switch_commit(env):
             )
             xdotool("keyup", "Control_R")
             wait_for(
-                lambda: selected(preheld_window) == "preheld-b",
+                lambda: active_session_name(env, preheld_window) == "preheld-b",
                 "the last pre-held Ctrl release did not commit the cycle",
             )
         finally:
@@ -5697,6 +5932,445 @@ def verify_session_switch_commit(env):
 
         print("OK: Ctrl-Tab cycles without selecting, commits once the last Ctrl comes up, reverses, "
               "survives pre-held Ctrl keys, and Esc / a blur / the dashboard abort")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
+def verify_session_switch_zoom(env):
+    """Terminal zoom owns the keyboard, so Ctrl-Tab under it neither begins nor commits a cycle."""
+    process, app = launch(env)
+    try:
+        window_id = window_list(env)[0]["id"]
+
+        def zoom(action):
+            control_json(env, "surface", "zoom", action, "--target", "active", "--window", window_id, "--json")
+            wait_for(
+                lambda: bool(window_tree(env, window_id).get("zoomedSurface")) == (action == "show"),
+                f"terminal zoom {action} did not take effect",
+            )
+
+        seed_mru_sessions(env, window_id, "zoom")
+
+        zoom("show")
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            assert not poll(lambda: switcher_overlay_names(app), NEGATIVE_SETTLE_SECONDS), (
+                "Ctrl-Tab under terminal zoom opened the switcher overlay"
+            )
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert active_session_name(env, window_id) == "zoom-c", (
+            "the Ctrl release under terminal zoom selected a session"
+        )
+        zoom("hide")
+
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            wait_for(lambda: switcher_overlay_names(app), "the Ctrl-Tab overlay never appeared before the zoom")
+            zoom("show")
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert active_session_name(env, window_id) == "zoom-c", (
+            "a cycle overtaken by terminal zoom still committed on the Ctrl release"
+        )
+        assert not switcher_overlay_names(app), "the switcher overlay outlived the zoom-refused commit"
+        zoom("hide")
+
+        # The refusals above prove nothing unless the same keys still cycle once the zoom is gone.
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+        wait_for(lambda: active_session_name(env, window_id) == "zoom-b",
+                 "Ctrl-Tab did not commit after the terminal zoom closed")
+
+        print("OK: Ctrl-Tab under terminal zoom opens no switcher, and a zoom mid-hold commits nothing")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
+def verify_session_switch_scroll(env):
+    """A highlight cycled below the fold of a ten-row card scrolls into view (macOS `scrollTo(index)`)."""
+    # Auto-follow stays explicitly off: this settings.json would otherwise let an idle reconcile blur the
+    # surface mid-hold and cancel the cycle.
+    with open(os.path.join(env["AGTERM_STATE_DIR"], "settings.json"), "w", encoding="utf-8") as target:
+        json.dump({"interfaceFontSize": 20, "autoFollowAttention": "off"}, target)
+    process, app = launch(env)
+    try:
+        window_id = window_list(env)[0]["id"]
+
+        def frame_height():
+            heights = [box.height for node in collect(app, role="frame") if (box := window_extents(node))]
+            return max(heights) if heights else None
+
+        def row_inside(name):
+            card = switcher_card(app)
+            if card is None:
+                return None
+            labels = collect(card, role="label")
+            title = next((index for index, item in enumerate(labels) if item.get_name() == name), None)
+            if title is None or title + 1 >= len(labels):
+                return None
+            # The subtitle's parent is the row box, whose extents take in the padding its highlight paints.
+            row = labels[title + 1].get_parent()
+            card_box = window_extents(card)
+            row_box = window_extents(row) if row else None
+            if not card_box or not row_box:
+                return None
+            return card_box.y <= row_box.y and row_box.y + row_box.height <= card_box.y + card_box.height
+
+        first_id = control_json(env, "tree", "--json")["result"]["tree"]["workspaces"][0]["sessions"][0]["id"]
+        control_json(env, "session", "rename", "scroll-0", "--target", first_id, "--json")
+        ids = [first_id] + [
+            control_json(env, "session", "new", "--name", f"scroll-{n}", "--json")["result"]["id"]
+            for n in range(1, 10)
+        ]
+        # Selecting in order leaves the MRU `[9 ... 0]`, so `scroll-0` is the card's LAST row.
+        for target in ids:
+            control_json(env, "session", "select", "--target", target, "--json")
+        assert active_session_name(env, window_id) == "scroll-9", (
+            f"the setup left {active_session_name(env, window_id)!r} selected"
+        )
+
+        tall = wait_for(frame_height, "the window frame never reported an allocation")
+        control_json(env, "window", "resize", window_id, "--width", "900", "--height", "300", "--json")
+        if wait_for(lambda: (frame_height() or tall) < tall - 50, "", timeout=8, required=False) is None:
+            print(f"SKIP: the compositor kept the window {tall}px tall, so ten rows cannot overflow the card")
+            return
+
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            wait_for(lambda: len(switcher_overlay_names(app)) == 10, "the Ctrl-Tab card did not list ten rows")
+            # Without an overflowing card the reveal below proves nothing.
+            assert poll(lambda: row_inside("scroll-0") is False, 4), (
+                "the last row already fits the card, so the window is not short enough to test scrolling"
+            )
+            for _ in range(8):
+                tap("Tab")
+            wait_for(lambda: row_inside("scroll-0"), "the highlighted last row stayed below the card's fold")
+        wait_for(lambda: active_session_name(env, window_id) == "scroll-0",
+                 "the Ctrl release did not commit the last row")
+        wait_for(lambda: not switcher_overlay_names(app), "the switcher overlay outlived the commit")
+
+        print("OK: cycling to the last of ten rows scrolls it into the switcher card")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
+def verify_session_switch_sessionless(env):
+    """With no active session over live ones, Ctrl-Tab still commits and a keymap launcher still runs.
+
+    A restore that drops a dangling selected id leaves `activeSession == nil`, so no surface holds the
+    keyboard and every key reaches the window itself.
+    """
+    state = env["AGTERM_STATE_DIR"]
+    config = os.path.join(state, "config")
+    os.makedirs(config)
+    marker = os.path.join(state, "sessionless-command.marker")
+    with open(os.path.join(config, "keymap.conf"), "w", encoding="utf-8") as target:
+        target.write(f'command "Sessionless Marker" ctrl+shift+u printf fired > {shlex.quote(marker)}\n')
+    ids = {
+        "lost-a": "5E55107E-0000-4000-8000-00000000000A",
+        "lost-b": "5E55107E-0000-4000-8000-00000000000B",
+        "lost-c": "5E55107E-0000-4000-8000-00000000000C",
+    }
+    with open(os.path.join(state, "workspaces.json"), "w", encoding="utf-8") as target:
+        json.dump({
+            "version": 1,
+            "selectedSessionID": "5E55107E-0000-4000-8000-0000000000FF",
+            "sessionRecency": [ids["lost-c"], ids["lost-b"], ids["lost-a"]],
+            "workspaces": [{
+                "id": "5E55107E-0000-4000-8000-000000000001",
+                "name": "sessionless",
+                "sessions": [{"id": ids[name], "customName": name, "cwd": env["HOME"]} for name in ids],
+            }],
+        }, target)
+    process, app = launch(env)
+    try:
+        window_id = wait_for(
+            lambda: next((item["id"] for item in window_list(env) if item["open"]), None),
+            "initial window was not registered",
+        )
+
+        wait_for(lambda: len(window_sessions(env, window_id)) == 3, "the seeded sessions were not restored")
+        assert not any(session["active"] for session in window_sessions(env, window_id)), (
+            "the dangling selected id did not restore to a sessionless window"
+        )
+
+        press_x11_key("ctrl+shift+u", process.pid)
+        wait_for(lambda: os.path.exists(marker), "a keymap launcher did not run in a sessionless window")
+
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            if not poll(lambda: switcher_overlay_names(app) == ["lost-c", "lost-b", "lost-a"], 12):
+                raise AssertionError(
+                    f"sessionless Ctrl-Tab did not list the restored MRU: {switcher_overlay_names(app)}")
+        wait_for(
+            lambda: any(session["active"] and session["name"] == "lost-b"
+                        for session in window_sessions(env, window_id)),
+            "the Ctrl release in a sessionless window did not commit the highlighted session",
+        )
+        wait_for(lambda: not switcher_overlay_names(app), "the switcher overlay outlived the sessionless commit")
+
+        print("OK: a sessionless window runs keymap launchers and commits a Ctrl-Tab cycle")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
+def verify_session_switch_leader(env):
+    """A Ctrl-Tab inside a leader sequence abandons it, even when no cycle begins.
+
+    One session keeps the Tab from starting a cycle or moving focus, and a single xdotool run keeps both
+    `a` presses well inside the 1.5s deadline with no fresh Ctrl press between Tab and `a`: either would
+    clear the leader on its own and hide a missing reset.
+    """
+    state = env["AGTERM_STATE_DIR"]
+    config = os.path.join(state, "config")
+    os.makedirs(config)
+    marker = os.path.join(state, "leader-command.marker")
+    with open(os.path.join(config, "keymap.conf"), "w", encoding="utf-8") as target:
+        target.write(f'command "Leader Marker" ctrl+x>a printf fired > {shlex.quote(marker)}\n')
+    process, app = launch(env)
+    try:
+        window_id = wait_for(
+            lambda: next((item["id"] for item in window_list(env) if item["open"]), None),
+            "initial window was not registered",
+        )
+        wait_for(
+            lambda: session_count(window_tree(env, window_id)) == 1
+            and window_tree(env, window_id)["workspaces"][0]["sessions"][0]["active"],
+            "the launch did not settle on one active session",
+        )
+
+        def chord_then_a(*between):
+            focus_window(process.pid)
+            time.sleep(0.5)
+            subprocess.run(
+                ["xdotool", "keydown", "Control_L", "key", "x", *between, "keyup", "Control_L", "key", "a"],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+
+        chord_then_a()
+        wait_for(lambda: os.path.exists(marker), "the ctrl+x>a leader did not fire")
+        os.remove(marker)
+
+        chord_then_a("key", "Tab")
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert not os.path.exists(marker), "a Ctrl-Tab inside the leader left it armed for `a`"
+        assert not switcher_overlay_names(app), "Ctrl-Tab over one session opened the switcher overlay"
+
+        print("OK: a Ctrl-Tab abandons a half-typed leader")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
+def verify_session_switch_entry(env):
+    """Ctrl-Tab cycles from the search entry and an inline rename, and stays inert under Preferences.
+
+    GTK's own Ctrl-Tab moves focus out of an entry, so only the window's capture-phase controller can reach
+    the switcher from there, as macOS's app-wide monitor does.
+    """
+    config = os.path.join(env["AGTERM_STATE_DIR"], "config")
+    os.makedirs(config)
+    with open(os.path.join(config, "keymap.conf"), "w", encoding="utf-8") as target:
+        target.write("map ctrl+alt+r rename_session\n")
+    process, app = launch(env)
+    try:
+        window_id = window_list(env)[0]["id"]
+
+        def search_open():
+            return actionable(app, "Next match (Enter)") is not None
+
+        def editable_texts():
+            texts = []
+            for item in collect(app):
+                try:
+                    if item.get_editable_text_iface():
+                        # Not `get_text_iface().get_text(0, -1)`: libatspi 2.52 binds that to the deprecated
+                        # zero-argument Accessible.get_text, and GTK 4.14 clamps an end offset of -1 to 0.
+                        texts.append(Atspi.Text.get_text(item, 0, Atspi.Text.get_character_count(item)))
+                except Exception:
+                    pass
+            return texts
+
+        def rename_entry():
+            return next((entry for row in collect(app, role="list item")
+                         if (entry := editable_descendant(row))), None)
+
+        _, second_id, _ = seed_mru_sessions(env, window_id, "entry")
+
+        press_x11_key("ctrl+shift+f", process.pid)
+        wait_for(search_open, "Ctrl+Shift+F did not open the search bar")
+        type_x11_text("zzq", process.pid)
+        wait_for(lambda: "zzq" in editable_texts(), "the typed query never reached the search entry")
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            if not poll(lambda: switcher_overlay_names(app) == ["entry-c", "entry-b", "entry-a"], 12):
+                raise AssertionError(
+                    f"Ctrl-Tab from the search entry did not open the switcher: {switcher_overlay_names(app)}")
+            tap("Escape")
+            wait_for(lambda: not switcher_overlay_names(app), "Esc left the switcher overlay up over the search")
+            assert search_open() and "zzq" in editable_texts(), "Esc during a cycle also ended the search"
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert active_session_name(env, window_id) == "entry-c", (
+            "the release after an Esc abort from the search entry selected a session"
+        )
+        press_escape(process.pid)
+        wait_for(lambda: not search_open(), "Esc with no cycle up did not close the search")
+
+        press_x11_key("ctrl+shift+f", process.pid)
+        wait_for(search_open, "Ctrl+Shift+F did not reopen the search bar")
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            wait_for(lambda: switcher_overlay_names(app), "Ctrl-Tab from the reopened search opened no switcher")
+        wait_for(lambda: active_session_name(env, window_id) == "entry-b",
+                 "the Ctrl release from the search entry did not commit")
+        wait_for(lambda: not switcher_overlay_names(app), "the switcher overlay outlived the search-entry commit")
+
+        press_ctrl_comma(process.pid)
+        wait_for(lambda: preferences_window(app), "Ctrl+, did not open Preferences")
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            assert not poll(lambda: switcher_overlay_names(app), NEGATIVE_SETTLE_SECONDS), (
+                "Ctrl-Tab under Preferences opened the switcher overlay"
+            )
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert active_session_name(env, window_id) == "entry-b", "the Ctrl release under Preferences selected a session"
+        press_escape(process.pid)
+        wait_for(lambda: not preferences_window(app), "Preferences did not close")
+
+        # The commit's surface grab ends the rename through the entry's focus-leave, its one commit path.
+        press_x11_key("ctrl+alt+r", process.pid)
+        wait_for(rename_entry, "the mapped rename_session did not open the inline rename entry")
+        type_x11_text("entry-renamed", process.pid)
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            wait_for(lambda: switcher_overlay_names(app), "Ctrl-Tab from the rename entry opened no switcher")
+        wait_for(lambda: active_session_name(env, window_id) == "entry-c",
+                 "the Ctrl release from the rename entry did not commit")
+        wait_for(lambda: rename_entry() is None, "the commit left the inline rename entry open")
+        renamed = [session["id"] for session in window_sessions(env, window_id) if session["name"] == "entry-renamed"]
+        assert renamed == [second_id], f"the rename landed on {renamed}, not only on the renamed session"
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert active_session_name(env, window_id) == "entry-c", (
+            "the deferred sidebar rebuild after the rename lost the new selection"
+        )
+
+        print("OK: Ctrl-Tab cycles from the search and rename entries, Esc cancels only the cycle, "
+              "and Preferences refuses it")
+    except AssertionError:
+        describe_tree(app)
+        raise
+    finally:
+        stop(process)
+
+
+def verify_session_switch_deactivate(env):
+    """A cycle ends when another window, the palette or a control picker takes the keyboard mid-hold.
+
+    Each of those receives the Ctrl release instead, so an uncancelled cycle would commit on the NEXT
+    release back in this window. Preferences stays inside the window, so its refusal is the commit-time gate.
+    """
+    process, app = launch(env)
+    try:
+        window_id = window_list(env)[0]["id"]
+
+        def assert_abandoned(reason):
+            wait_for(lambda: not switcher_overlay_names(app), f"{reason} left the switcher overlay up")
+            assert switcher_dim(app) is None, f"{reason} left the switcher dim up"
+
+        def assert_nothing_committed(reason):
+            time.sleep(NEGATIVE_SETTLE_SECONDS)
+            assert active_session_name(env, window_id) == "deact-c", (
+                f"{reason}: the Ctrl release selected {active_session_name(env, window_id)!r}"
+            )
+            # A later bare Ctrl press and release in this window must not commit a stranded cycle.
+            select_window(env, window_id)
+            with ctrl_held(process.pid):
+                pass
+            time.sleep(NEGATIVE_SETTLE_SECONDS)
+            assert active_session_name(env, window_id) == "deact-c", (
+                f"{reason}: a later Ctrl release committed {active_session_name(env, window_id)!r}"
+            )
+
+        seed_mru_sessions(env, window_id, "deact")
+
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            wait_for(lambda: switcher_overlay_names(app), "the Ctrl-Tab overlay never appeared for the palette leg")
+            tap("shift+p")
+            wait_for(lambda: named(app, "Command Palette", role="frame"), "Ctrl+Shift+P mid-hold opened no palette")
+            assert_abandoned("opening the palette")
+        press_escape(process.pid, window_title="Command Palette")
+        wait_for(lambda: not named(app, "Command Palette", role="frame"), "the palette did not close")
+        assert_nothing_committed("the palette leg")
+
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            wait_for(lambda: switcher_overlay_names(app), "the Ctrl-Tab overlay never appeared for the picker leg")
+            opened = raw_control_json(env, {
+                "cmd": "pick.open", "args": {"items": [{"id": "only", "label": "Only"}]},
+            })
+            assert opened["ok"], opened
+            wait_for(lambda: named(app, "Select", role="frame"), "the control picker did not open mid-hold")
+            assert_abandoned("opening a control picker")
+        press_return(process.pid, window_title="Select")
+        wait_for(lambda: not named(app, "Select", role="frame"), "the answered picker stayed open")
+        assert_nothing_committed("the picker leg")
+
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            wait_for(lambda: switcher_overlay_names(app),
+                     "the Ctrl-Tab overlay never appeared for the Preferences leg")
+            tap("comma")
+            wait_for(lambda: preferences_window(app), "Ctrl+, mid-hold did not open Preferences")
+        wait_for(lambda: not switcher_overlay_names(app), "the switcher overlay outlived the refused commit")
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert active_session_name(env, window_id) == "deact-c", (
+            "the Ctrl release under Preferences committed the cycle"
+        )
+        press_escape(process.pid)
+        wait_for(lambda: not preferences_window(app), "Preferences did not close")
+
+        other_id = control_json(env, "window", "new", "deactivate-b", "--json")["result"]["id"]
+        other_first = window_tree(env, other_id)["workspaces"][0]["sessions"][0]["id"]
+        control_json(env, "session", "rename", "other-a", "--target", other_first, "--window", other_id, "--json")
+        control_json(env, "session", "new", "--name", "other-b", "--window", other_id, "--json")
+        assert active_session_name(env, other_id) == "other-b", (
+            f"the second window selected {active_session_name(env, other_id)!r}"
+        )
+        select_window(env, window_id)
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+            wait_for(lambda: switcher_overlay_names(app) == ["deact-c", "deact-b", "deact-a"],
+                     "the Ctrl-Tab overlay never appeared for the deactivation leg")
+            select_window(env, other_id)
+            assert_abandoned("activating another window")
+        time.sleep(NEGATIVE_SETTLE_SECONDS)
+        assert active_session_name(env, other_id) == "other-b", (
+            "the release in the second window selected a session there"
+        )
+        assert_nothing_committed("the deactivation leg")
+
+        # The refusals above prove nothing unless the same keys still cycle afterwards.
+        with ctrl_held(process.pid) as tap:
+            tap("Tab")
+        wait_for(lambda: active_session_name(env, window_id) == "deact-b",
+                 "Ctrl-Tab did not commit after the cancelled cycles")
+
+        print("OK: another window, the palette and a control picker cancel a Ctrl-Tab cycle mid-hold, "
+              "and Preferences refuses its commit")
     except AssertionError:
         describe_tree(app)
         raise
@@ -6754,7 +7428,9 @@ def main():
             "window-key-dispatch",
             "split-exit", "split-primary-exit", "window-ownership", "preferences-pages",
             "notification-reveal", "notification-focus", "session-pickers",
-            "session-switch-commit", "child-gdk-env",
+            "session-switch-commit", "session-switch-zoom", "session-switch-scroll",
+            "session-switch-sessionless", "session-switch-leader", "session-switch-entry",
+            "session-switch-deactivate", "child-gdk-env",
             "child-gdk-env-inverted",
             "custom-command-failures", "remote-presentation", "control-hooks",
             "surface-lifetimes", "surface-failures",
@@ -6907,6 +7583,18 @@ def main():
             verify_session_pickers(env, state)
         elif scenario == "session-switch-commit":
             verify_session_switch_commit(env)
+        elif scenario == "session-switch-zoom":
+            verify_session_switch_zoom(env)
+        elif scenario == "session-switch-scroll":
+            verify_session_switch_scroll(env)
+        elif scenario == "session-switch-sessionless":
+            verify_session_switch_sessionless(env)
+        elif scenario == "session-switch-leader":
+            verify_session_switch_leader(env)
+        elif scenario == "session-switch-entry":
+            verify_session_switch_entry(env)
+        elif scenario == "session-switch-deactivate":
+            verify_session_switch_deactivate(env)
         elif scenario == "hidden-toolbar":
             verify_hidden_toolbar(env, state)
         elif scenario == "desktop-actions":

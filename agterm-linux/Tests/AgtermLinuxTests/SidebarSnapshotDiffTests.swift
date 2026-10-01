@@ -312,6 +312,114 @@ struct SidebarSnapshotFlatteningTests {
     }
 }
 
+@Suite("sidebar remote rows")
+@MainActor
+struct SidebarRemoteRowTests {
+    let local = Session(initialCwd: "/tmp", customName: "local")
+    let remote = Session(initialCwd: "/tmp", customName: "remote", remoteHost: "buildbox")
+    let store: AppStore
+
+    init() {
+        store = AppStore(workspaces: [Workspace(name: "one", sessions: [local, remote])],
+                         selectedSessionID: local.id)
+    }
+
+    private func bind(version: Int? = 1) {
+        store.bindRemote(RemoteBinding(remoteSessionID: "s1", daemonsByLocalPane: [:], presentationVersion: version),
+                         forSession: remote.id)
+    }
+
+    private func snapshot() -> SidebarSnapshot {
+        SidebarSnapshot.desired(from: store, settings: AppSettings(), renaming: nil,
+                                expandedWorkspaceIDs: persistedExpansion(store))
+    }
+
+    private func row(_ session: Session) throws -> SidebarSnapshot.RowContent {
+        try #require(snapshot().rowContent[session.id])
+    }
+
+    @Test("a local row carries no remote marker or notice")
+    func localRow() throws {
+        bind()
+        let row = try row(local)
+        #expect(!row.remote)
+        #expect(row.notice == nil)
+        #expect(!row.disconnected)
+        #expect(row.leadIconName == "utilities-terminal-symbolic")
+    }
+
+    @Test("a remote row follows its stream: notice and slashed icon while down, plain cloud when up")
+    func remoteRowFollowsConnection() throws {
+        bind()
+        let connecting = try row(remote)
+        #expect(connecting.remote)
+        #expect(connecting.notice == RemotePresentationConnection.connecting.rowNotice(host: "buildbox"))
+        #expect(connecting.disconnected)
+        #expect(connecting.leadIconName == "agterm-remote-disconnected-symbolic")
+
+        store.setRemoteConnection(.connected, forSession: remote.id)
+        let connected = try row(remote)
+        #expect(connected.notice == nil)
+        #expect(!connected.disconnected)
+        #expect(connected.leadIconName == "agterm-remote-symbolic")
+
+        store.setRemoteConnection(.failed("exit 255"), forSession: remote.id)
+        let failed = try row(remote)
+        #expect(failed.notice?.hasPrefix("Lost the connection to buildbox (exit 255)") == true)
+        #expect(failed.leadIconName == "agterm-remote-disconnected-symbolic")
+    }
+
+    @Test("the shared remote glyph is the connected sidebar icon")
+    func sharedRemoteGlyph() throws {
+        bind()
+        store.setRemoteConnection(.connected, forSession: remote.id)
+        #expect(LinuxRemoteGlyph.connected == "agterm-remote-symbolic")
+        #expect(try row(remote).leadIconName == LinuxRemoteGlyph.connected)
+    }
+
+    @Test("an origin without the stream, or an unbound row, is remote with nothing to say",
+          arguments: [true, false])
+    func remoteRowWithoutNotice(bound: Bool) throws {
+        if bound { bind(version: nil) }
+        let row = try row(remote)
+        #expect(row.remote)
+        #expect(row.notice == nil)
+        #expect(row.leadIconName == "agterm-remote-symbolic")
+    }
+
+    @Test("a flagged remote row keeps its star beside the cloud in tree mode")
+    func flaggedRemoteRowKeepsStar() throws {
+        bind()
+        store.setRemoteConnection(.connected, forSession: remote.id)
+        remote.flagged = true
+        let row = try row(remote)
+        #expect(row.star)
+        #expect(row.leadIconName == "agterm-remote-symbolic")
+    }
+
+    @Test("a connection change is one in-place update of that row")
+    func connectionChangeUpdatesInPlace() {
+        bind()
+        store.setRemoteConnection(.connected, forSession: remote.id)
+        let before = snapshot()
+        store.setRemoteConnection(.failed("exit 255"), forSession: remote.id)
+        let down = snapshot()
+        #expect(SidebarSnapshotDiff.plan(from: before, to: down) == [.updateRow(remote.id)])
+        store.setRemoteConnection(.connecting, forSession: remote.id)
+        #expect(SidebarSnapshotDiff.plan(from: down, to: snapshot()) == [.updateRow(remote.id)])
+    }
+
+    @Test("only leaving connected reconciles the connection effect")
+    func connectionEffectReconcile() {
+        #expect(AppController.remoteConnectionNeedsReconcile(from: .connected, to: .failed("gone")))
+        #expect(AppController.remoteConnectionNeedsReconcile(from: .connected, to: .connecting))
+        #expect(!AppController.remoteConnectionNeedsReconcile(from: nil, to: .connecting))
+        #expect(!AppController.remoteConnectionNeedsReconcile(from: .connecting, to: .connected))
+        #expect(!AppController.remoteConnectionNeedsReconcile(from: .failed("gone"), to: .connecting))
+        #expect(!AppController.remoteConnectionNeedsReconcile(from: .connected, to: .connected))
+    }
+}
+
 @Suite("sidebar snapshot diff")
 @MainActor
 struct SidebarSnapshotDiffTests {
@@ -541,7 +649,11 @@ struct SidebarSnapshotContentDiffTests {
         starred.star = true
         var badged = content()
         badged.badge = "2"
-        return [renamed, renaming, glyphed, blinking, starred, badged]
+        var remote = content()
+        remote.remote = true
+        var noticed = content()
+        noticed.notice = "down"
+        return [renamed, renaming, glyphed, blinking, starred, badged, remote, noticed]
     }
 
     @Test("each row content change updates exactly its own row")

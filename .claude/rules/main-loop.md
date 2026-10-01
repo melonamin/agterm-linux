@@ -72,6 +72,15 @@ paths:
   hop seam next to `MainTimer` only if a real need appears.
   The one deliberate exception in core is `AppStore+AutoFollow`'s observation callback, a nonisolated→main
   hop the `@MainActor` timer seam cannot express — and unreachable under GTK.
+- **A child-exit action runs its surface hooks a hop later, held exits included.**
+  The `GHOSTTY_ACTION_SHOW_CHILD_EXITED` held arm keeps only `handleHeldProcessExit` (the lead reset)
+  synchronous and queues `onExitHeld` through `runOnMain` with a `RetainedGhosttySurface`, like the closing
+  arm: a replica's hook reaches the store, which may close and free that surface inside the callback.
+  `teardown()` clears `onExitHeld` beside `onExit`, so a hop that drains after teardown finds no hook.
+  `LinuxRemoteHeldExitRouter` acts only on the surface still in its slot and reconciles with
+  `focusActive: false`.
+  A queued closing hook checks the same identity, never the session id alone: a program or page can take
+  the session overlay slot before the hop drains (`AppController.sessionOverlayExitCloses`).
 - **A repeating or long-lived timer stays on the Linux side** with a direct `g_timeout_add`;
   `MainTimer` is deliberately one-shot.
   Three live here: `LinuxAutoFollowCoordinator`'s idle tick, `SplitRatioRestoreCoordinator`'s 50 ms
@@ -210,13 +219,26 @@ paths:
   Known limitation, accepted: because the unmapped disjunct is qualified by the TOPLEVEL being mapped, a
   HIDE performed while the window itself is unmapped (`agtermctl quick hide` on a minimized window) is
   never repaired; the destroy case still works, since the `focus == nil` disjunct carries no such qualifier.
-- **A terminal blur ends the half-finished keyboard interactions that surface owns.**
+- **A terminal blur ends half-finished keyboard interactions.**
   `surfaceFocusLeave` (`GhosttySurface.swift`) abandons a typed custom-command leader AND an in-flight
   Ctrl-Tab cycle. Why the cancel is broader than the blur that triggers it:
   `agterm-linux/docs/menu-actions.md`.
-  A Ctrl release schedules its commit through `MainTimer.schedule(after: 0)`: GTK's keyboard-device
-  modifier state remains pre-release inside the signal callback and becomes current on the next GLib
-  turn. Reacquire the display/seat/keyboard there; never retain the event or its borrowed pointers.
+- **The Ctrl-Tab commit reads the keyboard device one GLib turn after the Ctrl release.**
+  The window's capture-phase switcher controller (`AppController+SessionSwitchCapture.swift`) schedules
+  it through `MainTimer.schedule(after: 0)`: GTK's keyboard-device modifier state remains pre-release
+  inside the signal callback and becomes current on the next GLib turn.
+  Reacquire the display/seat/keyboard there; never retain the event or its borrowed pointers.
+- **A covered pane's keys go to the keymap first, then `LinuxPaneLeadKeyPolicy`.**
+  Both entry points share that order: `GhosttySurface.keyPressed` after `handleKey` declines, and the lead
+  cover's button, which `syncLeadCover` gives the keyboard.
+  So Ctrl-Tab, the leader and app chords keep working on a covered pane; Super chords and modifier-only
+  presses are consumed without taking the lead, and the first other key takes it once.
+  Their modifier releases stay off the covered terminal too; the Ctrl-Tab commit is the window's, above.
+  GTK4 has no repeat flag, so the takeover keycode is one app-wide value consuming every further press of it
+  until its own release, from whichever surface or cover then holds the keyboard: the press lands on the
+  surface `reattachPane` tears down, its repeats and release on the replacement.
+  Never clear it on focus change or teardown.
+  `reattachPane` hands focus to the replacement when the old GLArea OR its cover held it.
 - **A GtkPopover takes the keyboard on popup and does NOT give it back — the dismissal has to.**
   Measured (GTK 4.22): `gtk_popover_popup` moves the window's focus widget onto the popover's first item
   WHETHER OR NOT that item sets `focus-on-click`, and `gtk_popover_popdown` hands focus to the popover's

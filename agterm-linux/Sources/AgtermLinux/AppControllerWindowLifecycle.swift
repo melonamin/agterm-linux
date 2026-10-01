@@ -55,6 +55,14 @@ extension AppController {
         gtk_window_close(WIN(window))
     }
 
+    func applyExitCapture(_ action: LinuxExitCapturePolicy.Action) {
+        switch action {
+        case .capture(let preserve): Self.captureForegroundCommands(in: [self], preserveUnconsumedPending: preserve)
+        case .clear: store.workspaces.flatMap(\.sessions).forEach { $0.clearCapturedForegroundCommands() }
+        case .skip: break
+        }
+    }
+
     /// The window is closing: capture its size for restore-on-reopen, then tear down its surfaces and
     /// drop it from the library + registry.
     func windowWillClose() {
@@ -97,7 +105,7 @@ extension AppController {
         // finalizer's teardown sweeps (see `.claude/rules/main-loop.md`).
         store.finalizeAllPendingCloses()
         cancelPendingWorkspaceToggle()
-        cancelLeaderDeadlineForWindowClose()
+        abandonLeader()
         cancelSessionSwitch()
         splitRatioRestore.cancelAll()
         sidebarRuntime.scrollRetry.cancelAll()
@@ -111,7 +119,8 @@ extension AppController {
         autoFollowCoordinator.stop()
         let w = gtk_widget_get_width(W(window)), h = gtk_widget_get_height(W(window))
         if w > 0, h > 0 { library.setGeometry(WindowGeometry.Size(width: Double(w), height: Double(h)), forWindow: windowID) }
-        if linuxSettingsStore().load().effectiveRestoreMode == .rerun { captureForegroundCommands() }
+        applyExitCapture(gExitCapture.windowClosing(windowID, isTerminating: library.isTerminating,
+                                                     openIDs: library.openIDs()))
         store.save()
         store.discardHudBodies()
         quickSurface?.teardown()

@@ -1,6 +1,11 @@
 import Foundation
 import agtermCore
 
+/// The one "remote, connected" glyph for the sidebar, Ctrl-Tab and popovers; the disconnected variant is sidebar-only.
+enum LinuxRemoteGlyph {
+    static let connected = "agterm-remote-symbolic"
+}
+
 /// What the sidebar SHOULD render, keyed by id: the host-free model `syncSidebar` diffs against the live
 /// widget tree instead of rebuilding it. Settings-derived presentation is folded in, so a settings change
 /// is an ordinary content change rather than a separate refresh path.
@@ -22,6 +27,16 @@ struct SidebarSnapshot: Equatable {
         var blink: Bool
         var star: Bool
         var badge: String?
+        var remote = false
+        /// The remote row's stream notice, shown as the lead icon's tooltip; set only while the stream is down.
+        var notice: String?
+
+        var disconnected: Bool { remote && notice != nil }
+
+        var leadIconName: String {
+            guard remote else { return "utilities-terminal-symbolic" }
+            return disconnected ? "agterm-remote-disconnected-symbolic" : LinuxRemoteGlyph.connected
+        }
     }
 
     struct Section: Equatable {
@@ -158,7 +173,9 @@ private struct SidebarSnapshotBuilder {
             glyph: glyph,
             blink: glyph != nil && session.agentIndicator.blink,
             star: session.flagged && !flaggedView,
-            badge: badged ? (unseen > 99 ? "99+" : "\(unseen)") : nil)
+            badge: badged ? (unseen > 99 ? "99+" : "\(unseen)") : nil,
+            remote: session.remoteHost != nil,
+            notice: session.remoteHost.flatMap { session.remotePresentation?.connection.rowNotice(host: $0) })
     }
 }
 

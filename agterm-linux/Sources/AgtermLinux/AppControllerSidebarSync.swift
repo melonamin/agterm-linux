@@ -41,6 +41,16 @@ extension AppController {
             Self.applyStatusGlyph(content.glyph, blink: content.blink,
                                   phase: sidebarRuntime.blinkPhase.phase, to: widgets.glyph)
         }
+        if previous?.leadIconName != content.leadIconName {
+            gtk_image_set_from_icon_name(widgets.lead, content.leadIconName)
+        }
+        if previous?.notice != content.notice {
+            if let notice = content.notice {
+                notice.withCString { gtk_widget_set_tooltip_text(W(widgets.lead), $0) }
+            } else {
+                gtk_widget_set_tooltip_text(W(widgets.lead), nil)
+            }
+        }
         if previous?.star != content.star { gtk_widget_set_visible(W(widgets.star), content.star ? 1 : 0) }
         if previous?.badge != content.badge { Self.applyRowBadge(content.badge, to: widgets.badge) }
         widgets.applied = applied

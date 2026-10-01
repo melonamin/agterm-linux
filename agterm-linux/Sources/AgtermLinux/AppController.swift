@@ -23,8 +23,10 @@ final class AppController {
     let window: OpaquePointer        // AdwApplicationWindow
     let deck: OpaquePointer          // GtkOverlay (one stable overlay child per session)
     var contentBox: OpaquePointer?   // vertical box [search + deck-overlay]
-    var deckOverlay: OpaquePointer?  // GtkOverlay over the deck, hosts the floating quick panel
-    var switcherBox: OpaquePointer?  // the Ctrl-Tab MRU overlay (a centered overlay child while cycling)
+    var deckOverlay: OpaquePointer?  // window GtkOverlay over the whole split (sidebar + deck)
+    var switcherScroller: OpaquePointer?  // the Ctrl-Tab card; its parent dim is the overlay child
+    var switcherRows: [UUID: OpaquePointer] = [:]  // that card's rows, built once per cycle
+    var switcherRevealTick: guint = 0  // pending frame-clock retry revealing the highlighted row
     var toastOverlay: OpaquePointer? // AdwToastOverlay wrapping the content, for transient banners
     var bottomBar: OpaquePointer?    // the sidebar footer toolbar (compact/tall padding setting)
     var sidebarHeader: OpaquePointer? // sidebar AdwHeaderBar (hidden-toolbar mode)
@@ -202,6 +204,7 @@ final class AppController {
         window = OpaquePointer(adw_application_window_new(APPW(app)))
         attachControllerContext(to: window, windowID: windowID)
         installEmptyWindowKeyController(on: window)
+        installSessionSwitchCapture(on: window)
         // restore the window's last on-screen size (Wayland: size only — the compositor owns position),
         // else the default. set BEFORE present so the window maps at the saved size.
         if let geo = library.geometry(forWindow: windowID), geo.width > 0, geo.height > 0 {
@@ -340,8 +343,7 @@ final class AppController {
         reconcile()
     }
     func newSessionCwd() -> String {
-        linuxSettingsStore().load().resolveNewSessionCwd(currentSessionCwd: store.activeSession?.focusedCwd,
-                                                    home: Self.homeCwd)
+        Self.newSessionCwd(settings: linuxSettingsStore().load(), activeSession: store.activeSession)
     }
     func newWorkspace() {
         noteUserActivity()
@@ -544,7 +546,7 @@ final class AppController {
                 socketPath: gControlServer.resolvedSocketPath,
                 programVersion: LinuxAppMetadata.version)
             environment["AGTERM_WINDOW_ID"] = windowID.uuidString
-            let q = GhosttySurface(sessionID: UUID(), cwd: Self.homeCwd,
+            let q = GhosttySurface(sessionID: UUID(), cwd: Self.quickTerminalCwd(activeSession: store.activeSession),
                                    env: environment,
                                    controller: self, role: .quick, reportsPaneState: false)
             q.onExit = { [weak self] in self?.closeQuick() }

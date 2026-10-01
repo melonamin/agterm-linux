@@ -75,9 +75,10 @@ extension AppController: ControlActions {
     }
 
     func controlTree(window: String?) -> ControlResponse {
+        let zmxSnapshot = gZmxForegroundResolver?.passSnapshot(for: store.workspaces.flatMap(\.sessions), timeout: nil)
         let baseTree = store.controlTree(
-            paneForeground: { ($0.surface as? GhosttySurface)?.paneForeground() },
-            splitPaneForeground: { ($0.splitSurface as? GhosttySurface)?.paneForeground() },
+            paneForeground: { ($0.surface as? GhosttySurface)?.paneForeground(zmxSnapshot: zmxSnapshot) },
+            splitPaneForeground: { ($0.splitSurface as? GhosttySurface)?.paneForeground(zmxSnapshot: zmxSnapshot) },
             fontSize: { ($0.surface as? GhosttySurface)?.currentFontSize() },
             splitFontSize: { ($0.splitSurface as? GhosttySurface)?.currentFontSize() },
             scratchFontSize: { [weak self] in self?.scratchSurfaces[$0.id]?.currentFontSize() },

@@ -59,7 +59,7 @@ public struct InterfaceMetrics: Equatable, Sendable {
     /// window. Half the inset, except where that would push the right edge past the window: the panel is
     /// centered, so its right edge sits at `(windowWidth + width) / 2 + offset`, and capping the offset at
     /// `(windowWidth - width) / 2` is exactly the condition that keeps it inside. A too-narrow window
-    /// therefore degrades to the old whole-window centering rather than to a clipped panel.
+    /// therefore pins the panel to the window's right edge rather than clipping it.
     public func panelOffset(width: Double, windowWidth: Double, terminalAreaInset: Double) -> Double {
         max(0, min(terminalAreaInset / 2, (windowWidth - width) / 2))
     }

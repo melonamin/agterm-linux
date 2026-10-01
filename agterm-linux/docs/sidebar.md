@@ -6,7 +6,8 @@ Nothing auto-loads this document — read it before editing `AppController.swift
 `AppControllerSidebarSync.swift`, `SidebarSnapshot.swift`, `SidebarRevealState.swift`,
 `SidebarScrollRetryCoordinator.swift`, `SidebarRuntime.swift`, `LinuxSidebarPolicy.swift`,
 `LinuxStatusGlyph.swift` (`makeStatusGlyphLabel`), `LinuxBlinkPolicy.swift`,
-`BlinkPhaseCoordinator.swift`, `LinuxThemePolicy.swift` (`windowThemeCSS`), or the sidebar scenarios in
+`BlinkPhaseCoordinator.swift`, `LinuxThemePolicy.swift` (`windowThemeCSS`), the connection effect in
+`AppController+RemoteEffects.swift`, or the sidebar scenarios in
 `agterm-linux/tests/atspi_smoke.py`.
 
 ## Incremental reconcile
@@ -30,6 +31,14 @@ Nothing auto-loads this document — read it before editing `AppController.swift
   A hidden child is ABSENT from the accessible tree rather than merely non-showing (measured on GTK
   4.22, and the whole subtree under a hidden list box goes with it), so the AT-SPI scenarios' exact
   child lists still mean "the visible parts".
+- A remote row's lead icon is `LinuxRemoteGlyph.connected`, the mark Ctrl-Tab and the popovers also use,
+  slashed (`agterm-remote-disconnected-symbolic`, sidebar-only) while its presentation stream is not up,
+  with the stream's `rowNotice` as that icon's tooltip; the flag star stays its own widget.
+  Both ride `RowContent` as in-place updates.
+  A connection change that leaves `connected` reconciles with `focusActive: false`, because only a
+  reconcile takes the released replica ask and orphaned overlays off screen; any other change only syncs
+  the sidebar and title, since `.connecting` is reported from inside `reconcile`'s own
+  `syncRemotePresentations`.
 - GTK does not skip an unchanged write — `gtk_label_set_markup` re-parses and
   `gtk_widget_set_tooltip_text` always sets — so every widget set caches what it last applied and
   compares against that itself.

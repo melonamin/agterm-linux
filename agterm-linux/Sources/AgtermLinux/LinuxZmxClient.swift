@@ -7,6 +7,7 @@ import Glibc
 /// Bounded process adapter for the pinned zmx CLI. Every invocation owns its Process and pipes, so the
 /// immutable client can serve local inventory and remote-control workers concurrently.
 final class LinuxZmxClient: @unchecked Sendable {
+    /// With `LinuxRemoteCommand`'s 250 ms kill grace, a hung listing still ends inside the 500 ms exit budget.
     static let captureInvocationTimeout: TimeInterval = 0.1
     static let terminationGrace: TimeInterval = 0.25
 
@@ -15,6 +16,8 @@ final class LinuxZmxClient: @unchecked Sendable {
         let arguments: [String]
         let environment: [String: String]
         let timeout: TimeInterval
+        /// zmx confirms a kill on stderr; a listing must not see stderr notices.
+        let mergesStderr: Bool
         let input: Data?
     }
 
@@ -70,8 +73,8 @@ final class LinuxZmxClient: @unchecked Sendable {
         kill(names: paneIdentities.map(ZmxSupport.daemonName(for:)))
     }
 
-    func listSessions() -> [ZmxSessionRecord]? {
-        try? ZmxListParser.parse(invoke(["list"]))
+    func listSessions(timeout: TimeInterval? = nil) -> [ZmxSessionRecord]? {
+        try? ZmxListParser.parse(invoke(["list"], timeout: timeout))
     }
 
     func screen(name: String, all: Bool) -> ZmxScreen? {
@@ -83,8 +86,8 @@ final class LinuxZmxClient: @unchecked Sendable {
         (try? invoke(["type", name], input: Data(bytes))) != nil
     }
 
-    func sessionLeaderPIDs() -> [String: Int32]? {
-        listSessions().map(ZmxLeaderMap.leaders(in:))
+    func sessionLeaderPIDs(timeout: TimeInterval? = nil) -> [String: Int32]? {
+        listSessions(timeout: timeout).map(ZmxLeaderMap.leaders(in:))
     }
 
     enum KillOutcome: Equatable {
@@ -97,7 +100,7 @@ final class LinuxZmxClient: @unchecked Sendable {
         var outcomes: [String: KillOutcome] = [:]
         for name in Set(names) {
             do {
-                outcomes[name] = Self.outcome(of: try invoke(["kill", name]), name: name)
+                outcomes[name] = Self.outcome(of: try invoke(["kill", name], mergesStderr: true), name: name)
             } catch {
                 outcomes[name] = .failed(String(describing: error))
             }
@@ -107,7 +110,7 @@ final class LinuxZmxClient: @unchecked Sendable {
 
     func killConfirmed(name: String) -> KillOutcome {
         do {
-            return Self.outcome(of: try invoke(["kill", name, "--force"]), name: name)
+            return Self.outcome(of: try invoke(["kill", name, "--force"], mergesStderr: true), name: name)
         } catch {
             return .failed(String(describing: error))
         }
@@ -126,17 +129,18 @@ final class LinuxZmxClient: @unchecked Sendable {
         var seen = Set<String>()
         let unique = names.filter { seen.insert($0).inserted }
         guard !unique.isEmpty else { return true }
-        return (try? invoke(["kill"] + unique + ["--force"])) != nil
+        return (try? invoke(["kill"] + unique + ["--force"], mergesStderr: true)) != nil
     }
 
     private func invoke(_ arguments: [String], timeout timeoutOverride: TimeInterval? = nil,
-                        input: Data? = nil) throws -> String {
+                        mergesStderr: Bool = false, input: Data? = nil) throws -> String {
         var environment = ProcessInfo.processInfo.environment
         environment["ZMX_DIR"] = socketDirectory
         environment.removeValue(forKey: "ZMX_SESSION")
         environment.removeValue(forKey: "ZMX_SESSION_PREFIX")
         return try runner(.init(executablePath: executablePath, arguments: arguments,
-                                environment: environment, timeout: timeoutOverride ?? timeout, input: input))
+                                environment: environment, timeout: timeoutOverride ?? timeout,
+                                mergesStderr: mergesStderr, input: input))
     }
 
     private static func run(_ invocation: Invocation) throws -> String {
@@ -148,6 +152,6 @@ final class LinuxZmxClient: @unchecked Sendable {
         guard result.status == 0 else {
             throw CommandError.failed(result.status, result.stdout + result.stderr)
         }
-        return result.stdout
+        return invocation.mergesStderr ? result.stdout + result.stderr : result.stdout
     }
 }

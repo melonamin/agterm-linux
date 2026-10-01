@@ -97,7 +97,6 @@ extension AppController {
         }
         let outcomes = client.killObservedOrphan(names: names)
         let killed = outcomes.values.filter { $0 == .killed }.count
-        gZmxForegroundResolver?.noteLifecycleChange()
         return ControlResponse(ok: true, result: ControlResult(
             text: Self.zmxPruneReport(outcomes), affected: killed
         ))
@@ -148,7 +147,6 @@ extension AppController {
         case .failed(let reason):
             return ControlResponse(ok: false, error: "could not kill \(row.daemon): \(reason)")
         }
-        gZmxForegroundResolver?.noteLifecycleChange()
         if let controller = gWindows[claim.windowID],
            let session = controller.store.session(withID: claim.sessionID) {
             let surface = (claim.pane == .left ? session.surface : session.splitSurface) as? GhosttySurface

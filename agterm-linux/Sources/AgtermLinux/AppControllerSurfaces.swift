@@ -104,7 +104,7 @@ extension AppController {
             if scratchSurfaces[s.id] == nil {
                 let command = s.scratchCommand
                 s.scratchCommand = nil
-                let sc = GhosttySurface(sessionID: s.id, cwd: s.effectiveCwd, command: command,
+                let sc = GhosttySurface(sessionID: s.id, cwd: Self.scratchLaunchCwd(s), command: command,
                                         env: sessionEnv(for: s, pane: .scratch), controller: self,
                                         role: .scratch,
                                         reportsPaneState: false)
@@ -154,7 +154,7 @@ extension AppController {
                 if s.hudActive, let hudFile = s.hudFile {
                     ovlEnv[HudLayout.fileEnvKey] = hudFile
                 }
-                let ov = GhosttySurface(sessionID: s.id, cwd: s.overlayCwd ?? s.effectiveCwd,
+                let ov = GhosttySurface(sessionID: s.id, cwd: Self.overlayLaunchCwd(s, pane: nil),
                                         command: "sh -c " + Self.singleQuoted(OverlayCapture.shellLine),
                                         env: ovlEnv, controller: self, waitAfterCommand: s.overlayWait,
                                         role: .overlay,
@@ -168,10 +168,16 @@ extension AppController {
                 ov.captureExitCode(from: codePath) { code in
                     if recordsExitCode { gWindows[owner]?.store.recordOverlayExit(sid, code: code) }
                 }
-                ov.onExit = {
+                ov.onExit = { [weak ov] in
                     runOnMain { MainActor.assumeIsolated {
-                        gWindows[owner]?.closeOverlay(sid)
+                        guard let controller = gWindows[owner],
+                              Self.sessionOverlayExitCloses(ov, in: controller.store.session(withID: sid)) else { return }
+                        controller.closeOverlay(sid)
                     } }
+                }
+                ov.onExitHeld = { [weak ov] in
+                    guard let ov else { return }
+                    gWindows[owner]?.remoteHeldExits.overlayHeld(ov, forSession: sid)
                 }
                 s.overlaySurface = ov
                 overlaySurfaces[s.id] = ov
@@ -328,6 +334,12 @@ extension AppController {
 
     static func singleQuoted(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
+    /// A queued exit must not close a program or page that took the slot after its surface left it.
+    static func sessionOverlayExitCloses(_ surface: (any TerminalSurface)?, in session: Session?) -> Bool {
+        guard let surface, let session else { return false }
+        return session.overlaySurface === surface
+    }
+
     /// The overlay's command exited (or a control close): tear it down + reconcile.
     func closeOverlay(_ id: UUID) {
         let hud = store.session(withID: id)?.hudActive == true
@@ -336,23 +348,18 @@ extension AppController {
     }
 
     /// Capture each pane's live foreground command into the session model so a restart can re-run it.
-    func captureForegroundCommands() {
-        let denylistPath = ConfigPaths.restoreDenylistPath(configDirectory: configDirectory())
-        let denylist = (try? String(contentsOf: denylistPath, encoding: .utf8)).map(CommandRestore.parseDenylist)
-            ?? ["tmux", "screen", "zellij"]
-        for ws in store.workspaces {
-            for s in ws.sessions {
-                if let argv = surfaces[s.id]?.foregroundCommand(), CommandRestore.shouldRestore(argv: argv, denylist: denylist) {
-                    s.foregroundCommand = argv
-                } else {
-                    s.foregroundCommand = nil
-                }
-                let splitArgv = s.isSplit ? splitSurfaces[s.id]?.foregroundCommand() : nil
-                s.splitForegroundCommand = splitArgv.flatMap {
-                    CommandRestore.shouldRestore(argv: $0, denylist: denylist) ? $0 : nil
-                }
-            }
+    /// One call per edge across its windows, so the edge takes one zmx listing and one budget.
+    @discardableResult
+    static func captureForegroundCommands(in controllers: [AppController], preserveUnconsumedPending: Bool) -> Int {
+        let owned = controllers.flatMap { owner in
+            owner.store.workspaces.flatMap(\.sessions).map { (session: $0, owner: owner) }
         }
+        let owners = Dictionary(owned.map { ($0.session.id, $0.owner) }, uniquingKeysWith: { first, _ in first })
+        return LinuxForegroundCapture.capture(
+            sessions: owned.map(\.session), preserveUnconsumedPending: preserveUnconsumedPending,
+            panes: { (owners[$0.id]?.surfaces[$0.id], owners[$0.id]?.splitSurfaces[$0.id]) },
+            snapshot: { gZmxForegroundResolver?.freshSnapshot(timeout: LinuxZmxClient.captureInvocationTimeout) },
+            read: { surface, snapshot in surface.foregroundCommand(zmxSnapshot: snapshot) })
     }
 
     func runCustomCommand(_ cmd: CustomCommand, origin: GhosttySurface? = nil,
@@ -450,7 +457,7 @@ extension AppController {
         guard let paned = sessionPanes[s.id], let primaryHost = primaryPaneHosts[s.id] else { return }
         if s.isSplit, splitSurfaces[s.id] == nil {
             let launch = paneLaunchProvider(for: s, pane: .right)
-            let split = GhosttySurface(sessionID: s.id, cwd: s.initialSplitCwd ?? s.effectiveCwd,
+            let split = GhosttySurface(sessionID: s.id, cwd: Self.splitLaunchCwd(s),
                                        env: launch.environment, controller: self,
                                        role: .split, fontSize: s.fontSize,
                                        backedByZmx: launch.backedByZmx)
@@ -499,6 +506,10 @@ extension AppController {
             } else {
                 self.reconcile()
             }
+        }
+        surface.onExitHeld = { [weak self, weak surface] in
+            guard let self, let surface else { return }
+            self.remoteHeldExits.paneHeld(surface, forSession: sessionID)
         }
     }
 
@@ -824,7 +835,9 @@ extension AppController {
     /// in the in-terminal search entry, which is unknowable by dismissal time. `detachPopover` consumes
     /// the capture. `keepingCapture` carries a still-live one across a REPLACEMENT, where re-reading the
     /// entry answers `false` because the outgoing popover holds the keyboard.
+    /// A popover takes the keyboard, so it also ends a Ctrl-Tab cycle.
     func popupPopover(_ popover: OpaquePointer, keepingCapture: Bool = false) {
+        cancelSessionSwitch()
         popoverTookKeyboardFromSearchEntry = keepingCapture || searchEntryHoldsKeyboard()
         gtk_popover_popup(POPOVER(popover))
     }

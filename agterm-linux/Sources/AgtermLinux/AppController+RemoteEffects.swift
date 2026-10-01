@@ -18,9 +18,15 @@ extension AppController {
                 self?.showRemoteNotification(notify, forSession: id)
             },
             connection: { [weak self] connection in
-                self?.store.setRemoteConnection(connection, forSession: id)
-                self?.syncSidebar()
-                self?.updateTitle()
+                guard let self else { return }
+                let previous = store.session(withID: id)?.remotePresentation?.connection
+                store.setRemoteConnection(connection, forSession: id)
+                if Self.remoteConnectionNeedsReconcile(from: previous, to: connection) {
+                    reconcile(focusActive: false)
+                } else {
+                    syncSidebar()
+                    updateTitle()
+                }
             },
             context: { [weak self] context in
                 self?.store.applyRemoteContext(context, forSession: id)
@@ -51,6 +57,14 @@ extension AppController {
                 LinuxStructuredLogger(category: "RemotePresentation")
                     .notice("presentation stream for \(id): \(reason)")
             })
+    }
+
+    /// Leaving `connected` releases a replica ask and orphans replica overlays, which only a reconcile takes
+    /// off screen. No other move may reconcile: `.connecting` is reported from inside `reconcile`'s own
+    /// `syncRemotePresentations`.
+    nonisolated static func remoteConnectionNeedsReconcile(from previous: RemotePresentationConnection?,
+                                                           to next: RemotePresentationConnection) -> Bool {
+        previous == .connected && next != .connected
     }
 
     func showRemoteNotification(_ notify: PresentationNotify, forSession id: UUID) {

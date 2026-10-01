@@ -1,38 +1,46 @@
 import Foundation
 import agtermCore
-#if canImport(Glibc)
-import Glibc
-#endif
 
 /// Resolves a zmx daemon leader to its pty's foreground process group through `/proc/<pid>/stat`.
+/// A capture or `tree` pass takes one bounded listing that serves every pane of that pass.
 @MainActor
 final class LinuxZmxForegroundResolver {
+    typealias Probe = @Sendable (Int32) -> Int32?
+
+    struct Snapshot: Sendable {
+        let leaders: [String: Int32]
+        let probe: Probe
+
+        func foregroundPID(sessionName: String) -> Int32? {
+            leaders[sessionName].flatMap(probe)
+        }
+    }
+
     private let client: LinuxZmxClient
-    private var leaders: [String: Int32] = [:]
-    private var gate = ZmxRefreshGate()
+    private let probe: Probe
 
-    init(client: LinuxZmxClient) {
+    init(client: LinuxZmxClient, probe: @escaping Probe = LinuxZmxForegroundResolver.terminalForegroundGroup(_:)) {
         self.client = client
+        self.probe = probe
     }
 
-    func noteLifecycleChange() {
-        gate.noteLifecycleChange()
+    /// Nil when the listing failed or timed out, which leaves every wrapped pane of the pass unknown.
+    func freshSnapshot(timeout: TimeInterval?) -> Snapshot? {
+        client.sessionLeaderPIDs(timeout: timeout).map { Snapshot(leaders: $0, probe: probe) }
     }
 
-    func foregroundPID(sessionName: String, now: Date = Date()) -> Int32? {
-        if gate.shouldRefresh(now: now), let refreshed = client.sessionLeaderPIDs() {
-            leaders = refreshed
-        }
-        guard let leader = leaders[sessionName] else {
-            gate.noteLifecycleChange()
-            return nil
-        }
-        guard let foreground = Self.terminalForegroundGroup(leader) else {
-            if Glibc.kill(leader, 0) != 0, errno == ESRCH { leaders[sessionName] = nil }
-            gate.noteLifecycleChange()
-            return nil
-        }
-        return foreground
+    func passSnapshot(for sessions: [Session], timeout: TimeInterval?) -> Snapshot? {
+        ZmxForegroundRefreshPolicy.hasWrappedPane(in: sessions.filter(\.isPersistable))
+            ? freshSnapshot(timeout: timeout) : nil
+    }
+
+    /// A wrapped pane's local pty foreground is its zmx attach client, so a failed daemon lookup reports
+    /// unknown rather than falling back to it.
+    nonisolated static func paneForegroundPID(backedByZmx: Bool, paneIdentity: UUID?, snapshot: Snapshot?,
+                                              localForeground: () -> Int32?) -> Int32? {
+        guard backedByZmx else { return localForeground().flatMap { $0 > 0 ? $0 : nil } }
+        guard let paneIdentity else { return nil }
+        return snapshot?.foregroundPID(sessionName: ZmxSupport.daemonName(for: paneIdentity))
     }
 
     /// Linux proc stat fields after the parenthesized command begin with state, ppid, pgrp, session,

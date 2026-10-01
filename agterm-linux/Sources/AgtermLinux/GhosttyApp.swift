@@ -229,9 +229,18 @@ final class GhosttyApp: @unchecked Sendable {
                 return true
             case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
                 guard let w = Self.wrapper(fromTarget: target) else { return false }
-                if !w.shouldCloseOnChildExitAction { w.handleHeldProcessExit(); return false }
-                guard w.shouldCloseOnChildExitAction else { return false }
-                guard let retained = w.surface.flatMap({ RetainedGhosttySurface(ghostty_surface_userdata($0)) }) else { return false }
+                let retained = w.surface.flatMap { RetainedGhosttySurface(ghostty_surface_userdata($0)) }
+                guard w.shouldCloseOnChildExitAction else {
+                    w.handleHeldProcessExit()
+                    // the held hook reaches the store, which may close and free this surface: never inside the callback
+                    guard let retained else { return false }
+                    runOnMain { MainActor.assumeIsolated {
+                        retained.surface.onExitHeld?()
+                        retained.release()
+                    } }
+                    return false
+                }
+                guard let retained else { return false }
                 runOnMain { MainActor.assumeIsolated {
                     retained.surface.handleProcessExit()
                     retained.release()
@@ -388,25 +397,21 @@ final class GhosttyApp: @unchecked Sendable {
                     retained.release()
                     return
                 }
-                let req = ClipboardRequest(surface: surface, state: requestState, retained: retained)
+                let req = ClipboardRequest(state: requestState, retained: retained)
                 gdk_clipboard_read_text_async(
                     clipboard, nil,
                     { source, result, data in
                         let req = Unmanaged<ClipboardRequest>.fromOpaque(data!).takeRetainedValue()
                         defer { req.retained.release() }
                         guard let source else {
-                            "".withCString {
-                                ghostty_surface_complete_clipboard_request(req.surface, $0, req.state, false)
-                            }
+                            MainActor.assumeIsolated { req.complete("") }
                             return
                         }
                         let text = gdk_clipboard_read_text_finish(OpaquePointer(source), result, nil)
                         let raw = text.map { String(cString: $0) } ?? ""
                         // a file-manager copy lands as a file:// uri-list → paste the POSIX paths, like macOS.
                         let value = PasteDecoder.posixPaths(fromURIList: raw) ?? raw
-                        value.withCString {
-                            ghostty_surface_complete_clipboard_request(req.surface, $0, req.state, false)
-                        }
+                        MainActor.assumeIsolated { req.complete(value) }
                         if let text { g_free(text) }
                     },
                     Unmanaged.passRetained(req).toOpaque()
@@ -531,13 +536,18 @@ final class GhosttyApp: @unchecked Sendable {
 }
 
 final class ClipboardRequest: @unchecked Sendable {
-    let surface: ghostty_surface_t
     let state: UnsafeMutableRawPointer?
     let retained: RetainedGhosttySurface
-    init(surface: ghostty_surface_t, state: UnsafeMutableRawPointer?, retained: RetainedGhosttySurface) {
-        self.surface = surface
+    init(state: UnsafeMutableRawPointer?, retained: RetainedGhosttySurface) {
         self.state = state
         self.retained = retained
+    }
+
+    /// Rereads the live surface, which a teardown during the GDK read frees.
+    /// The orphaned request state then leaks: no C API frees it without the surface.
+    @MainActor func complete(_ text: String) {
+        guard let surface = retained.surface.surface else { return }
+        text.withCString { ghostty_surface_complete_clipboard_request(surface, $0, state, false) }
     }
 }
 

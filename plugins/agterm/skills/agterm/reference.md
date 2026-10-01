@@ -1647,9 +1647,9 @@ Closing agterm or sending it SIGTERM ends the attach clients and leaves live dae
 also captures each live pane's foreground command, so a daemon missing after an orderly machine restart is
 recreated under the same name running that command. Four cases still come back as a
 fresh shell: a pane in a window closed before the quit, a hard power loss or force quit that never reached
-capture, a command refused by `restore-denylist.conf` or carrying control bytes, and SIGTERM, which leaves
-the daemons running but skips the clean-quit capture. A session or split that is explicitly deleted has its
-daemon killed after the undo grace period.
+capture, a command refused by `restore-denylist.conf` or carrying control bytes, and SIGTERM on macOS, which
+leaves the daemons running but skips the clean-quit capture (Linux quits cleanly on SIGTERM). A session
+or split that is explicitly deleted has its daemon killed after the undo grace period.
 Switching to Fresh shells or Re-run commands and restarting ends every detached live process in the state
 directory. A launch that still requests Live sessions but cannot use it preserves those processes.
 
@@ -1704,7 +1704,8 @@ clients. That is the resting state after you close a window, not a leak, which i
 state is its own column. `unknown` means the pane inventory was incomplete, so no row can be called an orphan.
 The header also carries `endpoint.executable` and `endpoint.socketDirectory`, which is what another machine
 needs to reach these daemons; a server older than remote sessions omits the key. A row whose daemon was
-created before the recorded first launch with this zmx build carries `outdated: true` (omitted otherwise).
+created before the recorded first launch with this zmx build carries `outdated: true` (omitted otherwise;
+macOS only, Linux never sets it).
 
 `agtermctl zmx prune` — kill the daemons no pane claims and nothing is attached to. It refuses outright on
 an incomplete or conflicted inventory. The gate is checked and revalidated rather than atomic: zmx has no
@@ -1722,7 +1723,8 @@ three-second undo. It refuses a daemon already gone, one zmx could not read (for
 live daemon's socket and leave it running unreachable), and a session inside its undo window. Killing the
 daemon of the pane you are typing in can kill the calling `agtermctl` before it reads the reply.
 
-`agtermctl zmx reset --force` — Agterm ▸ Reset Live Sessions… without the dialog. A live session created
+`agtermctl zmx reset --force` — macOS only; Linux answers unsupported.
+Agterm ▸ Reset Live Sessions… without the dialog. A live session created
 before the session host existed keeps its own macOS permission identity, so every new version of a tool in
 it asks for the microphone again; the reset ends those sessions' processes at the next launch and recreates
 them under the host, starting their captured commands again where possible. It also covers every session

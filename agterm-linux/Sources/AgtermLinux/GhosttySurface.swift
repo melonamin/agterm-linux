@@ -100,6 +100,7 @@ final class GhosttySurface: PaneRoleMutableSurface {
 
     /// Set by the host: the shell process exited.
     var onExit: (() -> Void)?
+    var onExitHeld: (() -> Void)?
     private var exitCodeFile: String?
     private var onExitCodeCaptured: ((Int) -> Void)?
     var didHandleProcessExit = false
@@ -658,6 +659,7 @@ final class GhosttySurface: PaneRoleMutableSurface {
                                  context: shortcutKeyContext(event: event, keycode: keycode)) == true {
             return true
         }
+        if controller?.paneLeadConsumesPress(self, keyval: keyval, keycode: keycode, state: state) == true { return true }
 
         // Route through the IM context: a dead-key/compose/CJK sequence is CONSUMED here (its result
         // arrives via the `commit` signal → imCommit). Plain keys pass through (filter returns false) and
@@ -843,6 +845,7 @@ final class GhosttySurface: PaneRoleMutableSurface {
 
     func teardown() {
         onExit = nil
+        onExitHeld = nil
         if let spawnKey { gSpawnRegistry.cancel(spawnKey) }
         spawnPacer = nil
         spawnKey = nil
@@ -890,19 +893,6 @@ private let surfaceKeyPressed: @MainActor @convention(c) (OpaquePointer?, UInt32
         ) ?? false) ? 1 : 0
     }
 }
-/// Modifier-only releases reach libghostty (macOS `flagsChanged` parity) BEFORE the Ctrl-Tab commit: the
-/// commit moves focus and rebuilds widgets, and this surface's own release must not queue behind it.
-private let surfaceKeyReleased: @MainActor @convention(c) (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> Void = { _, keyval, keycode, state, data in
-    let bit = ModifierKeyMods.modifierBit(forKeyval: keyval)
-    if bit != nil {
-        MainActor.assumeIsolated { wrap(data)?.modifierKeyReleased(keyval: keyval, keycode: keycode, state: state) }
-    }
-    if bit == ModifierKeyMods.controlBit {
-        MainActor.assumeIsolated {
-            wrap(data)?.controller?.scheduleSessionSwitchCommit(releasing: keycode)
-        }
-    }
-}
 private let surfaceFocusEnter: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { _, data in
     MainActor.assumeIsolated {
         guard let surface = wrap(data) else { return }
@@ -918,7 +908,7 @@ private let surfaceFocusLeave: @MainActor @convention(c) (OpaquePointer?, gpoint
     MainActor.assumeIsolated {
         wrap(data)?.setFocus(false)
         wrap(data)?.imFocus(false)
-        wrap(data)?.controller?.resetLeader()
+        wrap(data)?.controller?.abandonLeader()
         wrap(data)?.controller?.cancelSessionSwitch()
     }
 }

@@ -360,4 +360,6 @@ paths:
 - Deferred completion captures `GhosttySurfaceView`, then rereads its live surface. If a pane closed while
   the sheet was open, skip completion rather than use the freed raw pointer; freeing already discards the
   request. Keep request state `nonisolated(unsafe)` under the same lifetime check.
+  Linux's pin (`0ba6250`) does not discard it: a skipped completion leaks the request state, which no C API
+  frees without the surface.
 - AppKit dialog behavior is manual-only; unit-test `ClipboardPromptPolicy`.

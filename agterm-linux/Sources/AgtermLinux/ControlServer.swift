@@ -198,21 +198,28 @@ final class ControlServer: @unchecked Sendable {
 
     /// SSH waits on a per-connection worker, never GTK's main thread and never the listener thread.
     private func dispatchRemoteZmx(_ request: ControlRequest) -> ControlResponse {
-        guard let host = request.args?.host?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !host.isEmpty else {
+        Self.dispatchRemoteZmx(request, readTree: readRemoteTree(host:), attach: attachRemoteOnMain)
+    }
+
+    /// Validates and trims like the shared dispatcher, before any ssh call.
+    static func dispatchRemoteZmx(
+        _ request: ControlRequest, readTree: (String) -> ControlResponse,
+        attach: (_ host: String, _ session: String, _ tree: ControlRemoteTree, _ window: String?) -> ControlResponse
+    ) -> ControlResponse {
+        guard let host = request.args?.host?.linuxTrimmedOrNil else {
             return ControlResponse(ok: false, error: request.cmd == .zmxAttach
                 ? "zmx.attach requires a host" : "invalid host")
         }
-        let tree = readRemoteTree(host: host)
-        guard request.cmd == .zmxAttach else { return tree }
-        guard let remoteID = request.target?.trimmingCharacters(in: .whitespacesAndNewlines),
-              Self.isPlainRemoteToken(remoteID) else {
-            return ControlResponse(ok: false, error: request.target == nil
-                ? "zmx.attach requires a remote session" : "invalid remote session")
+        guard request.cmd == .zmxAttach else { return readTree(host) }
+        guard let remoteID = request.target?.linuxTrimmedOrNil else {
+            return ControlResponse(ok: false, error: "zmx.attach requires a remote session")
         }
+        guard isPlainRemoteToken(remoteID) else {
+            return ControlResponse(ok: false, error: "invalid remote session")
+        }
+        let tree = readTree(host)
         guard tree.ok, let remote = tree.result?.remote else { return tree }
-        return attachRemoteOnMain(host: host, session: remoteID, tree: remote,
-                                  window: request.args?.window)
+        return attach(host, remoteID, remote, request.args?.window?.linuxTrimmedOrNil)
     }
 
     private func readRemoteTree(host: String) -> ControlResponse {
@@ -246,7 +253,7 @@ final class ControlServer: @unchecked Sendable {
         runOnMain {
             MainActor.assumeIsolated {
                 let controller: AppController?
-                if let window, !window.isEmpty {
+                if let window {
                     switch gLibrary?.resolveWindow(window) {
                     case .resolved(let id): controller = gWindows[id]
                     case .ambiguous(let hits):

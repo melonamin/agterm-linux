@@ -137,7 +137,8 @@ extension ControlServer {
     func attachPresentationHub() {
         presentationHub.onPresenterLost = { [weak self] id in self?.presenterLost(forSession: id) }
         presentationHub.onPresenterFrame = { [weak self] id, body in self?.receivePresenterFrame(body, forSession: id) }
-        overlayJobs.onFinished = { job in
+        overlayJobs.onFinished = { [weak self] job in
+            self?.pendingJobCancels.remove(job.id)
             gLibrary?.store(forSession: job.session)?.finishRemoteOverlay(job)
         }
         for controller in gWindows.values {
@@ -175,21 +176,44 @@ extension ControlServer {
     }
 
     @MainActor
+    private func presenterRouter(forSession id: UUID) -> LinuxPresenterFrameRouter? {
+        guard let controller = gWindows.values.first(where: { $0.store.session(withID: id) != nil }) else { return nil }
+        return LinuxPresenterFrameRouter(store: controller.store,
+                                         takeBackAsk: { controller.takeBackRemoteAsk(forSession: $0) },
+                                         reconcile: { controller.reconcile(focusActive: false) })
+    }
+
+    @MainActor
     private func presenterLost(forSession id: UUID) {
-        guard let controller = gWindows.values.first(where: { $0.store.session(withID: id) != nil }) else { return }
-        let store = controller.store
-        controller.takeBackRemoteAsk(forSession: id)
-        store.remoteOverlayPresenterLost(forSession: id)
-        controller.reconcile(focusActive: false)
+        presenterRouter(forSession: id)?.presenterLost(forSession: id)
     }
 
     @MainActor
     private func receivePresenterFrame(_ body: PresentationFrame.Body, forSession id: UUID) {
-        guard let store = gLibrary?.store(forSession: id) else { return }
+        presenterRouter(forSession: id)?.receive(body, forSession: id)
+    }
+}
+
+/// Applies what a session's presenter sent to its store; the host hands back GUI asks and redraws.
+@MainActor
+struct LinuxPresenterFrameRouter {
+    let store: AppStore
+    let takeBackAsk: (UUID) -> Void
+    let reconcile: () -> Void
+
+    func presenterLost(forSession id: UUID) {
+        takeBackAsk(id)
+        store.remoteOverlayPresenterLost(forSession: id)
+        reconcile()
+    }
+
+    func receive(_ body: PresentationFrame.Body, forSession id: UUID) {
         switch body {
         case .askResolve(let answer): _ = store.resolveRemoteAsk(answer, forSession: id)
+        // a refused ask is not a lost presenter: its overlay jobs stay with it
         case .askRejected(let ref) where store.isPresentingRemotely(ref, forSession: id):
-            presenterLost(forSession: id)
+            takeBackAsk(id)
+            reconcile()
         case .overlayRejected(let change): store.rejectRemoteOverlay(change.job, forSession: id)
         case .overlayClosed(let change): store.remoteOverlaySurfaceClosed(change.job, forSession: id)
         default: break

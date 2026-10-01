@@ -9,6 +9,8 @@ paths:
   - "agtermCore/Sources/agtermCore/QuickTerminalMetrics.swift"
   - "agtermCore/Sources/agtermCore/SettingsStore.swift"
   - "agtermUITests/SettingsUITests.swift"
+  - "agterm-linux/Sources/AgtermLinux/LinuxExitCapturePolicy.swift"
+  - "agterm-linux/Sources/AgtermLinux/LinuxForegroundCapture.swift"
 ---
 
 ## Settings
@@ -164,6 +166,14 @@ paths:
   daemon-side leaders. A live hidden split is captured while its backing surface exists; an ordinary or
   rerun hidden split remains nil. Refresh failure or deadline expiry clears the affected slots rather than
   reading the resolver's retained map.
+  Linux (`LinuxExitCapturePolicy`) runs the same arms at inverted edges: its quit confirm sets
+  `isTerminating` BEFORE `gtk_window_close`, and `windowWillClose` drops the window from `gWindows`.
+  So a terminating or last-window close captures, a non-last close clears as above, and `flushOnQuit`
+  (also reached by SIGTERM/SIGINT) captures only windows still in `gWindows`.
+  Never widen it to `library.allOpenSessions()`: an already-closed window's torn-down surfaces read nil
+  and overwrite its capture.
+  Each window is captured at most once per exit, and every capture of one edge shares one zmx listing
+  under `LinuxZmxClient.captureInvocationTimeout`.
   Strip login `-` before shell recognition; a known shell with only flags is idle and omitted, while
   scripts/payload args remain, including `/bin/sh <script>`.
   System shutdown, restart, and logout skip quit confirmation so `applicationWillTerminate` can capture

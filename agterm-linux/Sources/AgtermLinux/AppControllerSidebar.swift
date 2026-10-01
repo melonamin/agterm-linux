@@ -346,13 +346,14 @@ extension AppController {
 
     func makeRow(_ id: UUID, content: SidebarSnapshot.RowContent) -> OpaquePointer? {
         guard let row = op(gtk_list_box_row_new()), let box = op(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6)),
-              let lead = op(gtk_image_new_from_icon_name("utilities-terminal-symbolic")),
+              let lead = op(gtk_image_new_from_icon_name(content.leadIconName)),
               let name = makeSessionNameWidget(id, content: content),
               let glyph = op(gtk_label_new(nil)), let star = op(gtk_image_new_from_icon_name("starred-symbolic")),
               let badge = op(gtk_label_new(nil)) else { return nil }
         "session-row".withCString { gtk_widget_set_name(W(row), $0) }
         gtk_widget_add_css_class(W(box), "agterm-session-row-content")
         gtk_widget_set_margin_start(W(lead), 6)
+        if let notice = content.notice { notice.withCString { gtk_widget_set_tooltip_text(W(lead), $0) } }
         gtk_box_append(cast(box), W(lead))
         gtk_box_append(cast(box), W(name))
         Self.applyStatusGlyph(content.glyph, blink: content.blink,

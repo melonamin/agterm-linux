@@ -76,7 +76,9 @@ extension AppController {
             environment = old.env
             wait = true
         }
-        let focused = gtk_widget_has_focus(W(old.glArea)) != 0
+        let coverFocused = old.leadCover.flatMap { gtk_widget_get_first_child(W($0)) }.map { gtk_widget_has_focus($0) != 0 }
+        let focused = LinuxPaneLeadKeyPolicy.replacementTakesFocus(
+            surfaceFocused: gtk_widget_has_focus(W(old.glArea)) != 0, coverFocused: coverFocused ?? false)
         let replacement = GhosttySurface(sessionID: session.id, cwd: old.cwd, command: command,
                                          env: environment, controller: self, waitAfterCommand: wait,
                                          role: role == .right ? .split : .main, fontSize: session.fontSize,
@@ -98,7 +100,6 @@ extension AppController {
         gtk_overlay_set_child(host, W(replacement.rootWidget))
         replacement.realizeWidgetIfNeeded()
         if focused { replacement.grabFocus() }
-        if old.backedByZmx { gZmxForegroundResolver?.noteLifecycleChange() }
         store.leadRoleChanged()
     }
 }
@@ -121,6 +122,9 @@ extension GhosttySurface {
             let key = gtk_event_controller_key_new()
             connect(key, "key-pressed", unsafeBitCast(onPaneLeadKey as @convention(c)
                 (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> gboolean, to: GCallback.self),
+                Unmanaged.passUnretained(self).toOpaque())
+            connect(key, "key-released", unsafeBitCast(surfaceKeyReleased as @convention(c)
+                (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> Void, to: GCallback.self),
                 Unmanaged.passUnretained(self).toOpaque())
             gtk_widget_add_controller(W(button), key)
             gtk_overlay_add_overlay(rootWidget, W(cover))
@@ -150,12 +154,7 @@ private let onPaneLeadKey: @MainActor @convention(c)
     MainActor.assumeIsolated {
         guard let data else { return 1 }
         let surface = Unmanaged<GhosttySurface>.fromOpaque(data).takeUnretainedValue()
-        guard let controller = surface.controller else { return 1 }
-        if controller.handleKey(keyval: keyval, keycode: keycode, state: state,
-                                sessionID: surface.sessionID, origin: surface,
-                                context: nil) { return 1 }
-        if state & (1 << 26) != 0 || ModifierKeyMods.modifierBit(forKeyval: keyval) != nil { return 1 }
-        controller.takePaneLead(surface)
+        surface.controller?.paneLeadCoverKey(surface, keyval: keyval, keycode: keycode, state: state)
         return 1
     }
 }
