@@ -228,6 +228,77 @@ def verify_html_overlay(env, state):
         assert cli("session", "overlay", "close", "--target", session,
                    "--window", window, "--json")["ok"]
 
+        verify_page_answers(env, process, session, window, pages, page)
+
         print("OK: WebKit loaded full, floating, pane, and HTTP pages; JavaScript, file grants, and URI-list paste stayed scoped")
     finally:
         stop(process)
+
+
+def verify_page_answers(env, process, session, window, pages, page):
+    """A blocked open returns what its page submits, through agterm.request or a data-agterm tag, or exits 2."""
+    from atspi_smoke import find_app, mouse_click
+
+    def blocked_open(*args):
+        return subprocess.Popen([CTL, "session", "overlay", "open", "--html", *args, "--block",
+                                 "--target", session, "--window", window, "--socket", env["AGTERM_CONTROL_SOCKET"]],
+                                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def answer(command):
+        try:
+            stdout, stderr = command.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            command.kill()
+            raise AssertionError(f"the blocked open never returned; page: {page()}")
+        return command.returncode, json.loads(stdout) if stdout.strip() else stderr
+
+    def session_name():
+        return next(item["name"] for workspace in window_tree(env, window)["workspaces"]
+                    for item in workspace["sessions"] if item["id"] == session)
+
+    with open(os.path.join(pages, "bridge.html"), "w", encoding="utf-8") as target:
+        target.write("""<!doctype html><title>Bridge</title><script>
+            const frame = new Promise(resolve => window.addEventListener('message', event => resolve(event.data)));
+            agterm.request('session.rename', {args: {name: 'bridged'}})
+              .then(() => { document.title = 'renamed'; return frame; })
+              .then(heard => agterm.request('session.overlay.submit', {args: {value: 'main|' + heard}}))
+              .catch(error => { document.title = 'error:' + error.message; });
+            </script><iframe src="frame.html"></iframe>""")
+    with open(os.path.join(pages, "frame.html"), "w", encoding="utf-8") as target:
+        target.write("""<!doctype html><script>
+            const answer = text => parent.postMessage(text, '*');
+            try {
+              window.webkit.messageHandlers.agterm.postMessage({cmd: 'tree'})
+                .then(() => answer('accepted'), error => answer(error.message));
+            } catch (error) { answer('no handler'); }
+            </script>""")
+    original = session_name()
+    command = blocked_open(os.path.join(pages, "bridge.html"), "--cwd", pages, "--js")
+    code, outcome = answer(command)
+    assert code == 0, (code, outcome, page())
+    assert outcome["outcome"] == "submitted", outcome
+    assert outcome["value"] == "main|requests from frames are refused", f"a frame reached the bridge: {outcome}"
+    assert session_name() == "bridged", "agterm.request did not rename the page's own session"
+    read = control_json(env, "session", "overlay", "result", "--page", outcome["pageID"], "--json")
+    assert read["result"]["pageOutcome"] == outcome, read
+    assert control_json(env, "session", "rename", original, "--target", session, "--window", window, "--json")["ok"]
+
+    with open(os.path.join(pages, "selector.html"), "w", encoding="utf-8") as target:
+        target.write("""<!doctype html><title>Selector</title><button type="button" data-agterm="session.overlay.submit"
+            data-agterm-args='{"value":"clicked"}' style="position:fixed;inset:0;width:100%;height:100%">Pick</button>""")
+    command = blocked_open(os.path.join(pages, "selector.html"))
+    wait_for(lambda: page() and page()["state"] == "loaded", f"selector page did not load: {page()}", timeout=20)
+    mouse_click(lambda: next(iter(collect(find_app(process.pid), role="document web")), None),
+                process.pid, button="left")
+    code, outcome = answer(command)
+    assert code == 0 and outcome["outcome"] == "submitted" and outcome["value"] == "clicked", (code, outcome)
+
+    command = blocked_open(os.path.join(pages, "index.html"))
+    wait_for(lambda: page() and page().get("id"), f"blocked page did not open: {page()}")
+    opened = page()["id"]
+    assert control_json(env, "session", "overlay", "close", "--target", session,
+                        "--window", window, "--json")["ok"]
+    code, outcome = answer(command)
+    assert code == 2 and outcome == {"pageID": opened, "outcome": "dismissed"}, (code, outcome)
+    print("OK: pages answered --block through agterm.request and a data-agterm tag, a frame was refused, "
+          "and a closed page read dismissed")

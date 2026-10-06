@@ -736,7 +736,10 @@ Page JavaScript is off by default and requires `--js`.
 The `--navigation` toolbar adds browser navigation and Open in Browser, plus Show in Files for local
 pages or Copy Link for URLs.
 The page's load state and current address are readable in `tree --json` under `htmlOverlays`.
-The `session overlay result`, `text`, and `copy` commands apply only to program overlays.
+A file page can run agterm commands and, opened with `--block`, return a value it submits (exit 0) or
+exit 2 when closed unanswered; [agterm.com/docs](https://agterm.com/docs) covers the page bridge.
+`session overlay result --page ID` reads a page's outcome; without `--page`, `result`, `text`, and `copy`
+apply only to program overlays.
 The [HTML document overlay recipe](cookbook/html-doc-overlay/) contains generated-page examples.
 
 A session's terminal surface is created lazily — it does not exist until the session has been shown at least once. Injecting text into a never-shown session therefore fails with `session not realized` unless you pass `--select`, which selects the session (realizing its surface) before injecting:
