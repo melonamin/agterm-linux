@@ -8,7 +8,8 @@ typealias LinuxHtmlBridgeDispatch = @MainActor (ControlRequest, @escaping @MainA
 /// LinuxHtmlOverlayBridge is upstream's `HtmlOverlayBridge` over WebKitGTK script message handlers: the same
 /// `data-agterm` adapter in a world of its own, and `agterm.request` on a `--js` page. WebKitGTK names no frame for
 /// a message, so both scripts, injected into the top frame only, send the page's token, and a message without
-/// it came from a frame.
+/// it came from a frame. The token lives in a script closure with `postMessage` bound at document start, so no
+/// function source, property or later prototype patch shows it to the page or a same-origin frame.
 @MainActor
 enum LinuxHtmlOverlayBridge {
     static let world = "agterm-bridge"
@@ -18,8 +19,7 @@ enum LinuxHtmlOverlayBridge {
     static func adapterScript(token: String) -> String {
         """
         (() => {
-          const handler = window.webkit.messageHandlers.\(handlerName);
-          const post = (body) => handler.postMessage({token: '\(token)', request: body});
+          \(sender(token: token))
           const show = (el, text) => {
             const selector = el.getAttribute('data-agterm-into');
             const into = selector ? document.querySelector(selector) : null;
@@ -91,15 +91,22 @@ enum LinuxHtmlOverlayBridge {
         """
     }
 
+    // `post` names the token only through its closure, and calls the handler's own postMessage, bound before any
+    // page script can replace it on the prototype
+    private static func sender(token: String) -> String {
+        "const post = ((token, send) => (body) => send({token, request: body}))("
+            + "'\(token)', window.webkit.messageHandlers.\(handlerName).postMessage.bind(window.webkit.messageHandlers.\(handlerName)));"
+    }
+
     static func helperScript(token: String) -> String {
         """
         (() => {
-          const handler = window.webkit.messageHandlers.\(handlerName);
+          \(sender(token: token))
           const request = (cmd, {target, args} = {}) => {
             const body = {cmd};
             if (target !== undefined) body.target = target;
             if (args !== undefined) body.args = args;
-            return handler.postMessage({token: '\(token)', request: body});
+            return post(body);
           };
           Object.defineProperty(window, 'agterm', {value: Object.freeze({request}), enumerable: false});
         })();

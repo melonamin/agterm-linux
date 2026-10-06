@@ -105,12 +105,13 @@ struct LinuxHtmlOverlayBridgeTests {
         #expect(calls.replies.map(\.error) == ["control is unavailable"])
     }
 
-    @Test func bothScriptsSendThePageTokenThroughTheAgtermHandler() {
+    @Test func bothScriptsKeepThePageTokenOutOfAnyFunctionSource() {
         let adapter = LinuxHtmlOverlayBridge.adapterScript(token: "T-1")
         let helper = LinuxHtmlOverlayBridge.helperScript(token: "T-1")
         for script in [adapter, helper] {
-            #expect(script.contains("window.webkit.messageHandlers.agterm"))
-            #expect(script.contains("{token: 'T-1', request: body}"))
+            #expect(script.contains(".postMessage.bind(window.webkit.messageHandlers.agterm)"))
+            #expect(script.components(separatedBy: "'T-1'").count == 2)
+            #expect(script.contains("send({token, request: body}))('T-1', "))
         }
         #expect(helper.contains("Object.defineProperty(window, 'agterm'"))
         #expect(adapter.contains("data-agterm-into"))

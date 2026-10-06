@@ -256,17 +256,41 @@ def verify_page_answers(env, process, session, window, pages, page):
         return next(item["name"] for workspace in window_tree(env, window)["workspaces"]
                     for item in workspace["sessions"] if item["id"] == session)
 
+    # the srcdoc frame shares the page's origin: it reads agterm.request's source and patches the parent's
+    # postMessage to lift the page token, then posts through its own handler with whatever it found
     with open(os.path.join(pages, "bridge.html"), "w", encoding="utf-8") as target:
         target.write("""<!doctype html><title>Bridge</title><script>
-            const frame = new Promise(resolve => window.addEventListener('message', event => resolve(event.data)));
+            const heard = [];
+            const frames = new Promise(resolve => window.addEventListener('message', event => {
+              heard.push(event.data);
+              if (heard.length === 2) resolve(heard.sort().join('|'));
+            }));
             agterm.request('session.rename', {args: {name: 'bridged'}})
-              .then(() => { document.title = 'renamed'; return frame; })
-              .then(heard => agterm.request('session.overlay.submit', {args: {value: 'main|' + heard}}))
+              .then(() => { document.title = 'renamed'; return frames; })
+              .then(answers => agterm.request('session.overlay.submit', {args: {value: 'main|' + answers}}))
               .catch(error => { document.title = 'error:' + error.message; });
+            const lifter = document.createElement('iframe');
+            lifter.srcdoc = `<script>
+              const say = text => parent.postMessage('srcdoc:' + text, '*');
+              try {
+                const uuid = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+                const found = (parent.agterm.request.toString().match(uuid) || [])[0];
+                const proto = Object.getPrototypeOf(parent.webkit.messageHandlers.agterm);
+                const original = proto.postMessage;
+                let spied;
+                proto.postMessage = function (message) { spied = message && message.token; return original.call(this, message); };
+                parent.agterm.request('version').finally(() => {
+                  proto.postMessage = original;
+                  window.webkit.messageHandlers.agterm.postMessage({token: found || spied || 'none', request: {cmd: 'tree'}})
+                    .then(() => say('accepted'), error => say(error.message));
+                });
+              } catch (error) { say('threw ' + error.message); }
+            <\\/script>`;
+            document.documentElement.appendChild(lifter);
             </script><iframe src="frame.html"></iframe>""")
     with open(os.path.join(pages, "frame.html"), "w", encoding="utf-8") as target:
         target.write("""<!doctype html><script>
-            const answer = text => parent.postMessage(text, '*');
+            const answer = text => parent.postMessage('frame:' + text, '*');
             try {
               window.webkit.messageHandlers.agterm.postMessage({cmd: 'tree'})
                 .then(() => answer('accepted'), error => answer(error.message));
@@ -277,7 +301,8 @@ def verify_page_answers(env, process, session, window, pages, page):
     code, outcome = answer(command)
     assert code == 0, (code, outcome, page())
     assert outcome["outcome"] == "submitted", outcome
-    assert outcome["value"] == "main|requests from frames are refused", f"a frame reached the bridge: {outcome}"
+    assert outcome["value"] == ("main|frame:requests from frames are refused|srcdoc:requests from frames are refused"), \
+        f"a frame reached the bridge: {outcome}"
     assert session_name() == "bridged", "agterm.request did not rename the page's own session"
     read = control_json(env, "session", "overlay", "result", "--page", outcome["pageID"], "--json")
     assert read["result"]["pageOutcome"] == outcome, read
