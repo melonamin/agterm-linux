@@ -1,0 +1,20 @@
+pkgbase = agterm-linux-bin
+	pkgdesc = Native terminal with a workspace and session sidebar, built on libghostty
+	pkgver = 0.26.1
+	pkgrel = 1
+	url = https://github.com/melonamin/agterm-linux
+	arch = x86_64
+	license = MIT
+	makedepends = patchelf
+	depends = bash
+	depends = glibc
+	depends = gtk4
+	depends = libadwaita
+	depends = libepoxy
+	optdepends = zsh: required for live session restore
+	source = https://github.com/melonamin/agterm-linux/releases/download/linux-v0.26.1/agterm-linux-v0.26.1-x86_64.tar.gz
+	source = LICENSE::https://github.com/melonamin/agterm-linux/raw/linux-v0.26.1/LICENSE
+	sha256sums = 2833a39158fc20d61c2e05fcc58931bb9ac3bd39b7c2029d28807792afb97068
+	sha256sums = 155d97114b2d9b7f66181d0ba258aca57f97b8b957dd1662745bf57218c41ef3
+
+pkgname = agterm-linux-bin
