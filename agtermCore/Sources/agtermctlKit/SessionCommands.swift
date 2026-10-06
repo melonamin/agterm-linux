@@ -530,8 +530,8 @@ struct Session: ParsableCommand {
     struct Overlay: ParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Open, read, resize, or close an ephemeral overlay terminal on a session.",
-            subcommands: [Open.self, Close.self, Resize.self, Reload.self, Navigate.self, Result.self, Copy.self, Text.self,
-                          RunJob.self]
+            subcommands: [Open.self, Close.self, Resize.self, Reload.self, Navigate.self, Result.self, Submit.self, Copy.self,
+                          Text.self, RunJob.self]
         )
 
         /// `--pane` validation for the overlay commands: the two pane roles only, deliberately NOT the shared
@@ -562,7 +562,7 @@ struct Session: ParsableCommand {
                 """)
             var cwd: String?
             @Flag(name: .long, help: "Keep the overlay open after COMMAND exits (press any key to close).") var wait = false
-            @Flag(name: .long, help: "Block until COMMAND exits and exit with its status (the program renders normally; capture its output via the program's own output file).") var block = false
+            @Flag(name: .long, help: Open.blockHelp) var block = false
             @Flag(name: .long, help: "Select (switch to) the target session after opening the overlay (default: open without switching).") var follow = false
             @Option(name: .long, help: "Render a floating, framed panel at PERCENT (1-100) of the pane instead of full-size.") var sizePercent: Int?
             @Option(name: .long, help: "Solid background color (#rrggbb) for the overlay pane, independent of the session's own.") var backgroundColor: String?
@@ -582,7 +582,7 @@ struct Session: ParsableCommand {
                 if [command, html, url].compactMap({ $0 }).count != 1 {
                     throw ValidationError("provide exactly one of COMMAND, --html or --url")
                 }
-                if command == nil, wait || block { throw ValidationError("a page cannot be combined with --wait or --block") }
+                if command == nil, wait || (url != nil && block) { throw ValidationError("a page takes no --wait, and a --url page no --block") }
                 if navigation, command != nil { throw ValidationError("--navigation requires --html or --url") }
                 if javascript, command != nil { throw ValidationError("--js requires --html or --url") }
                 if url != nil, cwd != nil { throw ValidationError("--cwd cannot be combined with --url") }
@@ -617,6 +617,7 @@ struct Session: ParsableCommand {
 
             func run() throws {
                 guard block else { try defaultRun(); return }
+                if html != nil { return try HtmlPageRunner(json: options.json, send: SocketClient(path: options.socketPath()).send).block(makeRequest()) }
                 let client = SocketClient(path: options.socketPath())
                 // open via the same `makeRequest()` as the non-block path: in block mode `validate()` guarantees
                 // `!wait`, so its `wait` is nil, and the floating `--size-percent` rides that single source
@@ -684,18 +685,12 @@ struct Session: ParsableCommand {
         }
 
         struct Result: RequestCommand {
-            static let configuration = CommandConfiguration(abstract: "Print the overlay program's exit status (errors if it is still running or never ran).")
+            static let configuration = CommandConfiguration(abstract: "Print the overlay program's exit status, or with --page an HTML page's outcome.")
             @Option(name: .long, help: "Read that split pane's overlay status (primary/left/top or split/right/bottom); omit for the session-wide overlay.")
             var pane: String?
+            @Option(name: .long, help: "Read the outcome of the HTML page with this id, as a --block open prints it.") var page: String?
             @OptionGroup var target: TargetOptions
             @OptionGroup var options: ClientOptions
-
-            func validate() throws { try Overlay.validatePane(pane) }
-
-            func makeRequest() throws -> ControlRequest {
-                ControlRequest(cmd: .sessionOverlayResult, target: target.target,
-                               args: options.withWindow(pane.map { ControlArgs(pane: $0) }))
-            }
         }
 
         struct Copy: RequestCommand {

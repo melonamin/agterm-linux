@@ -183,6 +183,7 @@ final class HtmlOverlayRegistryTests: XCTestCase {
         servers.forEach { $0.stop() }
         registry.browser = SystemBrowser()
         registry.sharing = SystemHtmlSharing()
+        registry.dispatch = nil
         store.closeSession(session.id)
         try? FileManager.default.removeItem(at: directory)
     }
@@ -791,6 +792,303 @@ final class HtmlOverlayRegistryTests: XCTestCase {
 
     func testNavigatingAPageThatWasNeverShownIsRefused() {
         XCTAssertEqual(registry.navigate(UUID(), .back), OverlayHtmlError.notRealized)
+    }
+
+    func testTaggedControlsRunOnRealInputWithPageScriptOffFromText() async throws {
+        try await checkTaggedControls(grant: nil, destination: "about:blank", javascript: false)
+    }
+
+    func testTaggedControlsRunOnRealInputWithPageScriptOffFromAFolder() async throws {
+        try await checkTaggedControls(grant: pages.path, destination: "b.html", javascript: false)
+    }
+
+    func testTaggedControlsRunOnRealInputWithPageScriptOn() async throws {
+        try await checkTaggedControls(grant: pages.path, destination: "b.html", javascript: true)
+    }
+
+    func testAThemeChangeKeepsTaggedControlsWorking() async throws {
+        let requests = recordDispatch()
+        try write("tags.html", Self.taggedPage(destination: "b.html"))
+        let page = registry.page(for: try open(file: "tags.html", grant: pages.path), store: store)
+        let window = try present(page.webView)
+        defer { window.orderOut(nil) }
+        try await waitFor("loaded") { self.current?.loadState == .loaded }
+
+        try write("tags.html", Self.taggedPage(destination: "b.html").replacingOccurrences(of: "<title>T</title>",
+                                                                                         with: "<title>R</title>"))
+        page.applyTheme(HtmlOverlayTheme(background: "#101010", foreground: "#e0e0e0", dark: true))
+        try await waitForTitle("R", in: page.webView)
+        try await waitFor("reloaded") { self.current?.loadState == .loaded }
+        try await click("b", in: page.webView, window: window)
+        try await waitFor("request after the theme change") { requests.value.count == 1 }
+        XCTAssertEqual(requests.value.first?.cmd, .sessionSelect)
+    }
+
+    private final class Recorded { var value: [ControlRequest] = [] }
+
+    private static func taggedPage(destination: String) -> String {
+        """
+        <title>T</title><script>document.title = 'page script ran'</script>
+        <button type="button" id="b" data-agterm="session.select" data-agterm-target="3F2A">go</button>
+        <button type="button" id="n" data-agterm="session.select" data-agterm-target="9C41"><span id="inner">in</span></button>
+        <form id="f" data-agterm="session.rename" action="\(destination)">
+          <input id="i" name="name" value="n"><button id="fb">rename</button>
+        </form>
+        <form action="\(destination)"><input id="p" name="v" value="1"></form>
+        """
+    }
+
+    private func checkTaggedControls(grant: String?, destination: String, javascript: Bool) async throws {
+        let requests = recordDispatch()
+        try write("tags.html", Self.taggedPage(destination: destination))
+        let page = registry.page(for: try open(file: "tags.html", grant: grant, javascript: javascript), store: store)
+        let window = try present(page.webView)
+        defer { window.orderOut(nil) }
+        try await waitFor("loaded") { self.current?.loadState == .loaded }
+        try await waitForTitle(javascript ? "page script ran" : "T", in: page.webView)
+        let start = page.webView.url
+
+        try await click("b", in: page.webView, window: window)
+        try await waitFor("button request") { requests.value.count == 1 }
+        XCTAssertEqual(requests.value.last?.cmd, .sessionSelect)
+        XCTAssertEqual(requests.value.last?.target, "3F2A")
+
+        try await click("inner", in: page.webView, window: window)
+        try await waitFor("nested element request") { requests.value.count == 2 }
+        XCTAssertEqual(requests.value.last?.target, "9C41")
+
+        try await click("fb", in: page.webView, window: window)
+        try await waitFor("submit button request") { requests.value.count == 3 }
+        XCTAssertEqual(requests.value.last?.cmd, .sessionRename)
+
+        try await pressReturn(in: "i", view: page.webView, window: window)
+        try await waitFor("return request") { requests.value.count == 4 }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(requests.value.count, 4, "each input sends one request")
+        XCTAssertEqual(page.webView.url, start, "a tagged form never navigates")
+
+        try await pressReturn(in: "p", view: page.webView, window: window)
+        try await waitFor("the untagged form navigates") { page.webView.url != start }
+        XCTAssertEqual(requests.value.count, 4)
+    }
+
+    func testAScriptedPageGetsEachReplyAndEveryRequestSettles() async throws {
+        _ = recordDispatch { _ in ControlResponse(ok: true, result: ControlResult(text: "v1")) }
+        try write("js.html", """
+            <title>J</title><script>
+            agterm.request('version').then(r => { document.title = 'ok:' + r.text });
+            agterm.request('session.nope').catch(e => { document.body.dataset.err = e.message });
+            agterm.request('zmx.reset').catch(e => { document.body.dataset.refused = e.message });
+            </script>
+            """)
+        let page = registry.page(for: try open(file: "js.html", javascript: true), store: store)
+        try await waitForTitle("ok:v1", in: page.webView)
+        try await waitForScript("document.body.dataset.err", in: page.webView) { $0.hasPrefix("invalid request: ") }
+        try await waitForScript("document.body.dataset.refused", in: page.webView) { $0 == "zmx.reset cannot be sent from a page" }
+    }
+
+    func testDataAgtermIntoShowsTheReplyOrTheErrorWithPageScriptOff() async throws {
+        _ = recordDispatch { request in
+            request.cmd == .version ? ControlResponse(ok: true, result: ControlResult(text: "v1"))
+                : ControlResponse(ok: false, error: "no such session")
+        }
+        try write("into.html", """
+            <title>I</title>
+            <button type="button" id="ok" data-agterm="version" data-agterm-into="#out">v</button>
+            <button type="button" id="bad" data-agterm="session.select" data-agterm-target="X" data-agterm-into="#err">s</button>
+            <pre id="out"></pre><pre id="err"></pre>
+            """)
+        let page = registry.page(for: try open(file: "into.html"), store: store)
+        try await waitForTitle("I", in: page.webView)
+        _ = try await page.webView.evaluateJavaScript("document.getElementById('ok').click(); document.getElementById('bad').click()")
+        try await waitForScript("document.getElementById('out').textContent", in: page.webView) { $0 == "v1" }
+        try await waitForScript("document.getElementById('err').textContent", in: page.webView) { $0 == "no such session" }
+    }
+
+    func testFormControlsBecomeTypedArgumentsOverTheJsonBase() async throws {
+        let requests = recordDispatch()
+        try write("form.html", """
+            <title>F</title>
+            <form id="f" data-agterm="session.status" data-agterm-args='{"autoReset":true,"name":"base"}'>
+              <input name="name" value="typed">
+              <input type="number" name="sizePercent" value="80">
+              <input type="number" name="lines" value="">
+              <input type="checkbox" name="blink">
+              <input name="text" value="skipped" disabled>
+              <input type="radio" name="status" value="active"><input type="radio" name="status" value="completed" checked>
+              <button>go</button>
+            </form>
+            """)
+        let page = registry.page(for: try open(file: "form.html"), store: store)
+        try await waitForTitle("F", in: page.webView)
+        _ = try await page.webView.evaluateJavaScript("document.getElementById('f').requestSubmit()")
+        try await waitFor("form request") { requests.value.count == 1 }
+        let args = try XCTUnwrap(requests.value.first?.args)
+        XCTAssertEqual(args.name, "typed")
+        XCTAssertEqual(args.sizePercent, 80)
+        XCTAssertNil(args.lines)
+        XCTAssertEqual(args.blink, false)
+        XCTAssertNil(args.text)
+        XCTAssertEqual(args.status, "completed")
+        XCTAssertEqual(args.autoReset, true)
+    }
+
+    func testTheClickedNamedButtonIsTheOnlyButtonSent() async throws {
+        let requests = recordDispatch()
+        try write("buttons.html", """
+            <title>B</title>
+            <form id="f" data-agterm="session.overlay.submit">
+              <button id="main" name="value" value="main">Main</button><button id="dev" name="value" value="dev">Dev</button>
+            </form>
+            """)
+        let page = registry.page(for: try open(file: "buttons.html"), store: store)
+        try await waitForTitle("B", in: page.webView)
+        _ = try await page.webView.evaluateJavaScript("document.getElementById('f').requestSubmit(document.getElementById('dev'))")
+        try await waitFor("dev request") { requests.value.count == 1 }
+        XCTAssertEqual(requests.value.first?.args?.value, "dev")
+        _ = try await page.webView.evaluateJavaScript("document.getElementById('f').requestSubmit(document.getElementById('main'))")
+        try await waitFor("main request") { requests.value.count == 2 }
+        XCTAssertEqual(requests.value.last?.args?.value, "main")
+    }
+
+    func testControlsInADisabledFieldsetAreSkipped() async throws {
+        let requests = recordDispatch()
+        try write("fieldset.html", """
+            <title>D</title>
+            <form id="f" data-agterm="session.status" data-agterm-args='{"name":"base"}'>
+              <fieldset disabled><input name="name" value="locked"><input type="checkbox" name="blink" checked></fieldset>
+              <input name="status" value="idle">
+            </form>
+            """)
+        let page = registry.page(for: try open(file: "fieldset.html"), store: store)
+        try await waitForTitle("D", in: page.webView)
+        _ = try await page.webView.evaluateJavaScript("document.getElementById('f').requestSubmit()")
+        try await waitFor("form request") { requests.value.count == 1 }
+        let args = try XCTUnwrap(requests.value.first?.args)
+        XCTAssertEqual(args.name, "base")
+        XCTAssertNil(args.blink)
+        XCTAssertEqual(args.status, "idle")
+    }
+
+    func testARepeatedValueIsRefusedAndSendsNothing() async throws {
+        let requests = recordDispatch()
+        try write("repeat.html", """
+            <title>R</title>
+            <form id="twice" data-agterm="session.rename" data-agterm-into="#err">
+              <input name="name" value="a"><input name="name" value="b">
+            </form>
+            <form id="multi" data-agterm="session.rename" data-agterm-into="#err2">
+              <select name="name" multiple><option selected>a</option><option selected>b</option></select>
+            </form>
+            <pre id="err"></pre><pre id="err2"></pre>
+            """)
+        let page = registry.page(for: try open(file: "repeat.html"), store: store)
+        try await waitForTitle("R", in: page.webView)
+        _ = try await page.webView.evaluateJavaScript("document.getElementById('twice').requestSubmit(); document.getElementById('multi').requestSubmit()")
+        try await waitForScript("document.getElementById('err').textContent", in: page.webView) { $0.contains("name") }
+        try await waitForScript("document.getElementById('err2').textContent", in: page.webView) { $0.contains("name") }
+        XCTAssertTrue(requests.value.isEmpty)
+    }
+
+    func testAFrameRequestIsRefused() async throws {
+        let requests = recordDispatch()
+        try write("frame.html", #"""
+            <title>P</title>
+            <iframe srcdoc="<script>window.webkit.messageHandlers.agterm.postMessage({cmd: 'version'})
+              .then(() => { parent.document.title = 'leaked' }, e => { parent.document.title = 'refused:' + e.message })
+            </script>"></iframe>
+            """#)
+        let page = registry.page(for: try open(file: "frame.html", javascript: true), store: store)
+        try await waitForTitle("refused:requests from frames are refused", in: page.webView)
+        XCTAssertTrue(requests.value.isEmpty)
+    }
+
+    func testAUrlPageGetsNoBridge() async throws {
+        let port = try await serve(.ipv4(.loopback), ["/": .init(body: "<title>app</title>")])
+        let page = registry.page(for: try openURL("http://127.0.0.1:\(port)/", javascript: true), store: store)
+        try await waitFor("loaded") { self.current?.loadState == .loaded && self.current?.current?.title == "app" }
+        let helper = try await page.webView.evaluateJavaScript("typeof window.agterm + '|' + typeof window.webkit?.messageHandlers?.agterm")
+        XCTAssertEqual(helper as? String, "undefined|undefined")
+        let bridge = try await page.webView.evaluateJavaScript("typeof window.webkit?.messageHandlers?.agterm", in: nil,
+                                                               contentWorld: HtmlOverlayBridge.world)
+        XCTAssertEqual(bridge as? String, "undefined")
+    }
+
+    func testAReleasedPageSendsNothingFurther() async throws {
+        let requests = recordDispatch()
+        try write("tags.html", Self.taggedPage(destination: "about:blank"))
+        let page = registry.page(for: try open(file: "tags.html"), store: store)
+        try await waitForTitle("T", in: page.webView)
+        XCTAssertTrue(store.closeOverlay(session.id))
+        let handler = try await page.webView.evaluateJavaScript("typeof window.webkit?.messageHandlers?.agterm", in: nil,
+                                                                contentWorld: HtmlOverlayBridge.world)
+        XCTAssertEqual(handler as? String, "undefined")
+        _ = try? await page.webView.evaluateJavaScript("document.getElementById('b').click()")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(requests.value.isEmpty)
+    }
+
+    private func recordDispatch(_ respond: @escaping (ControlRequest) -> ControlResponse = { _ in ControlResponse(ok: true) })
+        -> Recorded {
+        let recorded = Recorded()
+        registry.dispatch = { request in
+            recorded.value.append(request)
+            return respond(request)
+        }
+        return recorded
+    }
+
+    private func waitForScript(_ script: String, in view: WKWebView, _ matches: @escaping (String) -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(10)
+        while true {
+            let value = try await view.evaluateJavaScript("String(\(script))") as? String ?? ""
+            if matches(value) { return }
+            guard Date() < deadline else { return XCTFail("\(script) never matched, last: \(value)") }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    private func present(_ view: NSView) throws -> NSWindow {
+        let window = try host(view)
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(view)
+        return window
+    }
+
+    private func click(_ id: String, in view: WKWebView, window: NSWindow) async throws {
+        let value = try await view.evaluateJavaScript("""
+            (() => { const r = document.getElementById('\(id)').getBoundingClientRect();
+                     return [r.x + r.width / 2, r.y + r.height / 2] })()
+            """)
+        let center = try XCTUnwrap(value as? [Double])
+        let local = NSPoint(x: center[0], y: view.isFlipped ? center[1] : view.bounds.height - center[1])
+        let point = view.convert(local, to: nil)
+        let content = try XCTUnwrap(window.contentView)
+        let hit = try XCTUnwrap(content.hitTest(content.convert(point, from: nil)))
+        XCTAssertTrue(hit === view || hit.isDescendant(of: view), "the click must land on the page view")
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(
+                with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+                pressure: type == .leftMouseDown ? 1 : 0))
+            if type == .leftMouseDown { hit.mouseDown(with: event) } else { hit.mouseUp(with: event) }
+        }
+    }
+
+    private func pressReturn(in id: String, view: WKWebView, window: NSWindow) async throws {
+        try await click(id, in: view, window: window)
+        let responder = try XCTUnwrap(window.firstResponder)
+        for type in [NSEvent.EventType.keyDown, .keyUp] {
+            let event = try XCTUnwrap(NSEvent.keyEvent(
+                with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+                isARepeat: false, keyCode: 36))
+            if type == .keyDown { responder.keyDown(with: event) } else { responder.keyUp(with: event) }
+        }
+    }
+
+    private func waitForTitle(_ title: String, in view: WKWebView) async throws {
+        try await waitFor("title \(title)") { view.title == title }
     }
 
     private var current: HtmlOverlay? { session.htmlOverlay ?? session.paneOverlay(.left)?.html }

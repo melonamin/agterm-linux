@@ -339,7 +339,7 @@ final class ControlServer: @unchecked Sendable {
              .sessionSplit, .sessionSplitClose, .sessionSwap, .sessionLead, .sessionScratch, .sessionFocus,
              .sessionCopy, .sessionPaste, .sessionSelectAll, .sessionSearch,
              .sessionOverlayOpen, .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayResult,
-             .sessionOverlayReload, .sessionOverlayNavigate,
+             .sessionOverlayReload, .sessionOverlayNavigate, .sessionOverlaySubmit,
              .sessionOverlayCopy, .sessionOverlayText,
              .sessionHudOpen, .sessionHudUpdate, .sessionHudClose,
              .askOpen,
