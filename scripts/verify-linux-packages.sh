@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERIFY_ARCH="$ROOT/scripts/verify-linux-architecture.sh"
 VERSION="${1#v}"
 # nFPM's semver schema maps prerelease separators to '~' so prereleases sort before stable versions.
-PACKAGE_VERSION="${VERSION/-/~}"
+PACKAGE_VERSION="${VERSION/-/\~}" # escaped: bash 5.2 expands a bare ~ in the replacement to $HOME
 OUT="${2:-dist-linux}"
 [[ "$OUT" = /* ]] || OUT="$ROOT/$OUT"
 
