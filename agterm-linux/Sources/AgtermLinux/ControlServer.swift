@@ -285,6 +285,21 @@ final class ControlServer: @unchecked Sendable {
         }
     }
 
+    /// dispatchFromPage runs a page's request as the socket would, on a later main-loop turn, so a command that closes
+    /// or reloads its own page never runs inside WebKit's message signal. A remote zmx request waits on ssh off the
+    /// main thread, as it does over the socket.
+    @MainActor func dispatchFromPage(_ request: ControlRequest, reply: @escaping @MainActor (ControlResponse) -> Void) {
+        let answer = PageReplyBox(reply)
+        if Self.isRemoteZmxRequest(request) {
+            Thread.detachNewThread { [self] in
+                let response = dispatchRemoteZmx(request)
+                runOnMain { MainActor.assumeIsolated { answer.reply(response) } }
+            }
+            return
+        }
+        runOnMain { MainActor.assumeIsolated { answer.reply(Self.route(for: request).response(for: request)) } }
+    }
+
     /// Run the dispatch on the GTK main thread and block until it returns.
     private func dispatchOnMain(_ req: ControlRequest) -> ControlResponse {
         let sem = DispatchSemaphore(value: 0)
@@ -440,6 +455,12 @@ final class ControlServer: @unchecked Sendable {
             return true
         }
     }
+}
+
+// only ever called on the main thread; the box carries the closure across the hop
+private final class PageReplyBox: @unchecked Sendable {
+    let reply: @MainActor (ControlResponse) -> Void
+    init(_ reply: @escaping @MainActor (ControlResponse) -> Void) { self.reply = reply }
 }
 
 private final class ResponseBox: @unchecked Sendable {

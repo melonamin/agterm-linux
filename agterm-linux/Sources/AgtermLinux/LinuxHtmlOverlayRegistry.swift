@@ -9,6 +9,8 @@ final class LinuxHtmlOverlayRegistry {
     static let shared = LinuxHtmlOverlayRegistry()
     private static let fileScheme = "agterm-file"
     private var pages: [UUID: LinuxHtmlOverlayPage] = [:]
+    /// dispatch runs the requests pages send; the app supplies it once the control server starts.
+    var dispatch: LinuxHtmlBridgeDispatch?
     private var installed = false
 
     func install() {
@@ -39,11 +41,13 @@ final class LinuxHtmlOverlayRegistry {
         pages.removeValue(forKey: id)?.close()
     }
 
+    /// releasePages empties every page slot of a closing window through the model, as macOS does, so each page
+    /// is released once and a caller blocked on it reads `dismissed`.
     func releasePages(in store: AppStore) {
         for session in store.workspaces.flatMap(\.sessions) {
-            if let page = session.htmlOverlay { release(page.id) }
-            for pane in OverlayPane.allCases {
-                if let page = session.paneOverlay(pane)?.html { release(page.id) }
+            if session.htmlOverlay != nil { session.teardownOverlaySlot() }
+            for pane in OverlayPane.allCases where session.paneOverlay(pane)?.html != nil {
+                session.teardownPaneOverlay(pane)
             }
         }
     }

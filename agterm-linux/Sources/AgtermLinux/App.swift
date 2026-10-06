@@ -225,6 +225,7 @@ private let onOpen: @MainActor @convention(c) (OpaquePointer?, UnsafeMutablePoin
     installAppCSS()
     installAppIcons()
     gControlServer.start()
+    LinuxHtmlOverlayRegistry.shared.dispatch = { gControlServer.dispatchFromPage($0, reply: $1) }
     gHooks = LinuxHooks(library: gLibrary, configDirectory: ConfigPaths.configDirectory(
         setting: currentSettings.configDirectory,
         stateDir: ProcessInfo.processInfo.environment["AGTERM_STATE_DIR"],

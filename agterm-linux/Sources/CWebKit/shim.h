@@ -43,3 +43,34 @@ static inline void agterm_disconnect_signals(gpointer object, gpointer data)
 {
     g_signal_handlers_disconnect_by_data(object, data);
 }
+
+// Page script messages cross as JSON text; `gpointer` keeps JSC and reply types out of Swift's view.
+static inline char *agterm_script_message_json(gpointer value)
+{
+    return jsc_value_to_json(JSC_VALUE(value), 0);
+}
+
+static inline gpointer agterm_script_message_reply_ref(gpointer reply)
+{
+    return webkit_script_message_reply_ref((WebKitScriptMessageReply *)reply);
+}
+
+static inline void agterm_script_message_reply_unref(gpointer reply)
+{
+    webkit_script_message_reply_unref((WebKitScriptMessageReply *)reply);
+}
+
+// One context serves every reply: the reply serializes the value out of it at once.
+static inline void agterm_script_message_reply_json(gpointer reply, const char *json)
+{
+    static JSCContext *context = NULL;
+    if (!context) context = jsc_context_new();
+    JSCValue *value = jsc_value_new_from_json(context, json);
+    webkit_script_message_reply_return_value((WebKitScriptMessageReply *)reply, value);
+    g_object_unref(value);
+}
+
+static inline void agterm_script_message_reply_error(gpointer reply, const char *message)
+{
+    webkit_script_message_reply_return_error_message((WebKitScriptMessageReply *)reply, message);
+}

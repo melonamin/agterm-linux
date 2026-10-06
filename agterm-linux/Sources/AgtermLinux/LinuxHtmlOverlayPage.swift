@@ -56,6 +56,7 @@ final class LinuxHtmlOverlayPage {
     private let title: OpaquePointer
     private let errorLabel: OpaquePointer
     private var buttons: [String: OpaquePointer] = [:]
+    private let bridgeToken = UUID().uuidString
 
     init(overlay: HtmlOverlay, controller: AppController, backgroundColor: String?, theme: HtmlOverlayTheme) {
         id = overlay.id
@@ -87,6 +88,7 @@ final class LinuxHtmlOverlayPage {
             webkit_user_content_manager_add_script(manager, script)
             webkit_user_script_unref(script)
         }
+        if case .file = overlay.source { installBridge() }
         buildUI()
         connectSignals()
         applyTheme(theme)
@@ -104,6 +106,10 @@ final class LinuxHtmlOverlayPage {
             adw_dialog_close(cast(dialog))
         }
         agterm_disconnect_signals(RAW(webView), data)
+        agterm_disconnect_signals(RAW(manager), data)
+        if case .file = overlay.source {
+            for world in bridgeWorlds { webkit_user_content_manager_unregister_script_message_handler(manager, LinuxHtmlOverlayBridge.handlerName, world) }
+        }
         if let inputController { agterm_disconnect_signals(RAW(inputController), data) }
         for button in buttons.values { agterm_disconnect_signals(RAW(button), data) }
         webkit_web_view_stop_loading(cast(webView))
@@ -241,6 +247,59 @@ final class LinuxHtmlOverlayPage {
             }
             html.withCString { webkit_web_view_load_html(cast(webView), $0, nil) }
         }
+    }
+
+    // the page world (nil) only on a --js page, where `agterm.request` lives
+    private var bridgeWorlds: [String?] { overlay.javascript ? [LinuxHtmlOverlayBridge.world, nil] : [LinuxHtmlOverlayBridge.world] }
+
+    // installed once: theme changes replace only style sheets, so the scripts and handlers stay
+    private func installBridge() {
+        addScript(LinuxHtmlOverlayBridge.adapterScript(token: bridgeToken), world: LinuxHtmlOverlayBridge.world,
+                  at: WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END)
+        if overlay.javascript {
+            addScript(LinuxHtmlOverlayBridge.helperScript(token: bridgeToken), world: nil,
+                      at: WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START)
+        }
+        connect(manager, "script-message-with-reply-received::\(LinuxHtmlOverlayBridge.handlerName)",
+                unsafeBitCast(onHtmlBridgeMessage as @convention(c)
+                    (OpaquePointer?, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, gpointer?) -> gboolean,
+                    to: GCallback.self), Unmanaged.passUnretained(self).toOpaque())
+        for world in bridgeWorlds {
+            _ = webkit_user_content_manager_register_script_message_handler_with_reply(
+                manager, LinuxHtmlOverlayBridge.handlerName, world)
+        }
+    }
+
+    private func addScript(_ source: String, world: String?, at time: WebKitUserScriptInjectionTime) {
+        let script = source.withCString { source in
+            if let world {
+                return world.withCString { webkit_user_script_new_for_world(source, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME, time, $0, nil, nil) }
+            }
+            return webkit_user_script_new(source, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME, time, nil, nil)
+        }
+        webkit_user_content_manager_add_script(manager, script)
+        webkit_user_script_unref(script)
+    }
+
+    func bridgeMessage(_ value: UnsafeMutableRawPointer?, reply: UnsafeMutableRawPointer?) -> gboolean {
+        guard let reply else { return 0 }
+        let message = value.flatMap { agterm_script_message_json($0) }.map { json in
+            defer { g_free(json) }
+            return String(cString: json)
+        }
+        let answer = LinuxScriptReply(reply)
+        LinuxHtmlOverlayBridge.handle(message, token: bridgeToken, origin: bridgeOrigin,
+                                      dispatch: LinuxHtmlOverlayRegistry.shared.dispatch) { json, error in
+            answer.send(json, error: error)
+        }
+        return 1
+    }
+
+    // resolved per message, so a page acts from where it sits now
+    private var bridgeOrigin: HtmlBridgePage? {
+        guard let store, let slot = store.htmlOverlaySlot(id) else { return nil }
+        let window = gWindows.first { $0.value.store === store }?.key.uuidString
+        return HtmlBridgePage(window: window, session: slot.session.id, pane: slot.pane)
     }
 
     func fail(_ message: String) {
@@ -534,6 +593,9 @@ private let onHtmlScriptDialog: @MainActor @convention(c) (OpaquePointer?, Opaqu
 private let onHtmlProcessTerminated: @MainActor @convention(c) (OpaquePointer?, Int32, gpointer?) -> Void = { _, _, data in
     htmlPage(data)?.fail("web content process terminated")
 }
+private let onHtmlBridgeMessage: @MainActor @convention(c)
+    (OpaquePointer?, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, gpointer?) -> gboolean =
+    { _, value, reply, data in htmlPage(data)?.bridgeMessage(value, reply: reply) ?? 0 }
 private let onHtmlExternalResponse: @MainActor @convention(c) (OpaquePointer?, UnsafePointer<CChar>?, gpointer?) -> Void =
     { _, answer, data in htmlPage(data)?.externalResponse(answer) }
 private let onHtmlUserEvent: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> gboolean =

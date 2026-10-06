@@ -83,6 +83,15 @@ extension LinuxControlDispatcher {
                 return actions.navigateSessionOverlay(request.target, window: request.args?.window,
                                                       pane: pane, navigation: step)
             }
+        case .sessionOverlaySubmit:
+            guard let value = request.args?.value else {
+                return ControlResponse(ok: false, error: OverlayHtmlError.submitValue)
+            }
+            switch parseOverlayPane(request.args?.pane) {
+            case .rejected(let response): return response
+            case .pane(let pane):
+                return actions.submitSessionOverlay(request.target, window: request.args?.window, pane: pane, value: value)
+            }
         default:
             preconditionFailure("unexpected HTML overlay command: \(request.cmd.rawValue)")
         }

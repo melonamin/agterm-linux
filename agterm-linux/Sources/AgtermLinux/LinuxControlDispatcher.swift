@@ -25,7 +25,7 @@ struct LinuxControlDispatcher {
                 .surfaceZoom, .surfaceCursor,
                 .sessionCopy, .sessionPaste, .sessionSelectAll, .sessionOverlayOpen,
                 .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayResult,
-                .sessionOverlayReload, .sessionOverlayNavigate,
+                .sessionOverlayReload, .sessionOverlayNavigate, .sessionOverlaySubmit,
                 .sessionOverlayCopy, .sessionOverlayText, .sessionBackground, .sessionText:
             return dispatchSessionSurfaceCommand(request)
         case .sessionHudOpen, .sessionHudUpdate, .sessionHudClose:
@@ -456,7 +456,7 @@ struct LinuxControlDispatcher {
             return actions.setSurfaceZoom(request.target, window: request.args?.window, mode: mode)
         case .surfaceCursor:
             return actions.readSurfaceCursor(request.target, window: request.args?.window)
-        case .sessionOverlayOpen, .sessionOverlayReload, .sessionOverlayNavigate:
+        case .sessionOverlayOpen, .sessionOverlayReload, .sessionOverlayNavigate, .sessionOverlaySubmit:
             return dispatchHtmlOverlayCommand(request)
         case .sessionOverlayClose:
             switch parseOverlayPane(request.args?.pane) {
@@ -485,6 +485,10 @@ struct LinuxControlDispatcher {
             return actions.resizeSessionOverlay(request.target, window: request.args?.window,
                                                 sizePercent: wantsFull ? nil : percent)
         case .sessionOverlayResult:
+            if let page = request.args?.page {
+                guard let id = UUID(uuidString: page) else { return ControlResponse(ok: false, error: OverlayHtmlError.invalidPageID) }
+                return actions.htmlPageResult(id)
+            }
             switch parseOverlayPane(request.args?.pane) {
             case .rejected(let response): return response
             case .pane(let pane):

@@ -21,7 +21,7 @@ extension AppController {
                 }
                 if options.follow { selectSession(id, userInitiated: false) }
                 reconcile()
-                return ok(id)
+                return ControlResponse(ok: true, result: ControlResult(id: id.uuidString, pageID: overlay.id.uuidString))
             }
             if let remote = gControlServer.openRemoteOverlay(in: store, sessionID: id, options: options) {
                 return remote
@@ -57,6 +57,16 @@ extension AppController {
                                                                     current: current, store: store) {
                 return err(failure.message)
             }
+            return ok(id)
+        }
+    }
+
+    func submitSessionOverlay(_ target: String?, window: String?, pane: OverlayPane?, value: String) -> ControlResponse {
+        switch resolveSessionResponse(target) {
+        case .failure(let response): return response
+        case .success(let id):
+            if let failure = store.submitHtmlOverlay(id, pane: pane, value: value) { return err(failure.message) }
+            reconcile()
             return ok(id)
         }
     }
