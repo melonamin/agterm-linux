@@ -3,7 +3,7 @@ import Foundation
 /// HudMarkdown lays a markdown HUD message out for the painter: Foundation parses standard markdown, `lines`
 /// walks the parsed blocks into prefixed logical rows of styled runs, `rows` wraps them, `fitted` clips them
 /// to the panel's grid and `sgr` encodes each finished row.
-enum HudMarkdown {
+public enum HudMarkdown {
     struct Style: OptionSet, Hashable, Sendable {
         let rawValue: UInt8
         static let bold = Style(rawValue: 1)
@@ -45,6 +45,7 @@ enum HudMarkdown {
     static let minRuleWidth = 3
     static let tabWidth = 4
 
+    #if canImport(Darwin)
     /// lines parses `source` as standard markdown. Blocks are separated by one blank row, except blocks
     /// sharing a list, since the parser does not say whether a list was tight or loose.
     static func lines(_ source: String) -> [Line] {
@@ -64,9 +65,10 @@ enum HudMarkdown {
         }
         return walker.finish()
     }
+    #endif
 
     /// rendersVisibleText reports whether `source` lays out to at least one non-space cell.
-    static func rendersVisibleText(_ source: String) -> Bool {
+    public static func rendersVisibleText(_ source: String) -> Bool {
         rows(lines(source), width: HudLayout.maxColumns).contains { row in
             row.contains { run in run.text.unicodeScalars.contains { !$0.properties.isWhitespace } }
         }
@@ -104,6 +106,7 @@ enum HudMarkdown {
         return out
     }
 
+    #if canImport(Darwin)
     fileprivate struct Segment {
         let text: String
         let inline: InlinePresentationIntent
@@ -325,6 +328,7 @@ enum HudMarkdown {
             return (lead, hang)
         }
     }
+    #endif
 }
 
 extension HudMarkdown {

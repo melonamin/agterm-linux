@@ -38,15 +38,26 @@ You are inside agterm (`AGTERM_ENABLED=1`). Use:
   `agtermctl terminfo install <host>` (local-only, no socket; `-p`, `-i`, `-J`, `-F` pass through, other
   connection settings belong in `~/.ssh/config`, and the execution settings are the installer's own). The symptom it fixes is `less`, `vim` or `apt` on the remote
   warning that the terminal is not fully functional, because `TERM=xterm-ghostty` is unknown there.
-- **Logs** (unified logging, subsystem `com.umputun.agterm`):
+- **Logs** — split by platform. macOS uses unified logging with subsystem `com.umputun.agterm`:
   ```bash
   log show --predicate 'subsystem == "com.umputun.agterm"' --info --last 30m
   ```
   Categories: `GhosttyApp`, `GhosttySurfaceView`, `WatermarkRenderer`, `NotificationManager`,
   `SettingsView`, `SettingsModel`, `CustomCommandRunner`, `ControlServer`.
+  Linux ControlServer: GLib structured logging — journald stores the fields when the process is
+  journal-connected; otherwise GLib writes to stderr (launch agterm from a terminal to keep it).
+  Other Linux diagnostics may still write directly to stderr. ControlServer diagnostics:
+  ```bash
+  journalctl --user -t agterm GLIB_DOMAIN=ControlServer --since "30 minutes ago"
+  ```
 - **Files** — keymap `~/.config/agterm/keymap.conf`; agterm-scoped ghostty config
-  `~/.config/agterm/ghostty.conf`; settings `~/Library/Application Support/agterm/settings.json`;
-  socket path in `$AGTERM_SOCKET`.
+  `~/.config/agterm/ghostty.conf`; settings in the platform application-support directory
+  (`~/Library/Application Support/agterm/settings.json` on macOS); socket path in `$AGTERM_SOCKET`.
+- **Linux integrations** — `agtermctl integration status --json` is local and works without the app.
+  A `conflict` means agterm found unrelated content and refused to replace it. Preview repairs with
+  `agtermctl integration install hooks --dry-run --json` or `integration install skill --dry-run --json`.
+  Multi-target installs may still apply independent safe targets; the conflicting target remains untouched and exit status is `2`.
+  Pi must have created `~/.pi/agent` first; restart Pi or run `/reload` after installing or updating hooks.
 
 ### "Keymap editor won't open"
 
@@ -61,7 +72,7 @@ also no-ops with no session selected or an overlay already open.
 
 Causes, in order: a parse error (see the diagnostics); the chord conflicts with a built-in or another
 custom command and was dropped to palette-only (it still runs from `⌃⇧P`, tagged `custom`); a reserved
-chord (`ctrl+tab`, `ctrl+1`/`ctrl+2`); a first chord without a modifier or function key
+chord (`ctrl+tab`, `ctrl+1`/`ctrl+2`, or Linux `ctrl+,`); a first chord without a modifier or function key
 (`f1` through `f20`); it does not fire while a text field (inline rename, a palette, Settings)
 has keyboard focus,
 though it DOES fire from a terminal pane or an empty window (every session closed); it runs in a non-interactive
@@ -86,25 +97,39 @@ key before the terminal sees it. The items enable only when the terminal can ser
 selection, Paste needs something pasteable on the clipboard (text, or a file/web URL, which pastes as a
 shell-escaped path), Select All needs a live surface. Cut stays disabled for the terminal (it still works in
 a text field, such as the inline rename or a palette's search box). Undo and Redo are not in the menu at all:
-agterm has no undo, and ⌘Z belongs to File ▸ Reopen Closed Item. Because these are standard menu shortcuts,
-⌘C/⌘V/⌘A are NOT rebindable through `ghostty.conf`.
+agterm has no undo, and ⌘Z belongs to File ▸ Reopen Closed Item. Because these are standard macOS
+menu shortcuts, the menu's ⌘C/⌘V/⌘A equivalents are not rebindable through `ghostty.conf`. On Linux
+there is no menu layer — the bundled binds below are the only layer, and every one of them IS
+rebindable there.
 
-agterm's bundled ghostty defaults are the **fallback**, binding all three to the physical key POSITIONS
-(`super+key_c`/`super+key_v`/`super+key_a`), matched by keycode regardless of the character the layout
-prints. They fire whenever the menu equivalent does not: on a Russian/Greek/etc. layout the physical C key
-yields `с`, so the menu's ⌘C never matches and the keycode bind runs instead; likewise a ⌘C with no
-selection, or a ⌘V with nothing pasteable, leaves the menu item disabled and reaches the bind on ANY
-layout. The three binds deliberately omit ghostty's `performable:` prefix so they always consume the key,
-and one that cannot act simply does nothing. With that prefix the unperformed press fell through to key
-encoding — invisible under legacy encoding, which drops ⌘ chords on macOS, but the kitty keyboard protocol
-reports them and the program renders a stray `^[[…u` as text. This is why copy, paste, and select-all all
-keep working on a non-Latin layout. (ghostty's own
-`super+c`/`super+v`/`super+a` match the produced CHARACTER, so alone they would miss there — `super+key_a`
-in particular exists because without it ⌘A would silently do nothing on a Cyrillic layout.)
+agterm's bundled macOS ghostty defaults are the **fallback**, binding all three to the physical key
+POSITIONS (`super+key_c`/`super+key_v`/`super+key_a`), matched by keycode regardless of the character the
+layout prints. They fire whenever the menu equivalent does not: on a Russian/Greek/etc. layout the
+physical C key yields `с`, so the menu's ⌘C never matches and the keycode bind runs instead; likewise a
+⌘C with no selection, or a ⌘V with nothing pasteable, leaves the menu item disabled and reaches the
+bind on ANY layout. The three macOS fallback binds deliberately omit ghostty's `performable:` prefix so
+they always consume the key, and one that cannot act simply does nothing. With that prefix the
+unperformed press would fall through to key encoding — invisible under legacy encoding, which drops ⌘
+chords on macOS, but the kitty keyboard protocol reports them and the program renders a stray `^[[…u` as
+text. (ghostty's own `super+c`/`super+v`/`super+a` match the produced CHARACTER, so alone they would miss
+on a non-Latin layout — `super+key_a` in particular exists because without it ⌘A would silently do
+nothing on a Cyrillic layout.)
+
+On Linux there is no menu layer. The bundled layer is the ONLY layer and uses
+`performable:ctrl+shift+key_c`/`performable:ctrl+shift+key_v`/`performable:ctrl+shift+key_a`, since bare
+Ctrl+C is SIGINT. The physical-key form works across layouts when the action is available. The
+`performable:` prefix preserves ghostty's native fall-through when copy, paste, or select all cannot run.
+All three bindings are rebindable through `ghostty.conf`.
 
 To remap a shortcut ghostty still owns: a physical key name (`key_c`, `key_v`, …) matches by position on
 any layout; a bare letter (`c`, `v`) matches the produced character. Edit `~/.config/agterm/ghostty.conf`,
-then `agtermctl config reload`.
+then `agtermctl config reload`. On Linux each bundled `ctrl+shift+key_c/v/a` bind needs its own override
+line — C, V, and A are three separate binds. For example, to move copy off Ctrl+Shift+C:
+
+```
+keybind = ctrl+shift+key_c=unbind
+keybind = ctrl+shift+c=copy_to_clipboard
+```
 
 ### "My live session came back as a fresh shell"
 
@@ -112,9 +137,9 @@ Check these in order:
 
 - **Restart after selecting Live sessions.** The restore mode is fixed when agterm starts. Changing
   **Settings ▸ General ▸ Restore sessions** affects the next process, not sessions already open.
-- **Read the eligibility reason in Settings.** Live mode requires zsh as the macOS login shell and the
-  bundled zmx and zsh-integration resources. If the launch cannot use live mode, every pane starts as an
-  ordinary shell.
+- **Read the eligibility reason in Settings.** Live mode requires zsh as the password-database login shell,
+  bundled zmx, and the bundled zsh-integration resources on both frontends. If the launch cannot use live
+  mode, every pane starts as an ordinary shell.
 - **Inspect actual backing with `tree --json`.** Primary and split surfaces report `backedByZmx`; the session
   field is true only when every existing primary or split is backed. The sidebar deliberately has no zmx
   indicator.
@@ -127,9 +152,9 @@ Check these in order:
 - **A missing daemon is recreated, running the captured command.** A reboot or a stale daemon leaves nothing
   to attach, so agterm creates one under the saved name and replays the command that pane was running at the
   last clean quit. A fresh shell instead means no capture applied: the window was closed before the quit, the
-  machine lost power or was force-quit, the process exited before quitting, SIGTERM was used, or the command
-  is refused by `restore-denylist.conf`. `agtermctl zmx kill` is not one of these — it closes a shown split
-  or promotes a primary rather than leaving a daemon to recreate. To check what was captured, read
+  machine lost power or was force-quit, the process exited before quitting, SIGTERM was used on macOS, or the
+  command is refused by `restore-denylist.conf`. `agtermctl zmx kill` is not one of these — it closes a shown
+  split or promotes a primary rather than leaving a daemon to recreate. To check what was captured, read
   `foregroundCommand` in `windows/<id>.json` while agterm is STOPPED: the next launch moves it into memory
   and rewrites the file with nil, so a running app always shows null there.
 - **A tool asks for the microphone again after every update.** The pane was created before the session
@@ -139,9 +164,12 @@ Check these in order:
   possible, and the notification afterwards says how many sessions were covered. A session whose old process
   could not be confirmed gone gets no command restarted and the reset can be run again.
 - **After an update, an attached session still needs a key press, or a zmx change seems missing.** A live
-  session keeps the zmx it was created with through app updates. `agtermctl zmx list` marks such rows
+  session keeps the zmx it was created with through app updates.
+  On macOS, `agtermctl zmx list` marks such rows
   `outdated`; Agterm ▸ Reset Live Sessions… (or `agtermctl zmx reset --force`) recreates them on the current
   zmx, with the same cost as any reset: running work stops and agent conversations need resuming.
+  Linux has neither the flag nor the reset (`zmx reset` answers unsupported); the session keeps its old zmx
+  until its daemon ends.
 - **Switching modes ends detached live processes.** Selecting Fresh shells or Re-run commands and restarting
   reaps the live daemons in this state directory. An unavailable launch that still requests Live sessions
   preserves its claimed daemons for a later eligible launch.

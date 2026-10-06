@@ -9,10 +9,35 @@ paths:
   - "agterm/Views/SplitRatioAccessor.swift"
   - "agterm/Views/TerminalView.swift"
   - "agterm/Views/TerminalSearchBar.swift"
+  - "agterm-linux/Sources/AgtermLinux/Ghostty*.swift"
+  - "agterm-linux/Sources/AgtermLinux/AppController*.swift"
+  - "agterm-linux/Sources/AgtermLinux/Dashboard*.swift"
   - "scripts/setup.sh"
 ---
 
 ## libghostty gotchas
+
+- Linux Dashboard mirrors live surfaces and never reparents a `GtkGLArea`. Unparenting unrealizes the
+  surface and invalidates its GL context. Keep one stable `GtkOverlay` child per session, map pages for
+  Dashboard without accepting input, and mirror each source through `GtkWidgetPaintable` + `GtkPicture`
+  beneath an opaque input-owning Dashboard host.
+- That GL-context invalidation is PERMANENT: `GhosttySurface` connects `realize` but no `unrealize` and
+  `realize()`'s `createSurface()` no-ops on an existing surface, so a re-add realizes a NEW context while
+  libghostty keeps drawing into the destroyed one, and `refresh()` cannot repair it. `realize()` logs
+  `GLArea re-realized over a live surface` for exactly that, since no AT-SPI assertion can see a blank pane.
+  So a pane host's GtkPaned slot is fixed for its LIFETIME: promoting the survivor of a primary-pane exit
+  clears the DEAD pane's slot and leaves the survivor where it is, and `layoutSplit` is the single
+  placement authority that gives the next split the freed one.
+  Everything role-named stays keyed to the MODEL across that inversion — `AppControllerSurfaces`
+  `primaryInEndSlot` converts the divider fraction so `splitRatio` is always the primary's share, and
+  role-based focus/resize requests resolve to the model pane. Directional focus and resize requests follow
+  the live slots through that same `primaryInEndSlot` fact, as do `focusPane(left:)` and the arrow keys.
+  A caller naming a pane ROLE takes `focusPane(wantSplit:)`.
+  The one accepted consequence is placement: a split taken after a promotion appears on the freed SIDE
+  rather than beside the survivor.
+  Terminal zoom follows the same rule: `AppControllerZoom` never moves a surface. It hides the sidebar
+  column and the content header, shows the permanent `zoomHeader` strip, presents the zoomed session's deck
+  page and hides the sibling pane host; a zoomed `.quick` card is only allocated the whole content area.
 
 ## Rendering
 
@@ -57,6 +82,10 @@ paths:
   for the surface renderer and sets the flag once; no later Ghostty path replaces the layer or
   rewrites the flag. A `GHOSTTY_REV` bump has to recheck both, and that the synchronous reveal draw
   still restores the intended visible-resize path.
+- On Linux the main thread is the only consumer of the 64-slot app mailbox (`ghostty_app_tick`), so
+  nothing on it may push `.forever` there: once the mailbox is full, the push waits on itself.
+  Feeding OSC into surfaces did that through `color_change` and froze the app with many sessions.
+  `PendingHealth` in `ghostty-embedded-opengl.patch` owns the non-blocking `renderer_health` contract.
 
 ## Theme and sidebar
 
@@ -228,7 +257,10 @@ paths:
 - A live OSC 11 override masks config defaults in the pinned libghostty. No embedding API clears
   it: RIS leaves colors, PTY writes bypass the parser, and COLOR_CHANGE is outbound-only.
   `session.background color` changes only the default and cannot override live OSC.
-- OSC 111 copies current default into override. Per-surface update also reseeds default from a
+- The Linux host never feeds colors into a surface, only config: `ghostty_app_update_config` and
+  per-surface overlays, so program OSC 10/11 overrides keep standard terminal semantics.
+- OSC 111 copies current default into override; the Linux pin's `DynamicRGB.reset` clears the override.
+  Either way reset shows the default. Per-surface update also reseeds default from a
   `background` key. Restating OSC color in the overlay therefore made reset permanently retain it (#309).
   Opacity-only overlay leaves theme as default, so reset returns to theme.
 - `tree.background` reports the stored specification and may differ from a live OSC-rendered color.
@@ -278,7 +310,9 @@ paths:
 - Defaults load before user config and set `cursor-style = block` plus
   `shell-integration-features = no-cursor,no-title`. `no-cursor` prevents prompt DECSCUSR bar resets;
   `no-title` prevents abbreviated local cwd OSC 2 from overriding sidebar names. User/remote OSC titles
-  still work, and OSC 7 is unaffected.
+  still work, and OSC 7 is unaffected. Fish's built-in `fish_title` is independent of Ghostty's feature
+  bit, so Linux also normalizes an exact cwd or Fish's default `prompt_pwd -d 1 -D 1` title to blank in
+  `LinuxSessionTitlePolicy`; real program titles and host-prefixed remote titles remain intact.
 - `ssh-env` and `ssh-terminfo` are forced OFF after `ghostty_config_load_recursive_files`, so no user
   source including a `config-file` include can enable them: their wrappers call a `ghostty` CLI agterm
   does not bundle, and enabling either broke `ssh` outright (#463). The override reads the resolved
@@ -354,4 +388,6 @@ paths:
 - Deferred completion captures `GhosttySurfaceView`, then rereads its live surface. If a pane closed while
   the sheet was open, skip completion rather than use the freed raw pointer; freeing already discards the
   request. Keep request state `nonisolated(unsafe)` under the same lifetime check.
+  Linux's pin (`0ba6250`) does not discard it: a skipped completion leaks the request state, which no C API
+  frees without the surface.
 - AppKit dialog behavior is manual-only; unit-test `ClipboardPromptPolicy`.
