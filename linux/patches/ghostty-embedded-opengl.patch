@@ -44,6 +44,31 @@ index 2ee9f93..a5f9148 100644
      // Drain our mailbox
      try self.drainMailbox(rt_app);
  }
+diff --git i/src/Surface.zig w/src/Surface.zig
+index 7ef2038..5b18ba4 100644
+--- i/src/Surface.zig
++++ w/src/Surface.zig
+@@ -128,6 +128,11 @@ io: termio.Termio,
+ io_thread: termio.Thread,
+ io_thr: std.Thread,
+
++/// Set when deinit starts. deinit joins this surface's threads on the thread
++/// that drains the app mailbox, so from then on apprt.surface.Mailbox drops
++/// this surface's messages instead of waiting for room in that mailbox.
++closing: std.atomic.Value(bool) = .init(false),
++
+ /// Terminal inspector
+ inspector: ?*inspectorpkg.Inspector = null,
+
+@@ -797,6 +802,8 @@ pub fn init(
+ }
+
+ pub fn deinit(self: *Surface) void {
++    self.closing.store(true, .release);
++
+     // Stop search thread
+     if (self.search) |*s| s.deinit();
+
 diff --git i/src/apprt/embedded.zig w/src/apprt/embedded.zig
 index a380dc5..5213f09 100644
 --- i/src/apprt/embedded.zig
@@ -135,6 +160,36 @@ index a380dc5..5213f09 100644
  };
 
  pub const EnvVar = extern struct {
+diff --git i/src/apprt/surface.zig w/src/apprt/surface.zig
+index 3cb0016..b662979 100644
+--- i/src/apprt/surface.zig
++++ w/src/apprt/surface.zig
+@@ -145,12 +145,23 @@ pub const Mailbox = struct {
+         // Surface message sending is actually implemented on the app
+         // thread, so we have to rewrap the message with our surface
+         // pointer and send it to the app thread.
+-        return self.app.push(.{
++        const wrapped: App.Message = .{
+             .surface_message = .{
+                 .surface = self.surface,
+                 .message = msg,
+             },
+-        }, timeout);
++        };
++        if (timeout != .forever) return self.app.push(wrapped, timeout);
++
++        // Wait in slices: a closing surface joins our thread on the thread
++        // that drains the app mailbox, so waiting forever on a full mailbox
++        // would deadlock it. Its messages are dropped then, as App drops
++        // messages for surfaces it no longer has.
++        while (true) {
++            const result = self.app.push(wrapped, .{ .ns = 10 * std.time.ns_per_ms });
++            if (result != 0) return result;
++            if (self.surface.closing.load(.acquire)) return 0;
++        }
+     }
+ };
+
 diff --git i/src/build/SharedDeps.zig w/src/build/SharedDeps.zig
 index 86cfecc..b81df42 100644
 --- i/src/build/SharedDeps.zig

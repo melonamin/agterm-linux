@@ -86,6 +86,10 @@ paths:
   nothing on it may push `.forever` there: once the mailbox is full, the push waits on itself.
   Feeding OSC into surfaces did that through `color_change` and froze the app with many sessions.
   `PendingHealth` in `ghostty-embedded-opengl.patch` owns the non-blocking `renderer_health` contract.
+- The same holds for surface teardown: `ghostty_surface_free` joins the surface's threads on the main
+  thread, so a surface thread waiting `.forever` for room in the app mailbox never returns. A program
+  flooding OSC titles froze `session close` that way. `Surface.closing`, set first in `Surface.deinit`, makes
+  `apprt.surface.Mailbox.push` wait in slices and drop the message once it is set.
 
 ## Theme and sidebar
 
