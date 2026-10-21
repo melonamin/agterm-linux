@@ -111,6 +111,7 @@ final class GhosttySurface: PaneRoleMutableSurface {
         if let surface { ghostty_surface_free(surface) }
         ownedConfigs.forEach { ghostty_config_free($0) }
         configurationStorage?.release()
+        if let imContext { g_object_unref(RAW(imContext)) }
         if let exitCodeFile { try? FileManager.default.removeItem(atPath: exitCodeFile) }
     }
 
@@ -150,6 +151,7 @@ final class GhosttySurface: PaneRoleMutableSurface {
         let me = Unmanaged.passRetained(self).toOpaque()
         connect(glArea, "destroy", unsafeBitCast(surfaceDestroy as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self), me)
         connect(glArea, "realize", unsafeBitCast(surfaceRealize as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self), me)
+        connect(glArea, "unrealize", unsafeBitCast(surfaceUnrealize as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self), me)
         installVisibilityTracking()
         connect(glArea, "render", unsafeBitCast(surfaceRender as @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> gboolean, to: GCallback.self), me)
         connect(glArea, "resize", unsafeBitCast(surfaceResize as @convention(c) (OpaquePointer?, Int32, Int32, gpointer?) -> Void, to: GCallback.self), me)
@@ -162,7 +164,6 @@ final class GhosttySurface: PaneRoleMutableSurface {
 
         let im = OpaquePointer(gtk_im_multicontext_new())
         imContext = im
-        gtk_im_context_set_client_widget(cast(im), W(glArea))
         connect(im, "commit", unsafeBitCast(surfaceIMCommit as @convention(c) (OpaquePointer?, UnsafePointer<CChar>?, gpointer?) -> Void, to: GCallback.self), me)
         connect(im, "preedit-changed", unsafeBitCast(surfacePreeditChanged as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self), me)
 
@@ -201,6 +202,9 @@ final class GhosttySurface: PaneRoleMutableSurface {
     // MARK: - Lifecycle
 
     func realize() {
+        // The IM client is bound to realization, as in GtkText: ibus's queued focus-in idle reads the
+        // client's X11 surface and crashes on a client that has since left the window.
+        gtk_im_context_set_client_widget(cast(imContext), W(glArea))
         // A second realize over a live surface means the GLArea was reparented; the pane is blank from
         // here on ([[libghostty]]) and only this line can say so, since AT-SPI cannot see a blank pane.
         if surface != nil {
@@ -220,6 +224,10 @@ final class GhosttySurface: PaneRoleMutableSurface {
             return
         }
         createSurface()
+    }
+
+    func unrealize() {
+        gtk_im_context_set_client_widget(cast(imContext), nil)
     }
 
     private func reportGLContextFailure(message: String? = nil) {
@@ -888,6 +896,9 @@ private let surfaceDestroy: @MainActor @convention(c) (OpaquePointer?, gpointer?
 }
 private let surfaceRealize: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { _, data in
     MainActor.assumeIsolated { wrap(data)?.realize() }
+}
+private let surfaceUnrealize: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { _, data in
+    MainActor.assumeIsolated { wrap(data)?.unrealize() }
 }
 private let surfaceRender: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> gboolean = { _, _, data in
     MainActor.assumeIsolated { wrap(data)?.render() }
