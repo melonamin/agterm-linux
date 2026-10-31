@@ -101,7 +101,7 @@ final class ControlServer: @unchecked Sendable {
             unlink(path)
             return
         }
-        guard listen(fd, 8) == 0 else {
+        guard listen(fd, SOMAXCONN) == 0 else {
             let reason = String(cString: strerror(errno))
             logger.notice("control listen() failed: \(reason)")
             close(fd)
