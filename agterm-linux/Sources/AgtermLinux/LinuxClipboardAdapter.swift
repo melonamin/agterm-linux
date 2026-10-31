@@ -96,17 +96,20 @@ enum LinuxClipboardAdapter {
         }
     }
 
-    /// The prompt's answer. A nil `surface` closed under the prompt, so neither call may run: the request
-    /// state then leaks in the engine, and no C API frees it without the surface.
-    static func resolveConfirmation(allowed: Bool, surface: ghostty_surface_t?, payload: ClipboardConfirmation,
-                                    state: UnsafeMutableRawPointer?, complete deliver: Completion = engineCompletion,
-                                    deny: Denial = engineDenial) {
-        guard let surface else { return }
-        guard allowed else {
-            deny(surface, state)
-            return
+    /// The prompt's answer. `liveSurface` is read only when it arrives, because a pointer taken earlier
+    /// dangles once the pane closes under the prompt. A closed pane gets neither call: the request state
+    /// then leaks in the engine, and no C API frees it without the surface.
+    static func confirmationAnswer(liveSurface: @escaping () -> ghostty_surface_t?, payload: ClipboardConfirmation,
+                                   state: UnsafeMutableRawPointer?, complete deliver: @escaping Completion = engineCompletion,
+                                   deny: @escaping Denial = engineDenial) -> (Bool) -> Void {
+        { allowed in
+            guard let surface = liveSurface() else { return }
+            guard allowed else {
+                deny(surface, state)
+                return
+            }
+            complete(surface, items: payload.items, available: payload.available, state: state, confirmed: true, using: deliver)
         }
-        complete(surface, items: payload.items, available: payload.available, state: state, confirmed: true, using: deliver)
     }
 
     // MARK: - GDK

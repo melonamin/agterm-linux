@@ -423,10 +423,11 @@ final class GhosttyApp: @unchecked Sendable {
                         retained.release()
                         return
                     }
+                    let answer = LinuxClipboardAdapter.confirmationAnswer(liveSurface: { requester.surface }, payload: payload,
+                                                                          state: requestState)
                     ClipboardPromptController.shared.request(access, requester: requester) { allowed in
                         defer { retained.release() }
-                        LinuxClipboardAdapter.resolveConfirmation(allowed: allowed, surface: requester.surface,
-                                                                  payload: payload, state: requestState)
+                        answer(allowed)
                     }
                 }
             }

@@ -209,10 +209,13 @@ struct LinuxClipboardAdapterTests {
     @Test("a surface closed under the prompt calls neither complete nor deny", arguments: [true, false])
     func closedSurfaceResolution(allowed: Bool) {
         let engine = EngineStandIn()
+        var live: ghostty_surface_t? = surface
+        let answer = LinuxClipboardAdapter.confirmationAnswer(liveSurface: { live },
+                                                              payload: ClipboardConfirmation(items: items, available: []), state: state,
+                                                              complete: engine.complete, deny: engine.deny)
 
-        LinuxClipboardAdapter.resolveConfirmation(allowed: allowed, surface: nil,
-                                                  payload: ClipboardConfirmation(items: items, available: []), state: state,
-                                                  complete: engine.complete, deny: engine.deny)
+        live = nil
+        answer(allowed)
 
         #expect(engine.deliveries.isEmpty)
         #expect(engine.denials.isEmpty)
@@ -221,10 +224,11 @@ struct LinuxClipboardAdapterTests {
     @Test("an allowed prompt completes the payload as confirmed")
     func allowedResolution() {
         let engine = EngineStandIn()
+        let answer = LinuxClipboardAdapter.confirmationAnswer(liveSurface: { surface },
+                                                              payload: ClipboardConfirmation(items: items, available: ["text/plain"]), state: state,
+                                                              complete: engine.complete, deny: engine.deny)
 
-        LinuxClipboardAdapter.resolveConfirmation(allowed: true, surface: surface,
-                                                  payload: ClipboardConfirmation(items: items, available: ["text/plain"]), state: state,
-                                                  complete: engine.complete, deny: engine.deny)
+        answer(true)
 
         #expect(engine.deliveries == [EngineStandIn.Delivery(
             surface: surface, state: state, items: items, available: ["text/plain"], confirmed: true, remember: false)])
@@ -234,10 +238,11 @@ struct LinuxClipboardAdapterTests {
     @Test("a refused prompt denies and completes nothing")
     func refusedResolution() {
         let engine = EngineStandIn()
+        let answer = LinuxClipboardAdapter.confirmationAnswer(liveSurface: { surface },
+                                                              payload: ClipboardConfirmation(items: items, available: []), state: state,
+                                                              complete: engine.complete, deny: engine.deny)
 
-        LinuxClipboardAdapter.resolveConfirmation(allowed: false, surface: surface,
-                                                  payload: ClipboardConfirmation(items: items, available: []), state: state,
-                                                  complete: engine.complete, deny: engine.deny)
+        answer(false)
 
         #expect(engine.denials == [EngineStandIn.Denial(surface: surface, state: state)])
         #expect(engine.deliveries.isEmpty)
