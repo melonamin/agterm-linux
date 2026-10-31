@@ -87,6 +87,18 @@ paths:
   nothing on it may push `.forever` there: once the mailbox is full, the push waits on itself.
   Feeding OSC into surfaces did that through `color_change` and froze the app with many sessions.
   `PendingHealth` in `ghostty-embedded-opengl.patch` owns the non-blocking `renderer_health` contract.
+- Linux is the reverse of this section's first bullet.
+  `linux/ghostty-resources.env` pins the same `683d8db`, and `ghostty-embedded-opengl.patch` declares
+  `must_draw_from_app_thread` for OpenGL, so the render thread only posts `redraw_surface` and that
+  patch is the sole reason `GHOSTTY_ACTION_RENDER` arrives.
+  The arm in `GhosttyApp.handleAction` queues the `GtkGLArea`, whose `render` signal calls
+  `ghostty_surface_draw` on the main thread with the context current.
+- Hidden-surface GPU release is not enabled on Linux. `setVisible`, the only caller of
+  `releaseGpuResources`, compiles the call out under that constant: it runs on the render thread, and
+  GL teardown needs the `GtkGLArea` context on the main thread.
+  `ghostty_surface_set_occlusion(false)` therefore only stops drawing, and a hidden pane keeps its swap
+  chain.
+  Enabling the release needs a new C entry point called with that context current, and its own tests.
 
 ## Theme and sidebar
 
@@ -264,8 +276,8 @@ paths:
   `session.background color` changes only the default and cannot override live OSC.
 - The Linux host never feeds colors into a surface, only config: `ghostty_app_update_config` and
   per-surface overlays, so program OSC 10/11 overrides keep standard terminal semantics.
-- OSC 111 copies current default into override; the Linux pin's `DynamicRGB.reset` clears the override.
-  Either way reset shows the default. Per-surface update also reseeds default from a
+- OSC 111 clears the override through `DynamicRGB.reset`, so reset shows the default.
+  Per-surface update also reseeds default from a
   `background` key. Restating OSC color in the overlay therefore made reset permanently retain it (#309).
   Opacity-only overlay leaves theme as default, so reset returns to theme.
 - `tree.background` reports the stored specification and may differ from a live OSC-rendered color.
@@ -395,8 +407,8 @@ paths:
 - Default ungated writes are synchronous so a same-tick read sees them. Read defaults to ask; write defaults
   allow and can be changed in agterm `ghostty.conf`.
 - Deferred completion captures `GhosttySurfaceView`, then rereads its live surface. If a pane closed while
-  the sheet was open, skip completion rather than use the freed raw pointer; freeing already discards the
-  request. Keep request state `nonisolated(unsafe)` under the same lifetime check.
-  Linux's pin (`0ba6250`) does not discard it: a skipped completion leaks the request state, which no C API
-  frees without the surface.
+  the sheet was open, skip completion rather than use the freed raw pointer.
+  Keep request state `nonisolated(unsafe)` under the same lifetime check.
+  At `683d8db` a read skipped after a close still leaks its request state, as does a prompted Kitty write:
+  `Surface.deinit` tracks none of them, and no C API frees one without the surface.
 - AppKit dialog behavior is manual-only; unit-test `ClipboardPromptPolicy`.
