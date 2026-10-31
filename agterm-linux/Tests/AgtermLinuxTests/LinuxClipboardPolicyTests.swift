@@ -1,8 +1,9 @@
 import Foundation
 import Testing
+import agtermCore
 @testable import AgtermLinux
 
-@Suite("Linux clipboard policy — GDK representations")
+@Suite("Linux clipboard policy")
 struct LinuxClipboardPolicyTests {
     private let plain = ClipboardItem(mime: LinuxClipboardPolicy.textMime, data: Data("cafe".utf8))
     private let utf8 = ClipboardItem(mime: LinuxClipboardPolicy.utf8TextMime, data: Data("café".utf8))
@@ -53,5 +54,52 @@ struct LinuxClipboardPolicyTests {
 
         #expect(LinuxClipboardPolicy.gdkRepresentations([png, plain, utf8]) == [png, plain, utf8])
         #expect(LinuxClipboardPolicy.gdkRepresentations([png, plain]).map(\.mime) == [png.mime, utf8.mime, plain.mime])
+    }
+
+    @Test("a read plan follows the requested text MIME and the list flag")
+    func readPlans() {
+        let text = LinuxClipboardPolicy.textMime
+
+        #expect(LinuxClipboardPolicy.readPlan(mimes: [text], list: false) == .text(list: false))
+        #expect(LinuxClipboardPolicy.readPlan(mimes: ["image/png", text], list: false) == .text(list: false))
+        #expect(LinuxClipboardPolicy.readPlan(mimes: [text], list: true) == .text(list: true))
+        #expect(LinuxClipboardPolicy.readPlan(mimes: [], list: true) == .listOnly)
+        #expect(LinuxClipboardPolicy.readPlan(mimes: ["image/png"], list: true) == .listOnly)
+        #expect(LinuxClipboardPolicy.readPlan(mimes: [], list: false) == .unavailable)
+        #expect(LinuxClipboardPolicy.readPlan(mimes: ["image/png"], list: false) == .unavailable)
+    }
+
+    @Test("an empty clipboard still completes with a zero-length text item and lists nothing")
+    func emptyClipboardCompletion() {
+        let empty = [ClipboardItem(mime: LinuxClipboardPolicy.textMime, data: Data())]
+
+        #expect(LinuxClipboardPolicy.textCompletion(text: nil, list: false).items == empty)
+        #expect(LinuxClipboardPolicy.textCompletion(text: nil, list: true).items == empty)
+        #expect(LinuxClipboardPolicy.textCompletion(text: "", list: false).items == empty)
+        #expect(LinuxClipboardPolicy.textCompletion(text: nil, list: true).available.isEmpty)
+    }
+
+    @Test("a text completion carries the UTF-8 bytes and lists formats only when asked")
+    func textCompletion() {
+        let text = LinuxClipboardPolicy.textMime
+        let listed = LinuxClipboardPolicy.textCompletion(text: "café", list: true)
+        let unlisted = LinuxClipboardPolicy.textCompletion(text: "café", list: false)
+
+        #expect(listed.items == [ClipboardItem(mime: text, data: utf8.data)])
+        #expect(listed.available == [text])
+        #expect(unlisted.items == listed.items)
+        #expect(unlisted.available.isEmpty)
+    }
+
+    @Test("only content access prompts, in the request's direction")
+    func accessPerKind() {
+        let expected: [ClipboardRequestKind: ClipboardAccess?] = [
+            .paste: nil, .list: nil, .osc52Read: .read, .kittyRead: .read, .osc52Write: .write, .kittyWrite: .write,
+        ]
+
+        #expect(Set(expected.keys) == Set(ClipboardRequestKind.allCases))
+        for (kind, access) in expected {
+            #expect(LinuxClipboardPolicy.access(for: kind) == access, "\(kind)")
+        }
     }
 }
