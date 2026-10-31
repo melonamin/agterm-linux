@@ -7464,6 +7464,7 @@ def main():
             "sidebar-multiselect",
             "chrome-focus-buttons", "chrome-focus-sidebar", "chrome-focus-popovers",
             "recent-clear", "control-picker", "control-ask", "ask-visual", "palette-lifecycle", "palette-layout-navigation",
+            "clipboard-osc52",
             "auto-follow", "hidden-toolbar", "desktop-actions",
             "theme-many-sessions",
         ):
@@ -7567,6 +7568,9 @@ def main():
         elif scenario == "palette-layout-navigation":
             from atspi_palette_layout import verify_palette_layout_navigation
             verify_palette_layout_navigation(env)
+        elif scenario == "clipboard-osc52":
+            from atspi_clipboard_osc52 import verify_clipboard_osc52
+            verify_clipboard_osc52(env)
         elif scenario == "dashboard-modal":
             verify_dashboard_modal(env)
         elif scenario == "context-menu":
