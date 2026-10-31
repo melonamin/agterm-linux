@@ -50,9 +50,11 @@ enum LinuxClipboardPolicy {
 
     /// Bare `text/plain` defaults to ASCII, so a provider offering only it garbles non-ASCII text in
     /// readers that want UTF-8, and on X11 loses `UTF8_STRING`, which GDK derives from the charset form.
-    /// UTF-8 goes first because some clients take the first match.
+    /// UTF-8 goes first because some clients take the first match. A GDK union serves a MIME from its first
+    /// provider, so an alias must never sit beside the client's own charset form.
     static func gdkRepresentations(_ items: [ClipboardItem]) -> [ClipboardItem] {
-        items.flatMap { item in
+        if items.contains(where: { $0.mime == utf8TextMime }) { return items }
+        return items.flatMap { item in
             item.mime == textMime ? [ClipboardItem(mime: utf8TextMime, data: item.data), item] : [item]
         }
     }
