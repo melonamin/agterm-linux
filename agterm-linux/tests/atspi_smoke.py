@@ -7463,7 +7463,8 @@ def main():
             "sidebar-incremental",
             "sidebar-multiselect",
             "chrome-focus-buttons", "chrome-focus-sidebar", "chrome-focus-popovers",
-            "recent-clear", "control-picker", "control-ask", "ask-visual", "palette-lifecycle", "auto-follow", "hidden-toolbar", "desktop-actions",
+            "recent-clear", "control-picker", "control-ask", "ask-visual", "palette-lifecycle", "palette-layout-navigation",
+            "auto-follow", "hidden-toolbar", "desktop-actions",
             "theme-many-sessions",
         ):
             child_env = dict(os.environ, AGTERM_ATSPI_SCENARIO=child_scenario)
@@ -7563,6 +7564,9 @@ def main():
         elif scenario == "palette-lifecycle":
             from atspi_palette_lifecycle import verify_palette_lifecycle
             verify_palette_lifecycle(env)
+        elif scenario == "palette-layout-navigation":
+            from atspi_palette_layout import verify_palette_layout_navigation
+            verify_palette_layout_navigation(env)
         elif scenario == "dashboard-modal":
             verify_dashboard_modal(env)
         elif scenario == "context-menu":

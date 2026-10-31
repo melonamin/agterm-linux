@@ -14,7 +14,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in dbus-run-session dbus-send dbus-update-activation-environment ibus ibus-daemon openbox xdotool xvfb-run "$PYTHON"; do
+for command in dbus-run-session dbus-send dbus-update-activation-environment ibus ibus-daemon openbox setxkbmap xdotool xvfb-run "$PYTHON"; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "missing Linux UI test dependency: $command" >&2
     exit 1

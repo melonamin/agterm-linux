@@ -88,7 +88,7 @@ jobs:
             librsvg2-dev librsvg2-common libgirepository1.0-dev gobject-introspection \
             git curl jq ca-certificates xz-utils unzip zsh fish gcc file imagemagick ripgrep \
             rpm cpio desktop-file-utils patchelf ncurses-bin \
-            at-spi2-core dbus-x11 gir1.2-atspi-2.0 openbox python3-gi xdotool xvfb xauth ibus ibus-gtk4 \
+            at-spi2-core dbus-x11 gir1.2-atspi-2.0 openbox python3-gi xdotool xvfb xauth x11-xkb-utils ibus ibus-gtk4 \
             libatk-bridge2.0-0 libgl1-mesa-dri libegl-mesa0 mesa-utils
           curl -fsSLo /tmp/swiftlint.zip \
             "https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/swiftlint_linux_amd64.zip"
