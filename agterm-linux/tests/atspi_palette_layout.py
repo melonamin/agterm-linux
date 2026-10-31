@@ -14,11 +14,13 @@ STEPS = ((J_KEYCODE, 1), (J_KEYCODE, 2), (K_KEYCODE, 1))
 
 @contextlib.contextmanager
 def russian_layout(env):
-    subprocess.run(["setxkbmap", "ru"], check=True, env=env)
     try:
+        subprocess.run(["setxkbmap", "ru"], check=True, env=env)
         yield
     finally:
-        subprocess.run(["setxkbmap", "us"], check=False, env=env)
+        # Unchecked here so a failed restore cannot replace the error already propagating.
+        restored = subprocess.run(["setxkbmap", "us"], check=False, env=env)
+    assert restored.returncode == 0, "setxkbmap could not restore us; the shared display stays Russian"
 
 
 def selected_row_index(frame):
