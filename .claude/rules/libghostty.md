@@ -83,8 +83,9 @@ paths:
   for the surface renderer and sets the flag once; no later Ghostty path replaces the layer or
   rewrites the flag. A `GHOSTTY_REV` bump has to recheck both, and that the synchronous reveal draw
   still restores the intended visible-resize path.
-- On Linux the main thread is the only consumer of the 64-slot app mailbox (`ghostty_app_tick`), so
-  nothing on it may push `.forever` there: once the mailbox is full, the push waits on itself.
+- During normal operation the Linux main thread is the only consumer of the 64-slot app mailbox
+  (`ghostty_app_tick`), so nothing on it may push `.forever` there: once the mailbox is full, the push
+  waits on itself.
   Feeding OSC into surfaces did that through `color_change` and froze the app with many sessions.
   `PendingHealth` in `ghostty-embedded-opengl.patch` owns the non-blocking `renderer_health` contract.
 - Linux is the reverse of this section's first bullet.
@@ -96,9 +97,9 @@ paths:
 - Hidden-surface GPU release is not enabled on Linux. `setVisible`, the only caller of
   `releaseGpuResources`, compiles the call out under that constant: it runs on the render thread, and
   GL teardown needs the `GtkGLArea` context on the main thread.
-  `ghostty_surface_set_occlusion(false)` therefore only stops drawing, and a hidden pane keeps its swap
-  chain.
-  Enabling the release needs a new C entry point called with that context current, and its own tests.
+  `ghostty_surface_set_occlusion(false)` therefore pauses render-thread updates and draw requests while
+  a hidden pane keeps its swap chain; terminal visibility and mode 2033 reports still apply.
+  Enabling the release needs an explicit host-thread path with that context current, and its own tests.
 
 ## Theme and sidebar
 
