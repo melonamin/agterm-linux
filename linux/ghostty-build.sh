@@ -5,7 +5,6 @@ GHOSTTY_BUILD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$GHOSTTY_BUILD_ROOT/linux/ghostty-resources.env"
 GHOSTTY_PATCHES=(
   "$GHOSTTY_BUILD_ROOT"/scripts/ghostty-patches/*.patch
-  "$GHOSTTY_BUILD_ROOT/linux/patches/ghostty-teardown-compat.patch"
   "$GHOSTTY_BUILD_ROOT/linux/patches/ghostty-embedded-opengl.patch"
   "$GHOSTTY_BUILD_ROOT/linux/patches/ghostty-embedded-input-handoff.patch"
   "$GHOSTTY_BUILD_ROOT/linux/patches/ghostty-lib-resources.patch"
