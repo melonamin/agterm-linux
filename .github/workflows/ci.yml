@@ -150,7 +150,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libepoxy-dev librsvg2-common pkg-config git curl ca-certificates xz-utils ncurses-bin \
-            ripgrep zsh fish gcc file at-spi2-core dbus-x11 gir1.2-atspi-2.0 openbox python3-gi xdotool xvfb xauth ibus ibus-gtk4 \
+            ripgrep zsh fish gcc file at-spi2-core dbus-x11 gir1.2-atspi-2.0 openbox python3-gi xdotool xvfb xauth x11-xkb-utils ibus ibus-gtk4 \
             libatk-bridge2.0-0 libgl1-mesa-dri libegl-mesa0 mesa-utils
           curl -fsSLo /tmp/zig.tar.xz \
             https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
