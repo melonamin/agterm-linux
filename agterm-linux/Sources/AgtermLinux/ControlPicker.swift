@@ -323,9 +323,9 @@ private let onControlPickRow: @MainActor @convention(c)
     }
 
 private let onControlPickKey: @MainActor @convention(c)
-    (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> gboolean = { keys, originalKeyval, _, state, _ in
-    let keyval: UInt32 = state & UInt32(GDK_CONTROL_MASK.rawValue) != 0
-        ? (originalKeyval == 106 ? 0xFF54 : (originalKeyval == 107 ? 0xFF52 : originalKeyval)) : originalKeyval
+    (OpaquePointer?, UInt32, UInt32, UInt32, gpointer?) -> gboolean = { keys, originalKeyval, keycode, state, _ in
+        let keyval = paletteNavigationKeyval(keyval: originalKeyval, keycode: keycode, state: state,
+                                             event: keys.flatMap { gtk_event_controller_get_current_event($0) })
         switch keyval {
         case 0xFF1B:
             MainActor.assumeIsolated { controllerForEventController(keys)?.cancelControlPick() }
