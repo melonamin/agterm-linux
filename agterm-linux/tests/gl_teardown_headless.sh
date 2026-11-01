@@ -4,8 +4,10 @@
 #   gl_teardown_headless.sh wayland                     headless sway, hardware GL through renderD128
 #   gl_teardown_headless.sh x11                         Xvfb and openbox, software GL
 #   gl_teardown_headless.sh wayland --software-waiver   no GPU available; the run is labelled software
+#   gl_teardown_headless.sh stage                       release build and a fresh stage, in podman, for the runs above
 #
-# Needs a stage: `scripts/stage-linux.sh artifacts/gl-teardown/stage`, from `swift build -c release`, both in podman.
+# Only `stage` passes AGTERM_PACKAGE_COMMIT, because a linked worktree's gitdir is not in the container, where
+# stage-linux.sh's `git rev-parse` fallback leaves COMMIT empty. A run refuses a stage without a commit.
 # Images: `localhost/agterm-linux-ci:latest` has no tracked recipe. It comes from
 # `podman build -t localhost/agterm-linux-ci ~/.local/share/agterm-linux-ci`, a local mirror of ci.yml's app job; on a
 # machine without that file, build the same image from ci.yml's Swift tag, apt list and zig pin. Then, from the root:
@@ -25,6 +27,28 @@ blocked() {
   exit "${2:-2}"
 }
 
+run_stage() {
+  local root commit
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  command -v podman >/dev/null || blocked "podman is not installed"
+  podman image exists "$BASE_IMAGE" || blocked "image $BASE_IMAGE is missing"
+  commit="$(git -C "$root" rev-parse HEAD)" || blocked "no commit to record for the stage"
+  if [[ -n "$(git -C "$root" status --porcelain -- agterm-linux/Sources agtermCore/Sources)" ]]; then
+    blocked "Sources differ from $commit, so the stage could not name what it was built from"
+  fi
+  # shellcheck disable=SC2016 # expanded in the container
+  podman run --rm --userns=keep-id -v "$root:/src" -w /src/agterm-linux -e HOME=/tmp/agterm-home \
+    -e AGTERM_PACKAGE_COMMIT="$commit" "$BASE_IMAGE" bash -c '
+      set -euo pipefail
+      swift build -c release
+      cd /src
+      rm -rf artifacts/gl-teardown/stage
+      mkdir -p artifacts/gl-teardown/stage
+      scripts/stage-linux.sh artifacts/gl-teardown/stage
+    '
+  echo "staged $commit"
+}
+
 run_host() {
   local mode=$1 waiver=$2
   local root stage name device=()
@@ -37,6 +61,8 @@ run_host() {
   for product in bin/agterm-linux bin/agterm-linux.bin bin/zmx lib/libghostty.so; do
     [[ -e "$stage/$product" ]] || blocked "stage lacks $product: $stage"
   done
+  grep -Eq '^[0-9a-f]{40}$' "$stage/share/agterm/COMMIT" || blocked "the stage names no commit; run: $0 stage"
+  echo "stage commit $(cat "$stage/share/agterm/COMMIT")"
   if podman container exists "$name"; then blocked "container $name already exists"; fi
   [[ "$mode" == wayland && -e "$RENDER_NODE" ]] && device=(--device "$RENDER_NODE")
   mkdir -p "$root/artifacts/gl-teardown/$mode"
@@ -153,5 +179,6 @@ fi
 
 case "${1:-}:${2:-}" in
   wayland: | wayland:--software-waiver | x11:) run_host "$1" "${2:-}" ;;
-  *) blocked "usage: gl_teardown_headless.sh wayland [--software-waiver] | x11" ;;
+  stage:) run_stage ;;
+  *) blocked "usage: gl_teardown_headless.sh wayland [--software-waiver] | x11 | stage" ;;
 esac

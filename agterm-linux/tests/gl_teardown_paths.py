@@ -71,6 +71,43 @@ def call(socket_path, cmd, target=None, timeout=10, **args):
     return reply.get("result") or {}
 
 
+class ControlProbe:
+    """Times control reads on a thread. `finish` raises whatever stopped them, so a dead reader cannot read as a fast one."""
+
+    def __init__(self, read):
+        self.read = read
+        self.worst = 0.0
+        self.completed = 0
+        self.error = None
+        self.done = threading.Event()
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def run(self):
+        try:
+            while not self.done.is_set():
+                started = time.monotonic()
+                self.read()
+                self.worst = max(self.worst, time.monotonic() - started)
+                self.completed += 1
+                time.sleep(0.02)
+        except Exception as error:
+            self.error = error
+
+    def start(self):
+        self.thread.start()
+
+    def finish(self):
+        self.done.set()
+        self.thread.join(WAIT_SECONDS)
+        if self.thread.is_alive():
+            raise AssertionError(f"a control read was still running {WAIT_SECONDS} s after the close")
+        if self.error is not None:
+            raise AssertionError(f"a control read failed around the busy close: {self.error!r}") from self.error
+        if not self.completed:
+            raise AssertionError("no control read completed around the busy close")
+        return self.worst
+
+
 class Log:
     """Incremental reader of the shim's log, so waits are bounded on what actually happened."""
 
@@ -158,25 +195,14 @@ class Paths:
         draws = self.log.counts["DRAW_END"]
         self.request("session.type", session, text="yes\r")
         self.log.wait_count("DRAW_END", draws + 5, "yes never reached the renderer")
-        worst = [0.0]
-        done = threading.Event()
-
-        def read_control():
-            while not done.is_set():
-                started = time.monotonic()
-                self.request("window.list")
-                worst[0] = max(worst[0], time.monotonic() - started)
-                time.sleep(0.02)
-
-        reader = threading.Thread(target=read_control, daemon=True)
-        reader.start()
+        probe = ControlProbe(lambda: self.request("window.list"))
+        probe.start()
         try:
             self.closing("session-selected", lambda: self.request("session.close", session))
         finally:
-            done.set()
-            reader.join(WAIT_SECONDS)
-        assert worst[0] < READ_LIMIT_SECONDS, f"a control read took {worst[0]:.3f} s around the busy close"
-        print(f"OK: worst control read around the busy close {worst[0] * 1000:.0f} ms")
+            worst = probe.finish()
+        assert worst < READ_LIMIT_SECONDS, f"a control read took {worst:.3f} s around the busy close"
+        print(f"OK: worst control read around the busy close {worst * 1000:.0f} ms ({probe.completed} reads)")
 
     def session_background(self, main):
         session = self.new_session("gl-background")

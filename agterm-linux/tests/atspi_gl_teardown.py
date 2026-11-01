@@ -8,7 +8,7 @@ import subprocess
 
 import gl_teardown_analyze
 from atspi_clipboard_osc52 import Gdk, Gtk, clipboard_text
-from atspi_smoke import ROOT, launch, stop, wait_for
+from atspi_smoke import APP_STDERR_ATTACHED, ROOT, launch, stop, wait_for
 from gl_teardown_paths import Paths, call, write_app_config
 
 CLIPBOARD_TOKEN = "gl-quarantine-clipboard-before"
@@ -37,14 +37,18 @@ def stderr_offset():
 
 
 def stderr_slice(offset, name):
-    """The shared stderr log holds every scenario of a suite run; judge only this one's."""
+    """The shared stderr log holds every scenario of a suite run; judge only this one's.
+
+    The sink's marker proves the capture ran: an uncaptured stderr is empty, which reads as no degraded line.
+    """
     source = os.environ.get("AGTERM_UI_APP_STDERR")
+    assert source and os.path.exists(source), "AGTERM_UI_APP_STDERR names no capture, so stderr cannot be judged"
     slice_path = artifact_path(name)
-    with open(slice_path, "wb") as output:
-        if source and os.path.exists(source):
-            with open(source, "rb") as file:
-                file.seek(offset)
-                shutil.copyfileobj(file, output)
+    with open(slice_path, "wb") as output, open(source, "rb") as file:
+        file.seek(offset)
+        shutil.copyfileobj(file, output)
+    with open(slice_path, encoding="utf-8", errors="replace") as file:
+        assert APP_STDERR_ATTACHED in file.read(), f"{source} holds no capture of this launch"
     return slice_path
 
 
