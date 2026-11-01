@@ -89,6 +89,11 @@ terminals remain temporary.
 It requires zsh or fish as the password-database login shell and the matching bundled Ghostty integration.
 The mode is latched at process startup, and a missing daemon after reboot falls back to recreating the pane
 from its last cleanly captured command.
+The libghostty pin matches upstream v0.39.1.
+Kitty clipboard (OSC 5522) text reads and multi-representation writes are supported.
+Kitty image reads are not: reads serve text only.
+Kitty writes to PRIMARY are refused by the engine's `supportsClipboard`; copy-on-select to PRIMARY still works.
+Hidden-surface GPU release is not enabled, so a hidden pane keeps its swap chain.
 
 Linux uses desktop conventions: key labels are Ctrl/Shift rather than Command/Option, native chrome is
 provided by libadwaita, and local `file://` links open their containing folder in the default file manager.
@@ -284,8 +289,7 @@ dependency, shell integration, and compiled `xterm-ghostty` terminfo.
 It reuses vendored caches only when libghostty matches the current architecture, the Ghostty resources are
 complete, and the zmx revision matches; release staging rejects a partial cache.
 The libghostty cache stamp includes every applied patch.
-Linux applies upstream's mailbox teardown fix before its renderer patches; the compatibility patch drops
-two Kitty clipboard message cases absent from the Linux Ghostty pin while retaining the teardown drain.
+Linux applies upstream's mailbox teardown patch as is at `683d8db`, before its renderer patches.
 At runtime Linux advertises `TERM=xterm-ghostty` only when both shell integration and the sibling terminfo database
 resolve, and safely uses `TERM=xterm-256color` when they do not.
 
