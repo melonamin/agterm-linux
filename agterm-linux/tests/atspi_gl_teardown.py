@@ -9,7 +9,7 @@ import subprocess
 import gl_teardown_analyze
 from atspi_clipboard_osc52 import Gdk, Gtk, clipboard_text
 from atspi_smoke import APP_STDERR_ATTACHED, ROOT, launch, stop, wait_for
-from gl_teardown_paths import Paths, call, write_app_config
+from gl_teardown_paths import Paths, call, judge_run, require_clean_exit, write_app_config
 
 CLIPBOARD_TOKEN = "gl-quarantine-clipboard-before"
 LEAKED_TOKEN = "gl-quarantine-clipboard-after"
@@ -75,8 +75,7 @@ def verify_gl_teardown(env, state, scenario, require_api=None):
         arguments.append("--baseline")
     if require_api:
         arguments += ["--require-api", require_api]
-    status = gl_teardown_analyze.main(arguments)
-    assert status == 0, f"gl_teardown_analyze exited {status} on {log_path}"
+    judge_run(process, arguments)
     print(f"OK: {scenario}: analyzer clean on {log_path}")
 
 
@@ -151,6 +150,7 @@ def verify_gl_teardown_quarantine(env, state):
         assert call(socket_path, "window.list")["windows"], "control stopped answering"
     finally:
         stop(process)
+    require_clean_exit(process)
     stderr_text = open(stderr_slice(offset, "gl-teardown-quarantine-stderr.log"), encoding="utf-8", errors="replace").read()
     assert "assertion 'GTK_IS_WIDGET" not in stderr_text, "a dead widget was touched"
     print("OK: gl-teardown-quarantine: every late callback dropped, clipboard unchanged, control answering")

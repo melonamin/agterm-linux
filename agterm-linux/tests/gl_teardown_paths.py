@@ -9,6 +9,8 @@ import threading
 import time
 import zlib
 
+import gl_teardown_analyze
+
 WAIT_SECONDS = 20
 READ_LIMIT_SECONDS = 1.0
 BACKGROUND_SIZE = (37, 23)
@@ -45,6 +47,20 @@ def write_app_config(state):
     os.makedirs(config, exist_ok=True)
     with open(os.path.join(config, "ghostty.conf"), "w", encoding="utf-8") as file:
         file.write(f"custom-shader = {shader}\ncustom-shader-animation = false\n")
+
+
+def require_clean_exit(process):
+    """The GLib SIGTERM handler quits cleanly, so anything but 0 is a failure. A trace cannot show it: its END proves only
+    that the shim's destructor ran, which `exit(nonzero)` does too, and a later library finalizer can still abort."""
+    print(f"app exit status {process.returncode}")
+    assert process.returncode == 0, f"the app exited {process.returncode}"
+
+
+def judge_run(process, analyzer_arguments):
+    """Both verdicts print first, so a failing exit never hides what the trace said."""
+    status = gl_teardown_analyze.main(analyzer_arguments)
+    require_clean_exit(process)
+    assert status == 0, f"gl_teardown_analyze exited {status} on {analyzer_arguments[0]}"
 
 
 class ControlError(AssertionError):

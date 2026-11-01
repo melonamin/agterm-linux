@@ -21,6 +21,7 @@ BASE_IMAGE=localhost/agterm-linux-ci:latest
 IMAGE=localhost/agterm-linux-gl-teardown
 RENDER_NODE=/dev/dri/renderD128
 BOUND_SECONDS=15
+TESTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 blocked() {
   echo "blocker: $1" >&2
@@ -106,8 +107,37 @@ start_x11() {
   openbox --sm-disable >/out/openbox.log 2>&1 &
 }
 
+# Returns the app's real status. A shell reports a signal as 128+n, so a default SIGTERM death is 143, not a pass.
+reap_app() {
+  local app=$1 _
+  kill -TERM "$app"
+  for _ in $(seq 1 $((BOUND_SECONDS * 10))); do
+    kill -0 "$app" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$app" 2>/dev/null; then
+    echo "the app ignored SIGTERM" >&2
+    kill -KILL "$app"
+  fi
+  wait "$app"
+}
+
+# The status counts apart from the trace: END proves only that the shim's destructor ran, which exit(nonzero) does too,
+# and a later library finalizer can still abort.
+judge_run() {
+  local log=$1 app_stderr=$2 out=$3 app_status=$4 status=0
+  python3 "$TESTS/gl_teardown_analyze.py" "$log" --app-stderr "$app_stderr" >"$out/analyze.out" || status=$?
+  grep -E '^(SUMMARY|INFO)' "$out/analyze.out"
+  echo "app exit status $app_status"
+  if [[ "$app_status" -ne 0 ]]; then
+    echo "the app exited $app_status" >&2
+    return 1
+  fi
+  return "$status"
+}
+
 run_inside() {
-  local mode=$1 waiver=$2 tests=/src/agterm-linux/tests stage=/src/artifacts/gl-teardown/stage tool status
+  local mode=$1 waiver=$2 tests=$TESTS stage=/src/artifacts/gl-teardown/stage tool status
   SCRATCH=/tmp/gl
   local state=$SCRATCH/state log=/out/gl-teardown.log app_stderr=/out/gl-teardown-stderr.log
   export HOME=$SCRATCH/home XDG_RUNTIME_DIR=$SCRATCH/run XDG_CONFIG_HOME=$SCRATCH/home/.config
@@ -143,26 +173,15 @@ run_inside() {
   status=0
   PYTHONPATH=$tests python3 -c 'import sys, gl_teardown_paths as paths
 paths.Paths(sys.argv[1], sys.argv[2], sys.argv[3]).run_all()' "$AGTERM_CONTROL_SOCKET" "$log" "$state" || status=$?
-  kill -TERM "$app"
-  local _
-  for _ in $(seq 1 $((BOUND_SECONDS * 10))); do
-    kill -0 "$app" 2>/dev/null || break
-    sleep 0.1
-  done
-  if kill -0 "$app" 2>/dev/null; then
-    kill -KILL "$app"
-    echo "the app ignored SIGTERM" >&2
-    status=1
-  fi
-  wait "$app" || true
+  local app_status=0
+  reap_app "$app" || app_status=$?
   if [[ "$status" -ne 0 ]]; then
-    echo "the teardown paths failed; see $log" >&2
+    echo "the teardown paths failed, app exit status $app_status; see $log" >&2
     exit 1
   fi
 
   status=0
-  python3 "$tests/gl_teardown_analyze.py" "$log" --app-stderr "$app_stderr" >/out/analyze.out || status=$?
-  grep -E '^(SUMMARY|INFO)' /out/analyze.out
+  judge_run "$log" "$app_stderr" /out "$app_status" || status=$?
   if grep -Eq '^INFO renderer .*(llvmpipe|softpipe|swrast)' /out/analyze.out; then GL_CLASS=software; fi
   echo "GL_CLASS=$GL_CLASS mode=$mode"
   echo "$GL_CLASS" >/out/gl-class
@@ -172,13 +191,17 @@ paths.Paths(sys.argv[1], sys.argv[2], sys.argv[3]).run_all()' "$AGTERM_CONTROL_S
   fi
 }
 
-if [[ "${1:-}" == --inside ]]; then
-  run_inside "$2" "${3:-}"
-  exit 0
-fi
+main() {
+  if [[ "${1:-}" == --inside ]]; then
+    run_inside "$2" "${3:-}"
+    exit 0
+  fi
+  case "${1:-}:${2:-}" in
+    wayland: | wayland:--software-waiver | x11:) run_host "$1" "${2:-}" ;;
+    stage:) run_stage ;;
+    *) blocked "usage: gl_teardown_headless.sh wayland [--software-waiver] | x11 | stage" ;;
+  esac
+}
 
-case "${1:-}:${2:-}" in
-  wayland: | wayland:--software-waiver | x11:) run_host "$1" "${2:-}" ;;
-  stage:) run_stage ;;
-  *) blocked "usage: gl_teardown_headless.sh wayland [--software-waiver] | x11 | stage" ;;
-esac
+# gl_teardown_exit_test.py sources this file for reap_app and judge_run.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi
