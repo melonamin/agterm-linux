@@ -4,11 +4,12 @@ import contextlib
 import shutil
 import subprocess
 
-from atspi_smoke import (Atspi, collect, launch, named, open_palette, press_return, press_x11_key,
-                         raw_control_json, stop, wait_for)
+from atspi_smoke import (Atspi, collect, launch, named, press_return, press_x11_key, raw_control_json, stop,
+                         wait_for)
 
-# xdotool binds a named key missing from the map to a spare keycode as Latin j, which any comparison accepts.
-J_KEYCODE, K_KEYCODE = 44, 45
+# xdotool binds a named key missing from the map to a spare keycode as a Latin letter, which any comparison
+# accepts, and unbinds it after the tap, so an app stalled for 20-50 ms loses the press.
+J_KEYCODE, K_KEYCODE, P_KEYCODE = 44, 45, 33
 STEPS = ((J_KEYCODE, 1), (J_KEYCODE, 2), (K_KEYCODE, 1))
 
 
@@ -44,7 +45,9 @@ def verify_palette_layout_navigation(env):
     process, app = launch(env)
     try:
         with russian_layout(env):
-            palette, _ = open_palette(app, process.pid)
+            press_x11_key(f"ctrl+shift+{P_KEYCODE}", process.pid)
+            palette = wait_for(lambda: named(app, "Command Palette", role="frame"),
+                               "Ctrl+Shift+P did not open the palette under a Russian layout")
             verify_steps(palette, "Command Palette", process.pid)
             press_x11_key("Escape", process.pid, window_title="Command Palette")
             wait_for(lambda: not named(app, "Command Palette", role="frame"), "palette ignored Escape")
