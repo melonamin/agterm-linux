@@ -54,6 +54,19 @@ struct LinuxSurfaceFailureInjection: Sendable, Equatable {
         return nil
         #endif
     }
+
+    /// `gl-skip-free:<role>` fails the owner make-current and the clear at free only, so the engine stays running.
+    static func skipsGLFree(
+        for role: LinuxSurfaceRole,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        #if DEBUG
+        environment["AGTERM_ATSPI_SCENARIO"] != nil
+            && environment[environmentKey] == "gl-skip-free:\(role.failureInjectionName)"
+        #else
+        false
+        #endif
+    }
 }
 
 extension LinuxSurfaceRole {

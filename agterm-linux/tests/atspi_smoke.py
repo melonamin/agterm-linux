@@ -7454,7 +7454,7 @@ def main():
             "session-switch-deactivate", "child-gdk-env",
             "child-gdk-env-inverted",
             "custom-command-failures", "remote-presentation", "control-hooks",
-            "surface-lifetimes", "surface-failures",
+            "surface-lifetimes", "surface-failures", "gl-teardown", "gl-teardown-glx",
             "background-overlay-grid", "zoom-floating-overlay",
             "sidebar-row-height", "companion-layout", "companion-identity", "ibus-lifecycle",
             "sidebar-narrow-clipping",
@@ -7601,6 +7601,12 @@ def main():
             verify_surface_configuration_lifetimes(env)
         elif scenario == "surface-failures":
             verify_surface_failure_diagnostics(env)
+        elif scenario == "gl-teardown":
+            from atspi_gl_teardown import verify_gl_teardown
+            verify_gl_teardown(env, state, scenario)
+        elif scenario == "gl-teardown-glx":
+            from atspi_gl_teardown import verify_gl_teardown
+            verify_gl_teardown(env, state, scenario, require_api="glx")
         elif scenario == "background-overlay-grid":
             # Function-local: this harness re-execs itself per scenario, so it runs as `__main__` and
             # the sibling's `from atspi_smoke import …` loads a SECOND copy of this file; a module-scope

@@ -21,7 +21,8 @@ final class GhosttySurface: PaneRoleMutableSurface {
     let rootWidget: OpaquePointer
     /// The GtkGLArea widget (stored as OpaquePointer; cast at GTK call sites).
     let glArea: OpaquePointer
-    private(set) var surface: ghostty_surface_t?
+    var surface: ghostty_surface_t?
+    var retainedGLOwner: OpaquePointer?
     var isRealized: Bool { surface != nil }
     /// The key controller + a GtkIMContext for composed input (dead-keys / compose / CJK): key events are
     /// filtered through the IM, which commits the composed text via the `commit` signal.
@@ -77,10 +78,10 @@ final class GhosttySurface: PaneRoleMutableSurface {
     var mouseOverLink = false
     private var mouseShapeName = "text"
     /// Surface-owned C configuration buffers. libghostty may consume these after surface creation.
-    private var configurationStorage: GhosttySurfaceConfigurationStorage?
+    var configurationStorage: GhosttySurfaceConfigurationStorage?
     /// Per-surface overlay configs (session background/font override), retained until a newer overlay
     /// replaces them or the surface is torn down.
-    private var ownedConfigs: [ghostty_config_t] = []
+    var ownedConfigs: [ghostty_config_t] = []
     private var oscBackgroundColorHex: String?
     private var pendingFontRestore: Double?
     var dashboardFontOverride: Double? {
@@ -110,7 +111,7 @@ final class GhosttySurface: PaneRoleMutableSurface {
     var didHandleProcessExit = false
 
     isolated deinit {
-        if let surface { ghostty_surface_free(surface) }
+        assert(surface == nil, "the widget's destroy discharges the engine surface")
         ownedConfigs.forEach { ghostty_config_free($0) }
         configurationStorage?.release()
         if let exitCodeFile { try? FileManager.default.removeItem(atPath: exitCodeFile) }
@@ -271,11 +272,8 @@ final class GhosttySurface: PaneRoleMutableSurface {
         }
         let appearanceSide = LinuxAppearanceSide(isDark: AppController.systemIsDark)
         GhosttyApp.shared.applyColorScheme(appearanceSide)
-        if LinuxSurfaceFailureInjection.failure(for: role) == .creation {
-            surface = nil
-        } else {
-            surface = ghostty_surface_new(app, &cfg)
-        }
+        let injected = LinuxSurfaceFailureInjection.failure(for: role) == .creation
+        surface = injected ? nil : newSurfaceRetainingGLContext(app, &cfg)
         guard let surface else {
             // libghostty exposes no error value here and may reject one surface for fonts, renderer,
             // config, terminal initialization, or allocation. Keep the diagnostic on this exact host;
@@ -863,10 +861,7 @@ final class GhosttySurface: PaneRoleMutableSurface {
         spawnPacer = nil
         spawnKey = nil
         launchSeed = nil
-        if let surface {
-            ghostty_surface_free(surface)
-            self.surface = nil
-        }
+        dischargeEngineSurface()
         finishExitCodeCapture()
         ownedConfigs.forEach { ghostty_config_free($0) }
         ownedConfigs = []
@@ -886,7 +881,7 @@ private func wrap(_ data: gpointer?) -> GhosttySurface? {
 /// time). Fired when the widget is destroyed — the LAST signal, so the object stays valid through any
 /// focus-leave/etc. emitted during teardown.
 private let surfaceDestroy: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { _, data in
-    if let data { Unmanaged<GhosttySurface>.fromOpaque(data).release() }
+    if let data { MainActor.assumeIsolated { surfaceWidgetDestroyed(data) } }
 }
 private let surfaceRealize: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { _, data in
     MainActor.assumeIsolated { wrap(data)?.realize() }

@@ -67,10 +67,7 @@ final class GhosttyApp: @unchecked Sendable {
         }
         rt.close_surface_cb = { ud, _ in
             guard let retained = RetainedGhosttySurface(ud) else { return }
-            runOnMain { MainActor.assumeIsolated {
-                retained.surface.handleProcessExit()
-                retained.release()
-            } }
+            GhosttyApp.queueProcessExit(retained)
         }
 
         app = ghostty_app_new(&rt, cfg)
@@ -211,7 +208,9 @@ final class GhosttyApp: @unchecked Sendable {
     // MARK: - Action routing (runs on the main thread, during a tick)
 
     private func handleAction(_ target: ghostty_target_s, _ action: ghostty_action_s) -> Bool {
-        MainActor.assumeIsolated {
+        // true, because a false OPEN_URL runs the engine's own opener; SHOW_CHILD_EXITED's answer only picks its message
+        if Self.dropsQuarantined(target, action.tag) { return true }
+        return MainActor.assumeIsolated {
             switch action.tag {
             case GHOSTTY_ACTION_RENDER:
                 Self.wrapper(fromTarget: target)?.queueRender()
@@ -238,10 +237,7 @@ final class GhosttyApp: @unchecked Sendable {
                     return false
                 }
                 guard let retained else { return false }
-                runOnMain { MainActor.assumeIsolated {
-                    retained.surface.handleProcessExit()
-                    retained.release()
-                } }
+                Self.queueProcessExit(retained)
                 return true
             case GHOSTTY_ACTION_CELL_SIZE:
                 // fires when the cell pixel size changes (font-size via Ctrl+/-, or a DPI change):
@@ -435,7 +431,7 @@ final class GhosttyApp: @unchecked Sendable {
     }
 
     private static func writeClipboard(_ ud: UnsafeMutableRawPointer?, _ items: [ClipboardItem], _ loc: ghostty_clipboard_e, _ confirm: Bool) {
-        guard !items.isEmpty else { return }
+        guard !gSurfaceQuarantine.drops(quarantineKey(ud), kind: "clipboard write"), !items.isEmpty else { return }
         guard confirm else {
             // synchronous so a same-tick read sees it, which GDK allows only on its own thread
             assert(g_main_context_is_owner(g_main_context_default()) != 0, "clipboard write off the GTK main thread")
@@ -450,9 +446,10 @@ final class GhosttyApp: @unchecked Sendable {
                     retained.release()
                     return
                 }
+                let answer = gSurfaceQuarantine.writeAnswer(key: retained.key) { LinuxClipboardAdapter.setClipboard(items, loc: loc) }
                 ClipboardPromptController.shared.request(.write, requester: requester) { allowed in
                     defer { retained.release() }
-                    if allowed { LinuxClipboardAdapter.setClipboard(items, loc: loc) }
+                    answer(allowed)
                 }
             }
         }
@@ -464,14 +461,40 @@ final class GhosttyApp: @unchecked Sendable {
         wrapper(from: ud)?.surface
     }
     static func wrapper(from ud: UnsafeMutableRawPointer?) -> GhosttySurface? {
-        guard let ud else { return nil }
+        guard let ud, !gSurfaceQuarantine.drops(quarantineKey(ud), kind: "clipboard read") else { return nil }
         return Unmanaged<GhosttySurface>.fromOpaque(ud).takeUnretainedValue()
     }
     static func wrapper(fromTarget target: ghostty_target_s) -> GhosttySurface? {
-        guard target.tag == GHOSTTY_TARGET_SURFACE,
-              let surface = target.target.surface,
-              let ud = ghostty_surface_userdata(surface) else { return nil }
+        guard let ud = targetUserdata(target), !gSurfaceQuarantine.contains(quarantineKey(ud)) else { return nil }
         return Unmanaged<GhosttySurface>.fromOpaque(ud).takeUnretainedValue()
+    }
+    private static func targetUserdata(_ target: ghostty_target_s) -> UnsafeMutableRawPointer? {
+        guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface else { return nil }
+        return ghostty_surface_userdata(surface)
+    }
+    static func quarantineKey(_ ud: UnsafeMutableRawPointer?) -> UInt {
+        LinuxSurfaceQuarantine<GhosttySurfaceQuarantineRecord>.key(ud)
+    }
+    private static func dropsQuarantined(_ target: ghostty_target_s, _ tag: ghostty_action_tag_e) -> Bool {
+        guard let ud = targetUserdata(target) else { return false }
+        return gSurfaceQuarantine.drops(quarantineKey(ud), kind: actionName(tag))
+    }
+    private static func actionName(_ tag: ghostty_action_tag_e) -> String {
+        switch tag {
+        case GHOSTTY_ACTION_MOUSE_SHAPE: "MOUSE_SHAPE"
+        case GHOSTTY_ACTION_SET_TITLE: "SET_TITLE"
+        case GHOSTTY_ACTION_DESKTOP_NOTIFICATION: "DESKTOP_NOTIFICATION"
+        default: "action \(tag.rawValue)"
+        }
+    }
+
+    /// The closing hop for both `close_surface_cb` and `SHOW_CHILD_EXITED`.
+    private static func queueProcessExit(_ retained: RetainedGhosttySurface) {
+        let exit = gSurfaceQuarantine.exitHop(key: retained.key) { MainActor.assumeIsolated { retained.surface.handleProcessExit() } }
+        runOnMain { MainActor.assumeIsolated {
+            exit()
+            retained.release()
+        } }
     }
 
     /// Bundled config defaults select Ghostty's TERM only when its complete resource pair resolved.
@@ -521,9 +544,11 @@ final class RetainedGhosttySurface: @unchecked Sendable {
     private let retained: Unmanaged<GhosttySurface>
 
     init?(_ ud: UnsafeMutableRawPointer?) {
-        guard let ud else { return nil }
+        guard let ud, !gSurfaceQuarantine.drops(GhosttyApp.quarantineKey(ud), kind: "close") else { return nil }
         retained = Unmanaged<GhosttySurface>.fromOpaque(ud).retain()
     }
+
+    var key: UInt { GhosttyApp.quarantineKey(retained.toOpaque()) }
 
     @MainActor var surface: GhosttySurface { retained.takeUnretainedValue() }
 
