@@ -72,6 +72,15 @@ def find_app(process_id):
     return matches[-1] if matches else None
 
 
+def file_holds(path, expected):
+    """`printf > file` creates the file before it writes, so existing proves nothing about its contents."""
+    try:
+        with open(path, encoding="utf-8") as source:
+            return source.read() == expected
+    except FileNotFoundError:
+        return False
+
+
 def wait_for(predicate, message, timeout=12, required=True):
     """Poll `predicate` until it returns something truthy.
 
@@ -3475,9 +3484,7 @@ def verify_remote_presentation(env):
                      "sizePercent": 60},
         })
         assert overlay["ok"], overlay
-        wait_for(lambda: os.path.exists(overlay_marker), "remote overlay job did not run on origin")
-        with open(overlay_marker, encoding="utf-8") as source:
-            assert source.read() == "origin-job"
+        wait_for(lambda: file_holds(overlay_marker, "origin-job"), "remote overlay job did not run on origin")
         wait_for(lambda: raw_control_json(origin_env, {
             "cmd": "session.overlay.result", "target": origin_id,
         }).get("result", {}).get("exitCode") == 0,
@@ -3488,9 +3495,8 @@ def verify_remote_presentation(env):
             "args": {"text": "printf 'daemon-typed' > " + shlex.quote(typed_marker) + "\n"},
         })
         assert typed["ok"], typed
-        wait_for(lambda: os.path.exists(typed_marker), "origin could not type through its daemon while following")
-        with open(typed_marker, encoding="utf-8") as source:
-            assert source.read() == "daemon-typed"
+        wait_for(lambda: file_holds(typed_marker, "daemon-typed"),
+                 "origin could not type through its daemon while following")
         text_read = raw_control_json(origin_env, {
             "cmd": "session.text", "target": origin_id, "args": {"all": True},
         })
