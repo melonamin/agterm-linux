@@ -7,7 +7,8 @@
 #   gl_teardown_headless.sh stage                       release build and a fresh stage, in podman, for the runs above
 #
 # Only `stage` passes AGTERM_PACKAGE_COMMIT, because a linked worktree's gitdir is not in the container, where
-# stage-linux.sh's `git rev-parse` fallback leaves COMMIT empty. A run refuses a stage without a commit.
+# stage-linux.sh's `git rev-parse` fallback leaves COMMIT empty. A run refuses a stage without a commit, or one whose
+# commit differs from the live tree in STAGE_SOURCES; it need not be HEAD, since a docs commit leaves a stage valid.
 # Images: `localhost/agterm-linux-ci:latest` has no tracked recipe. It comes from
 # `podman build -t localhost/agterm-linux-ci ~/.local/share/agterm-linux-ci`, a local mirror of ci.yml's app job; on a
 # machine without that file, build the same image from ci.yml's Swift tag, apt list and zig pin. Then, from the root:
@@ -22,6 +23,7 @@ IMAGE=localhost/agterm-linux-gl-teardown
 RENDER_NODE=/dev/dri/renderD128
 BOUND_SECONDS=15
 TESTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STAGE_SOURCES=(agterm-linux/Sources agtermCore/Sources linux/patches)
 
 blocked() {
   echo "blocker: $1" >&2
@@ -34,7 +36,7 @@ run_stage() {
   command -v podman >/dev/null || blocked "podman is not installed"
   podman image exists "$BASE_IMAGE" || blocked "image $BASE_IMAGE is missing"
   commit="$(git -C "$root" rev-parse HEAD)" || blocked "no commit to record for the stage"
-  if [[ -n "$(git -C "$root" status --porcelain -- agterm-linux/Sources agtermCore/Sources)" ]]; then
+  if [[ -n "$(git -C "$root" status --porcelain -- "${STAGE_SOURCES[@]}")" ]]; then
     blocked "Sources differ from $commit, so the stage could not name what it was built from"
   fi
   # shellcheck disable=SC2016 # expanded in the container
@@ -50,6 +52,19 @@ run_stage() {
   echo "staged $commit"
 }
 
+# Runs on the host: git cannot follow a linked worktree's gitdir in the container. `git diff` skips untracked files.
+require_stage_source() {
+  local root=$1 stage=$2 commit
+  grep -Eq '^[0-9a-f]{40}$' "$stage/share/agterm/COMMIT" || blocked "the stage names no commit; run: $0 stage"
+  commit="$(cat "$stage/share/agterm/COMMIT")"
+  git -C "$root" cat-file -e "$commit^{commit}" 2>/dev/null || blocked "git cannot resolve stage commit $commit"
+  git -C "$root" diff --quiet "$commit" -- "${STAGE_SOURCES[@]}" || blocked "the tree differs from stage commit $commit; run: $0 stage"
+  if [[ -n "$(git -C "$root" ls-files --others --exclude-standard -- "${STAGE_SOURCES[@]}")" ]]; then
+    blocked "untracked files in ${STAGE_SOURCES[*]} are not in stage commit $commit"
+  fi
+  echo "stage commit $commit"
+}
+
 run_host() {
   local mode=$1 waiver=$2
   local root stage name device=()
@@ -62,8 +77,7 @@ run_host() {
   for product in bin/agterm-linux bin/agterm-linux.bin bin/zmx lib/libghostty.so; do
     [[ -e "$stage/$product" ]] || blocked "stage lacks $product: $stage"
   done
-  grep -Eq '^[0-9a-f]{40}$' "$stage/share/agterm/COMMIT" || blocked "the stage names no commit; run: $0 stage"
-  echo "stage commit $(cat "$stage/share/agterm/COMMIT")"
+  require_stage_source "$root" "$stage"
   if podman container exists "$name"; then blocked "container $name already exists"; fi
   [[ "$mode" == wayland && -e "$RENDER_NODE" ]] && device=(--device "$RENDER_NODE")
   mkdir -p "$root/artifacts/gl-teardown/$mode"
@@ -203,5 +217,5 @@ main() {
   esac
 }
 
-# gl_teardown_exit_test.py sources this file for reap_app and judge_run.
+# gl_teardown_exit_test.py sources this file for reap_app, judge_run and require_stage_source.
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

@@ -2,6 +2,7 @@
 import contextlib
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ from gl_teardown_analyze_test import clean_log  # noqa: E402
 from gl_teardown_paths import judge_run, require_clean_exit  # noqa: E402
 
 RUNNER = os.path.join(TESTS, "gl_teardown_headless.sh")
+SOURCES = ("agterm-linux/Sources/a.swift", "agtermCore/Sources/b.swift", "linux/patches/c.patch")
 ON_TERM = {
     "clean": "trap 'exit 0' TERM",
     "exit7": "trap 'exit 7' TERM",
@@ -88,6 +90,93 @@ class CompleteTrace(unittest.TestCase):
                 result = self.runner_judge(status)
                 self.assertIn("verdict=1", result.stdout)
                 self.assertIn(f"the app exited {status}", result.stderr)
+
+
+class StageSource(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = os.path.join(directory.name, "tree")
+        self.stage = os.path.join(directory.name, "stage")
+        os.makedirs(os.path.join(self.stage, "share", "agterm"))
+        for path in SOURCES:
+            self.write(path, "first")
+        self.write("README.md", "first")
+        self.git("init", "-q")
+        self.staged = self.commit("first")
+
+    def write(self, path, text):
+        target = os.path.join(self.root, path)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as file:
+            file.write(text)
+
+    def git(self, *arguments):
+        environment = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+        identity = ("-c", "user.name=test", "-c", "user.email=test@example.invalid")
+        result = subprocess.run(["git", "-C", self.root, *identity, *arguments], env=environment, check=True,
+                                capture_output=True, text=True)
+        return result.stdout.strip()
+
+    def commit(self, message):
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD")
+
+    def check(self, commit=None):
+        with open(os.path.join(self.stage, "share", "agterm", "COMMIT"), "w", encoding="utf-8") as file:
+            file.write(f"{self.staged if commit is None else commit}\n")
+        return in_runner('require_stage_source "$1" "$2"', self.root, self.stage)
+
+    def assert_refused(self, result, reason):
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertIn(reason, result.stderr)
+
+    def test_the_stage_commit_itself_passes(self):
+        result = self.check()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn(f"stage commit {self.staged}", result.stdout)
+
+    def test_a_later_commit_outside_the_sources_passes(self):
+        self.write("README.md", "second")
+        self.commit("docs")
+        self.write("README.md", "uncommitted")
+        self.assertEqual(0, self.check().returncode)
+
+    def test_a_committed_source_change_is_refused(self):
+        for path in SOURCES:
+            with self.subTest(path):
+                self.write(path, f"committed {path}")
+                self.commit(path)
+                self.assert_refused(self.check(), "the tree differs from stage commit")
+                self.git("revert", "--no-edit", "HEAD")
+                self.assertEqual(0, self.check().returncode)
+
+    def test_an_uncommitted_source_change_is_refused(self):
+        for path in SOURCES:
+            with self.subTest(path):
+                self.write(path, "uncommitted")
+                self.assert_refused(self.check(), "the tree differs from stage commit")
+                self.git("checkout", "--", path)
+
+    def test_an_untracked_source_is_refused(self):
+        self.write("agterm-linux/Sources/new.swift", "untracked")
+        self.assert_refused(self.check(), "untracked files")
+
+    def test_a_commit_git_does_not_know_is_refused(self):
+        self.assert_refused(self.check("f" * 40), "git cannot resolve stage commit")
+
+    def test_a_hash_that_is_not_a_commit_is_refused(self):
+        self.assert_refused(self.check(self.git("rev-parse", "HEAD^{tree}")), "git cannot resolve stage commit")
+
+    def test_a_stage_with_no_commit_is_refused(self):
+        self.assert_refused(self.check(""), "the stage names no commit")
+
+    def test_an_unreadable_gitdir_is_refused(self):
+        shutil.rmtree(os.path.join(self.root, ".git"))
+        with open(os.path.join(self.root, ".git"), "w", encoding="utf-8") as file:
+            file.write("gitdir: /nonexistent/worktrees/stage\n")
+        self.assert_refused(self.check(), "git cannot resolve stage commit")
 
 
 class ReapApp(unittest.TestCase):
