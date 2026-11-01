@@ -92,8 +92,8 @@ from its last cleanly captured command.
 The libghostty pin matches upstream v0.39.1.
 Kitty clipboard (OSC 5522) text reads and multi-representation writes are supported.
 Kitty image reads are not: reads serve text only.
-Kitty writes to PRIMARY are refused by the engine's `supportsClipboard`; copy-on-select to PRIMARY still works.
-Hidden-surface GPU release is not enabled, so a hidden pane keeps its swap chain.
+Kitty writes to PRIMARY are unsupported; copy-on-select to PRIMARY still works.
+Hidden panes retain their GPU resources.
 
 Linux uses desktop conventions: key labels are Ctrl/Shift rather than Command/Option, native chrome is
 provided by libadwaita, and local `file://` links open their containing folder in the default file manager.
