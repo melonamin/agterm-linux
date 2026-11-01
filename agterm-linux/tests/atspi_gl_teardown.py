@@ -2,7 +2,9 @@
 
 import base64
 import errno
+import json
 import os
+import shlex
 import shutil
 import subprocess
 
@@ -111,6 +113,18 @@ def release_child(fifo):
     wait_for(opened, "the quarantined child stopped reading its FIFO")
 
 
+def retained_gl_lines(offset):
+    with open(os.environ["AGTERM_UI_APP_STDERR"], "rb") as file:
+        file.seek(offset)
+        lines = file.read().decode("utf-8", "replace").splitlines()
+    return [line for line in lines if gl_teardown_analyze.PREFIX in line]
+
+
+def require_no_dead_widget_touched(offset, name):
+    with open(stderr_slice(offset, name), encoding="utf-8", errors="replace") as file:
+        assert "assertion 'GTK_IS_WIDGET" not in file.read(), "a dead widget was touched"
+
+
 def verify_gl_teardown_quarantine(env, state):
     """The engine of a skipped free keeps running; everything it says afterwards must die at the registry."""
     os.makedirs(os.path.join(state, "config"))
@@ -122,10 +136,7 @@ def verify_gl_teardown_quarantine(env, state):
     offset = stderr_offset()
 
     def log_has(text):
-        with open(os.environ["AGTERM_UI_APP_STDERR"], "rb") as file:
-            file.seek(offset)
-            lines = file.read().decode("utf-8", "replace").splitlines()
-        return any(gl_teardown_analyze.PREFIX in line and text in line for line in lines)
+        return any(text in line for line in retained_gl_lines(offset))
 
     process, _app = launch(env)
     try:
@@ -151,6 +162,57 @@ def verify_gl_teardown_quarantine(env, state):
     finally:
         stop(process)
     require_clean_exit(process)
-    stderr_text = open(stderr_slice(offset, "gl-teardown-quarantine-stderr.log"), encoding="utf-8", errors="replace").read()
-    assert "assertion 'GTK_IS_WIDGET" not in stderr_text, "a dead widget was touched"
+    require_no_dead_widget_touched(offset, "gl-teardown-quarantine-stderr.log")
     print("OK: gl-teardown-quarantine: every late callback dropped, clipboard unchanged, control answering")
+
+
+def verify_gl_teardown_quarantine_close(env, state):
+    """A surface with no `command` closes through close_surface_cb, after SHOW_CHILD_EXITED's own `close` drop."""
+    with open(os.path.join(state, "settings.json"), "w", encoding="utf-8") as file:
+        json.dump({"restoreMode": "none", "closeGraceUndoEnabled": False}, file)
+    script, ready, fifo, marker = write_quarantine_child(state)
+    env = dict(env, AGTERM_ATSPI_SURFACE_FAILURE="gl-skip-free:split")
+    socket_path = env["AGTERM_CONTROL_SOCKET"]
+    offset = stderr_offset()
+
+    def logged(entry):
+        return f"{gl_teardown_analyze.PREFIX} {entry}" in retained_gl_lines(offset)
+
+    def session_rows():
+        tree = call(socket_path, "tree")["tree"]
+        return [row for workspace in tree["workspaces"] for row in workspace["sessions"]]
+
+    def primary_shell_pid(session, name):
+        path = os.path.join(state, name)
+        call(socket_path, "session.type", session, text=f"echo $$ > {shlex.quote(path)}\r", pane="primary")
+        wait_for(lambda: os.path.exists(path) and os.path.getsize(path) > 0, f"the primary shell never wrote {name}")
+        with open(path, encoding="utf-8") as file:
+            return file.read()
+
+    process, _app = launch(env)
+    try:
+        wait_for(lambda: os.path.exists(socket_path), "control socket never appeared")
+        session = next(row["id"] for row in session_rows() if row["active"])
+        primary_pid = primary_shell_pid(session, "primary-before")
+
+        call(socket_path, "session.split", session, mode="on", axis="vertical")
+        call(socket_path, "session.type", session, text=f"exec sh {shlex.quote(script)}\r", pane="split")
+        wait_for(lambda: os.path.exists(ready), "the split's child never started")
+        call(socket_path, "session.split.close", session)
+        wait_for(lambda: logged("quarantined widget destroyed"), "the quarantined widget was never destroyed")
+        assert not logged("dropped close_surface"), "the split closed before its child was released"
+
+        release_child(fifo)
+        wait_for(lambda: os.path.exists(marker), "the quarantined engine's child never finished")
+        wait_for(lambda: logged("dropped close"), "the child's exit never reached the engine")
+        wait_for(lambda: logged("dropped close_surface"), "close_surface_cb never reached its quarantine check")
+
+        row = next(row for row in session_rows() if row["id"] == session)
+        assert not row.get("hasSplit"), f"the closed split is still in the tree: {row}"
+        assert primary_shell_pid(session, "primary-after") == primary_pid, "the primary pane's shell changed"
+        assert call(socket_path, "window.list")["windows"], "control stopped answering"
+    finally:
+        stop(process)
+    require_clean_exit(process)
+    require_no_dead_widget_touched(offset, "gl-teardown-quarantine-close-stderr.log")
+    print("OK: gl-teardown-quarantine-close: close_surface_cb dropped, primary pane intact, control answering")

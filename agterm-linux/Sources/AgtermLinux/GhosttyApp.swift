@@ -66,7 +66,8 @@ final class GhosttyApp: @unchecked Sendable {
             GhosttyApp.writeClipboard(ud, LinuxClipboardAdapter.copyItems(content, count: len), loc, confirm)
         }
         rt.close_surface_cb = { ud, _ in
-            guard let retained = RetainedGhosttySurface(ud) else { return }
+            // not "close": on a plain exit SHOW_CHILD_EXITED logs that first, and each kind logs once
+            guard let retained = RetainedGhosttySurface(ud, kind: "close_surface") else { return }
             GhosttyApp.queueProcessExit(retained)
         }
 
@@ -547,8 +548,8 @@ final class MainClosure: @unchecked Sendable { let body: @Sendable () -> Void; i
 final class RetainedGhosttySurface: @unchecked Sendable {
     private let retained: Unmanaged<GhosttySurface>
 
-    init?(_ ud: UnsafeMutableRawPointer?) {
-        guard let ud, !gSurfaceQuarantine.drops(GhosttyApp.quarantineKey(ud), kind: "close") else { return nil }
+    init?(_ ud: UnsafeMutableRawPointer?, kind: String = "close") {
+        guard let ud, !gSurfaceQuarantine.drops(GhosttyApp.quarantineKey(ud), kind: kind) else { return nil }
         retained = Unmanaged<GhosttySurface>.fromOpaque(ud).retain()
     }
 
