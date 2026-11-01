@@ -24,7 +24,7 @@ paths:
 - That GL-context invalidation is PERMANENT: `GhosttySurface`'s input-method unrealize handler only clears
   the IM client; it does not repair rendering, and
   `realize()`'s `createSurface()` no-ops on an existing surface, so a re-add realizes a NEW context while
-  libghostty keeps drawing into the destroyed one, and `refresh()` cannot repair it. `realize()` logs
+  libghostty keeps using the old context's objects with the new one current, and `refresh()` cannot repair it. `realize()` logs
   `GLArea re-realized over a live surface` for exactly that, since no AT-SPI assertion can see a blank pane.
   So a pane host's GtkPaned slot is fixed for its LIFETIME: promoting the survivor of a primary-pane exit
   clears the DEAD pane's slot and leaves the survivor where it is, and `layoutSplit` is the single
@@ -100,6 +100,39 @@ paths:
   `ghostty_surface_set_occlusion(false)` therefore pauses render-thread updates and draw requests while
   a hidden pane keeps its swap chain; terminal visibility and mode 2033 reports still apply.
   Enabling the release needs an explicit host-thread path with that context current, and its own tests.
+- Linux frees every surface under its own retained GL context; no engine patch is involved.
+  `ghostty_surface_free` reaches `renderer.deinit`, which deletes on whatever context is current: on the unfixed code that
+  was GTK's on a session close, none after `closeQuick` unparented, and the replacement's in `replacePane`.
+  A wrong context can delete another pane's local names; no context silently leaves objects alive (measured on `quick-exit`).
+  `GhosttySurface+RetainedGLContext.swift` takes a ref on the pane's `GdkGLContext` for exactly one successful
+  `ghostty_surface_new`, and `LinuxRetainedGLTeardown.run` saves a strong prior, makes the owner current, frees and restores.
+  A separate ref keeps the context usable through `gtk_gl_area_unrealize`, `gdk_draw_context_dispose` and `gdk_surface_destroy`
+  (`tests/gl_retained_context_check.c`, EGL and GLX on 4.14; 4.22 by reading its sources).
+  A re-realize never replaces the ref and its error stays an error.
+  Workers are joined before `renderer.deinit` and `threadEnter` is a no-op on embedded, so free reaches no `make_current`
+  callback. `Pipeline.deinit` leaves its FBO and VAO for the context's death: not every object is explicitly released.
+- Regular cleanup must run with the display open. A ref protects against neither `gdk_display_close` nor real context loss, and
+  `gdk_gl_context_make_current`'s fast path has no closed-display test, so `run` checks first and a closed display goes straight
+  to the skip; GDK's clear would enter it. Linux never calls `gdk_display_close`, and `onShutdown` frees no surfaces: no
+  quit-time sweep exists, so a surface can still hold its owner at exit.
+- The last-chance free is the widget's `destroy` (`surfaceWidgetDestroyed`), GTK's last hold on the wrapper, and is the normal
+  free for `closeQuick`, which unparents before `teardown()`. `deinit` only asserts a discharged handle: it can run inside
+  `destroy` or later, so it frees nothing and touches no `glArea`. `destroy` also clears `awaitingSpawnPermit`, because
+  `resumePacedSpawn` is the one creation path that can outlive the widget. Any branch that called free consumes the handle,
+  whatever the restore did.
+- Anything but `ownerCurrent` with `restored` is degraded and logged with `agterm: retained GL context:`.
+  A failed make-current clears and frees with no context, a possible GPU leak; a clear that cannot be established, or a closed
+  display, skips the free. Read-back proves GDK's slot, not a native context: GDK clears the slot only when the backend clear
+  succeeds, GLX's clear ignores the native result, a retained ref does not prove the prior undisposed, and a disposed prior still
+  in the slot reads as restored. `tests/gl_teardown_analyze.py` compares the native context for that reason.
+- A skipped free leaves the engine running until process exit, still using its config buffers, the owner and its unretained
+  `userdata`. `LinuxSurfaceQuarantine`, keyed by raw `userdata` and never dereferencing it, pins all four for the process lifetime
+  and is the explicit state, since `surface == nil` also describes a wrapper before creation. Its entry checks return before
+  any GTK or model access: the top of `handleAction`, which must not fall through on a nil wrapper (`OPEN_URL`,
+  `DESKTOP_NOTIFICATION`, `RING_BELL` and `RELOAD_CONFIG` use none), `wrapper(from:)`, `wrapper(fromTarget:)`, the top of
+  `writeClipboard`, and `RetainedGhosttySurface.init`. A hop queued past those rechecks as it runs: the write prompt's
+  `writeAnswer` and the closing `exitHop`, since `finishExitCodeCapture` can mutate the store before `onExit`. `wakeup_cb` is
+  app-level and the platform `make_current` runs before any quarantine. A new callback or hop owes the same check.
 
 ## Theme and sidebar
 
