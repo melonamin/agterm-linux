@@ -484,6 +484,7 @@ final class GhosttyApp: @unchecked Sendable {
         case GHOSTTY_ACTION_MOUSE_SHAPE: "MOUSE_SHAPE"
         case GHOSTTY_ACTION_SET_TITLE: "SET_TITLE"
         case GHOSTTY_ACTION_DESKTOP_NOTIFICATION: "DESKTOP_NOTIFICATION"
+        case GHOSTTY_ACTION_SHOW_CHILD_EXITED: "close"   // a `command` surface always waits, so close_surface_cb never fires
         default: "action \(tag.rawValue)"
         }
     }

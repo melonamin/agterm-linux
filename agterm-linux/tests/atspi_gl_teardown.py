@@ -1,12 +1,18 @@
 """Every surface teardown path under gl_teardown_shim.c, judged by gl_teardown_analyze.py."""
 
+import base64
+import errno
 import os
 import shutil
 import subprocess
 
 import gl_teardown_analyze
-from atspi_smoke import ROOT, Gtk, launch, stop, wait_for
-from gl_teardown_paths import Paths, write_app_config
+from atspi_clipboard_osc52 import Gdk, Gtk, clipboard_text
+from atspi_smoke import ROOT, launch, stop, wait_for
+from gl_teardown_paths import Paths, call, write_app_config
+
+CLIPBOARD_TOKEN = "gl-quarantine-clipboard-before"
+LEAKED_TOKEN = "gl-quarantine-clipboard-after"
 
 
 def build_preload(state):
@@ -68,3 +74,79 @@ def verify_gl_teardown(env, state, scenario, require_api=None):
     status = gl_teardown_analyze.main(arguments)
     assert status == 0, f"gl_teardown_analyze exited {status} on {log_path}"
     print(f"OK: {scenario}: analyzer clean on {log_path}")
+
+
+def write_quarantine_child(state):
+    """Blocks until the harness says the widget is gone, then speaks every protocol a dead widget must not hear."""
+    ready, fifo, marker = (os.path.join(state, name) for name in ("child-ready", "child-fifo", "child-done"))
+    os.mkfifo(fifo)
+    encoded = base64.b64encode(LEAKED_TOKEN.encode()).decode()
+    script = os.path.join(state, "quarantine-child.sh")
+    with open(script, "w", encoding="utf-8") as file:
+        file.write(f"""#!/bin/sh
+: > {ready}
+read _ < {fifo}
+printf '\\033]22;crosshair\\007'
+printf '\\033]2;quarantine-title\\007'
+printf '\\033]52;c;{encoded}\\007'
+printf '\\033]9;quarantine-notification\\007'
+touch {marker}
+""")
+    return script, ready, fifo, marker
+
+
+def release_child(fifo):
+    def opened():
+        try:
+            os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+            return True
+        except OSError as error:
+            if error.errno != errno.ENXIO:
+                raise
+            return False
+
+    wait_for(opened, "the quarantined child stopped reading its FIFO")
+
+
+def verify_gl_teardown_quarantine(env, state):
+    """The engine of a skipped free keeps running; everything it says afterwards must die at the registry."""
+    os.makedirs(os.path.join(state, "config"))
+    with open(os.path.join(state, "config", "ghostty.conf"), "w", encoding="utf-8") as config:
+        config.write("clipboard-write = allow\ndesktop-notifications = true\n")
+    script, ready, fifo, marker = write_quarantine_child(state)
+    env = dict(env, AGTERM_ATSPI_SURFACE_FAILURE="gl-skip-free:overlay")
+    socket_path = env["AGTERM_CONTROL_SOCKET"]
+    offset = stderr_offset()
+
+    def log_has(text):
+        with open(os.environ["AGTERM_UI_APP_STDERR"], "rb") as file:
+            file.seek(offset)
+            lines = file.read().decode("utf-8", "replace").splitlines()
+        return any(gl_teardown_analyze.PREFIX in line and text in line for line in lines)
+
+    process, _app = launch(env)
+    try:
+        wait_for(lambda: os.path.exists(socket_path), "control socket never appeared")
+        Gtk.init()
+        clipboard = Gdk.Display.get_default().get_clipboard()
+        encoded = base64.b64encode(CLIPBOARD_TOKEN.encode()).decode()
+        call(socket_path, "session.type", text=f"printf '\\033]52;c;{encoded}\\007'\r")
+        wait_for(lambda: clipboard_text(clipboard) == CLIPBOARD_TOKEN, "a live pane's OSC 52 never reached the clipboard")
+
+        call(socket_path, "session.overlay.open", command=f"sh {script}")
+        wait_for(lambda: os.path.exists(ready), "the overlay child never started")
+        call(socket_path, "session.overlay.close")
+        wait_for(lambda: log_has("quarantined widget destroyed"), "the quarantined widget was never destroyed")
+
+        release_child(fifo)
+        wait_for(lambda: os.path.exists(marker), "the quarantined engine's child never finished")
+        for kind in ("MOUSE_SHAPE", "SET_TITLE", "DESKTOP_NOTIFICATION", "clipboard write", "close"):
+            wait_for(lambda kind=kind: log_has(f"dropped {kind}"), f"no dropped line for {kind}")
+
+        assert clipboard_text(clipboard) == CLIPBOARD_TOKEN, "a quarantined engine wrote the clipboard"
+        assert call(socket_path, "window.list")["windows"], "control stopped answering"
+    finally:
+        stop(process)
+    stderr_text = open(stderr_slice(offset, "gl-teardown-quarantine-stderr.log"), encoding="utf-8", errors="replace").read()
+    assert "assertion 'GTK_IS_WIDGET" not in stderr_text, "a dead widget was touched"
+    print("OK: gl-teardown-quarantine: every late callback dropped, clipboard unchanged, control answering")
