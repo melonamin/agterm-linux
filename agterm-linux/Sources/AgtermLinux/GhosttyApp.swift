@@ -388,7 +388,10 @@ final class GhosttyApp: @unchecked Sendable {
                 return GHOSTTY_CLIPBOARD_READ_STARTED
             case .text(let wantsList):
                 guard let retained = RetainedGhosttySurface(userdata) else { return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
-                LinuxClipboardAdapter.readText(clipboard, ClipboardTextRead(state: requestState, retained: retained, list: wantsList))
+                // Taken as the read starts, from the offer GDK reads.
+                let read = ClipboardTextRead(state: requestState, retained: retained, list: wantsList,
+                                             advertisesURIList: LinuxClipboardAdapter.advertisesURIList(clipboard))
+                LinuxClipboardAdapter.readText(clipboard, read)
                 return GHOSTTY_CLIPBOARD_READ_STARTED
             }
         }

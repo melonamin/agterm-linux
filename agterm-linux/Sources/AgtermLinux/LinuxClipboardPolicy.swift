@@ -22,6 +22,14 @@ enum LinuxClipboardPolicy {
 
     static let textMime = "text/plain"
     static let utf8TextMime = "text/plain;charset=utf-8"
+    static let uriListMime = "text/uri-list"
+
+    /// A file-manager copy reads as POSIX paths, like macOS. The callback gets no request kind, so the
+    /// clipboard's formats are what tell that from literal `file://` text, which round-trips unchanged.
+    static func readableText(_ text: String, advertisesURIList: Bool) -> String {
+        guard advertisesURIList else { return text }
+        return PasteDecoder.posixPaths(fromURIList: text) ?? text
+    }
 
     /// Reads serve text only: binary representations are never fetched from the clipboard.
     static func readPlan(mimes: [String], list: Bool) -> ReadPlan {

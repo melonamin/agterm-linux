@@ -133,6 +133,11 @@ enum LinuxClipboardAdapter {
         return gdk_content_formats_contain_gtype(readable, GType(64) /* G_TYPE_STRING */) != 0
     }
 
+    static func advertisesURIList(_ clipboard: OpaquePointer) -> Bool {
+        guard let formats = gdk_clipboard_get_formats(clipboard) else { return false }
+        return LinuxClipboardPolicy.uriListMime.withCString { gdk_content_formats_contain_mime_type(formats, $0) != 0 }
+    }
+
     /// `read` owns the surface reference from here and always completes on the main thread.
     static func readText(_ clipboard: OpaquePointer, _ read: ClipboardTextRead) {
         gdk_clipboard_read_text_async(
@@ -144,8 +149,7 @@ enum LinuxClipboardAdapter {
                 if let source, let raw = gdk_clipboard_read_text_finish(OpaquePointer(source), result, nil) {
                     let value = String(cString: raw)
                     g_free(raw)
-                    // a file-manager copy lands as a file:// uri-list → paste the POSIX paths, like macOS.
-                    text = PasteDecoder.posixPaths(fromURIList: value) ?? value
+                    text = LinuxClipboardPolicy.readableText(value, advertisesURIList: read.advertisesURIList)
                 }
                 MainActor.assumeIsolated { read.finish(text: text) }
             },
@@ -181,11 +185,13 @@ final class ClipboardTextRead: @unchecked Sendable {
     let state: UnsafeMutableRawPointer?
     let retained: RetainedGhosttySurface
     let list: Bool
+    let advertisesURIList: Bool
 
-    init(state: UnsafeMutableRawPointer?, retained: RetainedGhosttySurface, list: Bool) {
+    init(state: UnsafeMutableRawPointer?, retained: RetainedGhosttySurface, list: Bool, advertisesURIList: Bool) {
         self.state = state
         self.retained = retained
         self.list = list
+        self.advertisesURIList = advertisesURIList
     }
 
     /// Rereads the live surface, which a teardown during the GDK read frees. The orphaned request state

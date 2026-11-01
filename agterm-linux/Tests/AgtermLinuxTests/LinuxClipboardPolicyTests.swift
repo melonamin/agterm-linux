@@ -56,6 +56,28 @@ struct LinuxClipboardPolicyTests {
         #expect(LinuxClipboardPolicy.gdkRepresentations([png, plain]).map(\.mime) == [png.mime, utf8.mime, plain.mime])
     }
 
+    @Test("an advertised uri-list converts file:// text to POSIX paths")
+    func uriListConverts() {
+        let copied = "# copied files\r\nfile:///tmp/one%20two\r\nfile:///tmp/three\r\n"
+
+        #expect(LinuxClipboardPolicy.readableText(copied, advertisesURIList: true) == "/tmp/one two /tmp/three")
+    }
+
+    @Test("without an advertised uri-list, file:// text round-trips")
+    func literalFileURLRoundTrips() {
+        for text in ["file:///tmp/example", "file:///tmp/one%20two\nfile:///tmp/three\n"] {
+            #expect(LinuxClipboardPolicy.readableText(text, advertisesURIList: false) == text)
+        }
+    }
+
+    @Test("ordinary text is unchanged whether or not a uri-list is advertised")
+    func ordinaryTextUnchanged() {
+        for text in ["plain", "file:///tmp/one\nplain", "# only a comment\n", ""] {
+            #expect(LinuxClipboardPolicy.readableText(text, advertisesURIList: false) == text)
+            #expect(LinuxClipboardPolicy.readableText(text, advertisesURIList: true) == text)
+        }
+    }
+
     @Test("a read plan follows the requested text MIME and the list flag")
     func readPlans() {
         let text = LinuxClipboardPolicy.textMime
