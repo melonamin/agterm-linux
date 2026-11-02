@@ -263,6 +263,27 @@ func shortcutChord(
     return Chord(mods: mods, key: key)
 }
 
+/// Ctrl-J/K list navigation, as the Down/Up keyval it stands for. Exact modifiers: ctrl+shift+j is not it.
+func paletteNavigation(chord: Chord?) -> UInt32? {
+    guard let chord, chord.mods == [.control] else { return nil }
+    switch chord.key {
+    case "j": return 0xFF54
+    case "k": return 0xFF52
+    default: return nil
+    }
+}
+
+func paletteNavigationKeyval(keyval: UInt32, keycode: UInt32, state: UInt32, event: OpaquePointer?) -> UInt32 {
+    guard needsShortcutKeyContext(state: state, leaderArmed: false) else { return keyval }
+    let chord = shortcutChord(
+        fromKeyval: keyval,
+        keycode: keycode,
+        state: state,
+        context: shortcutKeyContext(event: event, keycode: keycode)
+    )
+    return paletteNavigation(chord: chord) ?? keyval
+}
+
 func shortcutModifiers(_ state: UInt32) -> Modifier {
     var mods: Modifier = []
     if state & GDK_CONTROL != 0 { mods.insert(.control) }
