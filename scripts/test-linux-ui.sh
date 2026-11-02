@@ -239,6 +239,10 @@ fail_on_log_pattern -E 'Unrecognized value .*Try GDK_(DISABLE|DEBUG)=help' \
 fail_on_log_pattern -F "assertion 'GTK_IS_WIDGET (widget)' failed" \
   "GTK typecheck assertion on a finalized widget; see $APP_LOG"
 
+# GtkSearchEntry is not a GtkEntry. The wrong setter silently drops picker prompts after this critical.
+fail_on_log_pattern -F "gtk_entry_set_placeholder_text: assertion 'GTK_IS_ENTRY (entry)' failed" \
+  "a picker passed GtkSearchEntry to the GtkEntry placeholder setter; see $APP_LOG"
+
 # A second realize over a live surface means a GtkGLArea was moved to a new parent and its GL context is
 # gone: the pane is blank from then on and no AT-SPI assertion can see it ([[libghostty]]). The app logs it
 # from `GhosttySurface.realize()`; terminal zoom was the last site doing this, so any hit is a regression.
