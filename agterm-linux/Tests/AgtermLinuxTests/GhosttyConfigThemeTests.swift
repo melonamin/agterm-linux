@@ -90,9 +90,10 @@ struct GhosttyConfigThemeTests {
         }
         .agterm-sidebar label { color: #222222; }
         /* exact row-content path: a row-parented popover must not inherit the selection foreground */
-        .agterm-sidebar row.agterm-selected > .agterm-session-row-content > label,
-        .agterm-sidebar row.agterm-selected > .agterm-session-row-content > image,
-        .agterm-sidebar row.agterm-selected > .agterm-session-row-content > entry { color: #444444; }
+        .agterm-sidebar row.agterm-selected > .agterm-session-row-body > .agterm-session-row-content > label,
+        .agterm-sidebar row.agterm-selected > .agterm-session-row-body > .agterm-session-row-content > image,
+        .agterm-sidebar row.agterm-selected > .agterm-session-row-body > .agterm-session-row-content > entry,
+        .agterm-sidebar row.agterm-selected > .agterm-session-row-body > .agterm-session-info { color: #444444; }
         .agterm-sidebar button { color: #222222; }
         .agterm-sidebar separator { background-color: alpha(#222222, 0.22); }
         toolbarview.agterm-sidebar-column > .top-bar,
@@ -111,7 +112,7 @@ struct GhosttyConfigThemeTests {
             selectionForeground: "#444444", sidebarBackground: "#555555")
 
         #expect(css == expected)
-        #expect(css.contains("\n.agterm-sidebar row.agterm-selected > .agterm-session-row-content > label,"))
+        #expect(css.contains("\n.agterm-sidebar row.agterm-selected > .agterm-session-row-body > .agterm-session-row-content > label,"))
         #expect(!css.contains("\n.agterm-selected"))
     }
 }

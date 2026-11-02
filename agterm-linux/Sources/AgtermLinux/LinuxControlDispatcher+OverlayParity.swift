@@ -154,12 +154,6 @@ extension LinuxControlDispatcher {
         }
     }
 
-    enum OverlayContent {
-        case rejected(ControlResponse)
-        case program
-        case page(HtmlSource)
-    }
-
     private static func overlayPointFailure(_ points: OverlayPointSize) -> ControlResponse? {
         guard [points.width, points.height].allSatisfy({ ($0 ?? 1) > 0 }) else {
             return ControlResponse(ok: false, error: OverlayPointError.notPositive)
@@ -167,38 +161,8 @@ extension LinuxControlDispatcher {
         return nil
     }
 
-    static func overlayContent(command: String, args: ControlArgs?) -> OverlayContent {
-        let reject = { (error: String) in OverlayContent.rejected(ControlResponse(ok: false, error: error)) }
-        switch (args?.html, args?.url) {
-        case (nil, nil):
-            if args?.navigation == true { return reject(OverlayHtmlError.navigationWithoutPage) }
-            if args?.javascript == true { return reject(OverlayHtmlError.javascriptWithoutPage) }
-            if args?.chromeless == true { return reject(OverlayHtmlError.chromelessRequiresFile) }
-            if args?.persistent == true { return reject(OverlayHtmlError.persistentRequiresURL) }
-            if args?.browse == true { return reject(OverlayHtmlError.browseRequiresURL) }
-            return command.isEmpty ? reject("session.overlay.open requires a command") : .program
-        case (.some, .some):
-            return reject(OverlayHtmlError.htmlAndURL)
-        case (.some(let html), nil):
-            if !command.isEmpty { return reject(OverlayHtmlError.commandAndHtml) }
-            if args?.wait == true { return reject(OverlayHtmlError.waitWithHtml) }
-            if args?.chromeless == true, args?.navigation == true { return reject(OverlayHtmlError.chromelessWithNavigation) }
-            if args?.persistent == true { return reject(OverlayHtmlError.persistentRequiresURL) }
-            if args?.browse == true { return reject(OverlayHtmlError.browseRequiresURL) }
-            if let error = HtmlOverlay.grantError(file: html, grantRoot: args?.cwd) {
-                return reject("session.overlay.open: \(error)")
-            }
-            return .page(.file(path: html, grantRoot: args?.cwd))
-        case (nil, .some(let text)):
-            if !command.isEmpty { return reject(OverlayHtmlError.commandAndURL) }
-            if args?.wait == true { return reject(OverlayHtmlError.waitWithURL) }
-            if args?.cwd != nil { return reject(OverlayHtmlError.cwdWithURL) }
-            if args?.chromeless == true, args?.navigation == true { return reject(OverlayHtmlError.chromelessWithNavigation) }
-            if args?.chromeless == true, args?.browse == true { return reject(OverlayHtmlError.chromelessWithBrowse) }
-            guard let url = HtmlSource.webURL(text) else { return reject(OverlayHtmlError.invalidURL) }
-            if args?.chromeless == true, !HtmlSource.isLoopback(text) { return reject(OverlayHtmlError.chromelessRequiresLoopback) }
-            return .page(.url(url))
-        }
+    static func overlayContent(command: String, args: ControlArgs?) -> ControlDispatcher.OverlayContent {
+        ControlDispatcher.overlayContent(command: command, args: args)
     }
 
     /// The extent is checked before the pane, so the same flags produce the same first error here and on

@@ -65,6 +65,7 @@ if [[ -z "${AGTERM_RESOURCE_ROOT:-}" ]]; then
   # Integration installers stage and customize bundled resources. Real copies keep those writes inside
   # this disposable root instead of following a fixture symlink back into the checkout.
   cp -R "$ROOT/agterm/Resources/agent-status" "$resource_root/agent-status"
+  cp -R "$ROOT/agterm/Resources/markdown" "$resource_root/markdown"
   cp -R "$ROOT/plugins/agterm/skills/agterm" "$resource_root/agent-skill"
   export AGTERM_RESOURCE_ROOT="$resource_root"
 fi

@@ -60,8 +60,9 @@ enum SessionInfoMarkupPortable {
             let decoder = JSONDecoder()
             decoder.allowsJSON5 = true
             let values: Attributes
-            do { values = try decoder.decode(Attributes.self, from: Data(("{" + attribute.attributes + "}").utf8)) }
-            catch { throw .invalidMarkdown }
+            do {
+                values = try decoder.decode(Attributes.self, from: Data(("{" + attribute.attributes + "}").utf8))
+            } catch { throw .invalidMarkdown }
             if let name = values.color {
                 guard let color = TintColor(rawValue: name.lowercased()) else { throw .unknownColor(name) }
                 nested.color = color

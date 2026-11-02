@@ -9,36 +9,18 @@ extension AppController {
         case .failure(let response): return response
         case .success(let id):
             if let page = options.page {
-                let overlay = HtmlOverlay(source: page, navigation: options.navigation,
-                                          javascript: options.javascript, chromeless: options.chromeless,
-                                          persistent: options.persistent, browse: options.browse)
-                switch store.openRemotePage(id, overlay: overlay, options: options) {
-                case .opened:
-                    if case .file = page { gControlServer.schedulePageClaimExpiry(after: AppStore.pageClaimWindow) }
-                    return ControlResponse(ok: true, result: ControlResult(id: id.uuidString, pageID: overlay.id.uuidString))
-                case .slotTaken: return err(options.pane == nil ? "overlay already open" : PaneOverlayError.alreadyOpen)
-                case .paneMissing: return err(PaneOverlayError.paneNotVisible)
-                case .unsupported: return err(OverlayHtmlError.presenter)
-                case .loopback: return err(OverlayHtmlError.remoteLoopback)
-                case .tooLarge: return err(OverlayHtmlError.remoteTooLarge)
-                case .pointsUnsupported: return err(OverlayPointError.remote)
-                case .local: break
+                switch page {
+                case .image(let path):
+                    switch ImageProbe.load(path: path) {
+                    case .failure(let failure): return err("session.overlay.open: \(failure)")
+                    case .success(let (probe, _)): return openProbedImage(id, path: path, probe: probe, options: options)
+                    }
+                case .markdown(let path):
+                    if case .failure(let failure) = MarkdownProbe.check(path: path) { return err("session.overlay.open: \(failure)") }
+                    guard MarkdownAssets.shared.available else { return err("Markdown renderer resources are not bundled") }
+                default: break
                 }
-                if store.session(withID: id)?.remoteOverlays.slot(options.pane) != nil {
-                    return err(options.pane == nil ? "overlay already open" : PaneOverlayError.alreadyOpen)
-                }
-                if options.persistent, let error = LinuxBrowserStore.shared.failure() {
-                    return err("session.overlay.open: \(error)")
-                }
-                if let failure = store.openHtmlOverlay(id, pane: options.pane, overlay: overlay,
-                                                       sizePercent: options.sizePercent,
-                                                       points: options.points, backgroundColor: options.backgroundColor) {
-                    return err(failure.message(pane: options.pane))
-                }
-                _ = LinuxHtmlOverlayRegistry.shared.page(for: overlay, controller: self, backgroundColor: options.backgroundColor)
-                if options.follow { selectSession(id, userInitiated: false) }
-                reconcile()
-                return ControlResponse(ok: true, result: ControlResult(id: id.uuidString, pageID: overlay.id.uuidString))
+                return openResolvedPageOverlay(id, page: page, options: options)
             }
             if let remote = gControlServer.openRemoteOverlay(in: store, sessionID: id, options: options) {
                 return remote

@@ -131,6 +131,7 @@ private final class LinuxPaneRestart {
             closeEnded()
             return finish("the old shell ended (pid \(oldPID)) but the program or pane could not be replaced; nothing was started")
         }
+        MessageBus.shared.dispose(pane: identity)
         controller.store.clearPaneOwnedState(session.id, pane: role == .right ? .right : .left)
         let launch = ZmxSupport.attachCommand(config, replaying: replay?.argv, creationCommand: command, denylist: [])
         guard let replacement = controller.replacePane(surface, command: launch, environment: config.environment, wait: false, lead: lead, workingDirectory: replay?.workingDirectory) else {

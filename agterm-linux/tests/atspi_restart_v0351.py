@@ -43,9 +43,13 @@ def verify_restart_v0351(env, state):
             return next(pane["paneID"] for pane in row["surfaces"] if pane["kind"] == "left")
 
         identity = pane_id()
+        address = session + ":" + identity
+        queued = request("msg.send", args={"recipients": [address], "body": "belongs to old job"})
+        assert queued["ok"] and queued["result"]["delivered"] == [address], queued
         bad = request("session.restart", session, {"pane": "left", "paneID": "unknown", "command": "sleep 3600"})
         assert not bad["ok"] and "unknown pane id" in bad["error"], bad
         assert os.path.exists(f"/proc/{old_job}"), "refused restart killed the foreground job"
+        assert request("msg.read", args={"identity": address})["result"]["messages"], "refused restart discarded mail"
         background = request("session.new", args={"name": "foreground while restarting"})
         assert background["ok"], background
         new_pid_file = os.path.join(state, "new-job.pid")
@@ -56,6 +60,7 @@ def verify_restart_v0351(env, state):
         assert receipt["paneID"].lower() == identity.lower(), receipt
         assert receipt["oldPid"] != receipt["newPid"], receipt
         assert pane_id() == identity, "restart changed the stable pane identity"
+        assert not request("msg.read", args={"identity": address})["result"]["messages"], "replacement inherited old job mail"
         assert next(row for row in sessions() if row["id"] == background["result"]["id"])["active"], \
             "background restart stole the active session"
         wait_for(lambda: os.path.exists(new_pid_file), "new foreground job did not start")

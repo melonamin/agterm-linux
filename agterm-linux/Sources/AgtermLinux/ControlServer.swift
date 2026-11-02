@@ -277,14 +277,18 @@ final class ControlServer: @unchecked Sendable {
     }
 
     private static func isRemoteZmxRequest(_ request: ControlRequest) -> Bool {
-        request.cmd == .zmxAttach
+        request.cmd == .zmxAttach || request.cmd == .zmxAttachGroup
             || (request.cmd == .zmxTree
                 && request.args?.host?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
     }
 
     /// SSH waits on a per-connection worker, never GTK's main thread and never the listener thread.
     private func dispatchRemoteZmx(_ request: ControlRequest) -> ControlResponse {
-        Self.dispatchRemoteZmx(request, readTree: readRemoteTree(host:), attach: attachRemoteOnMain)
+        Self.dispatchRemoteZmx(request, readTree: readRemoteTree(host:)) { host, session, tree, window in
+            request.cmd == .zmxAttachGroup
+                ? self.attachRemoteGroup(host: host, session: session, tree: tree, window: window)
+                : self.attachRemoteOnMain(host: host, session: session, tree: tree, window: window)
+        }
     }
 
     /// Validates and trims like the shared dispatcher, before any ssh call.
@@ -293,12 +297,12 @@ final class ControlServer: @unchecked Sendable {
         attach: (_ host: String, _ session: String, _ tree: ControlRemoteTree, _ window: String?) -> ControlResponse
     ) -> ControlResponse {
         guard let host = request.args?.host?.linuxTrimmedOrNil else {
-            return ControlResponse(ok: false, error: request.cmd == .zmxAttach
-                ? "zmx.attach requires a host" : "invalid host")
+            return ControlResponse(ok: false, error: request.cmd == .zmxTree
+                ? "invalid host" : "\(request.cmd.rawValue) requires a host")
         }
-        guard request.cmd == .zmxAttach else { return readTree(host) }
+        guard request.cmd == .zmxAttach || request.cmd == .zmxAttachGroup else { return readTree(host) }
         guard let remoteID = request.target?.linuxTrimmedOrNil else {
-            return ControlResponse(ok: false, error: "zmx.attach requires a remote session")
+            return ControlResponse(ok: false, error: "\(request.cmd.rawValue) requires a remote session")
         }
         guard isPlainRemoteToken(remoteID) else {
             return ControlResponse(ok: false, error: "invalid remote session")
@@ -332,8 +336,9 @@ final class ControlServer: @unchecked Sendable {
         }
     }
 
-    private func attachRemoteOnMain(host: String, session: String,
-                                    tree: ControlRemoteTree, window: String?) -> ControlResponse {
+    func attachRemoteOnMain(
+        host: String, session: String, tree: ControlRemoteTree, window: String?
+    ) -> ControlResponse {
         if let remote = tree.sessions.first(where: { $0.id == session && $0.content == "page" }) {
             return attachRemotePageRow(remote, tree: tree, host: host, window: window)
         }
@@ -427,7 +432,7 @@ final class ControlServer: @unchecked Sendable {
              .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle,
              .sessionRestart, .sessionOverlaySubmit, .keymapRun, .sessionClose, .sessionDuplicate, .sessionSelect, .sessionGo, .sessionRename, .sessionReveal,
              .sessionMove, .sessionType,
-             .sessionStatus, .sessionRestore, .sessionFlag, .sessionContext, .sessionSeen,
+             .sessionStatus, .sessionRestore, .sessionFlag, .sessionContext, .sessionInfo, .sessionSeen,
              .sessionSplit, .sessionSplitClose, .sessionSwap, .sessionLead, .sessionScratch, .sessionFocus,
              .sessionCopy, .sessionPaste, .sessionSelectAll, .sessionSearch,
              .sessionOverlayOpen, .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayResult,
@@ -460,7 +465,7 @@ final class ControlServer: @unchecked Sendable {
              .restoreClear, .restoreCapture, .restoreMode, .recentClear, .version,
              .browserLinks, .recentList, .recentOpen, .sessionOverlayPageServe,
              .browserClear, .zmxScreen, .zmxList, .zmxPrune, .zmxKill, .zmxReset, .zmxTree, .zmxAttach, .zmxPresent,
-             .sessionOverlayJobRun, .debugAppearance:
+             .sessionOverlayJobRun, .msgSend, .msgRead, .msgAck, .zmxAttachGroup, .debugAppearance:
             return .controller(gController)
         }
     }

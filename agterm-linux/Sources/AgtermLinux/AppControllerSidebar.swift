@@ -284,6 +284,7 @@ extension AppController {
             applySidebarTint(content.tint, icon: icon, name: nameWidget)
         }
         widgets.applied = section.header
+        if let icon, let content = section.header { gtk_widget_set_visible(W(icon), content.iconVisible ? 1 : 0) }
         sidebarRuntime.sections[section.key] = widgets
         return widgets
     }
@@ -360,6 +361,7 @@ extension AppController {
 
     func makeRow(_ id: UUID, content: SidebarSnapshot.RowContent) -> OpaquePointer? {
         guard let row = op(gtk_list_box_row_new()), let box = op(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6)),
+              let body = op(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)), let info = op(gtk_label_new(nil)),
               let lead = op(gtk_image_new_from_icon_name(content.leadIconName)),
               let name = makeSessionNameWidget(id, content: content),
               let glyph = op(gtk_label_new(nil)), let star = op(gtk_image_new_from_icon_name("starred-symbolic")),
@@ -379,6 +381,19 @@ extension AppController {
         gtk_box_append(cast(box), W(badge))
         let widgets = SessionRowWidgets(row: row, box: box, lead: lead, name: name,
                                         glyph: glyph, star: star, badge: badge)
+        widgets.info = info
+        gtk_widget_add_css_class(W(body), "agterm-session-row-body")
+        gtk_widget_add_css_class(W(info), "agterm-session-info")
+        gtk_label_set_xalign(info, 0)
+        gtk_label_set_single_line_mode(info, 1)
+        gtk_label_set_ellipsize(info, PANGO_ELLIPSIZE_END)
+        gtk_widget_set_hexpand(W(info), 1)
+        gtk_widget_set_margin_end(W(info), 6)
+        gtk_box_append(cast(body), W(box))
+        gtk_box_append(cast(body), W(info))
+        gtk_widget_set_visible(W(lead), content.iconVisible ? 1 : 0)
+        if !content.iconVisible, let notice = content.notice { gtk_widget_set_tooltip_text(W(name), notice) }
+        applySessionInfo(widgets, content: content)
         installCompanionRowWidgets(id, widgets: widgets, content: content)
         widgets.applied = content
         sidebarRuntime.rows[id] = widgets
@@ -386,7 +401,7 @@ extension AppController {
         // Keep the trailing inset inside the content box as CSS `padding-right` (installAppCSS),
         // rather than shrinking the row that paints the rounded selection background. This mirrors
         // the leading icon's margin_start on the left.
-        gtk_list_box_row_set_child(GLBR(row), W(box))
+        gtk_list_box_row_set_child(GLBR(row), W(body))
         // Rows are PASSIVE: under GTK_SELECTION_NONE the list box's built-in click gesture would
         // still move keyboard focus to a selectable/activatable row on release — after showActive()
         // already gave the terminal focus on press — sending subsequent typing into the sidebar.

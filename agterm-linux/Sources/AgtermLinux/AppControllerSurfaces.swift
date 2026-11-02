@@ -106,8 +106,12 @@ extension AppController {
             if scratchSurfaces[s.id] == nil {
                 let command = s.scratchCommand
                 s.scratchCommand = nil
+                // Scratch has no persisted pane identity. Its one surface still needs a stable spawn
+                // token for status routing and the message bus; hiding preserves it, recreation replaces it.
+                var environment = sessionEnv(for: s, pane: .scratch)
+                environment["AGTERM_PANE_ID"] = UUID().uuidString
                 let sc = GhosttySurface(sessionID: s.id, cwd: Self.scratchLaunchCwd(s), command: command,
-                                        env: sessionEnv(for: s, pane: .scratch), controller: self,
+                                        env: environment, controller: self,
                                         role: .scratch,
                                         reportsPaneState: false)
                 let sid = s.id

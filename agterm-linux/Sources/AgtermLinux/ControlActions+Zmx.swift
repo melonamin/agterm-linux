@@ -197,6 +197,12 @@ extension AppController {
         guard let remote = tree.sessions.first(where: { $0.id == remoteID }) else {
             return ControlResponse(ok: false, error: "no attachable session \(remoteID) on \(host)")
         }
+        let matchingParents = store.workspaces.flatMap(\.sessions).filter { row in
+            row.parentID == nil && row.remoteHost == host && remote.parent != nil
+                && row.remotePresentation?.binding.remoteSessionID == remote.parent
+                && row.remotePresentation?.binding.origin?.endpoint == tree.endpoint
+        }
+        let parent = parent ?? (matchingParents.count == 1 ? matchingParents.first?.id : nil)
         guard let workspace = parent.flatMap({ store.workspace(forSession: $0)?.id }) ?? store.currentWorkspaceID else {
             return ControlResponse(ok: false, error: "no window to attach into")
         }

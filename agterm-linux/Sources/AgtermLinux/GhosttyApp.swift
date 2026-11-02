@@ -353,12 +353,12 @@ final class GhosttyApp: @unchecked Sendable {
 
     /// Apply the shared safe-link policy. Linux has no portable select-in-file-manager API, so a
     /// local file reveal opens its containing directory with the desktop's default file manager.
-    private static func openTerminalURL(_ raw: String) {
+    static func openTerminalURL(_ raw: String) {
         let uri: String
         switch LinkPolicy.disposition(for: raw) {
         case .open(let url):
             uri = url.absoluteString
-        case .reveal(let url):
+        case .reveal(let url), .image(let url), .markdown(let url):
             uri = url.deletingLastPathComponent().absoluteString
         case .ignore:
             return

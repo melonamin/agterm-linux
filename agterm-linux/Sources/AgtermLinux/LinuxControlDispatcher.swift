@@ -13,6 +13,7 @@ struct LinuxControlDispatcher {
     let actions: AppController
 
     func dispatch(_ request: ControlRequest) -> ControlResponse? {
+        if let response = ControlDispatcher(actions: actions).dispatchSynchronous(request) { return response }
         if let response = dispatchNewParityCommand(request) { return response }
         switch request.cmd {
         case .tree:

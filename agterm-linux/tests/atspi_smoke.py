@@ -7444,7 +7444,7 @@ def main():
     if scenario is None:
         failures = []
         for child_scenario in (
-            "normal", "upstream-controls", "upstream-v0391", "remote-v0391", "html-overlay", "overlay-visual", "live-restart", "live-fish-restart",
+            "normal", "upstream-controls", "upstream-v0391", "upstream-v0400", "sidebar-v0400", "links-v0400", "remote-v0391", "html-overlay", "overlay-visual", "live-restart", "live-fish-restart",
             "live-wait-output", "startup-environment",
             "dashboard-modal", "context-menu",
             "window-key-dispatch",
@@ -7532,6 +7532,15 @@ def main():
         elif scenario == "upstream-v0391":
             from atspi_v0391 import verify_v0391
             verify_v0391(env, state)
+        elif scenario == "upstream-v0400":
+            from atspi_v0400 import verify_v0400
+            verify_v0400(env, state)
+        elif scenario == "sidebar-v0400":
+            from atspi_v0400_sidebar import verify_sidebar_v0400
+            verify_sidebar_v0400(env, state)
+        elif scenario == "links-v0400":
+            from atspi_v0400_links import verify_links_v0400
+            verify_links_v0400(env, state)
         elif scenario == "companion-layout":
             from atspi_companion_layout import verify_companion_layout
             verify_companion_layout(env, state)

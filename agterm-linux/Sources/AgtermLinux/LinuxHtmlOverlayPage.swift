@@ -47,6 +47,7 @@ final class LinuxHtmlOverlayPage {
     private var theme: HtmlOverlayTheme
     private var appliedRevision: Int
     private var loadFailed = false
+    private var sourceLoadRevision = 0
     private var pendingExternalURL: URL?
     private var pendingDialog: OpaquePointer?
     private var promptSilenced = false
@@ -95,6 +96,16 @@ final class LinuxHtmlOverlayPage {
             }
             webkit_user_content_manager_add_script(manager, script)
             webkit_user_script_unref(script)
+        }
+        if overlay.source.markdownPath != nil {
+            MarkdownAssets.shared.script.withCString { source in
+                let script = "agterm-markdown".withCString { world in
+                    webkit_user_script_new_for_world(source, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+                                                     WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END, world, nil, nil)
+                }
+                webkit_user_content_manager_add_script(manager, script)
+                webkit_user_script_unref(script)
+            }
         }
         installBridge()
         buildUI()
@@ -150,7 +161,10 @@ final class LinuxHtmlOverlayPage {
         guard theme != newer || webkit_web_view_get_uri(cast(webView)) == nil else { return }
         theme = newer
         webkit_user_content_manager_remove_all_style_sheets(manager)
-        let themed: Bool = if case .url = overlay.source { false } else { true }
+        let themed: Bool = switch overlay.source {
+        case .url, .image: false
+        case .file, .replica, .markdown: true
+        }
         let look = themed ? "color-scheme: \(newer.dark ? "dark" : "light"); color: \(newer.foreground); " : ""
         let palette = newer.palette.enumerated().compactMap { index, color in
             color.isEmpty ? nil : "--agterm-color-\(index): \(color); "
@@ -163,7 +177,7 @@ final class LinuxHtmlOverlayPage {
             webkit_user_content_manager_add_style_sheet(manager, sheet)
             webkit_user_style_sheet_unref(sheet)
         }
-        if themed {
+        if themed || overlay.source.imagePath != nil {
             let rgb = UInt32(newer.background.dropFirst(), radix: 16) ?? 0x282c34
             var color = GdkRGBA(red: Float((rgb >> 16) & 255) / 255, green: Float((rgb >> 8) & 255) / 255,
                                 blue: Float(rgb & 255) / 255, alpha: 1)
@@ -182,6 +196,7 @@ final class LinuxHtmlOverlayPage {
             webkit_web_view_go_forward(cast(webView))
         case .browser:
             if case .replica = overlay.source { return OverlayHtmlError.remotePage }
+            if case .markdown = overlay.source { return OverlayHtmlError.markdownInOverlay }
             guard launchDefaultHandler(forURI: browserURL.absoluteString) else { return OverlayHtmlError.noBrowser }
         case .finder:
             guard case .file = overlay.source else { return OverlayHtmlError.finderRequiresFile }
@@ -219,6 +234,7 @@ final class LinuxHtmlOverlayPage {
     }
 
     private var pageURL: URL {
+        if let path = overlay.source.imagePath ?? overlay.source.markdownPath { return URL(fileURLWithPath: path) }
         if let raw = webkit_web_view_get_uri(cast(webView)), let url = URL(string: String(cString: raw)),
            url.scheme == HtmlSource.replicaScheme { return URL(fileURLWithPath: url.path) }
         if case .file(let path, let grantRoot) = overlay.source {
@@ -240,9 +256,12 @@ final class LinuxHtmlOverlayPage {
     }
 
     private func loadOriginal() {
+        sourceLoadRevision += 1
         loadFailed = false
         store?.setHtmlLoadState(id, state: .loading, error: nil)
         switch overlay.source {
+        case .image, .markdown:
+            loadGeneratedPage(overlay.source, revision: sourceLoadRevision)
         case .replica(let path):
             var uri = URLComponents()
             uri.scheme = HtmlSource.replicaScheme
@@ -264,6 +283,22 @@ final class LinuxHtmlOverlayPage {
                 return
             }
             html.withCString { webkit_web_view_load_html(cast(webView), $0, nil) }
+        }
+    }
+
+    private func loadGeneratedPage(_ source: HtmlSource, revision: Int) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let loaded = LinuxFilePageLoader.load(source)
+            runOnMain {
+                MainActor.assumeIsolated {
+                    guard let self, !self.closed, self.sourceLoadRevision == revision else { return }
+                    switch loaded {
+                    case .failure(let failure): self.fail(failure.message)
+                    case .success(let html):
+                        html.withCString { webkit_web_view_load_html(cast(self.webView), $0, nil) }
+                    }
+                }
+            }
         }
     }
 
