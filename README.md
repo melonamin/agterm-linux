@@ -142,6 +142,8 @@ What it does:
 - **Workspaces.** Sessions are grouped under named workspaces like "work" and "personal", which keeps a screen of concurrent sessions organized. You reach a session by name, by recency, or from the keyboard.
 - **Control API and CLI.** A bundled tool, `agtermctl`, drives almost everything over a local socket: create sessions, type into them, run a program in an overlay and read its exit status, move and resize windows, or post a notification tied to a specific session. A script or an agent can set up and drive its own layout, and send you a notification from the session it was working in.
 - **Splits, scratch, and overlays.** Split a session into two shells side by side or top and bottom, open a scratch terminal over it, or run a program in a full or floating overlay without disturbing the shell underneath.
+- **Companions.** Keep a log tail, a watcher, a second shell, or an HTML page pinned under a session in the sidebar: companions move, fold, and close with it. Duplicate as Companion copies a session's split layout and starts another copy of each pane's program.
+- **Remote sessions.** Attach a session from another host through key-based SSH, including its split and companions, with `agtermctl zmx attach --companions`. Status, notifications, HUD, and context follow the origin session.
 - **Three restore modes.** Restore fresh shells, rerun cleanly captured commands, or keep primary and split processes alive with zmx. Linux packages include the pinned zmx runtime.
 - **Agent skill.** An installable skill teaches Claude Code or Codex the control model and the `agtermctl` commands, so an agent running inside agterm can build its own layout, run overlays, manage windows, and show images inline without you explaining the API. On Linux, manage it from **Preferences ▸ Integrations**.
 - **Agent status.** A coding agent reports its state (active, blocked, or completed) onto its session's row, so you can see which of many running agents needs you. On Linux, inspect and install the Claude Code, Codex, Pi, OpenCode, and shell hooks from **Preferences ▸ Integrations**.
@@ -587,6 +589,7 @@ sid=$(agtermctl session new --workspace "$ws" --cwd "$PWD" --no-select)
 agtermctl session split on --axis horizontal --target "$sid" # add a top-and-bottom shell
 agtermctl session type $'pwd\n' --target "$sid"           # drive a session you are not looking at
 agtermctl session text --target "$sid" --lines 10         # read its terminal back
+agtermctl msg send "build done" --to "$sid:bottom"        # leave a message in the bottom shell's mailbox
 agtermctl session status blocked --target "$sid"          # set the sidebar status glyph
 printf '%s\n' staging production | agtermctl pick --prompt "Deploy where?"   # open the native picker
 agtermctl ask "Deploy now?" --button yes=Deploy --button no=Not\ yet --default no  # ask a question, get the button

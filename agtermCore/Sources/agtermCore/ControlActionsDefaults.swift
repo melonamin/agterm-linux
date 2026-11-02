@@ -5,6 +5,16 @@ import Foundation
 // Mac-only commands refuse by name rather than answering an empty success, and compatibility overloads
 // delegate to the older form.
 public extension ControlActions {
+    func resolveMessagePane(_: MessageAddress) -> Result<MessageRecipient, MessagePaneError> {
+        .failure(.unsupported)
+    }
+
+    func messagePanes(workspace _: String?, window _: String?) -> Result<[MessageRecipient], MessagePaneError> {
+        .failure(.unsupported)
+    }
+
+    func messageQueued(_: UUID, from _: String?, to _: [MessageRecipient]) {}
+
     func attachCompanionPage(_: String?, window _: String?) -> ControlResponse {
         ControlResponse(ok: false, error: ControlActionsUnsupported.message("session.companion.page.attach"))
     }
@@ -156,6 +166,10 @@ public extension ControlActions {
         ControlResponse(ok: false, error: ControlActionsUnsupported.message("zmx.attach"))
     }
 
+    func attachRemoteGroup(host _: String, session _: String, window _: String?) async -> ControlResponse {
+        ControlResponse(ok: false, error: ControlActionsUnsupported.message("zmx.attach.group"))
+    }
+
     func splitSession(_ target: String?, window: String?, mode: String?, axis _: SplitAxis?) -> ControlResponse {
         splitSession(target, window: window, mode: mode)
     }
@@ -209,6 +223,10 @@ public extension ControlActions {
 
     func setSessionContext(_: String?, window _: String?, context _: String?) -> ControlResponse {
         ControlResponse(ok: false, error: ControlActionsUnsupported.message("session.context"))
+    }
+
+    func setSessionInfo(_: String?, window _: String?, info _: SessionInfo?) -> ControlResponse {
+        ControlResponse(ok: false, error: ControlActionsUnsupported.message("session.info"))
     }
 
     func setSessionTint(_: String?, window _: String?, update _: ControlTintUpdate) -> ControlResponse {

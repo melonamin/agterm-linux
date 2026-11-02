@@ -553,6 +553,114 @@ struct ControlDispatcherOverlayTests {
         ])
     }
 
+    @Test(arguments: [
+        (ControlArgs(command: "cat", image: "/tmp/a.png"), OverlayHtmlError.oneSource),
+        (ControlArgs(html: "/tmp/r.html", image: "/tmp/a.png"), OverlayHtmlError.oneSource),
+        (ControlArgs(url: "http://localhost:5173/", image: "/tmp/a.png"), OverlayHtmlError.oneSource),
+        (ControlArgs(wait: true, image: "/tmp/a.png"), OverlayHtmlError.imageOptions),
+        (ControlArgs(cwd: "/tmp", image: "/tmp/a.png"), OverlayHtmlError.imageOptions),
+        (ControlArgs(navigation: true, image: "/tmp/a.png"), OverlayHtmlError.imageOptions),
+        (ControlArgs(javascript: true, image: "/tmp/a.png"), OverlayHtmlError.imageOptions),
+        (ControlArgs(chromeless: true, image: "/tmp/a.png"), OverlayHtmlError.imageOptions),
+        (ControlArgs(persistent: true, image: "/tmp/a.png"), OverlayHtmlError.imageOptions),
+        (ControlArgs(browse: true, image: "/tmp/a.png"), OverlayHtmlError.imageOptions),
+        (ControlArgs(image: "a.png"), OverlayHtmlError.imageNotAbsolute),
+        (ControlArgs(image: "/tmp/a.svg"), OverlayHtmlError.imageType),
+        (ControlArgs(image: "/tmp/a"), OverlayHtmlError.imageType),
+        (ControlArgs(width: 400, image: "/tmp/a.png"), OverlayPointError.needsPercent),
+        (ControlArgs(image: "/tmp/a.png", markdownFile: "/tmp/r.md"), OverlayHtmlError.oneSource),
+    ])
+    func imageOpenRejectsInvalidInputsBeforeCallingActions(_ args: ControlArgs, _ error: String) async {
+        let actions = MockControlActions()
+        let dispatcher = ControlDispatcher(actions: actions)
+
+        let response = await dispatcher.dispatch(ControlRequest(cmd: .sessionOverlayOpen, target: "session", args: args))
+
+        #expect(response == ControlResponse(ok: false, error: error))
+        #expect(actions.calls.isEmpty)
+    }
+
+    @Test func imageOpenRoutesTheStandardizedPathAndItsSize() async {
+        let actions = MockControlActions()
+        let dispatcher = ControlDispatcher(actions: actions)
+
+        _ = await dispatcher.dispatch(ControlRequest(
+            cmd: .sessionOverlayOpen, target: "session",
+            args: ControlArgs(sizePercent: 60, follow: true, width: 400, image: "/tmp/../tmp/Shot.PNG")
+        ))
+
+        #expect(actions.calls == [
+            .overlayOpen(target: "session", window: nil,
+                         ControlSessionOverlayOpenOptions(command: "", cwd: nil, wait: false, sizePercent: 60,
+                                                          backgroundColor: nil, follow: true,
+                                                          page: .image(path: "/tmp/Shot.PNG"),
+                                                          points: OverlayPointSize(width: 400)))
+        ])
+    }
+
+    @Test(arguments: [
+        (ControlArgs(command: "cat", markdownFile: "/tmp/r.md"), OverlayHtmlError.oneSource),
+        (ControlArgs(html: "/tmp/r.html", markdownFile: "/tmp/r.md"), OverlayHtmlError.oneSource),
+        (ControlArgs(url: "http://localhost:5173/", markdownFile: "/tmp/r.md"), OverlayHtmlError.oneSource),
+        (ControlArgs(wait: true, markdownFile: "/tmp/r.md"), OverlayHtmlError.markdownOptions),
+        (ControlArgs(cwd: "/tmp", markdownFile: "/tmp/r.md"), OverlayHtmlError.markdownOptions),
+        (ControlArgs(navigation: true, markdownFile: "/tmp/r.md"), OverlayHtmlError.markdownOptions),
+        (ControlArgs(javascript: true, markdownFile: "/tmp/r.md"), OverlayHtmlError.markdownOptions),
+        (ControlArgs(chromeless: true, markdownFile: "/tmp/r.md"), OverlayHtmlError.markdownOptions),
+        (ControlArgs(persistent: true, markdownFile: "/tmp/r.md"), OverlayHtmlError.markdownOptions),
+        (ControlArgs(browse: true, markdownFile: "/tmp/r.md"), OverlayHtmlError.markdownOptions),
+        (ControlArgs(markdownFile: "r.md"), OverlayHtmlError.markdownNotAbsolute),
+        (ControlArgs(markdownFile: "/tmp/r.txt"), OverlayHtmlError.markdownType),
+        (ControlArgs(markdownFile: "/tmp/readme"), OverlayHtmlError.markdownType),
+    ])
+    func markdownOpenRejectsInvalidInputsBeforeCallingActions(_ args: ControlArgs, _ error: String) async {
+        let actions = MockControlActions()
+        let dispatcher = ControlDispatcher(actions: actions)
+
+        let response = await dispatcher.dispatch(ControlRequest(cmd: .sessionOverlayOpen, target: "session", args: args))
+
+        #expect(response == ControlResponse(ok: false, error: error))
+        #expect(actions.calls.isEmpty)
+    }
+
+    @Test(arguments: ["/tmp/../tmp/Notes.MD", "/tmp/notes.markdown"])
+    func markdownOpenRoutesTheStandardizedPath(_ path: String) async {
+        let actions = MockControlActions()
+        let dispatcher = ControlDispatcher(actions: actions)
+
+        _ = await dispatcher.dispatch(ControlRequest(cmd: .sessionOverlayOpen, target: "session",
+                                                     args: ControlArgs(sizePercent: 95, markdownFile: path)))
+
+        #expect(actions.calls == [
+            .overlayOpen(target: "session", window: nil,
+                         ControlSessionOverlayOpenOptions(command: "", cwd: nil, wait: false, sizePercent: 95,
+                                                          backgroundColor: nil,
+                                                          page: .markdown(path: URL(fileURLWithPath: path).standardizedFileURL.path)))
+        ])
+    }
+
+    @Test func pageCompanionRefusesAMarkdownFile() async {
+        let actions = MockControlActions()
+        let dispatcher = ControlDispatcher(actions: actions)
+
+        let response = await dispatcher.dispatch(ControlRequest(cmd: .sessionCompanionPage, target: "session",
+                                                                args: ControlArgs(markdownFile: "/tmp/r.md")))
+
+        #expect(response == ControlResponse(ok: false, error: OverlayHtmlError.companionNeedsPage))
+        #expect(actions.calls.isEmpty)
+    }
+
+    @Test func pageCompanionRefusesAnImage() async {
+        let actions = MockControlActions()
+        let dispatcher = ControlDispatcher(actions: actions)
+
+        let response = await dispatcher.dispatch(ControlRequest(cmd: .sessionCompanionPage, target: "session",
+                                                                args: ControlArgs(image: "/tmp/a.png")))
+
+        #expect(response == ControlResponse(ok: false, error: OverlayHtmlError.companionNeedsPage))
+        #expect(actions.calls.isEmpty)
+    }
+
     @Test(arguments: [Bool?.none, false, true])
     func urlOpenRoutesItsNavigationScope(_ browse: Bool?) async throws {
         let actions = MockControlActions()
