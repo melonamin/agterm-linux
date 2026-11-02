@@ -41,7 +41,7 @@ Code layout:
 
 ### Linux feature parity and platform differences
 
-The `linux-port` branch carries the exact upstream v0.39.1 terminal model and control protocol, including
+The `linux-port` branch carries the exact upstream v0.40.0 terminal model and control protocol, including
 split/scratch/overlay terminals, Quick terminal input and read-back, terminal zoom, fullscreen,
 recently closed sessions with grouped undo, light/dark themes, configurable toolbar and sidebar text,
 recent-session and attention popovers, agent status in the multi-session dashboard, stable pane status
@@ -68,6 +68,14 @@ changes through a presentation stream.
 Remote file pages stream their granted assets and bridge requests from the origin through SSH.
 Companions appear as nested, collapsible rows, including terminal duplicates and temporary page companions.
 Closing an attached page view leaves its origin page alive; a parent shell can respawn while its companions remain.
+Remote group attach includes companions with per-member results and can adopt a standalone attached companion
+under its matching parent.
+Local PNG, JPEG, GIF, WebP, and Markdown files open as pages through terminal links or `--image`/`--markdown`.
+Markdown uses the bundled renderer with contained local pictures; authored scripts, network resources, and
+the control bridge are unavailable in generated image and Markdown pages.
+The per-pane message bus supports send, read, acknowledgement, and waiting, with pending counts in `tree`.
+Runtime session info supports one-line Markdown, timed expiry, and Always, Flagged, or Off sidebar display.
+Preferences also controls workspace and session icon visibility.
 Session and workspace tints, plain or grouped flagged lists, membership editors, and flagged ordering are
 available through GTK actions and the control socket.
 Overlay hide/show preserves the running program or page, and floating program and page overlays accept
@@ -149,6 +157,8 @@ What it does:
 - **Agent status.** A coding agent reports its state (active, blocked, or completed) onto its session's row, so you can see which of many running agents needs you. On Linux, inspect and install the Claude Code, Codex, Pi, OpenCode, and shell hooks from **Preferences ▸ Integrations**.
 
 A lot of "does it have X?" questions have the same answer: bind X yourself. A `command` line in `keymap.conf` turns any shell line into a key chord, and an overlay gives an interactive program a real terminal over the session, so a file manager, a git UI, or a database browser is one line away. Bigger workflows become scripts, which is what the [cookbook](cookbook/) collects.
+
+See the [Linux cookbook notes](agterm-linux/docs/cookbook.md) for host paths and native Docker networking.
 
 You are not meant to write those lines by hand. Install the agent skill (Help ▸ Install Agent Skill…) and ask the agent in your session for what you want, and it writes the line with the right syntax, targeting, and PATH handling. [Extend agterm](https://agterm.com/docs#extend) shows that, and teaches enough of the model to read and change what comes back.
 
@@ -273,6 +283,7 @@ Requirements:
 - GTK4, libadwaita, WebKitGTK 6.0, libepoxy, pkg-config, git, curl, ca-certificates, and xz.
 - Python 3 at runtime for the bundled Codex status hooks; DEB and RPM installs include this dependency.
 - SVG image loading at runtime for toolbar and sidebar icons (`librsvg2-common` on Ubuntu/Debian).
+- WebP image loading at runtime for image and Markdown pages (`webp-pixbuf-loader`).
 - zsh, required by the shared `agtermCore` tests.
 - Zig 0.16.0 for the vendored libghostty and zmx builds.
 

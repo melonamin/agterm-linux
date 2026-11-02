@@ -1000,8 +1000,13 @@ Full detail, templates, and the exact `gh` commands are in **troubleshooting.md*
 ## Linux integration management
 
 Linux builds expose local installation inspection separately from runtime control commands.
-Linux v0.39.1 supports the shared companion, tint, Recent, overlay visibility, point sizing, ask-form,
-and remote-page commands described above.
+Linux v0.40.0 supports the shared companion, tint, Recent, overlay visibility, point sizing, ask-form,
+remote-page, group-attach, message-bus, and session-info commands described above.
+Scratch panes receive a surface-lifetime pane ID and can send, receive, and acknowledge messages.
+Local image and Markdown pages use `--image` and `--markdown` with the same bounds and source-option
+validation as upstream.
+Markdown uses bundled rendering assets and contained local images; image and Markdown pages have no control bridge.
+Preferences ▸ Interface controls session/workspace icons and Always, Flagged, or Off info-line visibility.
 Remote file-page assets and bridge calls remain on the origin through SSH and obey that page's directory grant.
 Closing an attached page companion closes only the local view.
 GTK uses Ctrl for the platform command modifier; Ctrl+Shift+R opens Attach Remote from `remotes.conf`.
