@@ -3,6 +3,7 @@
 import json
 import os
 import shlex
+import shutil
 import subprocess
 
 from atspi_smoke import CTL, ROOT, launch, press_return, raw_control_json, stop, type_x11_text, wait_for
@@ -23,12 +24,18 @@ def verify_remote_v0391(env, state):
                    'for argument do remote=$argument; done\n'
                    'export AGTERM_STATE_DIR="$AGTERM_TEST_ORIGIN_STATE"\n'
                    'export AGTERM_CONTROL_SOCKET="$AGTERM_TEST_ORIGIN_SOCKET"\n'
+                   'unset TERMINFO\n'
                    'exec /bin/sh -c "$remote"\n')
     os.chmod(ssh, 0o755)
     if ssh_config := env.get("AGTERM_TEST_SSH_CONFIG"):
         with open(ssh, "w", encoding="utf-8") as file:
-            file.write("#!/bin/sh\nexec /usr/bin/ssh -F " + shlex.quote(ssh_config) + ' "$@"\n')
-    os.symlink(CTL, os.path.join(tools, "agtermctl"))
+            forwarded = "SetEnv=AGTERM_STATE_DIR=" + origin_state + " AGTERM_CONTROL_SOCKET=" + os.path.join(origin_state, "agterm.sock")
+            file.write("#!/bin/sh\nexec /usr/bin/ssh -F " + shlex.quote(ssh_config)
+                       + " -o " + shlex.quote(forwarded) + ' "$@"\n')
+    # A real installed CLI resolves terminfo beside itself, rather than beside its build tree.
+    shutil.copy2(CTL, os.path.join(tools, "agtermctl"))
+    os.makedirs(os.path.join(state, "share"))
+    os.symlink(os.path.join(ROOT, "vendor/ghostty/share/terminfo"), os.path.join(state, "share/terminfo"))
     origin_env = dict(env, AGTERM_STATE_DIR=origin_state, AGTERM_CONTROL_SOCKET=os.path.join(origin_state, "agterm.sock"),
                       AGTERM_APP_ID=env["AGTERM_APP_ID"] + ".origin", LD_PRELOAD=fixture,
                       AGTERM_ZMX_PATH=os.path.join(ROOT, "vendor/zmx/zmx"))
@@ -38,7 +45,7 @@ def verify_remote_v0391(env, state):
     origin_process = viewer_process = None
 
     def request(environment, command, target=None, args=None):
-        if command not in ("tree", "zmx.list", "session.text"):
+        if command not in ("tree", "zmx.list", "session.text", "session.overlay.text"):
             print("Remote parity:", "origin" if environment is origin_env else "viewer", command, flush=True)
         try:
             response = raw_control_json(environment, {"cmd": command, "target": target, "args": args or {}}, timeout=45)
@@ -96,6 +103,23 @@ def verify_remote_v0391(env, state):
         request(origin_env, "session.overlay.close", origin)
         wait_for(lambda: not page(), "origin close did not release the replica page")
         print("OK: remote assets, bridge, hide/show, resize, and close", flush=True)
+
+        terminfo_report = os.path.join(origin_state, "remote-terminfo.txt")
+        probe = ("printf '%s\\n' \"${TERMINFO:-missing}\" > " + shlex.quote(terminfo_report)
+                 + "; test -n \"$TERMINFO\" && infocmp -x xterm-ghostty >/dev/null"
+                 + " && printf 'REMOTE-TERMINFO-PASS\\n'")
+        request(origin_env, "session.overlay.open", origin,
+                {"command": "/bin/sh -c " + shlex.quote(probe), "wait": True, "sizePercent": 50})
+        try:
+            wait_for(lambda: "REMOTE-TERMINFO-PASS" in request(viewer_env, "session.overlay.text", viewer)["text"],
+                     "SSH overlay did not resolve its bundled terminfo", timeout=20)
+        except AssertionError as error:
+            raise AssertionError(str(error) + ": " + request(viewer_env, "session.overlay.text", viewer)["text"]) from error
+        with open(terminfo_report, encoding="utf-8") as file:
+            database = file.read().strip()
+        assert database != "missing" and os.path.isabs(database), database
+        request(origin_env, "session.overlay.close", origin)
+        print("OK: remote overlay fills absent TERMINFO from the CLI's bundled database", flush=True)
 
         terminal = request(viewer_env, "session.companion.new", viewer, {"name": "Remote child", "noSelect": True})
         assert terminal["parent"] == viewer and row(viewer_env, terminal["id"])["parent"] == viewer
