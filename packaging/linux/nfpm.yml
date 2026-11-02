@@ -45,6 +45,7 @@ overrides:
       - libwebkitgtk-6.0-4
       - libepoxy0
       - librsvg2-common
+      - webp-pixbuf-loader
   rpm:
     depends:
       - bash
@@ -54,3 +55,4 @@ overrides:
       - libadwaita >= 1.5
       - webkitgtk6.0
       - libepoxy
+      - webp-pixbuf-loader
