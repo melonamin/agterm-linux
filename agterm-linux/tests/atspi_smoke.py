@@ -7445,6 +7445,7 @@ def main():
         failures = []
         for child_scenario in (
             "normal", "upstream-controls", "upstream-v0391", "remote-v0391", "html-overlay", "overlay-visual", "live-restart", "live-fish-restart",
+            "live-wait-output",
             "dashboard-modal", "context-menu",
             "window-key-dispatch",
             "split-exit", "split-primary-exit", "window-ownership", "preferences-pages",
@@ -7556,6 +7557,9 @@ def main():
             if scenario == "live-fish-restart":
                 env = dict(env, AGTERM_TEST_LOGIN_SHELL="/usr/bin/fish")
             verify_restart_v0351(env, state)
+        elif scenario == "live-wait-output":
+            from atspi_live_wait_output import verify_live_wait_output
+            verify_live_wait_output(env, state)
         elif scenario == "control-ask":
             verify_control_ask(env)
         elif scenario == "ask-visual":
