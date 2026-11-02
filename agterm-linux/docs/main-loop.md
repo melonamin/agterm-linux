@@ -18,6 +18,17 @@ session shells at the `GhosttySurface` env choke point, the custom-command `/bin
 through `restoringChildEnvironment(_:)`, and desktop-handler launches through
 `launchDefaultHandler(forURI:)`.
 
+Resource environment writes and libghostty's process-locale setup also finish before GTK starts.
+`GhosttyApp.initializeRuntime()` runs once from `main()`, after the GDK assignments and before
+`adw_application_new`.
+The later `activateApplication` call creates the Ghostty app/config without mutating resource environment.
+Moving those initializers into activation lets them run after GTK has started worker threads that read
+the environment.
+The `startup-environment` smoke scenario observes the actual initialization calls and resource writes,
+and rejects late or repeated initialization.
+This ordering prevents agterm's late startup mutation; it does not establish the cause of a reported crash
+without a matching core or reproduction.
+
 ## What the GLib loop drains
 
 | Mechanism | Drained under `g_application_run`? |

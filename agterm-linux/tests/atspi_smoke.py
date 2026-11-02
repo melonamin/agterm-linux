@@ -7445,7 +7445,7 @@ def main():
         failures = []
         for child_scenario in (
             "normal", "upstream-controls", "upstream-v0391", "remote-v0391", "html-overlay", "overlay-visual", "live-restart", "live-fish-restart",
-            "live-wait-output",
+            "live-wait-output", "startup-environment",
             "dashboard-modal", "context-menu",
             "window-key-dispatch",
             "split-exit", "split-primary-exit", "window-ownership", "preferences-pages",
@@ -7560,6 +7560,9 @@ def main():
         elif scenario == "live-wait-output":
             from atspi_live_wait_output import verify_live_wait_output
             verify_live_wait_output(env, state)
+        elif scenario == "startup-environment":
+            from atspi_startup_environment import verify_startup_environment
+            verify_startup_environment(env, state)
         elif scenario == "control-ask":
             verify_control_ask(env)
         elif scenario == "ask-visual":

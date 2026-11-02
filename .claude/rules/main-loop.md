@@ -53,6 +53,12 @@ paths:
   A new child-spawning site owes one of those three, and a user who set the tokens themselves before
   launch gets THEIR value back, tokens included — that is the restore working as specified, and the one
   place the behaviour differs from upstream's unconditional removal.
+- **Resource environment and libghostty initialization also finish before GTK starts.**
+  `GhosttyApp.initializeRuntime()` runs once in `main()`, after the GDK policy assignments and before
+  `adw_application_new`.
+  It resolves and exports Ghostty resources and calls `ghostty_init`, which initializes the process locale.
+  Keep those operations out of the later `activateApplication` path, where GTK worker threads already exist.
+  `startup-environment` observes the real library calls and resource writes to enforce their order.
 - **Deferred main-actor work goes through `agtermCore`'s `MainTimer` seam — never a dispatch or
   `Task.sleep` timer.**
   The Linux app hands its main thread to GTK (`g_application_run`), and the GLib main loop drains neither

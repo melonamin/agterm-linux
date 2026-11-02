@@ -38,6 +38,9 @@ struct AgtermApp {
             setenv(DebugStateDirectory.environmentKey, state, 1)
         }
         #endif
+        // Both resource environment writes and libghostty's locale setup must finish before GTK
+        // starts worker threads that read the process environment.
+        GhosttyApp.shared.initializeRuntime()
         // AGTERM_APP_ID overrides the GApplication id so a dev/test instance registers separately on
         // the session bus and runs ALONGSIDE a deployed one (the Linux analogue of the macOS .debug
         // bundle id) instead of forwarding its launch to the running instance.
