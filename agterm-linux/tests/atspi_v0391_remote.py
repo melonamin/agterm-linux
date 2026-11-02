@@ -6,7 +6,7 @@ import shlex
 import shutil
 import subprocess
 
-from atspi_smoke import CTL, ROOT, launch, press_return, raw_control_json, stop, type_x11_text, wait_for
+from atspi_smoke import CTL, ROOT, collect, launch, press_return, raw_control_json, stop, type_x11_text, wait_for, window_extents
 
 
 def verify_remote_v0391(env, state):
@@ -65,7 +65,7 @@ def verify_remote_v0391(env, state):
         offered = wait_for(lambda: request(origin_env, "zmx.tree")["remote"].get("sessions"), "origin has no live session")
         origin = offered[0]["id"]
         request(origin_env, "session.companion.new", origin, {"name": "Keep parent alive", "noSelect": True})
-        viewer_process, _ = launch(viewer_env)
+        viewer_process, viewer_app = launch(viewer_env)
         viewer = request(viewer_env, "zmx.attach", origin, {"host": "local-test"})["id"]
         wait_for(lambda: row(viewer_env, viewer).get("presentation", {}).get("state") == "connected",
                  "viewer presentation did not connect", timeout=20)
@@ -104,9 +104,9 @@ def verify_remote_v0391(env, state):
         request(origin_env, "session.overlay.resize", origin, {"width": 100000, "height": 100000})
         wait_for(lambda: row(viewer_env, viewer).get("overlayWidth", 100000) < 100000,
                  "oversized remote point width was not capped")
-        geometry = next(item["geometry"] for item in request(viewer_env, "window.list")["windows"] if item["open"])
-        assert row(viewer_env, viewer)["overlayWidth"] <= geometry["width"] * 0.8, row(viewer_env, viewer)
-        assert row(viewer_env, viewer)["overlayHeight"] <= geometry["height"] * 0.8, row(viewer_env, viewer)
+        geometry = window_extents(collect(viewer_app, role="frame")[0])
+        assert row(viewer_env, viewer)["overlayWidth"] <= geometry.width * 0.8, row(viewer_env, viewer)
+        assert row(viewer_env, viewer)["overlayHeight"] <= geometry.height * 0.8, row(viewer_env, viewer)
         request(origin_env, "session.overlay.resize", origin, {"width": 280, "height": 160})
         request(origin_env, "session.overlay.hide", origin)
         wait_for(lambda: row(viewer_env, viewer).get("hiddenOverlays") == ["session"], "remote hide did not reach viewer")
