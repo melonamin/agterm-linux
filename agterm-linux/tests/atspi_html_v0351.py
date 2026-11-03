@@ -82,6 +82,25 @@ def verify_html_v0351(env, state):
         assert node().get("name") == "JS renamed", node()
         request("session.overlay.close")
 
+        # Reload must re-read mutable sibling resources at the same granted URI, not just the document.
+        reload_path, asset_path = [os.path.join(pages, name) for name in ("reload.html", "reload.js")]
+
+        def write_reload_fixture(version):
+            with open(reload_path, "w", encoding="utf-8") as file:
+                file.write(f'<p id="version">Document {version}</p><script src="reload.js"></script>')
+            with open(asset_path, "w", encoding="utf-8") as file:
+                file.write(f'document.title=document.getElementById("version").textContent+":Asset {version}";')
+
+        write_reload_fixture(1)
+        request("session.overlay.open", {"html": reload_path, "cwd": pages, "javascript": True})
+        loaded("Document 1:Asset 1")
+        for version, current in ((2, False), (3, True)):
+            write_reload_fixture(version)
+            request("session.overlay.reload", {"current": current})
+            loaded(f"Document {version}:Asset {version}")
+        request("session.overlay.close")
+        print("OK: original/current HTML reload refreshes the document and sibling script")
+
         class Quiet(SimpleHTTPRequestHandler):
             def log_message(self, *_args):
                 pass

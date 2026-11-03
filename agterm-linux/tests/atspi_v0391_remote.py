@@ -96,6 +96,17 @@ def verify_remote_v0391(env, state):
         wait_for(lambda: next(iter(row(origin_env, origin).get("htmlOverlays", [])), {}).get("state") == "loaded",
                  "origin did not receive page-state read-back")
         local_page = page()["id"]
+        script_path = os.path.join(pages, "app.js")
+        with open(script_path, encoding="utf-8") as file:
+            original_script = file.read()
+        with open(script_path, "w", encoding="utf-8") as file:
+            file.write(original_script.replace('document.title="remote-asset:"', 'document.title="remote-reloaded:"'))
+        request(origin_env, "session.overlay.reload", origin)
+        wait_for(lambda: page().get("title") == "remote-reloaded:524288",
+                 "remote reload reused a stale sibling script", timeout=25)
+        with open(script_path, "w", encoding="utf-8") as file:
+            file.write(original_script)
+        print("OK: remote reload refreshes streamed sibling scripts", flush=True)
         wait_for(lambda: row(viewer_env, viewer).get("overlayWidth") == 320
                  and row(viewer_env, viewer).get("overlayHeight") == 180, "remote page point size missing")
         request(origin_env, "session.overlay.resize", origin, {"width": 280, "height": 160})
