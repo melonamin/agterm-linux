@@ -1,1 +1,2 @@
 scripts/zmx-patches/*.patch whitespace=-blank-at-eol
+linux/patches/*.patch whitespace=-blank-at-eol

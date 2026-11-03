@@ -72,6 +72,15 @@ def find_app(process_id):
     return matches[-1] if matches else None
 
 
+def file_holds(path, expected):
+    """`printf > file` creates the file before it writes, so existing proves nothing about its contents."""
+    try:
+        with open(path, encoding="utf-8") as source:
+            return source.read() == expected
+    except FileNotFoundError:
+        return False
+
+
 def wait_for(predicate, message, timeout=12, required=True):
     """Poll `predicate` until it returns something truthy.
 
@@ -3475,9 +3484,7 @@ def verify_remote_presentation(env):
                      "sizePercent": 60},
         })
         assert overlay["ok"], overlay
-        wait_for(lambda: os.path.exists(overlay_marker), "remote overlay job did not run on origin")
-        with open(overlay_marker, encoding="utf-8") as source:
-            assert source.read() == "origin-job"
+        wait_for(lambda: file_holds(overlay_marker, "origin-job"), "remote overlay job did not run on origin")
         wait_for(lambda: raw_control_json(origin_env, {
             "cmd": "session.overlay.result", "target": origin_id,
         }).get("result", {}).get("exitCode") == 0,
@@ -3488,9 +3495,8 @@ def verify_remote_presentation(env):
             "args": {"text": "printf 'daemon-typed' > " + shlex.quote(typed_marker) + "\n"},
         })
         assert typed["ok"], typed
-        wait_for(lambda: os.path.exists(typed_marker), "origin could not type through its daemon while following")
-        with open(typed_marker, encoding="utf-8") as source:
-            assert source.read() == "daemon-typed"
+        wait_for(lambda: file_holds(typed_marker, "daemon-typed"),
+                 "origin could not type through its daemon while following")
         text_read = raw_control_json(origin_env, {
             "cmd": "session.text", "target": origin_id, "args": {"all": True},
         })
@@ -7455,7 +7461,8 @@ def main():
             "session-switch-deactivate", "child-gdk-env",
             "child-gdk-env-inverted",
             "custom-command-failures", "remote-presentation", "control-hooks",
-            "surface-lifetimes", "surface-failures",
+            "surface-lifetimes", "surface-failures", "gl-teardown", "gl-teardown-glx", "gl-teardown-quarantine",
+            "gl-teardown-quarantine-close",
             "background-overlay-grid", "zoom-floating-overlay",
             "sidebar-row-height", "companion-layout", "companion-identity", "ibus-lifecycle",
             "sidebar-narrow-clipping",
@@ -7465,6 +7472,7 @@ def main():
             "sidebar-multiselect",
             "chrome-focus-buttons", "chrome-focus-sidebar", "chrome-focus-popovers",
             "recent-clear", "control-picker", "control-ask", "ask-visual", "palette-lifecycle", "palette-layout-navigation",
+            "clipboard-osc52",
             "auto-follow", "hidden-toolbar", "desktop-actions",
             "theme-many-sessions",
         ):
@@ -7583,6 +7591,9 @@ def main():
         elif scenario == "palette-layout-navigation":
             from atspi_palette_layout import verify_palette_layout_navigation
             verify_palette_layout_navigation(env)
+        elif scenario == "clipboard-osc52":
+            from atspi_clipboard_osc52 import verify_clipboard_osc52
+            verify_clipboard_osc52(env)
         elif scenario == "dashboard-modal":
             verify_dashboard_modal(env)
         elif scenario == "context-menu":
@@ -7613,6 +7624,18 @@ def main():
             verify_surface_configuration_lifetimes(env)
         elif scenario == "surface-failures":
             verify_surface_failure_diagnostics(env)
+        elif scenario == "gl-teardown":
+            from atspi_gl_teardown import verify_gl_teardown
+            verify_gl_teardown(env, state, scenario)
+        elif scenario == "gl-teardown-glx":
+            from atspi_gl_teardown import verify_gl_teardown
+            verify_gl_teardown(env, state, scenario, require_api="glx")
+        elif scenario == "gl-teardown-quarantine":
+            from atspi_gl_teardown import verify_gl_teardown_quarantine
+            verify_gl_teardown_quarantine(env, state)
+        elif scenario == "gl-teardown-quarantine-close":
+            from atspi_gl_teardown import verify_gl_teardown_quarantine_close
+            verify_gl_teardown_quarantine_close(env, state)
         elif scenario == "background-overlay-grid":
             # Function-local: this harness re-execs itself per scenario, so it runs as `__main__` and
             # the sibling's `from atspi_smoke import …` loads a SECOND copy of this file; a module-scope
