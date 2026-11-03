@@ -1,0 +1,493 @@
+diff --git i/include/ghostty.h w/include/ghostty.h
+index 5523654..c858504 100644
+--- i/include/ghostty.h
++++ w/include/ghostty.h
+@@ -70,6 +70,7 @@ typedef enum {
+   GHOSTTY_PLATFORM_INVALID,
+   GHOSTTY_PLATFORM_MACOS,
+   GHOSTTY_PLATFORM_IOS,
++  GHOSTTY_PLATFORM_OPENGL,
+ } ghostty_platform_e;
+
+ typedef enum {
+@@ -457,9 +458,16 @@ typedef struct {
+   void* uiview;
+ } ghostty_platform_ios_s;
+
++typedef struct {
++  void* userdata;
++  void (*make_current)(void*);
++  void (*present)(void*);
++} ghostty_platform_opengl_s;
++
+ typedef union {
+   ghostty_platform_macos_s macos;
+   ghostty_platform_ios_s ios;
++  ghostty_platform_opengl_s opengl;
+ } ghostty_platform_u;
+
+ typedef enum {
+diff --git i/src/App.zig w/src/App.zig
+index 2ee9f93..a5f9148 100644
+--- i/src/App.zig
++++ w/src/App.zig
+@@ -154,6 +154,12 @@ pub fn destroy(self: *App) void {
+ /// events. This should be called by the application runtime on every loop
+ /// tick.
+ pub fn tick(self: *App, rt_app: *apprt.App) !void {
++    // Renderer health is pushed without blocking when frames complete on
++    // this thread; deliver what the full mailbox refused.
++    defer if (comptime renderer.Thread.must_draw_from_app_thread) {
++        for (self.surfaces.items) |surface| surface.core().renderer.flushPendingHealth();
++    };
++
+     // Drain our mailbox
+     try self.drainMailbox(rt_app);
+ }
+diff --git i/src/apprt/embedded.zig w/src/apprt/embedded.zig
+index a380dc5..5213f09 100644
+--- i/src/apprt/embedded.zig
++++ w/src/apprt/embedded.zig
+@@ -15,6 +15,7 @@ const global = @import("../global.zig");
+ const input = @import("../input.zig");
+ const internal_os = @import("../os/main.zig");
+ const renderer = @import("../renderer.zig");
++const build_config = @import("../build_config.zig");
+ const terminal = @import("../terminal/main.zig");
+ const CoreApp = @import("../App.zig");
+ const CoreInspector = @import("../inspector/main.zig").Inspector;
+@@ -28,6 +29,14 @@ const log = std.log.scoped(.embedded_window);
+ pub const resourcesDir = internal_os.resourcesDir;
+
+ pub const App = struct {
++    /// On the embedded apprt, draws must happen on the host (app) thread when
++    /// the renderer is OpenGL: the host owns the GL context (e.g. a GtkGLArea)
++    /// and GL/glad state is threadlocal, so the render thread only requests a
++    /// draw (the `.render` action) and the host calls ghostty_surface_draw on
++    /// its own thread. Metal (macOS) renders on the render thread, so this
++    /// stays false there.
++    pub const must_draw_from_app_thread = build_config.renderer == .opengl;
++
+     /// Because we only expect the embedding API to be used in embedded
+     /// environments, the options are extern so that we can expose it
+     /// directly to a C callconv and not pay for any translation costs.
+@@ -364,6 +373,7 @@ pub const App = struct {
+ pub const Platform = union(PlatformTag) {
+     macos: MacOS,
+     ios: IOS,
++    opengl: OpenGL,
+
+     // If our build target for libghostty is not darwin then we do
+     // not include macos support at all.
+@@ -377,6 +387,21 @@ pub const Platform = union(PlatformTag) {
+         uiview: objc.Object,
+     } else void;
+
++    /// A host-provided OpenGL surface. The host owns the GL context (e.g. a
++    /// GtkGLArea); ghostty renders into whatever context is current. The host
++    /// must make its context current before any GL-touching C ABI call
++    /// (ghostty_surface_new, ghostty_surface_draw); see `make_current`.
++    pub const OpenGL = struct {
++        /// Opaque host handle passed back to the callbacks below.
++        userdata: ?*anyopaque,
++        /// Make the host GL context current on the calling thread. Called from
++        /// surfaceInit and may be called again by the host before each draw.
++        make_current: ?*const fn (?*anyopaque) callconv(.c) void,
++        /// Present/swap the host GL surface after a frame. Optional: for an
++        /// offscreen/FBO-readback host this may be null.
++        present: ?*const fn (?*anyopaque) callconv(.c) void,
++    };
++
+     // The C ABI compatible version of this union. The tag is expected
+     // to be stored elsewhere.
+     pub const C = extern union {
+@@ -387,6 +412,12 @@ pub const Platform = union(PlatformTag) {
+         ios: extern struct {
+             uiview: ?*anyopaque,
+         },
++
++        opengl: extern struct {
++            userdata: ?*anyopaque,
++            make_current: ?*const fn (?*anyopaque) callconv(.c) void,
++            present: ?*const fn (?*anyopaque) callconv(.c) void,
++        },
+     };
+
+     /// Initialize a Platform a tag and configuration from the C ABI.
+@@ -406,6 +437,12 @@ pub const Platform = union(PlatformTag) {
+                     break :ios error.UIViewMustBeSet);
+                 break :ios .{ .ios = .{ .uiview = uiview } };
+             } else error.UnsupportedPlatform,
++
++            .opengl => .{ .opengl = .{
++                .userdata = c_platform.opengl.userdata,
++                .make_current = c_platform.opengl.make_current,
++                .present = c_platform.opengl.present,
++            } },
+         };
+     }
+ };
+@@ -416,6 +453,7 @@ pub const PlatformTag = enum(c_int) {
+
+     macos = 1,
+     ios = 2,
++    opengl = 3,
+ };
+
+ pub const EnvVar = extern struct {
+diff --git i/src/build/SharedDeps.zig w/src/build/SharedDeps.zig
+index 86cfecc..b81df42 100644
+--- i/src/build/SharedDeps.zig
++++ w/src/build/SharedDeps.zig
+@@ -651,6 +651,17 @@ pub fn add(
+         }
+     }
+
++    // libghostty built with the OpenGL renderer (e.g. the Linux embedded
++    // apprt) needs glad statically compiled into the library too. The exe
++    // path below compiles it for executables; this covers the .lib case.
++    if (step.kind == .lib and self.config.renderer == .opengl) {
++        step.root_module.addIncludePath(b.path("vendor/glad/include/"));
++        step.root_module.addCSourceFile(.{
++            .file = b.path("vendor/glad/src/gl.c"),
++            .flags = &.{},
++        });
++    }
++
+     // If we're building an exe then we have additional dependencies.
+     if (step.kind != .lib) {
+         // We always statically compile glad
+diff --git i/src/renderer.zig w/src/renderer.zig
+index 7475568..a17e27d 100644
+--- i/src/renderer.zig
++++ w/src/renderer.zig
+@@ -63,4 +63,5 @@ test {
+     _ = size;
+     _ = Thread;
+     _ = State;
++    _ = @import("renderer/PendingHealth.zig");
+ }
+diff --git i/src/renderer/OpenGL.zig w/src/renderer/OpenGL.zig
+index 4b01da0..5148c36 100644
+--- i/src/renderer/OpenGL.zig
++++ w/src/renderer/OpenGL.zig
+@@ -160,19 +160,24 @@ fn prepareContext(getProcAddress: anytype) !void {
+
+ /// This is called early right after surface creation.
+ pub fn surfaceInit(surface: *apprt.Surface) !void {
+-    _ = surface;
+-
+     switch (apprt.runtime) {
+         else => @compileError("unsupported app runtime for OpenGL"),
+
+         // GTK uses global OpenGL context so we load from null.
+-        apprt.gtk,
+-        => try prepareContext(null),
++        apprt.gtk => try prepareContext(null),
+
++        // The host (e.g. a GtkGLArea) owns the GL context. Make it current on
++        // this (app) thread, then load glad against it. glad's context is
++        // threadlocal and all embedded-OpenGL draws run on this same host
++        // thread (must_draw_from_app_thread), so loading here is correct.
+         apprt.embedded => {
+-            // TODO(mitchellh): this does nothing today to allow libghostty
+-            // to compile for OpenGL targets but libghostty is strictly
+-            // broken for rendering on this platforms.
++            switch (surface.platform) {
++                .opengl => |gl_platform| {
++                    if (gl_platform.make_current) |f| f(gl_platform.userdata);
++                },
++                else => return error.UnsupportedPlatform,
++            }
++            try prepareContext(null);
+         },
+     }
+
+diff --git i/src/renderer/PendingHealth.zig w/src/renderer/PendingHealth.zig
+new file mode 100644
+index 0000000..9de35db
+--- /dev/null
++++ w/src/renderer/PendingHealth.zig
+@@ -0,0 +1,206 @@
++//! The latest renderer health transition the app mailbox has not accepted.
++//!
++//! When frames complete on the app thread (`must_draw_from_app_thread`),
++//! that thread is also the only consumer of the app mailbox, so a blocking
++//! push there waits on itself once the mailbox is full. Transitions are
++//! pushed without blocking instead, and `App.tick` retries the pending one
++//! after each drain so the last transition is delivered even when no
++//! further frame completes.
++//!
++//! The sink's `push(Health) bool` must not block and must wake the app
++//! loop whether or not it succeeds, as `App.Mailbox.push` does.
++const PendingHealth = @This();
++
++const std = @import("std");
++const Health = @import("../renderer.zig").Health;
++
++value: ?Health = null,
++
++/// Record `health` as the latest transition and try to deliver it.
++pub fn report(self: *PendingHealth, health: Health, sink: anytype) void {
++    self.value = health;
++    self.flush(sink);
++}
++
++/// Retry the pending transition, if any.
++pub fn flush(self: *PendingHealth, sink: anytype) void {
++    const health = self.value orelse return;
++    if (!sink.push(health)) return;
++    // A transition reported during the push is newer and stays pending.
++    if (self.value == health) self.value = null;
++}
++
++const testing = std.testing;
++const BlockingQueue = @import("../datastruct/main.zig").BlockingQueue;
++
++const TestMessage = union(enum) {
++    other: u32,
++    health: Health,
++};
++
++const TestQueue = BlockingQueue(TestMessage, 64);
++
++/// Mirrors `App.Mailbox.push`: an `.instant` push that wakes either way.
++const TestSink = struct {
++    queue: *TestQueue,
++    wakeups: usize = 0,
++    reentrant: ?struct { pending: *PendingHealth, health: Health } = null,
++
++    fn push(self: *TestSink, health: Health) bool {
++        defer self.wakeups += 1;
++        const accepted = self.queue.push(testing.io, .{ .health = health }, .instant) > 0;
++        if (self.reentrant) |r| {
++            self.reentrant = null;
++            r.pending.report(r.health, self);
++        }
++        return accepted;
++    }
++
++    fn fill(self: *TestSink) void {
++        while (self.queue.push(testing.io, .{ .other = 0 }, .instant) > 0) {}
++    }
++
++    /// Drains the queue like `App.drainMailbox`, returning the health values in order.
++    fn drain(self: *TestSink, buf: []Health) []Health {
++        var n: usize = 0;
++        while (self.queue.pop(testing.io)) |msg| switch (msg) {
++            .other => {},
++            .health => |h| {
++                buf[n] = h;
++                n += 1;
++            },
++        };
++        return buf[0..n];
++    }
++};
++
++test "PendingHealth: report into a full mailbox returns and stays pending" {
++    var queue: TestQueue = .{};
++    var sink: TestSink = .{ .queue = &queue };
++    sink.fill();
++
++    var pending: PendingHealth = .{};
++    pending.report(.unhealthy, &sink);
++
++    try testing.expectEqual(@as(?Health, .unhealthy), pending.value);
++    try testing.expectEqual(@as(usize, 1), sink.wakeups);
++}
++
++test "PendingHealth: flush after a drain delivers without another frame" {
++    var queue: TestQueue = .{};
++    var sink: TestSink = .{ .queue = &queue };
++    sink.fill();
++
++    var pending: PendingHealth = .{};
++    pending.report(.unhealthy, &sink);
++
++    var buf: [64]Health = undefined;
++    try testing.expectEqual(@as(usize, 0), sink.drain(&buf).len);
++    pending.flush(&sink);
++
++    try testing.expectEqual(@as(?Health, null), pending.value);
++    try testing.expectEqualSlices(Health, &.{.unhealthy}, sink.drain(&buf));
++
++    pending.flush(&sink);
++    try testing.expectEqual(@as(usize, 2), sink.wakeups);
++}
++
++test "PendingHealth: a retry into a refilled mailbox stays pending and wakes again" {
++    var queue: TestQueue = .{};
++    var sink: TestSink = .{ .queue = &queue };
++    sink.fill();
++
++    var pending: PendingHealth = .{};
++    pending.report(.unhealthy, &sink);
++
++    var buf: [64]Health = undefined;
++    _ = sink.drain(&buf);
++    sink.fill();
++    pending.flush(&sink);
++
++    try testing.expectEqual(@as(?Health, .unhealthy), pending.value);
++    try testing.expectEqual(@as(usize, 2), sink.wakeups);
++
++    _ = sink.drain(&buf);
++    pending.flush(&sink);
++    try testing.expectEqual(@as(?Health, null), pending.value);
++    try testing.expectEqualSlices(Health, &.{.unhealthy}, sink.drain(&buf));
++}
++
++test "PendingHealth: only the latest undelivered transition is delivered" {
++    var queue: TestQueue = .{};
++    var sink: TestSink = .{ .queue = &queue };
++    sink.fill();
++
++    var pending: PendingHealth = .{};
++    pending.report(.unhealthy, &sink);
++    pending.report(.healthy, &sink);
++
++    var buf: [64]Health = undefined;
++    _ = sink.drain(&buf);
++    pending.flush(&sink);
++
++    try testing.expectEqualSlices(Health, &.{.healthy}, sink.drain(&buf));
++}
++
++test "PendingHealth: an accepted older value arrives first, then the pending newer one" {
++    var queue: TestQueue = .{};
++    var sink: TestSink = .{ .queue = &queue };
++
++    var pending: PendingHealth = .{};
++    pending.report(.unhealthy, &sink);
++    try testing.expectEqual(@as(?Health, null), pending.value);
++    sink.fill();
++    pending.report(.healthy, &sink);
++
++    var buf: [64]Health = undefined;
++    try testing.expectEqualSlices(Health, &.{.unhealthy}, sink.drain(&buf));
++    pending.flush(&sink);
++    try testing.expectEqualSlices(Health, &.{.healthy}, sink.drain(&buf));
++}
++
++test "PendingHealth: an older success never clears a newer transition" {
++    var queue: TestQueue = .{};
++    var sink: TestSink = .{ .queue = &queue };
++
++    var pending: PendingHealth = .{};
++    sink.fill();
++    pending.report(.unhealthy, &sink);
++
++    var buf: [64]Health = undefined;
++    _ = sink.drain(&buf);
++    for (0..63) |_| _ = queue.push(testing.io, .{ .other = 0 }, .instant);
++    sink.reentrant = .{ .pending = &pending, .health = .healthy };
++    pending.flush(&sink);
++
++    try testing.expectEqual(@as(?Health, .healthy), pending.value);
++    try testing.expectEqualSlices(Health, &.{.unhealthy}, sink.drain(&buf));
++    pending.flush(&sink);
++    try testing.expectEqual(@as(?Health, null), pending.value);
++    try testing.expectEqualSlices(Health, &.{.healthy}, sink.drain(&buf));
++}
++
++test "PendingHealth: removing one pending value still delivers the other's" {
++    const alloc = testing.allocator;
++    var queue: TestQueue = .{};
++    var sink: TestSink = .{ .queue = &queue };
++    sink.fill();
++
++    var surfaces: std.ArrayList(*PendingHealth) = .empty;
++    defer surfaces.deinit(alloc);
++    var live: PendingHealth = .{};
++    const doomed = try alloc.create(PendingHealth);
++    doomed.* = .{};
++    try surfaces.appendSlice(alloc, &.{ doomed, &live });
++
++    doomed.report(.unhealthy, &sink);
++    live.report(.healthy, &sink);
++
++    _ = surfaces.swapRemove(0);
++    alloc.destroy(doomed);
++
++    var buf: [64]Health = undefined;
++    _ = sink.drain(&buf);
++    for (surfaces.items) |p| p.flush(&sink);
++    try testing.expectEqualSlices(Health, &.{.healthy}, sink.drain(&buf));
++}
+diff --git i/src/renderer/Thread.zig w/src/renderer/Thread.zig
+index e3e2cec..9948391 100644
+--- i/src/renderer/Thread.zig
++++ w/src/renderer/Thread.zig
+@@ -25,7 +25,7 @@ const CURSOR_BLINK_INTERVAL = 600;
+ ///
+ /// If this is `true` then we send a `redraw_surface` message to the apprt
+ /// whenever we need to draw instead of calling `drawFrame` directly.
+-const must_draw_from_app_thread =
++pub const must_draw_from_app_thread =
+     if (@hasDecl(apprt.App, "must_draw_from_app_thread"))
+         apprt.App.must_draw_from_app_thread
+     else
+diff --git i/src/renderer/generic.zig w/src/renderer/generic.zig
+index cd62a7b..8ce4bb2 100644
+--- i/src/renderer/generic.zig
++++ w/src/renderer/generic.zig
+@@ -27,6 +27,7 @@ const Allocator = std.mem.Allocator;
+ const ArenaAllocator = std.heap.ArenaAllocator;
+ const Terminal = terminal.Terminal;
+ const Health = renderer.Health;
++const PendingHealth = @import("PendingHealth.zig");
+ const compat_file = @import("../lib/compat/file.zig");
+
+ const getConstraint = @import("../font/nerd_font_attributes.zig").getConstraint;
+@@ -207,6 +208,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+         /// Health of the most recently completed frame.
+         health: std.atomic.Value(Health) = .{ .raw = .healthy },
+
++        /// Used only with `must_draw_from_app_thread`, on the app thread.
++        pending_health: PendingHealth = .{},
++
+         /// Our swap chain (multiple buffering)
+         swap_chain: SwapChain,
+
+@@ -1750,15 +1754,37 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+
+                 // Our health value changed, so we notify the surface so that it
+                 // can do something about it.
+-                _ = self.surface_mailbox.push(.{
+-                    .renderer_health = health,
+-                }, .{ .forever = {} });
++                if (comptime renderer.Thread.must_draw_from_app_thread) {
++                    self.pending_health.report(health, self.healthSink());
++                } else {
++                    _ = self.surface_mailbox.push(.{
++                        .renderer_health = health,
++                    }, .{ .forever = {} });
++                }
+             }
+
+             // Always release our semaphore
+             self.swap_chain.releaseFrame();
+         }
+
++        /// Retry an undelivered health transition. App thread only, after
++        /// draining the app mailbox; see `PendingHealth`.
++        pub fn flushPendingHealth(self: *Self) void {
++            self.pending_health.flush(self.healthSink());
++        }
++
++        const HealthSink = struct {
++            mailbox: apprt.surface.Mailbox,
++
++            pub fn push(self: HealthSink, health: Health) bool {
++                return self.mailbox.push(.{ .renderer_health = health }, .instant) > 0;
++            }
++        };
++
++        fn healthSink(self: *const Self) HealthSink {
++            return .{ .mailbox = self.surface_mailbox };
++        }
++
+         /// Call this any time the background image path changes.
+         ///
+         /// Caller must hold the draw mutex.

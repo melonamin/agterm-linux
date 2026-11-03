@@ -1,5 +1,8 @@
 import Foundation
 import Testing
+#if canImport(Glibc)
+import Glibc
+#endif
 @testable import agtermCore
 @testable import agtermctlKit
 
@@ -12,11 +15,15 @@ final class StreamBridgeTests {
 
     init() throws {
         var sockets: [Int32] = [-1, -1]
+        #if canImport(Glibc)
+        try #require(socketpair(AF_UNIX, Int32(SOCK_STREAM.rawValue), 0, &sockets) == 0)
+        #else
         try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0)
         for fd in sockets {
             var on: Int32 = 1
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
         }
+        #endif
         var input: [Int32] = [-1, -1]
         var output: [Int32] = [-1, -1]
         try #require(pipe(&input) == 0)
@@ -99,7 +106,11 @@ final class StreamBridgeTests {
         #expect(running.done.wait(timeout: .now() + 3) == .success)
         closeOwned(bridge.socket)
         var reused: [Int32] = [-1, -1]
+        #if canImport(Glibc)
+        try #require(socketpair(AF_UNIX, Int32(SOCK_STREAM.rawValue), 0, &reused) == 0)
+        #else
         try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &reused) == 0)
+        #endif
         owned += reused
         send("late input\n", to: stdinWrite)
 

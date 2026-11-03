@@ -1,0 +1,11 @@
+diff --git a/src/App.zig b/src/App.zig
+--- a/src/App.zig
++++ b/src/App.zig
+@@ -719,7 +719,5 @@ fn discardMessage(message: Message) void {
+     switch (message) {
+         .surface_message => |msg| switch (msg.message) {
+-            .kitty_clipboard_read => |req| req.destroy(),
+-            .kitty_clipboard_write => |req| req.destroy(),
+             .clipboard_write => |write| write.req.deinit(),
+             .pwd_change => |pwd| pwd.deinit(),
+             else => {},

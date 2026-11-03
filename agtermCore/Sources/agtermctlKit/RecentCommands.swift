@@ -38,6 +38,8 @@ struct Recent: ParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Empty the recently closed list.")
         @OptionGroup var options: BasicOptions
 
+        var affectedNoun: String { "item" }
+
         func makeRequest() throws -> ControlRequest { ControlRequest(cmd: .recentClear) }
     }
 }

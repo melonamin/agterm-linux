@@ -28,7 +28,23 @@ report_status() {
 
 assistant_message_contains_question() {
   local message prose question quoted_mark
-  message=$(/usr/bin/plutil -extract last_assistant_message raw -o - - 2>/dev/null) || return 1
+  if [ -x /usr/bin/plutil ]; then
+    message=$(/usr/bin/plutil -extract last_assistant_message raw -o - - 2>/dev/null) || return 1
+  elif command -v python3 >/dev/null 2>&1; then
+    message=$(python3 -c '
+import json
+import sys
+
+value = json.load(sys.stdin).get("last_assistant_message")
+if not isinstance(value, str):
+    raise SystemExit(1)
+sys.stdout.write(value)
+' 2>/dev/null) || return 1
+  elif command -v jq >/dev/null 2>&1; then
+    message=$(jq -er '.last_assistant_message | strings' 2>/dev/null) || return 1
+  else
+    return 1
+  fi
   # a ? that opens quoted text ("? for shortcuts") ends no word, yet its opener would pass as one
   quoted_mark=$'s/(^|[[:space:]])([“‘"\'([*_]+)\\?/\\1\\2/g'
   # a span becomes a word rather than nothing so "run `make test`?" keeps its ? attached
@@ -123,7 +139,16 @@ case "$action" in
     # events would leave the pane active and replace the foreground watcher. it is ephemeral, so its
     # transcript_path is null, which plutil types as "(any)". foreground ephemeral sessions lose
     # these updates too.
-    [ "$(/usr/bin/plutil -type transcript_path - 2>/dev/null)" = "(any)" ] && exit 0
+    # Some plutil implementations reject JSON null. Probe separately so a failed parser does not
+    # consume the event before the Python/jq fallback can filter memory-thread hooks.
+    if [ -x /usr/bin/plutil ] && \
+      [ "$(printf '%s' '{"transcript_path":null}' | /usr/bin/plutil -type transcript_path - 2>/dev/null)" = "(any)" ]; then
+      [ "$(/usr/bin/plutil -type transcript_path - 2>/dev/null)" = "(any)" ] && exit 0
+    elif command -v python3 >/dev/null 2>&1; then
+      python3 -c 'import json, sys; sys.exit(0 if json.load(sys.stdin).get("transcript_path", False) is None else 1)' 2>/dev/null && exit 0
+    elif command -v jq >/dev/null 2>&1; then
+      jq -e 'has("transcript_path") and .transcript_path == null' >/dev/null 2>&1 && exit 0
+    fi
     ;;
 esac
 

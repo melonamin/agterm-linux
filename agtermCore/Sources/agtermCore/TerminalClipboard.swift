@@ -57,21 +57,55 @@ public enum TerminalClipboard {
         process.arguments = ["print", daemon]
         // empty is unset to zmx; an inherited prefix would resolve a name agterm never created
         process.environment = environment.merging(["ZMX_SESSION": "", "ZMX_SESSION_PREFIX": ""]) { _, new in new }
-        let stdin = Pipe()
+        let input = try inputHandles()
+        defer {
+            try? input.read.close()
+            try? input.write.close()
+        }
         let stderr = Pipe()
-        process.standardInput = stdin
+        process.standardInput = input.read
         process.standardOutput = FileHandle.nullDevice
         process.standardError = stderr
         try process.run()
+        try? input.read.close()
         // a zmx that exits before reading everything must surface as its status, not kill this process
-        _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
-        try? stdin.fileHandleForWriting.write(contentsOf: sequence)
-        try? stdin.fileHandleForWriting.close()
+        #if canImport(Darwin)
+        _ = fcntl(input.write.fileDescriptor, F_SETNOSIGPIPE, 1)
+        try? input.write.write(contentsOf: sequence)
+        #else
+        sequence.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                let count = Glibc.send(input.write.fileDescriptor, bytes.baseAddress! + offset,
+                                       bytes.count - offset, Int32(MSG_NOSIGNAL))
+                if count < 0 && errno == EINTR { continue }
+                if count <= 0 { break }
+                offset += count
+            }
+        }
+        #endif
+        try? input.write.close()
         let diagnostics = stderr.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
             throw Failure.printFailed(status: process.terminationStatus,
                                       stderr: String(decoding: diagnostics, as: UTF8.self))
         }
+    }
+
+    private static func inputHandles() throws -> (read: FileHandle, write: FileHandle) {
+        #if canImport(Darwin)
+        let pipe = Pipe()
+        return (pipe.fileHandleForReading, pipe.fileHandleForWriting)
+        #else
+        // A socket pair supports per-write SIGPIPE suppression without changing process signal policy.
+        var descriptors: [Int32] = [-1, -1]
+        let type = Int32(SOCK_STREAM.rawValue) | Int32(SOCK_CLOEXEC.rawValue)
+        guard socketpair(AF_UNIX, type, 0, &descriptors) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        return (FileHandle(fileDescriptor: descriptors[0], closeOnDealloc: true),
+                FileHandle(fileDescriptor: descriptors[1], closeOnDealloc: true))
+        #endif
     }
 }

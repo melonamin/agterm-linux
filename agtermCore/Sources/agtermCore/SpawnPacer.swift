@@ -63,6 +63,17 @@ public final class SpawnPacer {
         self.init(interval: interval, now: { ContinuousClock().now }, schedule: SpawnPacer.liveSchedule)
     }
 
+    /// A host whose UI loop does not drain Swift Concurrency's main executor can schedule grants through
+    /// the shared `MainTimer` seam. The GTK frontend installs its GLib implementation before arming.
+    public convenience init(interval: Duration = .milliseconds(120), mainTimer _: MainTimer.Type) {
+        self.init(interval: interval, now: { ContinuousClock().now }, schedule: { delay, body in
+            let components = delay.components
+            let seconds = TimeInterval(components.seconds)
+                + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
+            MainTimer.schedule(after: max(0, seconds), body)
+        })
+    }
+
     init(interval: Duration,
          now: @escaping @MainActor () -> ContinuousClock.Instant,
          schedule: @escaping Scheduler) {

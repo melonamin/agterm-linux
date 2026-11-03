@@ -1,0 +1,4 @@
+module CWebKit [system] {
+    umbrella header "shim.h"
+    export *
+}

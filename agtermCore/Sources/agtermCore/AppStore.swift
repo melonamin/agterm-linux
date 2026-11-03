@@ -138,7 +138,9 @@ public final class AppStore {
 
     @ObservationIgnored var pendingCloseRecords: [UUID: PendingCloseRecord] = [:]
     @ObservationIgnored var pendingCloseOrder: [UUID] = []
-    @ObservationIgnored var pendingCloseTasks: [UUID: Task<Void, Never>] = [:]
+    /// The armed grace finalizer per pending close, held as the `MainTimer` cancel closure it returned:
+    /// calling the stored closure disarms that record's finalization (a no-op once it has fired).
+    @ObservationIgnored var pendingCloseCancels: [UUID: @MainActor () -> Void] = [:]
 
     @ObservationIgnored let persistence: PersistenceStore
     /// snapshotDidSave runs after each snapshot write that landed.
@@ -911,5 +913,4 @@ public final class AppStore {
         }
         return nil
     }
-
 }

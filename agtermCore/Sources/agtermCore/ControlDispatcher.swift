@@ -12,6 +12,16 @@ public struct ControlDispatcher {
         self.bus = bus
     }
 
+    /// Hosts whose UI loop cannot drive Swift's main-actor executor can route these synchronous
+    /// command families through the same validators as the asynchronous entry point.
+    public func dispatchSynchronous(_ request: ControlRequest) -> ControlResponse? {
+        switch request.cmd {
+        case .msgSend, .msgRead, .msgAck: return dispatchMessageCommand(request)
+        case .sessionInfo: return dispatchSessionInfo(request)
+        default: return nil
+        }
+    }
+
     public func dispatch(_ request: ControlRequest) async -> ControlResponse? {
         switch request.cmd {
         case .tree:
@@ -43,8 +53,9 @@ public struct ControlDispatcher {
                 .workspaceFlag:
             return dispatchWorkspaceCommand(request)
         case .quick, .fontInc, .fontDec, .fontReset, .keymapReload, .keymapList, .keymapRun,
-                .configReload, .notify, .themeSet, .themeList, .sidebar, .sidebarMode, .sidebarFlaggedLayout,
-                .sidebarExpand, .sidebarCollapse, .sidebarWidth, .restoreClear, .restoreCapture, .version:
+                .configReload, .notify, .themeSet, .themeList, .sidebar, .sidebarMode, .sidebarExpand,
+                .sidebarCollapse, .sidebarFlaggedLayout, .sidebarWidth, .restoreClear, .restoreCapture,
+                .version:
             return dispatchAppCommand(request)
         case .restoreMode, .zmxList, .zmxPrune, .zmxKill, .zmxReset, .zmxTree, .zmxAttach, .zmxAttachGroup, .zmxPresent, .zmxScreen:
             return await dispatchZmxCommand(request)
@@ -371,16 +382,7 @@ public struct ControlDispatcher {
         case .sessionFocus:
             return actions.focusSessionPane(request.target, window: request.args?.window, pane: request.args?.pane)
         case .sessionResize:
-            switch (request.args?.ratio, request.args?.ratioDelta) {
-            case (nil, nil):
-                return ControlResponse(ok: false, error: "session.resize requires --split-ratio, --grow-left, or --grow-right")
-            case (.some, .some):
-                return ControlResponse(ok: false, error: "session.resize: --split-ratio is mutually exclusive with --grow-left/--grow-right")
-            case (.some(let ratio), nil):
-                return actions.resizeSplit(request.target, window: request.args?.window, resize: .ratio(ratio))
-            case (nil, .some(let delta)):
-                return actions.resizeSplit(request.target, window: request.args?.window, resize: .delta(delta))
-            }
+            return dispatchSessionResize(request)
         case .surfaceZoom:
             guard let mode = ControlToggleMode.parse(request.args?.mode, on: "show", off: "hide") else {
                 return ControlResponse(ok: false, error: "invalid surface zoom mode: \(request.args?.mode ?? "toggle")")

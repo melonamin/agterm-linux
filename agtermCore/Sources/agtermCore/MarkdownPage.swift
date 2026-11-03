@@ -40,12 +40,16 @@ public enum MarkdownPage {
     /// markdown file's own folder, after symlinks on both sides are resolved; in document order, each
     /// reference once. A remote, a `data:` or an escaping reference is left out and renders as its alt text.
     public static func imageReferences(in markdown: String, folder: String) -> [Image] {
+        #if canImport(Darwin)
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .full)
         guard let parsed = try? AttributedString(markdown: markdown, options: options) else { return [] }
+        let references = parsed.runs.compactMap { $0.imageURL?.relativeString }
+        #else
+        let references = MarkdownImageReferencesPortable.references(in: markdown)
+        #endif
         var found: [Image] = [], seen: Set<String> = []
-        for run in parsed.runs {
-            guard let url = run.imageURL else { continue }
-            let reference = url.relativeString.removingPercentEncoding ?? url.relativeString
+        for encoded in references {
+            let reference = encoded.removingPercentEncoding ?? encoded
             guard seen.insert(reference).inserted, let path = localPath(reference, folder: folder) else { continue }
             found.append(Image(reference: reference, path: path))
         }
