@@ -507,6 +507,7 @@ let onPanedPosition: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, 
 }
 
 let onPanedMapped: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { paned, _ in
+    guard let paned else { return }
     MainActor.assumeIsolated { controllerForWidget(paned)?.resumeSplitRatioRestore(paned) }
 }
 
