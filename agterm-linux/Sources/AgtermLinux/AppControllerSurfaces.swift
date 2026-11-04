@@ -67,6 +67,7 @@ extension AppController {
         sessionPanes[s.id] = paned
         gtk_widget_add_css_class(W(paned), "agterm-terminal-split")
         connect(paned, "notify::position", unsafeBitCast(onPanedPosition as @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
+        connect(paned, "map", unsafeBitCast(onPanedMapped as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
         let dividerClick = gtk_gesture_click_new()
         gtk_gesture_single_set_button(dividerClick, 1)
         connect(dividerClick, "pressed", unsafeBitCast(onPanedDoubleClick as @convention(c)
@@ -564,14 +565,39 @@ extension AppController {
 
     func scheduleSplitRatioRestore(sessionID: UUID, paned: OpaquePointer) {
         let generation = splitRatioRestore.begin(windowID: windowID, sessionID: sessionID, paned: paned)
-        guard tryRestorePanedRatio(
-            windowID: windowID, sessionID: sessionID, paned: paned, generation: generation) != 0 else { return }
+        guard gtk_widget_get_mapped(W(paned)) != 0 else { return }
+        scheduleSplitRatioRestoreFrame(sessionID: sessionID, paned: paned, generation: generation)
+    }
+
+    func resumeSplitRatioRestore(_ paned: OpaquePointer) {
+        guard let (sessionID, pending) = splitRatioRestore.pending.first(where: { $0.value.paned == paned }),
+              pending.callbackID == 0 else { return }
+        scheduleSplitRatioRestoreFrame(
+            sessionID: sessionID, paned: paned, generation: pending.generation)
+    }
+
+    private func scheduleSplitRatioRestoreFrame(sessionID: UUID, paned: OpaquePointer, generation: UInt64) {
         let context = SplitRatioRestoreTickContext(
             controller: self, sessionID: sessionID, paned: paned, generation: generation)
-        let sourceID = g_timeout_add_full(
-            G_PRIORITY_DEFAULT, 50, restorePanedRatioTick,
-            Unmanaged.passRetained(context).toOpaque(), releaseSplitRatioRestoreTick)
-        splitRatioRestore.setSource(sourceID, sessionID: sessionID, generation: generation)
+        let callbackID = gtk_widget_add_tick_callback(
+            W(paned), restorePanedRatioTick, Unmanaged.passRetained(context).toOpaque(),
+            releaseSplitRatioRestoreTick)
+        context.callbackID = callbackID
+        splitRatioRestore.setCallback(
+            callbackID, paned: paned, sessionID: sessionID, generation: generation)
+    }
+
+    func retrySplitRatioRestore(_ context: SplitRatioRestoreTickContext) -> gboolean {
+        guard gtk_widget_get_mapped(W(context.paned)) != 0 else {
+            splitRatioRestore.clearCallback(
+                context.callbackID, sessionID: context.sessionID, generation: context.generation)
+            return 0
+        }
+        context.ticks += 1
+        guard context.ticks > 1 else { return 1 }
+        return tryRestorePanedRatio(
+            windowID: context.windowID, sessionID: context.sessionID,
+            paned: context.paned, generation: context.generation)
     }
 
     @discardableResult
@@ -586,7 +612,8 @@ extension AppController {
             splitRatioRestore.complete(sessionID: sessionID, generation: generation)
             return 0
         }
-        guard let session = store.session(withID: sessionID) else { return 1 }
+        guard let session = store.session(withID: sessionID),
+              gtk_widget_get_mapped(W(paned)) != 0 else { return 1 }
         let extent = session.splitAxis == .topBottom
             ? gtk_widget_get_height(W(paned)) : gtk_widget_get_width(W(paned))
         guard extent > 0 else { return 1 }
