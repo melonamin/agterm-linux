@@ -87,19 +87,19 @@ paths:
   `focusActive: false`.
   A queued closing hook checks the same identity, never the session id alone: a program or page can take
   the session overlay slot before the hop drains (`AppController.sessionOverlayExitCloses`).
-- **A repeating or long-lived timer stays on the Linux side** with a direct `g_timeout_add`;
+- **Repeating or long-lived timers stay on the Linux side** with a direct `g_timeout_add`;
   `MainTimer` is deliberately one-shot.
-  Three live here: `LinuxAutoFollowCoordinator`'s idle tick, `SplitRatioRestoreCoordinator`'s 50 ms
-  divider-restore poll (`AppControllerSurfaces.scheduleSplitRatioRestore`, whose tick returns
-  `G_SOURCE_CONTINUE` until the paned has a width), and `BlinkPhaseCoordinator`'s status-glyph pulse
-  (cancelled in `windowWillClose` only AFTER the glyph maps it resolves are emptied), each owning its
-  `guint` source id and its own `g_source_remove` cancel.
+  `LinuxAutoFollowCoordinator` owns the idle tick and `BlinkPhaseCoordinator` owns the status-glyph pulse
+  (cancelled in `windowWillClose` only AFTER the glyph maps it resolves are emptied); each owns its `guint`
+  source id and `g_source_remove` cancel.
 - **A retry that must see a fresh ALLOCATION rides the frame clock, not another idle** —
   `gtk_widget_add_tick_callback`, whose id is WIDGET-scoped and removed through the widget rather than with
   `g_source_remove`.
   `SidebarScrollRetryCoordinator` owns the sidebar's one pending request, supersedes it per navigation, and
   is cancelled when its own row detaches, before a rebuild, and in `windowWillClose`
-  (`agterm-linux/docs/main-loop.md`).
+  (`agterm-linux/docs/main-loop.md`). `SplitRatioRestoreCoordinator` keeps a hidden session's saved ratio
+  pending without polling; the paned's `map` signal arms its widget-scoped tick callback, which waits through
+  a frame before applying the position and is cancelled in `windowWillClose`.
 - **Derive a coupled delay from the constant it trails**, never re-hardcode it — `reconcileSoftClose`
   schedules at the soft-close `grace + 0.1` so it cannot drift from the finalizer it must follow.
 - **The grace window is a state, not a schedule — nothing that runs DURING it may reap a held session.**

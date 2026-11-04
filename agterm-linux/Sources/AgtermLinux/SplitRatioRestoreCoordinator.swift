@@ -8,15 +8,17 @@ final class SplitRatioRestoreCoordinator {
         let sessionID: UUID
         let paned: OpaquePointer
         let generation: UInt64
-        var sourceID: guint
+        var callbackID: guint
     }
 
     private(set) var pending: [UUID: Pending] = [:]
     private var nextGeneration: UInt64 = 0
-    private let removeSource: (guint) -> Void
+    private let removeCallback: (OpaquePointer, guint) -> Void
 
-    init(removeSource: @escaping (guint) -> Void = { _ = g_source_remove($0) }) {
-        self.removeSource = removeSource
+    init(removeCallback: @escaping (OpaquePointer, guint) -> Void = {
+        gtk_widget_remove_tick_callback(W($0), $1)
+    }) {
+        self.removeCallback = removeCallback
     }
 
     func begin(windowID: UUID, sessionID: UUID, paned: OpaquePointer) -> UInt64 {
@@ -24,23 +26,29 @@ final class SplitRatioRestoreCoordinator {
         nextGeneration &+= 1
         pending[sessionID] = Pending(
             windowID: windowID, sessionID: sessionID, paned: paned,
-            generation: nextGeneration, sourceID: 0)
+            generation: nextGeneration, callbackID: 0)
         return nextGeneration
     }
 
-    func setSource(_ sourceID: guint, sessionID: UUID, generation: UInt64) {
-        guard var value = pending[sessionID], value.generation == generation else {
-            removeSource(sourceID)
+    func setCallback(_ callbackID: guint, paned: OpaquePointer, sessionID: UUID, generation: UInt64) {
+        guard var value = pending[sessionID], value.generation == generation, value.paned == paned else {
+            removeCallback(paned, callbackID)
             return
         }
-        value.sourceID = sourceID
+        value.callbackID = callbackID
         pending[sessionID] = value
     }
 
     func matches(windowID: UUID, sessionID: UUID, paned: OpaquePointer, generation: UInt64) -> Bool {
         pending[sessionID] == Pending(
             windowID: windowID, sessionID: sessionID, paned: paned,
-            generation: generation, sourceID: pending[sessionID]?.sourceID ?? 0)
+            generation: generation, callbackID: pending[sessionID]?.callbackID ?? 0)
+    }
+
+    func clearCallback(_ callbackID: guint, sessionID: UUID, generation: UInt64) {
+        guard pending[sessionID]?.generation == generation,
+              pending[sessionID]?.callbackID == callbackID else { return }
+        pending[sessionID]?.callbackID = 0
     }
 
     func complete(sessionID: UUID, generation: UInt64) {
@@ -50,7 +58,7 @@ final class SplitRatioRestoreCoordinator {
 
     func cancel(sessionID: UUID) {
         guard let value = pending.removeValue(forKey: sessionID) else { return }
-        if value.sourceID != 0 { removeSource(value.sourceID) }
+        if value.callbackID != 0 { removeCallback(value.paned, value.callbackID) }
     }
 
     func cancelAll() {
@@ -69,6 +77,8 @@ final class SplitRatioRestoreTickContext {
     let sessionID: UUID
     let paned: OpaquePointer
     let generation: UInt64
+    var callbackID: guint = 0
+    var ticks = 0
 
     init(controller: AppController, sessionID: UUID, paned: OpaquePointer, generation: UInt64) {
         self.controller = controller

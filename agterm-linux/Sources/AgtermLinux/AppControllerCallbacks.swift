@@ -506,6 +506,10 @@ let onPanedPosition: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, 
     MainActor.assumeIsolated { controllerForWidget(paned)?.capturePanedRatio(paned) }
 }
 
+let onPanedMapped: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { paned, _ in
+    MainActor.assumeIsolated { controllerForWidget(paned)?.resumeSplitRatioRestore(paned) }
+}
+
 let onPanedDoubleClick: @MainActor @convention(c) (OpaquePointer?, Int32, Double, Double, gpointer?) -> Void = { gesture, presses, x, y, _ in
     guard presses == 2 else { return }
     MainActor.assumeIsolated { controllerForEventController(gesture)?.resetSplitRatio(gesture, x: x, y: y) }
@@ -516,19 +520,21 @@ let onDeckAllocationChanged:
     MainActor.assumeIsolated { controllerForWidget(deck)?.refreshHudGeometryForDeckAllocation() }
 }
 
-let restorePanedRatioTick: @MainActor @convention(c) (gpointer?) -> gboolean = { data in
+let restorePanedRatioTick: GtkTickCallback = { _, _, data in
     guard let data else { return 0 }
+    let address = Int(bitPattern: data)
     return MainActor.assumeIsolated {
-        let context = Unmanaged<SplitRatioRestoreTickContext>.fromOpaque(data).takeUnretainedValue()
-        return context.controller?.tryRestorePanedRatio(
-            windowID: context.windowID, sessionID: context.sessionID,
-            paned: context.paned, generation: context.generation) ?? 0
+        guard let raw = UnsafeMutableRawPointer(bitPattern: address) else { return gboolean(0) }
+        let context = Unmanaged<SplitRatioRestoreTickContext>.fromOpaque(raw).takeUnretainedValue()
+        return context.controller?.retrySplitRatioRestore(context) ?? 0
     }
 }
 
 let releaseSplitRatioRestoreTick: GDestroyNotify = { data in
     guard let data else { return }
-    Unmanaged<SplitRatioRestoreTickContext>.fromOpaque(data).release()
+    let address = Int(bitPattern: data)
+    guard let raw = UnsafeMutableRawPointer(bitPattern: address) else { return }
+    Unmanaged<SplitRatioRestoreTickContext>.fromOpaque(raw).release()
 }
 
 // Unlike the `@convention(c)` closure above, these two are the typealiases GTK imports, which take no
