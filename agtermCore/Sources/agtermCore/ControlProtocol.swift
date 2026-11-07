@@ -27,6 +27,7 @@ public enum Command: String, Codable, Sendable {
     case sessionStatus = "session.status"
     case sessionFlag = "session.flag"
     case sessionContext = "session.context"
+    case sessionInfo = "session.info"
     case sessionTint = "session.tint"
     case sessionSeen = "session.seen"
     case sessionRestore = "session.restore"
@@ -111,6 +112,9 @@ public enum Command: String, Codable, Sendable {
     case askOpen = "ask.open"
     case askResult = "ask.result"
     case askCancel = "ask.cancel"
+    case msgSend = "msg.send"
+    case msgRead = "msg.read"
+    case msgAck = "msg.ack"
     case restoreClear = "restore.clear"
     case version = "version"
     case restoreCapture = "restore.capture"
@@ -121,6 +125,9 @@ public enum Command: String, Codable, Sendable {
     case zmxReset = "zmx.reset"
     case zmxTree = "zmx.tree"
     case zmxAttach = "zmx.attach"
+    /// zmxAttachGroup is its own command, not a flag on `zmx.attach`, so an app that predates it fails to
+    /// decode the request and creates nothing instead of attaching one row.
+    case zmxAttachGroup = "zmx.attach.group"
     case zmxPresent = "zmx.present"
     case zmxScreen = "zmx.screen"
     case recentList = "recent.list"
@@ -435,11 +442,24 @@ public struct ControlArgs: Codable, Sendable, Equatable {
     public var persistent: Bool?
     /// browse lets a `--url` page's main frame leave its first origin for any HTTP(S) site (`--browse`).
     public var browse: Bool?
+    /// image is the absolute path of the picture `session.overlay.open --image` shows instead of running `command`.
+    public var image: String?
+    /// markdownFile is the absolute path of the markdown file `session.overlay.open --markdown` renders; its
+    /// own field because `markdown` is the HUD's flag.
+    public var markdownFile: String?
     /// value is the answer `session.overlay.submit` hands back from a page, empty being a real answer, or
     /// the initial text of an `ask.open` input field.
     public var value: String?
     /// page is the page id `session.overlay.result` reads the outcome of, instead of a program's exit status.
     public var page: String?
+    /// recipients are the `SESSION:PANE` addresses `msg.send --to` names; the scalar `to` keeps its navigation meaning.
+    public var recipients: [String]?
+    /// identity is the `SESSION:PANE-ID` the caller acts as on `msg.*`.
+    public var identity: String?
+    /// ack makes `msg.read` remove the batch it returns.
+    public var ack: Bool?
+    /// ids are the message ids `msg.ack` removes.
+    public var ids: [String]?
 
     public init(name: String? = nil, cwd: String? = nil, targets: [String]? = nil,
                 workspace: String? = nil, workspaceName: String? = nil,
@@ -468,10 +488,11 @@ public struct ControlArgs: Codable, Sendable, Equatable {
                 close: Bool? = nil, fontSize: Double? = nil, autoSize: Bool? = nil, mru: Bool? = nil,
                 html: String? = nil, current: Bool? = nil, navigation: Bool? = nil, url: String? = nil,
                 javascript: Bool? = nil, value: String? = nil, page: String? = nil, chromeless: Bool? = nil,
-                persistent: Bool? = nil, browse: Bool? = nil, cancelButton: String? = nil, input: String? = nil,
+                persistent: Bool? = nil, browse: Bool? = nil, image: String? = nil, markdownFile: String? = nil, cancelButton: String? = nil, input: String? = nil,
                 placeholder: String? = nil, choices: [ControlAskChoice]? = nil, multiple: Bool? = nil,
                 checked: [String]? = nil, other: String? = nil, undoable: Bool? = nil,
-                tint: String? = nil, tintOn: [String]? = nil) {
+                tint: String? = nil, tintOn: [String]? = nil, recipients: [String]? = nil,
+                identity: String? = nil, ack: Bool? = nil, ids: [String]? = nil) {
         self.name = name
         self.cwd = cwd
         self.targets = targets
@@ -560,6 +581,8 @@ public struct ControlArgs: Codable, Sendable, Equatable {
         self.chromeless = chromeless
         self.persistent = persistent
         self.browse = browse
+        self.image = image
+        self.markdownFile = markdownFile
         self.cancelButton = cancelButton
         self.input = input
         self.placeholder = placeholder
@@ -568,6 +591,10 @@ public struct ControlArgs: Codable, Sendable, Equatable {
         self.checked = checked
         self.other = other
         self.undoable = undoable
+        self.recipients = recipients
+        self.identity = identity
+        self.ack = ack
+        self.ids = ids
     }
 }
 
@@ -679,6 +706,17 @@ public struct ControlResult: Codable, Sendable, Equatable {
     public var closed: [String]?
     /// The page a `session.companion.page.attach` handed out, token included.
     public var companionPage: PresentationPage?
+    /// messageID is the id every copy of a `msg.send` shares.
+    public var messageID: String?
+    /// delivered and rejected are `msg.send`'s per-recipient results.
+    public var delivered: [String]?
+    public var rejected: [MessageRejection]?
+    /// messages are the oldest of the reader's mailbox; remaining counts the pending ones left out.
+    public var messages: [BusMessage]?
+    public var remaining: Int?
+    /// acked names the messages removed, present on every `msg.ack` and `msg.read --ack` reply, empty included.
+    public var acked: [String]?
+    public var remoteGroup: ControlRemoteGroup?
 
     public init(id: String? = nil, tree: ControlTree? = nil, text: String? = nil,
                 windows: [ControlWindowNode]? = nil, exitCode: Int? = nil, count: Int? = nil,
@@ -695,8 +733,18 @@ public struct ControlResult: Codable, Sendable, Equatable {
                 pageID: String? = nil, pageOutcome: ControlHtmlPageOutcome? = nil,
                 restart: ControlRestartReceipt? = nil, installed: AppIdentity? = nil,
                 recent: [ControlRecentItem]? = nil, recentOpen: ControlRecentOpen? = nil, undoable: Bool? = nil,
-                parent: String? = nil, closed: [String]? = nil, companionPage: PresentationPage? = nil) {
+                parent: String? = nil, closed: [String]? = nil, companionPage: PresentationPage? = nil,
+                messageID: String? = nil, delivered: [String]? = nil, rejected: [MessageRejection]? = nil,
+                messages: [BusMessage]? = nil, remaining: Int? = nil, acked: [String]? = nil,
+                remoteGroup: ControlRemoteGroup? = nil) {
+        self.messageID = messageID
+        self.delivered = delivered
+        self.rejected = rejected
+        self.messages = messages
+        self.remaining = remaining
+        self.acked = acked
         self.companionPage = companionPage
+        self.remoteGroup = remoteGroup
         self.parent = parent
         self.closed = closed
         self.undoable = undoable
@@ -802,12 +850,25 @@ public enum OverlayHtmlError {
     public static let persistentRequiresURL = "session.overlay.open: --persistent requires --url"
     public static let persistentUnavailable = "persistent browser storage is not available"
     public static let browseRequiresURL = "session.overlay.open: --browse requires --url"
+    public static let oneSource = "session.overlay.open takes one of a command, --html, --url, --image or --markdown"
+    /// imageOptions: a picture page runs no script, navigates nowhere and reads only its own file.
+    public static let imageOptions =
+        "session.overlay.open: --image takes no --wait, --cwd, --navigation, --js, --chromeless, --persistent or --browse"
+    public static let imageNotAbsolute = "session.overlay.open: --image must be an absolute path"
+    public static let imageType = "session.overlay.open: --image must be a png, jpg, jpeg, gif or webp file"
+    public static let markdownOptions =
+        "session.overlay.open: --markdown takes no --wait, --cwd, --navigation, --js, --chromeless, --persistent or --browse"
+    public static let markdownNotAbsolute = "session.overlay.open: --markdown must be an absolute path"
+    public static let markdownType = "session.overlay.open: --markdown must be a .md or .markdown file"
+    public static let companionNeedsPage = "a page companion needs --html or --url"
     /// presenter: a page is shown on this Mac, so it is refused while another Mac presents the session.
     public static let presenter = "a viewer presents this session: an html overlay would open where nobody sees it"
     public static let noOverlay = "no overlay"
     public static let notHtml = "the overlay is not an html page"
     public static let navigation = "session.overlay.navigate requires back, forward, browser or finder"
     public static let finderRequiresFile = "show in Finder requires a file page"
+    /// markdownInOverlay: a markdown page is rendered by the app, so a browser would get the raw file instead.
+    public static let markdownInOverlay = "a markdown page opens only in its overlay"
     /// remoteFile: a file page shown for another Mac has no file here to reveal or open.
     public static let remoteFile = "the page's file is on another Mac"
     /// remotePage: Finder and Browser are refused for a file page shown on the presenting Mac.
@@ -861,7 +922,7 @@ public enum OverlayPointError {
     /// percent for the other axis to keep.
     public static let notFloating = "session.overlay.resize: --width/--height need a floating overlay; pass --size-percent too"
     public static let hud = "a hud measures its own height: --width/--height do not apply"
-    public static let remote = "--width/--height are not supported for an overlay shown on another Mac"
+    public static let remote = "--width/--height are not supported for an overlay this Mac shows for another Mac; resize it on that Mac"
 }
 
 /// Advisory text `notify` returns in `result.text` when the banner toggle is off. The command still succeeds

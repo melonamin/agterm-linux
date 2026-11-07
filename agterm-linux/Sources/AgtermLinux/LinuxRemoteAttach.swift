@@ -51,14 +51,22 @@ extension AppController {
                 return
             }
             progress.close()
-            let pick = PendingPick(id: UUID().uuidString, items: sessions.map(Self.remotePickItem), prompt: "Attach from \(host)")
+            let names = Dictionary(sessions.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+            let items = sessions.map { Self.remotePickItem($0, parentName: $0.parent.flatMap { names[$0] }) }
+            let pick = PendingPick(id: UUID().uuidString, items: items, prompt: "Attach from \(host)")
             guard self.openPick(pick, window: nil, follow: true).ok else { return }
             self.controlPickCompletion = { [weak self] result in
                 guard let self, result.result == .picked, let id = result.id else { return }
                 progress.show("attaching \(result.label ?? id)…", spinner: true)
-                self.remoteAttachRequest(ControlRequest(cmd: .zmxAttach, target: id,
+                let command: Command = sessions.first(where: { $0.id == id })?.parent == nil ? .zmxAttachGroup : .zmxAttach
+                self.remoteAttachRequest(ControlRequest(cmd: command, target: id,
                                                        args: ControlArgs(host: host, window: self.windowID.uuidString))) { response in
-                    if response.ok { progress.close() } else { progress.show(response.error ?? "attach failed") }
+                    if response.ok {
+                        progress.close()
+                    } else {
+                        if let parent = response.result?.id { progress.move(to: parent) }
+                        progress.show(response.error ?? "attach failed")
+                    }
                 }
             }
         }
@@ -77,11 +85,11 @@ extension AppController {
         }
     }
 
-    static func remotePickItem(_ session: ControlRemoteSession) -> ControlPickItem {
+    static func remotePickItem(_ session: ControlRemoteSession, parentName: String? = nil) -> ControlPickItem {
         let programs = session.panes.compactMap { $0.foreground?.first.map { ($0 as NSString).lastPathComponent } }
         let subtitle = ["\(session.windowName)/\(session.workspaceName)", session.context ?? "", session.cwd,
                         programs.joined(separator: " | ")].filter { !$0.isEmpty }.joined(separator: "  ·  ")
-        return ControlPickItem(id: session.id, label: session.name, subtitle: subtitle,
+        return ControlPickItem(id: session.id, label: parentName.map { "\($0) › \(session.name)" } ?? session.name, subtitle: subtitle,
                                status: session.status, statusColor: session.statusColor, statusShape: session.statusShape)
     }
 }
@@ -89,7 +97,7 @@ extension AppController {
 @MainActor
 final class LinuxRemoteAttachProgress {
     weak var controller: AppController?
-    let sessionID: UUID?
+    var sessionID: UUID?
     var generation: Int?
 
     init(controller: AppController) {
@@ -112,5 +120,12 @@ final class LinuxRemoteAttachProgress {
               controller.store.session(withID: sessionID)?.overlaySlotGeneration == generation else { return }
         _ = controller.closeHud(sessionID.uuidString, window: nil)
         self.generation = nil
+    }
+
+    func move(to value: String) {
+        guard let id = UUID(uuidString: value), controller?.store.session(withID: id) != nil else { return }
+        close()
+        sessionID = id
+        generation = nil
     }
 }

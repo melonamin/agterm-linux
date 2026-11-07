@@ -27,7 +27,15 @@ static inline void agterm_uri_scheme_finish_file(WebKitURISchemeRequest *request
         g_error_free(error);
         return;
     }
-    webkit_uri_scheme_request_finish(request, G_INPUT_STREAM(stream), -1, content_type);
+    WebKitURISchemeResponse *response = webkit_uri_scheme_response_new(G_INPUT_STREAM(stream), -1);
+    webkit_uri_scheme_response_set_content_type(response, content_type);
+    // Granted files and remote snapshots can change at the same URI between overlay reloads.
+    // WebKit otherwise keeps their scripts and styles in its memory cache after re-reading the page.
+    SoupMessageHeaders *headers = soup_message_headers_new(SOUP_MESSAGE_HEADERS_RESPONSE);
+    soup_message_headers_append(headers, "Cache-Control", "no-store");
+    webkit_uri_scheme_response_set_http_headers(response, headers); // Takes ownership of headers.
+    webkit_uri_scheme_request_finish_with_response(request, response);
+    g_object_unref(response);
     g_object_unref(stream);
 }
 

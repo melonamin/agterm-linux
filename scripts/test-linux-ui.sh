@@ -68,6 +68,7 @@ if [[ -z "${AGTERM_RESOURCE_ROOT:-}" ]]; then
   # Integration installers stage and customize bundled resources. Real copies keep those writes inside
   # this disposable root instead of following a fixture symlink back into the checkout.
   cp -R "$ROOT/agterm/Resources/agent-status" "$resource_root/agent-status"
+  cp -R "$ROOT/agterm/Resources/markdown" "$resource_root/markdown"
   cp -R "$ROOT/plugins/agterm/skills/agterm" "$resource_root/agent-skill"
   export AGTERM_RESOURCE_ROOT="$resource_root"
 fi
@@ -241,6 +242,14 @@ fail_on_log_pattern -E 'Unrecognized value .*Try GDK_(DISABLE|DEBUG)=help' \
 # scoped to its own stderr window, where a library assertion cannot be mistaken for the app's.
 fail_on_log_pattern -F "assertion 'GTK_IS_WIDGET (widget)' failed" \
   "GTK typecheck assertion on a finalized widget; see $APP_LOG"
+
+# Applying a saved split ratio before its GtkPaned has a current allocation leaves the terminal blank.
+fail_on_log_pattern -F "Trying to snapshot GtkPaned" \
+  "GtkPaned was snapshotted without a current allocation; see $APP_LOG"
+
+# GtkSearchEntry is not a GtkEntry. The wrong setter silently drops picker prompts after this critical.
+fail_on_log_pattern -F "gtk_entry_set_placeholder_text: assertion 'GTK_IS_ENTRY (entry)' failed" \
+  "a picker passed GtkSearchEntry to the GtkEntry placeholder setter; see $APP_LOG"
 
 # A second realize over a live surface means a GtkGLArea was moved to a new parent and its GL context is
 # gone: the pane is blank from then on and no AT-SPI assertion can see it ([[libghostty]]). The app logs it

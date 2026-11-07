@@ -19,6 +19,10 @@ extension AppController {
         switch resolveSessionResponse(target) {
         case .failure(let response): return response
         case .success(let id):
+            if let remote = store.resizeRemoteOverlay(id, sizePercent: sizePercent, points: points) {
+                return ControlResponse(ok: remote == .sent, result: remote == .sent ? ControlResult(id: id.uuidString) : nil,
+                                       error: remote.error)
+            }
             if let failure = store.resizeOverlayInPoints(id, sizePercent: sizePercent, points: points) { return err(failure.message) }
             reconcile(focusActive: false)
             return ok(id)

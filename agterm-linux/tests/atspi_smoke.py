@@ -7450,10 +7450,11 @@ def main():
     if scenario is None:
         failures = []
         for child_scenario in (
-            "normal", "upstream-controls", "upstream-v0391", "remote-v0391", "html-overlay", "overlay-visual", "live-restart", "live-fish-restart",
+            "normal", "upstream-controls", "upstream-v0391", "upstream-v0400", "sidebar-v0400", "links-v0400", "remote-v0391", "html-overlay", "overlay-visual", "live-restart", "live-fish-restart",
+            "live-wait-output", "startup-environment",
             "dashboard-modal", "context-menu",
             "window-key-dispatch",
-            "split-exit", "split-primary-exit", "window-ownership", "preferences-pages",
+            "split-exit", "split-primary-exit", "split-ratio-restore", "window-ownership", "preferences-pages",
             "notification-reveal", "notification-focus", "session-pickers",
             "session-switch-commit", "session-switch-zoom", "session-switch-scroll",
             "session-switch-sessionless", "session-switch-leader", "leader-repeat", "session-switch-entry",
@@ -7534,11 +7535,23 @@ def main():
             verify_normal_toolbar(env, state, home)
         elif scenario == "window-key-dispatch":
             verify_window_key_dispatch(env)
+        elif scenario == "split-ratio-restore":
+            from atspi_split_ratio import verify_split_ratio_restore
+            verify_split_ratio_restore(env, state)
         elif scenario == "upstream-controls":
             verify_upstream_control_parity(env)
         elif scenario == "upstream-v0391":
             from atspi_v0391 import verify_v0391
             verify_v0391(env, state)
+        elif scenario == "upstream-v0400":
+            from atspi_v0400 import verify_v0400
+            verify_v0400(env, state)
+        elif scenario == "sidebar-v0400":
+            from atspi_v0400_sidebar import verify_sidebar_v0400
+            verify_sidebar_v0400(env, state)
+        elif scenario == "links-v0400":
+            from atspi_v0400_links import verify_links_v0400
+            verify_links_v0400(env, state)
         elif scenario == "companion-layout":
             from atspi_companion_layout import verify_companion_layout
             verify_companion_layout(env, state)
@@ -7564,6 +7577,12 @@ def main():
             if scenario == "live-fish-restart":
                 env = dict(env, AGTERM_TEST_LOGIN_SHELL="/usr/bin/fish")
             verify_restart_v0351(env, state)
+        elif scenario == "live-wait-output":
+            from atspi_live_wait_output import verify_live_wait_output
+            verify_live_wait_output(env, state)
+        elif scenario == "startup-environment":
+            from atspi_startup_environment import verify_startup_environment
+            verify_startup_environment(env, state)
         elif scenario == "control-ask":
             verify_control_ask(env)
         elif scenario == "ask-visual":

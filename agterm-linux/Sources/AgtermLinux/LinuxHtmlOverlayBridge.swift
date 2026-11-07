@@ -6,6 +6,7 @@ import agtermCore
 @MainActor
 extension LinuxHtmlOverlayPage {
     func installBridge() {
+        if overlay.source.imagePath != nil || overlay.source.markdownPath != nil { return }
         if case .url = overlay.source { return }
         let data = Unmanaged.passUnretained(self).toOpaque()
         connect(manager, "script-message-with-reply-received::agterm", unsafeBitCast(onHtmlBridgeRequest, to: GCallback.self), data)
@@ -40,7 +41,8 @@ extension LinuxHtmlOverlayPage {
 
     func bridgeRequest(_ value: OpaquePointer?, reply: OpaquePointer?) {
         guard let reply else { return }
-        guard !closed, let store, let controller, let slot = store.htmlOverlaySlot(id),
+        guard overlay.source.imagePath == nil, overlay.source.markdownPath == nil,
+              !closed, let store, let controller, let slot = store.htmlOverlaySlot(id),
               let uri = webkit_web_view_get_uri(cast(webView)).map(String.init(cString:)),
               uri == "about:blank" || uri.hasPrefix("agterm-file://\(id.uuidString.lowercased())/")
                 || uri.hasPrefix("agterm-page://\(id.uuidString.lowercased())/") else {

@@ -255,7 +255,8 @@ private struct LinuxParser {
     private func linkText(_ chars: [Character], at start: Int) -> (text: String, next: Int, target: String?)? {
         if chars[start] == "<", let end = chars[(start + 1)...].firstIndex(of: ">") {
             let text = String(chars[(start + 1)..<end])
-            guard let url = URL(string: text), let target = HudMarkdown.linkTarget(url) else { return nil }
+            guard let url = URL(string: text), url.scheme != nil,
+                  let target = HudMarkdown.linkTarget(url) else { return nil }
             return (text, end + 1, target)
         }
         let image = chars[start] == "!"

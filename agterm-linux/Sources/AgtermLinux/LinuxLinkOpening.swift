@@ -24,10 +24,12 @@ extension GhosttySurface {
 
     var linkClickOrigin: LinkPolicy.ClickOrigin {
         switch role {
-        case .main, .split: .pane(sessionID)
-        case .scratch: .scratch(sessionID)
-        case .quick: .quick
-        case .overlay: controller?.store.session(withID: sessionID)?.hudActive == true ? .hud : .programOverlay
+        case .main, .split:
+            if controller?.store.session(withID: sessionID)?.remoteHost != nil { return .remotePane(sessionID) }
+            return .pane(sessionID)
+        case .scratch: return .scratch(sessionID)
+        case .quick: return .quick
+        case .overlay: return controller?.store.session(withID: sessionID)?.hudActive == true ? .hud : .programOverlay
         }
     }
 
@@ -35,6 +37,10 @@ extension GhosttySurface {
         guard let controller else { return false }
         let mode = linkBrowserOverride ? LinkOpenMode.browser : linuxSettingsStore().load().effectiveLinkOpenMode
         switch LinkPolicy.route(for: raw, mode: mode, origin: linkClickOrigin) {
+        case .image(let url, let id):
+            return controller.openClickedFile(url, session: id, markdown: false)
+        case .markdown(let url, let id, let sizePercent):
+            return controller.openClickedFile(url, session: id, markdown: true, sizePercent: sizePercent)
         case .overlay(let url, let id, let sizePercent):
             guard controller.terminalZoom.target == nil, controller.store.session(withID: id)?.hudActive != true else { return false }
             return controller.openSessionOverlay(id.uuidString, window: nil, options: ControlSessionOverlayOpenOptions(

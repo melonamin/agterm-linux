@@ -98,7 +98,7 @@ extension AppController {
         let entry = op(gtk_search_entry_new())
         controlPickEntry = entry
         (pick.prompt ?? "Select…").withCString {
-            gtk_entry_set_placeholder_text(UnsafeMutablePointer<GtkEntry>(entry), $0)
+            gtk_search_entry_set_placeholder_text(entry, $0)
         }
         connect(entry, "search-changed", unsafeBitCast(
             onControlPickSearch as @convention(c) (OpaquePointer?, gpointer?) -> Void,

@@ -41,7 +41,7 @@ Code layout:
 
 ### Linux feature parity and platform differences
 
-The `linux-port` branch carries the exact upstream v0.39.1 terminal model and control protocol, including
+The `linux-port` branch carries the exact upstream v0.40.0 terminal model and control protocol, including
 split/scratch/overlay terminals, Quick terminal input and read-back, terminal zoom, fullscreen,
 recently closed sessions with grouped undo, light/dark themes, configurable toolbar and sidebar text,
 recent-session and attention popovers, agent status in the multi-session dashboard, stable pane status
@@ -68,6 +68,16 @@ changes through a presentation stream.
 Remote file pages stream their granted assets and bridge requests from the origin through SSH.
 Companions appear as nested, collapsible rows, including terminal duplicates and temporary page companions.
 Closing an attached page view leaves its origin page alive; a parent shell can respawn while its companions remain.
+Remote group attach includes companions with per-member results and can adopt a standalone attached companion
+under its matching parent.
+Local PNG, JPEG, GIF, WebP, and Markdown files open as pages through terminal links or `--image`/`--markdown`.
+On Linux, Ctrl-click supports local paths under `/home`, including plain printed paths and OSC 8 `file://` links.
+The macOS automount-root restrictions apply only on macOS; remote file hosts and UNC paths remain blocked on both platforms.
+Markdown uses the bundled renderer with contained local pictures; authored scripts, network resources, and
+the control bridge are unavailable in generated image and Markdown pages.
+The per-pane message bus supports send, read, acknowledgement, and waiting, with pending counts in `tree`.
+Runtime session info supports one-line Markdown, timed expiry, and Always, Flagged, or Off sidebar display.
+Preferences also controls workspace and session icon visibility.
 Session and workspace tints, plain or grouped flagged lists, membership editors, and flagged ordering are
 available through GTK actions and the control socket.
 Overlay hide/show preserves the running program or page, and floating program and page overlays accept
@@ -147,11 +157,15 @@ What it does:
 - **Workspaces.** Sessions are grouped under named workspaces like "work" and "personal", which keeps a screen of concurrent sessions organized. You reach a session by name, by recency, or from the keyboard.
 - **Control API and CLI.** A bundled tool, `agtermctl`, drives almost everything over a local socket: create sessions, type into them, run a program in an overlay and read its exit status, move and resize windows, or post a notification tied to a specific session. A script or an agent can set up and drive its own layout, and send you a notification from the session it was working in.
 - **Splits, scratch, and overlays.** Split a session into two shells side by side or top and bottom, open a scratch terminal over it, or run a program in a full or floating overlay without disturbing the shell underneath.
+- **Companions.** Keep a log tail, a watcher, a second shell, or an HTML page pinned under a session in the sidebar: companions move, fold, and close with it. Duplicate as Companion copies a session's split layout and starts another copy of each pane's program.
+- **Remote sessions.** Attach a session from another host through key-based SSH, including its split and companions, with `agtermctl zmx attach --companions`. Status, notifications, HUD, and context follow the origin session.
 - **Three restore modes.** Restore fresh shells, rerun cleanly captured commands, or keep primary and split processes alive with zmx. Linux packages include the pinned zmx runtime.
 - **Agent skill.** An installable skill teaches Claude Code or Codex the control model and the `agtermctl` commands, so an agent running inside agterm can build its own layout, run overlays, manage windows, and show images inline without you explaining the API. On Linux, manage it from **Preferences ▸ Integrations**.
 - **Agent status.** A coding agent reports its state (active, blocked, or completed) onto its session's row, so you can see which of many running agents needs you. On Linux, inspect and install the Claude Code, Codex, Pi, OpenCode, and shell hooks from **Preferences ▸ Integrations**.
 
 A lot of "does it have X?" questions have the same answer: bind X yourself. A `command` line in `keymap.conf` turns any shell line into a key chord, and an overlay gives an interactive program a real terminal over the session, so a file manager, a git UI, or a database browser is one line away. Bigger workflows become scripts, which is what the [cookbook](cookbook/) collects.
+
+See the [Linux cookbook notes](agterm-linux/docs/cookbook.md) for host paths and native Docker networking.
 
 You are not meant to write those lines by hand. Install the agent skill (Help ▸ Install Agent Skill…) and ask the agent in your session for what you want, and it writes the line with the right syntax, targeting, and PATH handling. [Extend agterm](https://agterm.com/docs#extend) shows that, and teaches enough of the model to read and change what comes back.
 
@@ -276,6 +290,7 @@ Requirements:
 - GTK4, libadwaita, WebKitGTK 6.0, libepoxy, pkg-config, git, curl, ca-certificates, and xz.
 - Python 3 at runtime for the bundled Codex status hooks; DEB and RPM installs include this dependency.
 - SVG image loading at runtime for toolbar and sidebar icons (`librsvg2-common` on Ubuntu/Debian).
+- WebP image loading at runtime for image and Markdown pages (`webp-pixbuf-loader`).
 - zsh, required by the shared `agtermCore` tests.
 - Zig 0.16.0 for the vendored libghostty and zmx builds.
 
@@ -591,6 +606,7 @@ sid=$(agtermctl session new --workspace "$ws" --cwd "$PWD" --no-select)
 agtermctl session split on --axis horizontal --target "$sid" # add a top-and-bottom shell
 agtermctl session type $'pwd\n' --target "$sid"           # drive a session you are not looking at
 agtermctl session text --target "$sid" --lines 10         # read its terminal back
+agtermctl msg send "build done" --to "$sid:bottom"        # leave a message in the bottom shell's mailbox
 agtermctl session status blocked --target "$sid"          # set the sidebar status glyph
 printf '%s\n' staging production | agtermctl pick --prompt "Deploy where?"   # open the native picker
 agtermctl ask "Deploy now?" --button yes=Deploy --button no=Not\ yet --default no  # ask a question, get the button

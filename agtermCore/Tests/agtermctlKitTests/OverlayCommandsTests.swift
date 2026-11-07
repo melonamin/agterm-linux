@@ -139,9 +139,61 @@ struct OverlayCommandsTests {
         ["session", "overlay", "open", "--url", "http://localhost:5173/", "--wait"],
         ["session", "overlay", "open", "--url", "http://localhost:5173/", "--block"],
         ["session", "overlay", "open", "--url", "http://localhost:5173/", "--cwd", "/tmp"],
+        ["session", "overlay", "open", "revdiff", "--image", "/tmp/a.png"],
+        ["session", "overlay", "open", "--html", "/tmp/r.html", "--image", "/tmp/a.png"],
+        ["session", "overlay", "open", "--url", "http://localhost:5173/", "--image", "/tmp/a.png"],
+        ["session", "overlay", "open", "--image", "/tmp/a.png", "--companion"],
+        ["session", "overlay", "open", "--image", "/tmp/a.png", "--block"],
+        ["session", "overlay", "open", "--image", "/tmp/a.png", "--wait"],
+        ["session", "overlay", "open", "--image", "/tmp/a.png", "--navigation"],
+        ["session", "overlay", "open", "--image", "/tmp/a.png", "--js"],
+        ["session", "overlay", "open", "--image", "/tmp/a.png", "--chromeless"],
+        ["session", "overlay", "open", "--image", "/tmp/a.png", "--persistent"],
+        ["session", "overlay", "open", "--image", "/tmp/a.png", "--browse"],
+        ["session", "overlay", "open", "--image", "/tmp/a.png", "--cwd", "/tmp"],
+        ["session", "overlay", "open", "--image", "/tmp/a.png", "--width", "400"],
+        ["session", "overlay", "open", "revdiff", "--markdown", "/tmp/r.md"],
+        ["session", "overlay", "open", "--html", "/tmp/r.html", "--markdown", "/tmp/r.md"],
+        ["session", "overlay", "open", "--url", "http://localhost:5173/", "--markdown", "/tmp/r.md"],
+        ["session", "overlay", "open", "--image", "/tmp/a.png", "--markdown", "/tmp/r.md"],
+        ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--companion"],
+        ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--block"],
+        ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--wait"],
+        ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--navigation"],
+        ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--js"],
+        ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--chromeless"],
+        ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--persistent"],
+        ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--browse"],
+        ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--cwd", "/tmp"],
     ])
     func openRejectsAMissingOrConflictingContent(_ argv: [String]) {
         #expect(rejects(argv))
+    }
+
+    @Test func imageOpenSendsTheResolvedPathAndNoPageFlags() throws {
+        let req = try request(["session", "overlay", "open", "--image", "shots/../shots/a.png", "--follow"])
+        let cwd = FileManager.default.currentDirectoryPath
+        #expect(req.cmd == .sessionOverlayOpen)
+        #expect(req.args?.image == URL(fileURLWithPath: cwd).appendingPathComponent("shots/a.png").standardizedFileURL.path)
+        #expect(req.args?.html == nil)
+        #expect(req.args?.cwd == nil)
+        #expect(req.args?.sizePercent == nil)
+        #expect(req.args?.follow == true)
+    }
+
+    @Test func markdownOpenSendsTheResolvedPathInItsOwnField() throws {
+        let req = try request(["session", "overlay", "open", "--markdown", "docs/../docs/r.md", "--size-percent", "95"])
+        let cwd = FileManager.default.currentDirectoryPath
+        #expect(req.cmd == .sessionOverlayOpen)
+        #expect(req.args?.markdownFile == URL(fileURLWithPath: cwd).appendingPathComponent("docs/r.md").standardizedFileURL.path)
+        #expect(req.args?.markdown == nil)
+        #expect(req.args?.image == nil)
+        #expect(req.args?.sizePercent == 95)
+        let data = try JSONEncoder().encode(req)
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: data) == req)
+        let json = String(decoding: data, as: UTF8.self)
+        #expect(json.contains(#""markdownFile":"#))
+        #expect(!json.contains(#""markdown":"#))
     }
 
     @Test func submitSendsTheValuePaneAndTarget() throws {

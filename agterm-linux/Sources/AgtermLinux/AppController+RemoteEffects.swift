@@ -32,6 +32,10 @@ extension AppController {
                 self?.store.applyRemoteContext(context, forSession: id)
                 self?.reconcile(focusActive: false)
             },
+            info: { [weak self] info in
+                self?.store.applyRemoteInfo(info, forSession: id)
+                self?.syncSidebar()
+            },
             mode: { [weak self] mode in
                 self?.store.setRemoteMode(mode, forSession: id)
                 self?.syncSidebar()

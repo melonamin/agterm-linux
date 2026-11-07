@@ -524,6 +524,21 @@ struct AppSettingsTests {
         #expect(legacy.effectiveFlaggedViewLayout == .flat)
     }
 
+    @Test func sessionInfoDisplayDefaultsToAlwaysResolvesTolerantlyAndIsNotAGhosttyKey() throws {
+        #expect(AppSettings().sessionInfoDisplay == nil)
+        #expect(AppSettings().effectiveSessionInfoDisplay == .always)
+        #expect(AppSettings(sessionInfoDisplay: "flagged").ghosttyConfigLines() == AppSettings().ghosttyConfigLines())
+        for display in SessionInfoDisplay.allCases {
+            let settings = AppSettings(sessionInfoDisplay: display.rawValue)
+            let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+            #expect(decoded.effectiveSessionInfoDisplay == display)
+        }
+        #expect(AppSettings(sessionInfoDisplay: "sometimes").effectiveSessionInfoDisplay == .always)
+        let legacy = try JSONDecoder().decode(AppSettings.self, from: Data(#"{ "fontSize": 16 }"#.utf8))
+        #expect(legacy.effectiveSessionInfoDisplay == .always)
+        #expect(SessionInfoDisplay.allCases.map(\.displayName) == ["Always", "Flagged", "Off"])
+    }
+
     @Test func terminalInputSourceDefaultsOffRoundTripsAndIsNotAGhosttyKey() throws {
         #expect(AppSettings().terminalInputSource == nil)
         let settings = AppSettings(terminalInputSource: "com.apple.keylayout.US")
@@ -763,8 +778,11 @@ struct AppSettingsTests {
         for element in InterfaceElement.allCases {
             #expect((element.symbolName == nil) == textOnly.contains(element), "\(element)")
         }
-        let symbols = InterfaceElement.allCases.compactMap(\.symbolName)
+        let rowIcons: Set<InterfaceElement> = [.sessionIcons, .workspaceIcons]
+        let symbols = InterfaceElement.allCases.filter { !rowIcons.contains($0) }.compactMap(\.symbolName)
         #expect(Set(symbols).count == symbols.count)
+        #expect(InterfaceElement.sessionIcons.symbolName == InterfaceElement.quickTerminal.symbolName)
+        #expect(InterfaceElement.workspaceIcons.symbolName == InterfaceElement.focusFilter.symbolName)
     }
 
     @Test func settingsOrderListsTextOnlyElementsFirst() {
@@ -795,6 +813,19 @@ struct AppSettingsTests {
         let hidden = AppSettings(hiddenInterfaceElements: ["workspaceAddSession"])
         #expect(hidden.isInterfaceElementHidden(.workspaceAddSession))
         #expect(!hidden.isInterfaceElementHidden(.newSession))
+    }
+
+    @Test(arguments: [(InterfaceElement.sessionIcons, "Session icons", InterfaceElement.workspaceIcons),
+                      (.workspaceIcons, "Workspace icons", .sessionIcons)])
+    func rowIconElementsAreShownByDefaultAndHideIndependently(element: InterfaceElement, name: String,
+                                                              other: InterfaceElement) {
+        #expect(element.section == .sidebar)
+        #expect(element.displayName == name)
+        #expect(!element.hiddenByDefault)
+        #expect(!AppSettings().isInterfaceElementHidden(element))
+        let hidden = AppSettings(hiddenInterfaceElements: [element.rawValue])
+        #expect(hidden.isInterfaceElementHidden(element))
+        #expect(!hidden.isInterfaceElementHidden(other))
     }
 
     @Test func sessionContextIsATitleBarInterfaceElementGatingOnlyItself() {
@@ -862,7 +893,7 @@ struct AppSettingsTests {
         let titleBar = InterfaceElement.allCases.filter { $0.section == .titleBar }
         let sidebar = InterfaceElement.allCases.filter { $0.section == .sidebar }
         #expect(titleBar.count + sidebar.count == InterfaceElement.allCases.count)
-        #expect(sidebar == [.newWorkspace, .newSession, .flaggedView, .focusFilter, .workspaceAddSession])
+        #expect(sidebar == [.newWorkspace, .newSession, .flaggedView, .focusFilter, .workspaceAddSession, .workspaceIcons, .sessionIcons])
         #expect(!titleBar.isEmpty)
     }
 

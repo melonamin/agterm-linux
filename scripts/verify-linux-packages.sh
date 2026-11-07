@@ -68,6 +68,13 @@ verify_payload() {
   verify_opencode_plugin "$payload/share/agterm/agent-status/opencode/agterm-status.js"
   test -f "$payload/share/agterm/agent-skill/SKILL.md"
   test -s "$payload/share/agterm/ZMX-LICENSE"
+  for asset in render.js markdown-it-14.1.0.min.js highlight-11.11.1.min.js page.css \
+    markdown-it-14.1.0.LICENSE highlight-11.11.1.LICENSE; do
+    test -s "$payload/share/agterm/markdown/$asset"
+  done
+  for license in SWIFT-MARKDOWN-LICENSE.txt SWIFT-MARKDOWN-NOTICE.txt SWIFT-CMARK-COPYING.txt; do
+    test -s "$payload/share/agterm/licenses/$license"
+  done
   [[ "$(<"$payload/share/agterm/VERSION")" == "$VERSION" ]]
   test -s "$payload/share/agterm/COMMIT"
   test -f "$payload/share/applications/io.github.melonamin.agterm.desktop"
@@ -95,6 +102,7 @@ verify_payload "$WORK/tar/agterm-linux"
 dpkg-deb -f "$DEB" Depends | grep -Fq 'libwebkitgtk-6.0-4'
 dpkg-deb -f "$DEB" Depends | grep -Fq 'python3'
 dpkg-deb -f "$DEB" Depends | grep -Fq 'librsvg2-common'
+dpkg-deb -f "$DEB" Depends | grep -Fq 'webp-pixbuf-loader'
 dpkg-deb -x "$DEB" "$WORK/deb"
 verify_payload "$WORK/deb/opt/agterm-linux"
 [[ "$(readlink "$WORK/deb/usr/bin/agterm-linux")" == '/opt/agterm-linux/bin/agterm-linux' ]]
@@ -105,6 +113,7 @@ verify_payload "$WORK/deb/opt/agterm-linux"
 [[ "$(rpm --dbpath "$WORK/rpmdb" -qp --queryformat '%{VERSION}-%{RELEASE}' "$RPM")" == "$PACKAGE_VERSION-1" ]]
 rpm --dbpath "$WORK/rpmdb" -qp --requires "$RPM" | grep -Fq 'webkitgtk6.0'
 rpm --dbpath "$WORK/rpmdb" -qp --requires "$RPM" | grep -Fq 'python3'
+rpm --dbpath "$WORK/rpmdb" -qp --requires "$RPM" | grep -Fq 'webp-pixbuf-loader'
 (
   cd "$WORK/rpm"
   # Ubuntu's rpm2cpio can return 1 after emitting a complete archive. Trust cpio's status here; the

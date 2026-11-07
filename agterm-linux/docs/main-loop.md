@@ -18,6 +18,17 @@ session shells at the `GhosttySurface` env choke point, the custom-command `/bin
 through `restoringChildEnvironment(_:)`, and desktop-handler launches through
 `launchDefaultHandler(forURI:)`.
 
+Resource environment writes and libghostty's process-locale setup also finish before GTK starts.
+`GhosttyApp.initializeRuntime()` runs once from `main()`, after the GDK assignments and before
+`adw_application_new`.
+The later `activateApplication` call creates the Ghostty app/config without mutating resource environment.
+Moving those initializers into activation lets them run after GTK has started worker threads that read
+the environment.
+The `startup-environment` smoke scenario observes the actual initialization calls and resource writes,
+and rejects late or repeated initialization.
+This ordering prevents agterm's late startup mutation; it does not establish the cause of a reported crash
+without a matching core or reproduction.
+
 ## What the GLib loop drains
 
 | Mechanism | Drained under `g_application_run`? |
@@ -59,13 +70,11 @@ default.
 Each schedule becomes one one-shot `g_timeout_add_full` source (`GLibMainTimerSource`), retained as the
 source's user data and released by its destroy notify on both the fire and the cancel path.
 
-**Own a repeating or long-lived timer** — call `g_timeout_add` directly from the Linux target, as three
-coordinators do: `LinuxAutoFollowCoordinator` (the idle tick), `SplitRatioRestoreCoordinator` (a 50 ms
-divider-restore poll, `AppControllerSurfaces.scheduleSplitRatioRestore`, returning `G_SOURCE_CONTINUE`
-until the paned has a width), and `BlinkPhaseCoordinator` (the status glyph's pulse, which
-`windowWillClose` cancels only AFTER emptying the glyph maps, so the cancel's normalizing pass and any
-later resync resolve nothing).
-Each owns its `guint` source id plus its own `g_source_remove` cancel.
+**Own a repeating or long-lived timer** — call `g_timeout_add` directly from the Linux target.
+`LinuxAutoFollowCoordinator` owns the idle tick and `BlinkPhaseCoordinator` owns the status glyph's pulse,
+which `windowWillClose` cancels only AFTER emptying the glyph maps, so the cancel's normalizing pass and any
+later resync resolve nothing.
+Each owns its `guint` source id and `g_source_remove` cancel.
 `MainTimer` is deliberately one-shot; a subsystem that owns a re-arming timer keeps that logic on the Linux
 side rather than growing the shared seam.
 
@@ -75,9 +84,12 @@ for.
 `SidebarScrollRetryCoordinator` uses it to scroll a just-revealed sidebar row into view once GTK has
 allocated both the row and its containing list box (why both: `agterm-linux/docs/sidebar.md`), bounded by
 `LinuxSidebarPolicy.scrollRetryTicks` — a best-effort budget, not a guarantee that layout completes within it.
-The id is WIDGET-scoped — `gtk_widget_remove_tick_callback(widget, id)`, never `g_source_remove` — so the
-coordinator holds the row alongside the id, keeps at most one request, supersedes it on the next request,
-and is cancelled when its own row detaches, before a sidebar rebuild, and in `windowWillClose`.
+`SplitRatioRestoreCoordinator` keeps saved ratios pending while their paned is unmapped; the paned's `map`
+signal arms a frame callback that waits through a layout frame before applying the position.
+After window registration, already-mapped pending restores are resumed because initial mapping can occur
+inside the controller initializer before callbacks can resolve it through the window registry.
+Both callback ids are WIDGET-scoped — `gtk_widget_remove_tick_callback(widget, id)`, never `g_source_remove` —
+and their owners cancel them when the associated widget or window is torn down.
 
 ## Rules
 

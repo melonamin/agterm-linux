@@ -55,7 +55,8 @@ extension AppController {
         case .back: _ = registry.navigate(sessionID: id, pane: slot.pane, step: .back, store: store)
         case .forward: _ = registry.navigate(sessionID: id, pane: slot.pane, step: .forward, store: store)
         case .browser: _ = registry.navigate(sessionID: id, pane: slot.pane, step: .browser, store: store)
-        case .resize: store.resizeReplicaPage(command.page, forSession: id, sizePercent: command.sizePercent)
+        case .resize:
+            store.resizeReplicaPage(command.page, forSession: id, sizePercent: command.sizePercent, points: command.points)
         }
         if var record = replicaPages[slot.page.id] {
             record.appliedSeq = max(record.appliedSeq, command.seq)

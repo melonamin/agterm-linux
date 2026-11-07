@@ -23,13 +23,16 @@ public struct ControlSurfaceNode: Codable, Sendable, Equatable {
     public let reconnect: ControlReconnect?
     /// paneID is the token `--pane-id` resolves, omitted for a slot whose surface carries none.
     public let paneID: String?
+    /// pendingMessages counts the pane's unacked bus messages, omitted at zero.
+    public let pendingMessages: Int?
 
     public init(id: String, kind: String, active: Bool, visible: Bool) {
         self.init(id: id, kind: kind, active: active, visible: visible, backedByZmx: nil)
     }
 
     public init(id: String, kind: String, active: Bool, visible: Bool, backedByZmx: Bool?,
-                lead: ZmxLeadRole? = nil, reconnect: ControlReconnect? = nil, paneID: String? = nil) {
+                lead: ZmxLeadRole? = nil, reconnect: ControlReconnect? = nil, paneID: String? = nil,
+                pendingMessages: Int? = nil) {
         self.id = id
         self.kind = kind
         self.active = active
@@ -38,6 +41,7 @@ public struct ControlSurfaceNode: Codable, Sendable, Equatable {
         self.lead = lead
         self.reconnect = reconnect
         self.paneID = paneID
+        self.pendingMessages = pendingMessages
     }
 }
 
@@ -301,6 +305,13 @@ public struct ControlSessionNode: Codable, Sendable, Equatable {
     public let collapsed: Bool?
     /// `page` for a page companion, which has no terminal; omitted for a terminal session.
     public let content: String?
+    /// info is the sidebar info line's source as set (`Session.effectiveInfo`, so an attached row without a local
+    /// line shows its origin's). The three info fields are all present while a line is set, all omitted otherwise.
+    public let info: String?
+    /// infoMarkdown says whether `info` is read as markdown.
+    public let infoMarkdown: Bool?
+    /// infoHideAfter is the CONFIGURED expiry in seconds, 0 for none, never a countdown.
+    public let infoHideAfter: Double?
     /// The session's background watermark spec; nil/omitted when none is set. The read side of
     /// `session.background`.
     public let background: BackgroundWatermark?
@@ -382,8 +393,11 @@ public struct ControlSessionNode: Codable, Sendable, Equatable {
                 remoteOverlays: [ControlRemoteOverlayNode]? = nil, htmlOverlays: [ControlHtmlOverlayNode]? = nil,
                 hiddenOverlays: [String]? = nil, lastSelectedAt: Double? = nil,
                 tint: String? = nil, tintOn: [String]? = nil, parent: String? = nil, collapsed: Bool? = nil,
-                content: String? = nil) {
+                content: String? = nil, info: SessionInfo? = nil) {
         self.content = content
+        self.info = info?.source
+        self.infoMarkdown = info?.markdown
+        self.infoHideAfter = info?.hideAfter
         self.parent = parent
         self.collapsed = collapsed
         self.id = id
@@ -449,11 +463,13 @@ public struct ControlSessionNode: Codable, Sendable, Equatable {
 public struct ControlHtmlOverlayNode: Codable, Sendable, Equatable {
     /// pane is the pane role, omitted for the session-wide slot.
     public let pane: String?
-    /// file and url name the source; exactly one is set.
+    /// file, url, image and markdown name the source; exactly one is set.
     public let file: String?
     /// cwd is a file page's read grant, omitted when it has none.
     public let cwd: String?
     public let url: String?
+    public let image: String?
+    public let markdown: String?
     /// state is `loading`, `loaded` or `failed`.
     public let state: String
     public let error: String?
@@ -486,7 +502,8 @@ public struct ControlHtmlOverlayNode: Codable, Sendable, Equatable {
     /// replica is true for a page shown here for the Mac that opened it, omitted otherwise.
     public let replica: Bool?
 
-    public init(pane: String?, file: String? = nil, cwd: String? = nil, url: String? = nil, state: String,
+    public init(pane: String?, file: String? = nil, cwd: String? = nil, url: String? = nil, image: String? = nil,
+                markdown: String? = nil, state: String,
                 error: String?, page: String? = nil, title: String? = nil, canGoBack: Bool? = nil,
                 canGoForward: Bool? = nil, navigation: Bool? = nil, javascript: Bool = false, chromeless: Bool = false,
                 zoom: Double? = nil, id: String? = nil, persistent: Bool = false, browse: Bool = false,
@@ -499,6 +516,8 @@ public struct ControlHtmlOverlayNode: Codable, Sendable, Equatable {
         self.file = file
         self.cwd = cwd
         self.url = url
+        self.image = image
+        self.markdown = markdown
         self.state = state
         self.error = error
         self.page = page
@@ -514,7 +533,7 @@ public struct ControlHtmlOverlayNode: Codable, Sendable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case pane, file, cwd, url, state, error, page, title, canGoBack, canGoForward, navigation, javascript
+        case pane, file, cwd, url, image, markdown, state, error, page, title, canGoBack, canGoForward, navigation, javascript
         case chromeless, persistent, browse, zoom, id, hidden, remote, replica
     }
 
@@ -524,6 +543,8 @@ public struct ControlHtmlOverlayNode: Codable, Sendable, Equatable {
         file = try c.decodeIfPresent(String.self, forKey: .file)
         cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
         url = try c.decodeIfPresent(String.self, forKey: .url)
+        image = try c.decodeIfPresent(String.self, forKey: .image)
+        markdown = try c.decodeIfPresent(String.self, forKey: .markdown)
         state = try c.decode(String.self, forKey: .state)
         error = try c.decodeIfPresent(String.self, forKey: .error)
         page = try c.decodeIfPresent(String.self, forKey: .page)

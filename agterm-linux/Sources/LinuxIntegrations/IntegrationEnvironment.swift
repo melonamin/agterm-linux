@@ -76,7 +76,7 @@ public struct IntegrationEnvironment: Sendable {
         homeDirectory.appendingPathComponent(".local/share/agterm/cli-launcher-v1")
     }
 
-    func resource(named name: String) -> URL? {
+    public func resource(named name: String) -> URL? {
         let fm = FileManager.default
         if let resourceRoot {
             let explicit = resourceRoot.appendingPathComponent(name, isDirectory: true)

@@ -39,6 +39,7 @@ final class MockControlActions: ControlActions {
         case sessionFlag(target: String?, window: String?, String?)
         case flaggedMove(target: String?, window: String?, anchor: String, FlaggedOrderPlacement)
         case sessionContext(target: String?, window: String?, context: String?)
+        case sessionInfo(target: String?, window: String?, info: SessionInfo?)
         case sessionTint(target: String?, window: String?, ControlTintUpdate)
         case workspaceTint(target: String?, window: String?, ControlTintUpdate)
         case markSessionSeen(target: String?, window: String?)
@@ -390,6 +391,11 @@ final class MockControlActions: ControlActions {
 
     func setSessionContext(_ target: String?, window: String?, context: String?) -> ControlResponse {
         calls.append(.sessionContext(target: target, window: window, context: context))
+        return ControlResponse(ok: true)
+    }
+
+    func setSessionInfo(_ target: String?, window: String?, info: SessionInfo?) -> ControlResponse {
+        calls.append(.sessionInfo(target: target, window: window, info: info))
         return ControlResponse(ok: true)
     }
 
@@ -889,5 +895,44 @@ final class MockControlActions: ControlActions {
     func captureRestoreCommands() -> ControlResponse {
         calls.append(.restoreCapture)
         return nextRestoreCaptureResponse
+    }
+
+    struct Queued: Equatable {
+        let id: String
+        let from: String?
+        let recipients: [MessageRecipient]
+    }
+
+    struct Scope: Equatable {
+        let workspace: String?
+        let window: String?
+    }
+
+    var messagePanes: [MessageAddress: MessageRecipient] = [:]
+    var broadcastPanes: [MessageRecipient] = []
+    var queuedMessages: [Queued] = []
+    var broadcastScopes: [Scope] = []
+    /// messagesUnsupported answers what the `ControlActions` default answers, for a host without the bus.
+    var messagesUnsupported = false
+
+    func resolveMessagePane(_ address: MessageAddress) -> Result<MessageRecipient, MessagePaneError> {
+        if messagesUnsupported { return .failure(.unsupported) }
+        guard let recipient = messagePanes[address] else {
+            let pane = switch address.pane {
+            case .id(let id): id.uuidString
+            case .role(let role): role.rawValue
+            }
+            return .failure(MessagePaneError("pane not found: \(address.session):\(pane)"))
+        }
+        return .success(recipient)
+    }
+
+    func messagePanes(workspace: String?, window: String?) -> Result<[MessageRecipient], MessagePaneError> {
+        broadcastScopes.append(Scope(workspace: workspace, window: window))
+        return .success(broadcastPanes)
+    }
+
+    func messageQueued(_ messageID: UUID, from: String?, to recipients: [MessageRecipient]) {
+        queuedMessages.append(Queued(id: messageID.uuidString, from: from, recipients: recipients))
     }
 }

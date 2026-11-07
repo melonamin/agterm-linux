@@ -44,6 +44,14 @@ extension AppController {
         if previous?.leadIconName != content.leadIconName {
             gtk_image_set_from_icon_name(widgets.lead, content.leadIconName)
         }
+        if previous?.iconVisible != content.iconVisible {
+            gtk_widget_set_visible(W(widgets.lead), content.iconVisible ? 1 : 0)
+        }
+        if !content.iconVisible, let notice = content.notice {
+            gtk_widget_set_tooltip_text(W(named.widget), notice)
+        } else if previous?.iconVisible == false, previous?.notice != nil {
+            gtk_widget_set_tooltip_text(W(named.widget), store.sidebarMode == .flagged ? content.name : nil)
+        }
         if previous?.notice != content.notice {
             if let notice = content.notice {
                 notice.withCString { gtk_widget_set_tooltip_text(W(widgets.lead), $0) }
@@ -54,6 +62,7 @@ extension AppController {
         if previous?.star != content.star { gtk_widget_set_visible(W(widgets.star), content.star ? 1 : 0) }
         if previous?.badge != content.badge { Self.applyRowBadge(content.badge, to: widgets.badge) }
         applyCompanionRowWidgets(widgets, content: content)
+        applySessionInfo(widgets, content: content)
         widgets.applied = applied
     }
 
@@ -63,6 +72,7 @@ extension AppController {
               let name = widgets.name, let icon = widgets.icon else { return }
         let previous = widgets.applied
         guard previous != content else { return }
+        gtk_widget_set_visible(W(icon), content.iconVisible ? 1 : 0)
         var applied = content
         let slot = NameSlot(current: name, box: widgets.header, after: icon)
         let named = applyNameWidget(slot,

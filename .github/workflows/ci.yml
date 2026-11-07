@@ -11,8 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  UPSTREAM_BASE_TAG: "v0.39.1"
-  UPSTREAM_BASE_COMMIT: "405911244e469f8bf3dcce0509f4bc2f3a3f3328"
+  UPSTREAM_BASE_TAG: "v0.40.0"
+  UPSTREAM_BASE_COMMIT: "c63e5158e637662ded7ba3a12eac4881b24caef1"
   SWIFTLINT_VERSION: "0.65.0"
   SWIFTLINT_SHA256: "79306a34e5c7cc55a220cd108cbb861dcad5f10138dcdf261e2624ae8b0a486b"
   LINUX_SOURCEKIT_LIB_PATH: "/usr/lib/libsourcekitdInProc.so"
@@ -149,7 +149,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libepoxy-dev librsvg2-common pkg-config git curl ca-certificates xz-utils ncurses-bin \
+            libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libepoxy-dev librsvg2-common webp-pixbuf-loader pkg-config git curl ca-certificates xz-utils ncurses-bin \
             ripgrep zsh fish gcc file at-spi2-core dbus-x11 gir1.2-atspi-2.0 openbox python3-gi xdotool xvfb xauth x11-xkb-utils ibus ibus-gtk4 \
             libatk-bridge2.0-0 libgl1-mesa-dri libegl-mesa0 mesa-utils
           curl -fsSLo /tmp/zig.tar.xz \

@@ -225,30 +225,44 @@ public struct PresentationOverlay: Codable, Equatable, Sendable {
     /// The origin's pane the overlay covers, nil for the session-wide slot.
     public var pane: PresentationPane?
     public var sizePercent: Int?
+    /// width and height are the `--width`/`--height` point overrides, sent only to a presenter listing
+    /// `PresentationHub.overlayPointsKind`.
+    public var width: Int?
+    public var height: Int?
     public var backgroundColor: String?
     public var follow: Bool
     public var wait: Bool
 
-    public init(job: String, pane: PresentationPane?, sizePercent: Int?, backgroundColor: String?, follow: Bool,
-                wait: Bool) {
+    public init(job: String, pane: PresentationPane?, sizePercent: Int?, points: OverlayPointSize = OverlayPointSize(),
+                backgroundColor: String?, follow: Bool, wait: Bool) {
         self.job = job
         self.pane = pane
         self.sizePercent = sizePercent
+        width = points.width
+        height = points.height
         self.backgroundColor = backgroundColor
         self.follow = follow
         self.wait = wait
     }
+
+    public var points: OverlayPointSize { OverlayPointSize(width: width, height: height) }
 }
 
 /// PresentationOverlayChange names one remote overlay job, with a size for a resize.
 public struct PresentationOverlayChange: Codable, Equatable, Sendable {
     public var job: String
     public var sizePercent: Int?
+    public var width: Int?
+    public var height: Int?
 
-    public init(job: String, sizePercent: Int? = nil) {
+    public init(job: String, sizePercent: Int? = nil, points: OverlayPointSize = OverlayPointSize()) {
         self.job = job
         self.sizePercent = sizePercent
+        width = points.width
+        height = points.height
     }
+
+    public var points: OverlayPointSize { OverlayPointSize(width: width, height: height) }
 }
 
 /// PresentationPageSource is a handed-over page's full source on the origin: a file the viewer fetches over the
@@ -275,11 +289,14 @@ public struct PresentationPage: Codable, Equatable, Sendable {
     /// pane is the origin's pane the page covers, nil for the session-wide slot.
     public var pane: PresentationPane?
     public var sizePercent: Int?
+    public var width: Int?
+    public var height: Int?
     public var follow: Bool
 
     public init(page: String, token: String, source: PresentationPageSource, identity: String, chromeless: Bool,
                 javascript: Bool, navigation: Bool, browse: Bool, persistent: Bool, backgroundColor: String?,
-                pane: PresentationPane?, sizePercent: Int?, follow: Bool) {
+                pane: PresentationPane?, sizePercent: Int?, points: OverlayPointSize = OverlayPointSize(),
+                follow: Bool) {
         self.page = page
         self.token = token
         self.source = source
@@ -292,8 +309,12 @@ public struct PresentationPage: Codable, Equatable, Sendable {
         self.backgroundColor = backgroundColor
         self.pane = pane
         self.sizePercent = sizePercent
+        width = points.width
+        height = points.height
         self.follow = follow
     }
+
+    public var points: OverlayPointSize { OverlayPointSize(width: width, height: height) }
 }
 
 /// PresentationPageChange names one handed-over page by the origin's id, with a reason when the presenter
@@ -320,13 +341,20 @@ public struct PresentationPageCommand: Codable, Equatable, Sendable {
     public var seq: Int
     public var action: PresentationPageAction
     public var sizePercent: Int?
+    public var width: Int?
+    public var height: Int?
 
-    public init(page: String, seq: Int, action: PresentationPageAction, sizePercent: Int? = nil) {
+    public init(page: String, seq: Int, action: PresentationPageAction, sizePercent: Int? = nil,
+                points: OverlayPointSize = OverlayPointSize()) {
         self.page = page
         self.seq = seq
         self.action = action
         self.sizePercent = sizePercent
+        width = points.width
+        height = points.height
     }
+
+    public var points: OverlayPointSize { OverlayPointSize(width: width, height: height) }
 }
 
 /// PresentationPageState is what a handed-over page shows on the presenter. `address` is the origin's logical
@@ -373,6 +401,20 @@ public struct PresentationRespawns: Codable, Equatable, Sendable {
     }
 }
 
+/// PresentationInfo is a session's local info line as the origin mirrors it. The viewer parses the source itself and
+/// runs no timer: `hideAfter` is the configured value for read-back, and the origin's expiry arrives as a clear.
+public struct PresentationInfo: Codable, Equatable, Sendable {
+    public var source: String
+    public var markdown: Bool
+    public var hideAfter: Double
+
+    public init(source: String, markdown: Bool, hideAfter: Double) {
+        self.source = source
+        self.markdown = markdown
+        self.hideAfter = hideAfter
+    }
+}
+
 /// PresentationSnapshot is the replaceable state a subscriber starts from.
 public struct PresentationSnapshot: Codable, Equatable, Sendable {
     public var status: PresentationStatus?
@@ -381,14 +423,17 @@ public struct PresentationSnapshot: Codable, Equatable, Sendable {
     public var layout: PresentationLayout?
     /// respawns is nil from an origin that predates parent respawn.
     public var respawns: PresentationRespawns?
+    /// info is nil from an origin that predates the info line, or with no local line set.
+    public var info: PresentationInfo?
 
     public init(status: PresentationStatus?, hud: PresentationHud?, context: String? = nil, layout: PresentationLayout? = nil,
-                respawns: PresentationRespawns? = nil) {
+                respawns: PresentationRespawns? = nil, info: PresentationInfo? = nil) {
         self.status = status
         self.hud = hud
         self.context = context
         self.layout = layout
         self.respawns = respawns
+        self.info = info
     }
 }
 
@@ -402,6 +447,7 @@ public struct PresentationFrame: Equatable, Sendable {
         case snapshot(PresentationSnapshot)
         case status(PresentationStatus?)
         case context(String?)
+        case info(PresentationInfo?)
         case layout(PresentationLayout)
         case hud(PresentationHud?)
         case notify(PresentationNotify)
@@ -445,6 +491,7 @@ public struct PresentationFrame: Equatable, Sendable {
             case .snapshot: return "snapshot"
             case .status: return "status"
             case .context: return "context"
+            case .info: return "info"
             case .layout: return "layout"
             case .hud: return "hud"
             case .notify: return "notify"
@@ -486,7 +533,7 @@ public struct PresentationFrame: Equatable, Sendable {
 
 extension PresentationFrame: Codable {
     private enum CodingKeys: String, CodingKey {
-        case kind, gen, rev, hello, snapshot, status, context, layout, hud, notify, sound, ask, overlay, page, respawn
+        case kind, gen, rev, hello, snapshot, status, context, info, layout, hud, notify, sound, ask, overlay, page, respawn
     }
 
     public init(from decoder: Decoder) throws {
@@ -501,6 +548,7 @@ extension PresentationFrame: Codable {
         case "snapshot": body = .snapshot(try container.decode(PresentationSnapshot.self, forKey: .snapshot))
         case "status": body = .status(try container.decodeIfPresent(PresentationStatus.self, forKey: .status))
         case "context": body = .context(try container.decodeIfPresent(String.self, forKey: .context))
+        case "info": body = .info(try container.decodeIfPresent(PresentationInfo.self, forKey: .info))
         case "layout": body = .layout((try? container.decode(PresentationLayout.self, forKey: .layout)) ?? .invalid)
         case "hud": body = .hud(try container.decodeIfPresent(PresentationHud.self, forKey: .hud))
         case "notify": body = .notify(try container.decode(PresentationNotify.self, forKey: .notify))
@@ -539,6 +587,7 @@ extension PresentationFrame: Codable {
         case .snapshot(let snapshot): try container.encode(snapshot, forKey: .snapshot)
         case .status(let status): try container.encodeIfPresent(status, forKey: .status)
         case .context(let context): try container.encodeIfPresent(context, forKey: .context)
+        case .info(let info): try container.encodeIfPresent(info, forKey: .info)
         case .layout(let layout): try container.encode(layout, forKey: .layout)
         case .hud(let hud): try container.encodeIfPresent(hud, forKey: .hud)
         case .notify(let notify): try container.encode(notify, forKey: .notify)

@@ -15,6 +15,7 @@ final class SessionRowWidgets {
     let glyph: OpaquePointer
     let star: OpaquePointer
     let badge: OpaquePointer
+    var info: OpaquePointer?
     var disclosure: OpaquePointer?
     var disclosureSlot: OpaquePointer?
     var foldedMarker: OpaquePointer?

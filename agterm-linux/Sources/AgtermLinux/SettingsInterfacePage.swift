@@ -86,6 +86,13 @@ extension AppController {
             settingsInterfaceRows[row] = element
             adw_preferences_group_add(cast(group), W(row))
         }
+        if section == .sidebar {
+            let modes = SessionInfoDisplay.allCases
+            adw_preferences_group_add(cast(group), W(preferencesCombo(
+                "Session info", values: modes.map(\.displayName),
+                selected: modes.firstIndex(of: settings.effectiveSessionInfoDisplay) ?? 0,
+                handler: unsafeBitCast(onSessionInfoDisplayChanged, to: GCallback.self))))
+        }
         adw_preferences_page_add(cast(page), cast(group))
     }
 
@@ -94,6 +101,19 @@ extension AppController {
         setInterfaceElementVisible(element, visible: adw_switch_row_get_active(row) != 0)
     }
 }
+
+private let onSessionInfoDisplayChanged: @MainActor @convention(c)
+    (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { row, _, _ in
+        MainActor.assumeIsolated {
+            guard let controller = controllerForWidget(row) else { return }
+            let modes = SessionInfoDisplay.allCases
+            let index = Int(adw_combo_row_get_selected(cast(row)))
+            guard modes.indices.contains(index) else { return }
+            let mode = modes[index]
+            controller.persist(\.sessionInfoDisplay, mode == .always ? nil : mode.rawValue)
+            for window in gWindows.values { window.syncSidebar() }
+        }
+    }
 
 private let onInterfaceElementChanged: @MainActor @convention(c)
     (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { row, _, _ in

@@ -3,9 +3,10 @@
 import json
 import os
 import shlex
+import shutil
 import subprocess
 
-from atspi_smoke import CTL, ROOT, launch, press_return, raw_control_json, stop, type_x11_text, wait_for
+from atspi_smoke import CTL, ROOT, collect, launch, press_return, raw_control_json, stop, type_x11_text, wait_for, window_extents
 
 
 def verify_remote_v0391(env, state):
@@ -23,12 +24,18 @@ def verify_remote_v0391(env, state):
                    'for argument do remote=$argument; done\n'
                    'export AGTERM_STATE_DIR="$AGTERM_TEST_ORIGIN_STATE"\n'
                    'export AGTERM_CONTROL_SOCKET="$AGTERM_TEST_ORIGIN_SOCKET"\n'
+                   'unset TERMINFO\n'
                    'exec /bin/sh -c "$remote"\n')
     os.chmod(ssh, 0o755)
     if ssh_config := env.get("AGTERM_TEST_SSH_CONFIG"):
         with open(ssh, "w", encoding="utf-8") as file:
-            file.write("#!/bin/sh\nexec /usr/bin/ssh -F " + shlex.quote(ssh_config) + ' "$@"\n')
-    os.symlink(CTL, os.path.join(tools, "agtermctl"))
+            forwarded = "SetEnv=AGTERM_STATE_DIR=" + origin_state + " AGTERM_CONTROL_SOCKET=" + os.path.join(origin_state, "agterm.sock")
+            file.write("#!/bin/sh\nexec /usr/bin/ssh -F " + shlex.quote(ssh_config)
+                       + " -o " + shlex.quote(forwarded) + ' "$@"\n')
+    # A real installed CLI resolves terminfo beside itself, rather than beside its build tree.
+    shutil.copy2(CTL, os.path.join(tools, "agtermctl"))
+    os.makedirs(os.path.join(state, "share"))
+    os.symlink(os.path.join(ROOT, "vendor/ghostty/share/terminfo"), os.path.join(state, "share/terminfo"))
     origin_env = dict(env, AGTERM_STATE_DIR=origin_state, AGTERM_CONTROL_SOCKET=os.path.join(origin_state, "agterm.sock"),
                       AGTERM_APP_ID=env["AGTERM_APP_ID"] + ".origin", LD_PRELOAD=fixture,
                       AGTERM_ZMX_PATH=os.path.join(ROOT, "vendor/zmx/zmx"))
@@ -38,7 +45,7 @@ def verify_remote_v0391(env, state):
     origin_process = viewer_process = None
 
     def request(environment, command, target=None, args=None):
-        if command not in ("tree", "zmx.list", "session.text"):
+        if command not in ("tree", "zmx.list", "session.text", "session.overlay.text"):
             print("Remote parity:", "origin" if environment is origin_env else "viewer", command, flush=True)
         try:
             response = raw_control_json(environment, {"cmd": command, "target": target, "args": args or {}}, timeout=45)
@@ -58,10 +65,13 @@ def verify_remote_v0391(env, state):
         offered = wait_for(lambda: request(origin_env, "zmx.tree")["remote"].get("sessions"), "origin has no live session")
         origin = offered[0]["id"]
         request(origin_env, "session.companion.new", origin, {"name": "Keep parent alive", "noSelect": True})
-        viewer_process, _ = launch(viewer_env)
+        viewer_process, viewer_app = launch(viewer_env)
         viewer = request(viewer_env, "zmx.attach", origin, {"host": "local-test"})["id"]
         wait_for(lambda: row(viewer_env, viewer).get("presentation", {}).get("state") == "connected",
                  "viewer presentation did not connect", timeout=20)
+        request(origin_env, "session.info", origin, {"mode": "set", "text": "**Remote build** ready", "markdown": True})
+        wait_for(lambda: row(viewer_env, viewer).get("info") == "**Remote build** ready",
+                 "remote info snapshot/delta did not arrive")
 
         pages = os.path.join(origin_state, "pages")
         os.makedirs(pages)
@@ -76,7 +86,7 @@ def verify_remote_v0391(env, state):
         with open(html, "w", encoding="utf-8") as file:
             file.write('<!doctype html><title>Remote loading</title><script src="app.js"></script>')
         opened = request(origin_env, "session.overlay.open", origin,
-                         {"html": html, "cwd": pages, "javascript": True, "sizePercent": 75})
+                         {"html": html, "cwd": pages, "javascript": True, "sizePercent": 75, "width": 320, "height": 180})
 
         def page():
             return next(iter(row(viewer_env, viewer).get("htmlOverlays", [])), {})
@@ -86,6 +96,29 @@ def verify_remote_v0391(env, state):
         wait_for(lambda: next(iter(row(origin_env, origin).get("htmlOverlays", [])), {}).get("state") == "loaded",
                  "origin did not receive page-state read-back")
         local_page = page()["id"]
+        script_path = os.path.join(pages, "app.js")
+        with open(script_path, encoding="utf-8") as file:
+            original_script = file.read()
+        with open(script_path, "w", encoding="utf-8") as file:
+            file.write(original_script.replace('document.title="remote-asset:"', 'document.title="remote-reloaded:"'))
+        request(origin_env, "session.overlay.reload", origin)
+        wait_for(lambda: page().get("title") == "remote-reloaded:524288",
+                 "remote reload reused a stale sibling script", timeout=25)
+        with open(script_path, "w", encoding="utf-8") as file:
+            file.write(original_script)
+        print("OK: remote reload refreshes streamed sibling scripts", flush=True)
+        wait_for(lambda: row(viewer_env, viewer).get("overlayWidth") == 320
+                 and row(viewer_env, viewer).get("overlayHeight") == 180, "remote page point size missing")
+        request(origin_env, "session.overlay.resize", origin, {"width": 280, "height": 160})
+        wait_for(lambda: row(viewer_env, viewer).get("overlayWidth") == 280
+                 and row(viewer_env, viewer).get("overlayHeight") == 160, "remote page point resize missing")
+        request(origin_env, "session.overlay.resize", origin, {"width": 100000, "height": 100000})
+        wait_for(lambda: row(viewer_env, viewer).get("overlayWidth", 100000) < 100000,
+                 "oversized remote point width was not capped")
+        geometry = window_extents(collect(viewer_app, role="frame")[0])
+        assert row(viewer_env, viewer)["overlayWidth"] <= geometry.width * 0.8, row(viewer_env, viewer)
+        assert row(viewer_env, viewer)["overlayHeight"] <= geometry.height * 0.8, row(viewer_env, viewer)
+        request(origin_env, "session.overlay.resize", origin, {"width": 280, "height": 160})
         request(origin_env, "session.overlay.hide", origin)
         wait_for(lambda: row(viewer_env, viewer).get("hiddenOverlays") == ["session"], "remote hide did not reach viewer")
         request(origin_env, "session.overlay.show", origin)
@@ -96,6 +129,28 @@ def verify_remote_v0391(env, state):
         request(origin_env, "session.overlay.close", origin)
         wait_for(lambda: not page(), "origin close did not release the replica page")
         print("OK: remote assets, bridge, hide/show, resize, and close", flush=True)
+
+        terminfo_report = os.path.join(origin_state, "remote-terminfo.txt")
+        probe = ("printf '%s\\n' \"${TERMINFO:-missing}\" > " + shlex.quote(terminfo_report)
+                 + "; test -n \"$TERMINFO\" && infocmp -x xterm-ghostty >/dev/null"
+                 + " && printf 'REMOTE-TERMINFO-PASS\\n'")
+        request(origin_env, "session.overlay.open", origin,
+                {"command": "/bin/sh -c " + shlex.quote(probe), "wait": True, "sizePercent": 50, "width": 300, "height": 170})
+        wait_for(lambda: row(viewer_env, viewer).get("overlayWidth") == 300
+                 and row(viewer_env, viewer).get("overlayHeight") == 170, "remote program point size missing")
+        request(origin_env, "session.overlay.resize", origin, {"width": 290, "height": 150})
+        wait_for(lambda: row(viewer_env, viewer).get("overlayWidth") == 290
+                 and row(viewer_env, viewer).get("overlayHeight") == 150, "remote program point resize missing")
+        try:
+            wait_for(lambda: "REMOTE-TERMINFO-PASS" in request(viewer_env, "session.overlay.text", viewer)["text"],
+                     "SSH overlay did not resolve its bundled terminfo", timeout=20)
+        except AssertionError as error:
+            raise AssertionError(str(error) + ": " + request(viewer_env, "session.overlay.text", viewer)["text"]) from error
+        with open(terminfo_report, encoding="utf-8") as file:
+            database = file.read().strip()
+        assert database != "missing" and os.path.isabs(database), database
+        request(origin_env, "session.overlay.close", origin)
+        print("OK: remote overlay fills absent TERMINFO from the CLI's bundled database", flush=True)
 
         terminal = request(viewer_env, "session.companion.new", viewer, {"name": "Remote child", "noSelect": True})
         assert terminal["parent"] == viewer and row(viewer_env, terminal["id"])["parent"] == viewer
@@ -150,6 +205,41 @@ def verify_remote_v0391(env, state):
         wait_for(lambda: "respawn-recovered" in request(viewer_env, "session.text", viewer)["text"],
                  "attached terminal did not recover after parent respawn", timeout=25)
         print("OK: remote page assets/bridge/state, terminal/page companions, independent page lifetime, and parent respawn")
+
+        request(viewer_env, "session.close", terminal["id"])
+        adopted = request(viewer_env, "zmx.attach", origin_child["id"], {"host": "local-test"})
+        assert adopted["parent"] == viewer and row(viewer_env, adopted["id"])["parent"] == viewer, adopted
+        page_companion = request(origin_env, "session.companion.page", origin,
+                                 {"html": html, "cwd": pages, "javascript": True, "noSelect": True})["id"]
+        group = request(viewer_env, "zmx.attach.group", origin, {"host": "local-test"})
+        assert group["remoteGroup"]["membershipKnown"], group
+        outcomes = group["remoteGroup"]["companions"]
+        assert any(member["origin"] == page_companion for member in outcomes), outcomes
+        assert any(member["origin"] == origin_child["id"] for member in outcomes), outcomes
+        for member in outcomes:
+            assert member.get("id") and not member.get("error"), member
+            assert row(viewer_env, member["id"])["parent"] == group["id"], member
+        group_page = next(member["id"] for member in outcomes if member["origin"] == page_companion)
+        request(viewer_env, "session.select", group_page)
+        wait_for(lambda: row(viewer_env, group_page).get("htmlOverlays", [{}])[0].get("state") == "loaded",
+                 "group page companion did not render", timeout=25)
+        request(viewer_env, "session.close", group["id"])
+        assert row(origin_env, page_companion), "closing the group viewer closed an origin companion"
+        unavailable = request(origin_env, "session.companion.new", origin,
+                              {"name": "Finished companion", "command": "/bin/true", "wait": True, "noSelect": True})["id"]
+        wait_for(lambda: not any(item["id"] == unavailable for item in request(origin_env, "zmx.tree")["remote"]["sessions"]),
+                 "finished companion remained attachable")
+        partial = raw_control_json(viewer_env, {"cmd": "zmx.attach.group", "target": origin,
+                                                "args": {"host": "local-test"}}, timeout=45)
+        assert not partial["ok"] and partial.get("result", {}).get("id"), partial
+        outcomes = partial["result"]["remoteGroup"]["companions"]
+        assert any(member["origin"] == unavailable and member.get("error") and not member.get("id")
+                   for member in outcomes), outcomes
+        assert any(member.get("id") for member in outcomes), outcomes
+        assert row(viewer_env, partial["result"]["id"]), "partial failure discarded the attached parent"
+        request(viewer_env, "session.close", partial["result"]["id"])
+        print("OK: partial group failure preserves the parent/successful companions and reports the missing member")
+        print("OK: v0.40 remote info, page/program point open/resize, standalone adoption, and terminal/page group attach")
     except AssertionError:
         if origin_process is not None:
             print("Origin final rows:", [{k: v for k, v in item.items() if k != "foreground"} for item in rows(origin_env)], flush=True)

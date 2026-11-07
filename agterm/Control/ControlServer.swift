@@ -30,8 +30,8 @@ final class ControlServer {
     /// pure `ControlResolve` matcher with app-side store scoping and the pinned wire-error strings.
     let resolver: ControlTargetResolver
 
-    /// The listening socket fd, or -1 when not listening. `start()` is idempotent on this.
-    private var listenFD: Int32 = -1
+    /// The accept loop that owns the listening socket, nil when not listening. `start()` is idempotent on this.
+    private var listener: ControlAcceptLoop?
 
     /// The held ownership lock fd, or -1 when this process does not own `socketPath`.
     private var lockFD: Int32 = -1
@@ -40,7 +40,7 @@ final class ControlServer {
     private var refused = false
 
     /// The bound socket path, nil when not listening (bind failed or never started).
-    var boundSocketPath: String? { listenFD >= 0 ? socketPath : nil }
+    var boundSocketPath: String? { listener != nil ? socketPath : nil }
 
     /// Suffix marking the stand-in path a refused instance advertises. Nothing ever creates it, so every
     /// connection to it fails.
@@ -65,6 +65,8 @@ final class ControlServer {
     /// Live HUD auto-hide timers, one per session. `ControlServer+Hud` owns the logic; the state sits here
     /// because an extension cannot hold it. Main-actor only.
     var hudAutoHide: [UUID: HudAutoHide] = [:]
+    /// Live info-line expiry timers, one per session; `ControlServer+SessionInfo` owns the logic.
+    var infoAutoHide: [UUID: InfoAutoHide] = [:]
     /// hudGeometryPending holds the sessions whose HUD body rewrite is queued for this main-actor turn.
     var hudGeometryPending: Set<UUID> = []
     /// The clock HUD expiry deadlines are stamped from.
@@ -289,7 +291,7 @@ final class ControlServer {
     /// Bind and start listening. Idempotent — the scene `.task` re-runs when a window is recreated and a
     /// second `bind` must not be attempted. Any failure logs and returns, leaving the app to launch.
     func start() {
-        guard listenFD < 0 else { return }
+        guard listener == nil else { return }
 
         guard socketPath.utf8.count < 104 else {
             log("control socket path too long (\(socketPath.utf8.count) bytes): \(socketPath)")
@@ -338,8 +340,14 @@ final class ControlServer {
             return
         }
 
-        listenFD = fd
-        acceptLoop(fd: fd)
+        guard let loop = ControlAcceptLoop(listenFD: fd) else {
+            log("control accept loop setup failed: \(String(cString: strerror(errno)))")
+            close(fd)
+            unlink(socketPath)
+            return
+        }
+        listener = loop
+        acceptLoop(loop)
     }
 
     func stop() {
@@ -348,9 +356,9 @@ final class ControlServer {
         defer { releaseOwnership() }
         shutdownPresentationStreams()
         stopRemotePresentations()
-        guard listenFD >= 0 else { return }
-        close(listenFD)
-        listenFD = -1
+        guard let loop = listener else { return }
+        loop.stop()
+        listener = nil
         unlink(socketPath)
     }
 
@@ -413,16 +421,15 @@ final class ControlServer {
 
     /// Run the blocking accept loop on the background queue, each connection handled inline (one request →
     /// one response → close): connections are rare and short, so a per-connection thread is unnecessary.
-    private func acceptLoop(fd: Int32) {
+    private func acceptLoop(_ loop: ControlAcceptLoop) {
         acceptQueue.async {
-            while true {
-                let conn = accept(fd, nil, nil)
-                if conn < 0 {
-                    // a closed listener (stop()) makes accept fail — exit the loop.
-                    if errno == EBADF || errno == EINVAL { return }
-                    continue
-                }
+            while let conn = loop.next() {
                 ControlServer.handleConnection(conn, server: self)
+            }
+            loop.finish()
+            // a loop that ended on an error rather than stop() must not stay advertised as the bound listener
+            Task { @MainActor in
+                if self.listener === loop { self.listener = nil }
             }
         }
     }
@@ -541,7 +548,7 @@ final class ControlServer {
     /// `session.restart` waits on process exits for seconds, while the shell it starts calls this socket.
     nonisolated private static func waitsOnNetwork(_ cmd: Command) -> Bool {
         // companion creation may ssh to a remote parent's origin, which can be this Mac's own socket
-        [.zmxTree, .zmxAttach, .sessionRestart, .sessionCompanionNew, .sessionCompanionDuplicate,
+        [.zmxTree, .zmxAttach, .zmxAttachGroup, .sessionRestart, .sessionCompanionNew, .sessionCompanionDuplicate,
          .sessionCompanionPage].contains(cmd)
     }
 
@@ -628,7 +635,7 @@ final class ControlServer {
                 .sessionSplit, .sessionSplitClose, .sessionSwap, .sessionLead, .sessionRestart, .sessionScratch, .sessionFocus,
                 .sessionResize, .surfaceZoom,
                 .surfaceCursor,
-                .sessionStatus, .sessionFlag, .sessionContext, .sessionTint, .workspaceTint, .sessionSeen, .sessionRestore, .notify,
+                .sessionStatus, .sessionFlag, .sessionContext, .sessionInfo, .sessionTint, .workspaceTint, .sessionSeen, .sessionRestore, .notify,
                 .fontInc, .fontDec, .fontReset, .keymapReload, .keymapList, .keymapRun, .hooksReload, .hooksList, .browserClear,
                 .browserLinks,
                 .configReload, .themeSet, .themeList,
@@ -644,7 +651,7 @@ final class ControlServer {
                 .windowClose, .windowRename, .windowDelete, .windowResize, .windowMove, .windowZoom,
                 .windowFullscreen, .windowMinimize,
                 .restoreClear, .restoreCapture, .restoreMode, .zmxList, .zmxPrune, .zmxKill, .zmxReset, .zmxTree,
-                .zmxAttach, .zmxPresent, .zmxScreen, .sessionOverlayJobRun, .sessionOverlayPageServe, .dashboard, .version,
+                .zmxAttach, .zmxAttachGroup, .zmxPresent, .zmxScreen, .sessionOverlayJobRun, .sessionOverlayPageServe, .dashboard, .version,
                 .recentList, .recentOpen, .recentClear:
             return ControlResponse(ok: false, error: "control dispatcher did not handle \(request.cmd.rawValue)")
         case .debugAppearance:
@@ -653,6 +660,8 @@ final class ControlServer {
             preconditionFailure("pick command returned nil from ControlDispatcher")
         case .askOpen, .askResult, .askCancel:
             preconditionFailure("ask command returned nil from ControlDispatcher")
+        case .msgSend, .msgRead, .msgAck:
+            preconditionFailure("msg command returned nil from ControlDispatcher")
         case .sessionHudOpen, .sessionHudUpdate, .sessionHudClose:
             preconditionFailure("hud command returned nil from ControlDispatcher")
         }

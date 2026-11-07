@@ -20,6 +20,24 @@ public enum FlaggedViewLayout: String, Codable, Sendable, CaseIterable {
     case tree
 }
 
+/// SessionInfoDisplay is where the sidebar draws a session's info line: in every sidebar view, only in the
+/// flagged view, or nowhere. It gates drawing alone; the line, its expiry and its read-back stay either way.
+/// App-wide. Raw-stored, resolved by `effectiveSessionInfoDisplay`.
+public enum SessionInfoDisplay: String, Codable, Sendable, CaseIterable {
+    case always
+    case flagged
+    case off
+
+    /// displayName is the Settings picker's label for the value.
+    public var displayName: String {
+        switch self {
+        case .always: "Always"
+        case .flagged: "Flagged"
+        case .off: "Off"
+        }
+    }
+}
+
 /// Where a clicked web link from terminal output opens: the system `browser`, or a session web overlay at
 /// full size (`overlay`), 95%, 75% or 50%. App-wide. Raw-stored, resolved by `effectiveLinkOpenMode`.
 public enum LinkOpenMode: String, Codable, Sendable, CaseIterable {
@@ -75,6 +93,8 @@ public enum InterfaceElement: String, Codable, Sendable, CaseIterable {
     case flaggedView
     case focusFilter
     case workspaceAddSession
+    case workspaceIcons
+    case sessionIcons
 
     /// Which chrome surface the element belongs to — the Settings tab groups the toggles by this.
     public enum Section: Sendable { case titleBar, sidebar }
@@ -82,7 +102,8 @@ public enum InterfaceElement: String, Codable, Sendable, CaseIterable {
     /// The surface this element lives on; the title bar for everything not listed as sidebar.
     public var section: Section {
         switch self {
-        case .newWorkspace, .newSession, .flaggedView, .focusFilter, .workspaceAddSession: return .sidebar
+        case .newWorkspace, .newSession, .flaggedView, .focusFilter, .workspaceAddSession, .workspaceIcons, .sessionIcons:
+            return .sidebar
         default: return .titleBar
         }
     }
@@ -111,6 +132,8 @@ public enum InterfaceElement: String, Codable, Sendable, CaseIterable {
         case .flaggedView: return "Flagged view"
         case .focusFilter: return "Workspace filter"
         case .workspaceAddSession: return "Workspace add-session"
+        case .sessionIcons: return "Session icons"
+        case .workspaceIcons: return "Workspace icons"
         }
     }
 
@@ -139,6 +162,8 @@ public enum InterfaceElement: String, Codable, Sendable, CaseIterable {
         case .flaggedView: return "flag"
         case .focusFilter: return "square.grid.2x2"
         case .workspaceAddSession: return "plus"
+        case .sessionIcons: return "terminal"
+        case .workspaceIcons: return "square.grid.2x2"
         }
     }
 
@@ -389,6 +414,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// Raw `FlaggedViewLayout` for the sidebar's flagged view; nil = flat. Resolved by
     /// `effectiveFlaggedViewLayout`.
     public var flaggedViewLayout: String?
+    /// sessionInfoDisplay is the raw `SessionInfoDisplay` for the sidebar info line; nil = always. Resolved by
+    /// `effectiveSessionInfoDisplay`.
+    public var sessionInfoDisplay: String?
     /// Raw `LinkOpenMode`; nil = browser. Resolved by `effectiveLinkOpenMode`.
     public var linkOpenMode: String?
     /// terminalInputSource is the keyboard input source id held while a terminal has the keyboard; nil = off.
@@ -428,7 +456,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
                 hiddenInterfaceElements: [String]? = nil, shownInterfaceElements: [String]? = nil,
                 autoHideSidebarInactiveWindows: Bool? = nil, flaggedViewLayout: String? = nil,
                 linkOpenMode: String? = nil, terminalInputSource: String? = nil,
-                htmlOverlayZoom: Double? = nil, welcomeShown: Bool? = nil) {
+                htmlOverlayZoom: Double? = nil, welcomeShown: Bool? = nil, sessionInfoDisplay: String? = nil) {
+        self.sessionInfoDisplay = sessionInfoDisplay
         self.fontFamily = fontFamily
         self.fontSize = fontSize
         self.theme = theme
@@ -517,6 +546,11 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// The window and the mute wash must agree on whether the backing is opaque.
     public static func windowReducesTransparency(system: Bool, ignoring: Bool) -> Bool {
         system && !ignoring
+    }
+
+    /// effectiveSessionInfoDisplay is the explicit `sessionInfoDisplay` when a KNOWN raw value, else `always`.
+    public var effectiveSessionInfoDisplay: SessionInfoDisplay {
+        sessionInfoDisplay.flatMap(SessionInfoDisplay.init(rawValue:)) ?? .always
     }
 
     /// The resolved flagged-view layout: the explicit `flaggedViewLayout` when a KNOWN raw value, else `flat`.

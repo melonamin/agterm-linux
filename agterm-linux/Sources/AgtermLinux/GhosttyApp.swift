@@ -38,10 +38,14 @@ final class GhosttyApp: @unchecked Sendable {
     var currentThemePalette: [String] = []
     @MainActor private var appliedAppearanceSide: LinuxAppearanceSide?
 
-    @MainActor func start(appearanceSide: LinuxAppearanceSide) {
+    /// Process environment and locale initialization must precede GTK's worker threads.
+    /// Called once from main(), after the GDK policy assignments and before GTK initializes.
+    func initializeRuntime() {
         setGhosttyResourcesEnv()   // export GHOSTTY_RESOURCES_DIR before init + buildConfig read it
         ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
+    }
 
+    @MainActor func start(appearanceSide: LinuxAppearanceSide) {
         // Persisted settings (font/size/theme/scroll) are layered on at launch so they survive
         // relaunch. Translucency is omitted: Linux has no window-level compositing yet.
         let saved = linuxSettingsStore().load()
@@ -348,12 +352,12 @@ final class GhosttyApp: @unchecked Sendable {
 
     /// Apply the shared safe-link policy. Linux has no portable select-in-file-manager API, so a
     /// local file reveal opens its containing directory with the desktop's default file manager.
-    private static func openTerminalURL(_ raw: String) {
+    static func openTerminalURL(_ raw: String) {
         let uri: String
         switch LinkPolicy.disposition(for: raw) {
         case .open(let url):
             uri = url.absoluteString
-        case .reveal(let url):
+        case .reveal(let url), .image(let url), .markdown(let url):
             uri = url.deletingLastPathComponent().absoluteString
         case .ignore:
             return
