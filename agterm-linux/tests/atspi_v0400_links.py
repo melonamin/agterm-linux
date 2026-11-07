@@ -2,9 +2,12 @@
 
 import ctypes
 import os
+import pwd
 import shlex
+import shutil
 import struct
 import subprocess
+import tempfile
 import time
 import zlib
 
@@ -52,6 +55,15 @@ def verify_links_v0400(env, state):
     markdown = os.path.join(state, "link.md")
     with open(markdown, "w", encoding="utf-8") as file:
         file.write("# Clicked Markdown\n\nThis page came through the terminal's real input path.\n")
+    # HOME is deliberately redirected to /tmp by the runner. Use the test account's
+    # real home to cover Linux /home paths, which the macOS automount policy rejected.
+    # CI runs GTK tests as root, whose own home is /root; it can create the fixture in /home directly.
+    home_root = "/home" if os.geteuid() == 0 else pwd.getpwuid(os.getuid()).pw_dir
+    home_files = tempfile.TemporaryDirectory(prefix="agterm-links-", dir=home_root)
+    assert home_files.name.startswith("/home/"), home_files.name
+    paths = [image, markdown]
+    for path in (image, markdown):
+        paths.append(shutil.copy(path, home_files.name))
     process, app = launch(env)
 
     def request(command, target=None, args=None):
@@ -66,17 +78,20 @@ def verify_links_v0400(env, state):
     try:
         window = next(item["id"] for item in window_list(env) if item["open"])
         request("window.resize", window, {"width": 1000, "height": 700})
-        for path in (image, markdown):
-            script = "printf '\\033[2J\\033[H\\033]8;;file://localhost" + path + "\\033\\\\" + "OPEN_FILE_" * 6 + "\\033]8;;\\033\\\\'; exec sleep 3600"
+        for path, kind in ((path, kind) for path in paths for kind in ("plain", "osc8")):
+            label = path if kind == "plain" else "OPEN_FILE_" * 6
+            output = label if kind == "plain" else "\\033]8;;file://localhost" + path + "\\033\\\\" + label + "\\033]8;;\\033\\\\"
+            script = "printf '\\033[2J\\033[H" + output + "'; exec sleep 3600"
             identity = request("session.new", args={"name": "Click " + os.path.basename(path),
                                                     "command": "/bin/sh -c " + shlex.quote(script)})["id"]
-            wait_for(lambda: "OPEN_FILE_" in request("session.text", identity)["text"], "OSC-8 fixture did not print")
+            wait_for(lambda: label in request("session.text", identity)["text"], kind + " fixture did not print")
             frame = collect(app, role="frame")[0]
             bounds = window_extents(frame)
             sidebar = wait_for(lambda: sidebar_column(app), "sidebar not allocated")
             if artifacts := os.environ.get("AGTERM_UI_ARTIFACT_DIR"):
                 from x11_capture import capture
-                capture(os.path.join(artifacts, "v0400-link-" + os.path.basename(path) + ".png"))
+                location = "home" if path.startswith("/home/") else "tmp"
+                capture(os.path.join(artifacts, f"v0400-link-{location}-{kind}-{os.path.basename(path)}.png"))
             for top in (80, 72, 88, 96, 64, 56, 48):
                 mouse_click(lambda: frame, process.pid, button="left", modifier="ctrl",
                             x_fraction=(sidebar.x + sidebar.width + 45) / bounds.width,
@@ -85,9 +100,9 @@ def verify_links_v0400(env, state):
                 if row(identity).get("htmlOverlays"):
                     break
             wait_for(lambda: row(identity).get("htmlOverlays", [{}])[0].get("state") == "loaded",
-                     "Ctrl-click did not open generated page: " + path)
+                     "Ctrl-click did not open generated page: " + kind + " " + path)
             assert row(identity)["htmlOverlays"][0]["page"] == path, row(identity)
-            if path == markdown:
+            if path.endswith(".md"):
                 wait_for(lambda: named(app, "Clicked Markdown"), "clicked Markdown did not render")
             request("session.overlay.close", identity)
             request("session.close", identity)
@@ -126,3 +141,4 @@ def verify_links_v0400(env, state):
         print("OK: real Ctrl-click image/Markdown pages and native GTK divider cursor ownership under an ask")
     finally:
         stop(process)
+        home_files.cleanup()
