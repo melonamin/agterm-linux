@@ -29,6 +29,7 @@ The visual regressions complement the accessibility and control assertions:
 | `companion-layout` | Parent/peer alignment, nested companion indentation, stable row heights, working disclosure buttons, and unindented flagged layouts at normal and large sidebar fonts |
 | `ibus-lifecycle` | A private real IBus daemon, four focused-workspace deletions through the confirmation dialog, and keyboard input after the removed clients are gone; requires IBus's GTK4 module |
 | `companion-identity` | Real programs duplicated through both the GUI and socket use the copy's session/pane IDs in their environment and explicit arguments |
+| `split-ratio-restore` | Rendered pane proportions after cold restoration, selection of a restored hidden split, and control-driven resizing while hidden, in both orientations |
 | `upstream-v0391` | Companion/tint menus, forms, overlay controls, and real modifier clicks on HUD links across split panes |
 | `links-v0400` | Ctrl-clicked plain paths and OSC 8 links to image and Markdown files under `/tmp` and the test account's `/home` directory; native divider cursor ownership |
 

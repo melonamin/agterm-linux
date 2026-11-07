@@ -496,13 +496,7 @@ extension AppController: ControlActions {
             }
             _ = store.applySplitRatio(ratio, forSession: id)
             if let paned = sessionPanes[id] {
-                let extent = session.splitAxis == .topBottom
-                    ? gtk_widget_get_height(W(paned)) : gtk_widget_get_width(W(paned))
-                let applied = session.splitRatio ?? AppStore.splitRatioDefault
-                gtk_paned_set_position(
-                    paned,
-                    Int32(Double(max(1, extent)) * panedFraction(applied, session: id))
-                )
+                scheduleSplitRatioRestore(sessionID: id, paned: paned)
             }
             return ok(id)
         }

@@ -7448,7 +7448,7 @@ def main():
             "live-wait-output", "startup-environment",
             "dashboard-modal", "context-menu",
             "window-key-dispatch",
-            "split-exit", "split-primary-exit", "window-ownership", "preferences-pages",
+            "split-exit", "split-primary-exit", "split-ratio-restore", "window-ownership", "preferences-pages",
             "notification-reveal", "notification-focus", "session-pickers",
             "session-switch-commit", "session-switch-zoom", "session-switch-scroll",
             "session-switch-sessionless", "session-switch-leader", "leader-repeat", "session-switch-entry",
@@ -7527,6 +7527,9 @@ def main():
             verify_normal_toolbar(env, state, home)
         elif scenario == "window-key-dispatch":
             verify_window_key_dispatch(env)
+        elif scenario == "split-ratio-restore":
+            from atspi_split_ratio import verify_split_ratio_restore
+            verify_split_ratio_restore(env, state)
         elif scenario == "upstream-controls":
             verify_upstream_control_parity(env)
         elif scenario == "upstream-v0391":
