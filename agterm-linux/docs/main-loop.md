@@ -86,6 +86,8 @@ allocated both the row and its containing list box (why both: `agterm-linux/docs
 `LinuxSidebarPolicy.scrollRetryTicks` — a best-effort budget, not a guarantee that layout completes within it.
 `SplitRatioRestoreCoordinator` keeps saved ratios pending while their paned is unmapped; the paned's `map`
 signal arms a frame callback that waits through a layout frame before applying the position.
+After window registration, already-mapped pending restores are resumed because initial mapping can occur
+inside the controller initializer before callbacks can resolve it through the window registry.
 Both callback ids are WIDGET-scoped — `gtk_widget_remove_tick_callback(widget, id)`, never `g_source_remove` —
 and their owners cancel them when the associated widget or window is torn down.
 

@@ -576,6 +576,12 @@ extension AppController {
             sessionID: sessionID, paned: paned, generation: pending.generation)
     }
 
+    func resumeMappedSplitRatioRestores() {
+        for pending in splitRatioRestore.pending.values where gtk_widget_get_mapped(W(pending.paned)) != 0 {
+            resumeSplitRatioRestore(pending.paned)
+        }
+    }
+
     private func scheduleSplitRatioRestoreFrame(sessionID: UUID, paned: OpaquePointer, generation: UInt64) {
         let context = SplitRatioRestoreTickContext(
             controller: self, sessionID: sessionID, paned: paned, generation: generation)

@@ -100,6 +100,7 @@ paths:
   (`agterm-linux/docs/main-loop.md`). `SplitRatioRestoreCoordinator` keeps a hidden session's saved ratio
   pending without polling; the paned's `map` signal arms its widget-scoped tick callback, which waits through
   a frame before applying the position and is cancelled in `windowWillClose`.
+  Window registration resumes pending mapped restores because the initial `map` can precede registry insertion.
 - **Derive a coupled delay from the constant it trails**, never re-hardcode it — `reconcileSoftClose`
   schedules at the soft-close `grace + 0.1` so it cannot drift from the finalizer it must follow.
 - **The grace window is a state, not a schedule — nothing that runs DURING it may reap a held session.**
