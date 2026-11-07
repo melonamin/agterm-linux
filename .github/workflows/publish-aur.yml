@@ -1,26 +1,33 @@
 name: publish AUR package
 
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: Published Linux release tag
+        required: true
+        type: string
+    secrets:
+      AUR_SSH_PRIVATE_KEY:
+        required: true
 
 permissions:
   contents: read
 
 jobs:
   publish:
-    if: startsWith(github.event.release.tag_name, 'linux-v')
+    if: startsWith(inputs.tag, 'linux-v')
     runs-on: ubuntu-latest
     steps:
       - name: Check out release
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.tag }}
 
       - name: Download release checksum
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ inputs.tag }}
         run: |
           gh release download "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
@@ -32,7 +39,7 @@ jobs:
 
       - name: Update package metadata
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ inputs.tag }}
         run: |
           VERSION="${TAG#linux-v}"
           TARBALL_SHA256="$(cat /tmp/agterm-tarball.sha256)"
@@ -68,7 +75,7 @@ jobs:
       - name: Publish package to AUR
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          VERSION: ${{ github.event.release.tag_name }}
+          VERSION: ${{ inputs.tag }}
         run: |
           install -d -m 700 ~/.ssh
           printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
