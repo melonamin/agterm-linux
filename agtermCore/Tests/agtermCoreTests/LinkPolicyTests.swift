@@ -15,6 +15,33 @@ struct LinkPolicyTests {
     /// A fixed injected set so host matching is deterministic in tests (independent of the real machine).
     static let localHosts: Set<String> = ["myhost", "localhost"]
 
+    #if os(Linux)
+    @Test(arguments: ["document.md", "picture.png", "ordinary.txt"])
+    func linuxHomeFilesOpenThroughEveryLocalLinkForm(_ name: String) {
+        let path = "/home/tester/\(name)"
+        let url = URL(fileURLWithPath: path, isDirectory: false)
+        let expected: LinkPolicy.LinkDisposition
+        let route: LinkPolicy.Route
+        switch name {
+        case "document.md":
+            expected = .markdown(url)
+            route = .markdown(url, session: Self.session, sizePercent: nil)
+        case "picture.png":
+            expected = .image(url)
+            route = .image(url, session: Self.session)
+        default:
+            expected = .reveal(url)
+            route = .reveal(url)
+        }
+        for raw in [path, "~/\(name)", "file://\(path)", "file://localhost\(path)",
+                    "/tmp/../home/tester/./\(name)", "file:///home/tester/sub/../\(name)"] {
+            #expect(LinkPolicy.disposition(for: raw, localHosts: Self.localHosts, home: "/home/tester") == expected)
+            #expect(LinkPolicy.route(for: raw, mode: .overlay, origin: .pane(Self.session),
+                                     localHosts: Self.localHosts, home: "/home/tester") == route)
+        }
+    }
+    #endif
+
     @Test(arguments: [
         "http://example.com",
         "https://example.com/path?q=1#frag",
@@ -48,7 +75,11 @@ struct LinkPolicyTests {
         #expect(url.absoluteString == expected)
     }
 
+    #if os(macOS)
     @Test(arguments: [
+        "/net/host/x.png",
+        "/tmp/../net/x.png",
+        "/home/someone/x.png",
         "file:///net/server/share/x.txt",         // /net (-hosts) auto-mount root
         "file:///Network/Servers/host/share",     // /Network auto-mount root
         "file:///home/someone/x.txt",              // /home (auto_home) auto-mount root
@@ -66,6 +97,7 @@ struct LinkPolicyTests {
     func autoMountPathsIgnored(_ raw: String) {
         #expect(LinkPolicy.disposition(for: raw, localHosts: Self.localHosts) == .ignore)
     }
+    #endif
 
     /// Sibling names that merely start with an auto-mount root are NOT auto-mount paths — still revealed.
     /// The last case is the boundary that keeps the Data denylist narrow: a normal file on the Data volume
@@ -180,9 +212,6 @@ struct LinkPolicyTests {
 
     @Test(arguments: [
         "//server/share/x.png",
-        "/net/host/x.png",
-        "/tmp/../net/x.png",
-        "/home/someone/x.png",
         "~",
         "~user/x.png",
         "src/x.png",

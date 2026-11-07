@@ -71,6 +71,8 @@ Closing an attached page view leaves its origin page alive; a parent shell can r
 Remote group attach includes companions with per-member results and can adopt a standalone attached companion
 under its matching parent.
 Local PNG, JPEG, GIF, WebP, and Markdown files open as pages through terminal links or `--image`/`--markdown`.
+On Linux, Ctrl-click supports local paths under `/home`, including plain printed paths and OSC 8 `file://` links.
+The macOS automount-root restrictions apply only on macOS; remote file hosts and UNC paths remain blocked on both platforms.
 Markdown uses the bundled renderer with contained local pictures; authored scripts, network resources, and
 the control bridge are unavailable in generated image and Markdown pages.
 The per-pane message bus supports send, read, acknowledgement, and waiting, with pending counts in `tree`.
