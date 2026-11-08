@@ -1,4 +1,8 @@
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 import Foundation
 import Testing
 @testable import agtermCore
@@ -410,7 +414,8 @@ struct ZmxReplayScriptTests {
         ])
 
         #expect(try String(contentsOf: payloadLog, encoding: .utf8) == "ran\n")
-        #expect(try nullSeparatedValues(at: result) == ["/integration root:/user/share", "/integration root"])
+        let values = try nullSeparatedValues(at: result)
+        #expect(values == ["/integration root:/user/share", "/integration root"])
     }
 
     private func makeFixture() throws -> URL {
@@ -463,10 +468,20 @@ struct ZmxReplayScriptTests {
         try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: inTerminal ? "/usr/bin/script" : executable)
-        process.arguments = (inTerminal ? ["-q", "/dev/null", executable] : []) + ["--no-config", "-lic", script]
+        let fishArguments = ["--no-config", "-lic", script]
+        #if canImport(Darwin)
+        process.arguments = (inTerminal ? ["-q", "/dev/null", executable] : []) + fishArguments
+        #else
+        process.arguments = inTerminal
+            ? ["-q", "-e", "-c", CommandRestore.shellQuotedLine([executable] + fishArguments), "/dev/null"]
+            : fishArguments
+        #endif
         if inTerminal { process.standardInput = FileHandle.nullDevice }
         var processEnvironment = ProcessInfo.processInfo.environment
         processEnvironment.removeValue(forKey: "XDG_DATA_DIRS")
+        #if os(Linux)
+        processEnvironment["SHELL"] = "/bin/sh" // util-linux script runs -c through SHELL, with POSIX quoting below.
+        #endif
         process.environment = processEnvironment.merging([
             "HOME": home.path,
             "XDG_CONFIG_HOME": config.path,
@@ -520,7 +535,11 @@ struct ZmxReplayScriptTests {
     private func runZshInTerminal(script: String, environment overrides: [String: String]) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+        #if canImport(Darwin)
         process.arguments = ["-q", "/dev/null", "/bin/zsh", "-lic", script]
+        #else
+        process.arguments = ["-q", "-e", "-c", CommandRestore.shellQuotedLine(["/bin/zsh", "-lic", script]), "/dev/null"]
+        #endif
         process.environment = ProcessInfo.processInfo.environment.merging(overrides) { _, new in new }
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = Pipe()

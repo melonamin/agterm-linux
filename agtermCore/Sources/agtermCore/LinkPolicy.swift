@@ -226,7 +226,7 @@ public enum LinkPolicy {
     /// localPath classifies a decoded local path: `.image` for an `imageExtensions` file, `.markdown` for a
     /// `markdownExtensions` one, `.document` for a `DocumentPage.extensions` one, `.text` for a `TextPage`-eligible one, `.reveal` for anything else, and `.ignore` for an empty or relative path (which `URL(fileURLWithPath:)` would
     /// resolve against the process directory), a UNC-style `//` path (a remote target the host check cannot
-    /// see), or an auto-mount path. The automount check runs after LEXICAL `..` collapsing, so
+    /// see), or a macOS auto-mount path on macOS. The automount check runs after LEXICAL `..` collapsing, so
     /// `/tmp/../net/x` cannot sneak through and the classifier never stats the path it is about to deny.
     /// It never resolves symlinks either: do NOT swap in `standardizedFileURL`/`resolvingSymlinksInPath()`,
     /// which touch the filesystem.
@@ -246,7 +246,10 @@ public enum LinkPolicy {
         guard path.hasPrefix("/"), !path.hasPrefix("//"),
               !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { return nil }
         let normalized = lexicallyNormalizedAbsolutePath(path)
-        return isAutomountPath(normalized) ? nil : normalized
+        #if os(macOS)
+        guard !isAutomountPath(normalized) else { return nil }
+        #endif
+        return normalized
     }
 
     /// locations lists the files a link may name when only the filesystem can tell which: one ending in

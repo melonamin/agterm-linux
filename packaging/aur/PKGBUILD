@@ -1,0 +1,43 @@
+# Maintainer: agterm-linux maintainers <melonamin@users.noreply.github.com>
+pkgname=agterm-linux-bin
+pkgver=0.40.0
+pkgrel=1
+pkgdesc='Native terminal with a workspace and session sidebar, built on libghostty'
+arch=('x86_64')
+url='https://github.com/melonamin/agterm-linux'
+license=('MIT')
+provides=('agterm-linux')
+conflicts=('agterm-linux')
+options=('!strip' '!debug')
+depends=('bash' 'glibc' 'gtk4' 'libadwaita' 'libepoxy' 'webkitgtk-6.0' 'python' 'librsvg' 'webp-pixbuf-loader')
+makedepends=('patchelf')
+optdepends=('zsh: live session restore with zsh' 'fish: live session restore with fish')
+source=(
+    "${url}/releases/download/linux-v${pkgver}/agterm-linux-v${pkgver}-${CARCH}.tar.gz"
+    "LICENSE::${url}/raw/linux-v${pkgver}/LICENSE"
+)
+sha256sums=(
+    'e04509815c52f0e30bf14b26d3ba64071ad1de03c56171a838a936b1126a98c7'
+    '155d97114b2d9b7f66181d0ba258aca57f97b8b957dd1662745bf57218c41ef3'
+)
+
+package() {
+    install -d "$pkgdir/usr/lib"
+    cp -a agterm-linux "$pkgdir/usr/lib/"
+    patchelf --set-rpath '$ORIGIN/../lib' \
+        "$pkgdir/usr/lib/agterm-linux/bin/agterm-linux.bin"
+
+    install -d "$pkgdir/usr/bin"
+    ln -s /usr/lib/agterm-linux/bin/agterm-linux "$pkgdir/usr/bin/agterm-linux"
+    ln -s /usr/lib/agterm-linux/bin/agtermctl "$pkgdir/usr/bin/agtermctl"
+
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 \
+        "$pkgdir/usr/lib/agterm-linux/share/applications/io.github.melonamin.agterm.desktop" \
+        "$pkgdir/usr/share/applications/io.github.melonamin.agterm.desktop"
+    install -Dm644 \
+        "$pkgdir/usr/lib/agterm-linux/share/pixmaps/io.github.melonamin.agterm.png" \
+        "$pkgdir/usr/share/pixmaps/io.github.melonamin.agterm.png"
+    install -d "$pkgdir/usr/share/icons"
+    cp -a "$pkgdir/usr/lib/agterm-linux/share/icons/hicolor" "$pkgdir/usr/share/icons/"
+}

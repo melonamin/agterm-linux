@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# Validate the structure, metadata, checksums, and runtime-library closure of Linux release artifacts.
+# Usage: scripts/verify-linux-packages.sh VERSION [OUTPUT_DIRECTORY]
+set -euo pipefail
+
+if (( $# < 1 || $# > 2 )); then
+  echo "usage: scripts/verify-linux-packages.sh VERSION [OUTPUT_DIRECTORY]" >&2
+  exit 2
+fi
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VERIFY_ARCH="$ROOT/scripts/verify-linux-architecture.sh"
+VERSION="${1#v}"
+# nFPM's semver schema maps prerelease separators to '~' so prereleases sort before stable versions.
+PACKAGE_VERSION="${VERSION/-/\~}"
+OUT="${2:-dist-linux}"
+[[ "$OUT" = /* ]] || OUT="$ROOT/$OUT"
+
+# shellcheck source=../linux/arch.sh
+source "$ROOT/linux/arch.sh"
+
+TAR="$OUT/agterm-linux-v${VERSION}-${HOST_ARCH}.tar.gz"
+DEB="$OUT/agterm-linux-v${VERSION}-${HOST_ARCH}.deb"
+RPM="$OUT/agterm-linux-v${VERSION}-${HOST_ARCH}.rpm"
+ARCH="$OUT/agterm-linux-bin-${VERSION}-1-${HOST_ARCH}.pkg.tar.zst"
+CHECKSUMS="$OUT/agterm-linux-v${VERSION}-SHA256SUMS"
+
+for artifact in "$TAR" "$DEB" "$RPM" "$CHECKSUMS"; do
+  [[ -f "$artifact" ]] || { echo "missing release artifact: $artifact" >&2; exit 1; }
+done
+
+for command in dpkg-deb rpm rpm2cpio cpio desktop-file-validate file ldd; do
+  command -v "$command" >/dev/null || { echo "$command is required to verify Linux packages" >&2; exit 1; }
+done
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+verify_pi_extension() {
+  local extension="$1"
+  test -f "$extension"
+  grep -Fq '// agterm-pi-status-extension' "$extension"
+  grep -Fq 'pi.on("agent_start"' "$extension"
+  grep -Fq 'report(["active", "--blink"])' "$extension"
+  grep -Fq 'pi.on("agent_settled"' "$extension"
+  grep -Fq 'report(["completed", "--auto-reset"])' "$extension"
+}
+
+verify_opencode_plugin() {
+  local plugin="$1"
+  test -f "$plugin"
+  grep -Fq '// agterm-opencode-status-plugin' "$plugin"
+  grep -Fq 'export const AgtermStatusPlugin' "$plugin"
+}
+
+verify_payload() {
+  local payload="$1"
+  test -x "$payload/bin/agterm-linux"
+  test -x "$payload/bin/agterm-linux.bin"
+  test -x "$payload/bin/agtermctl"
+  test -x "$payload/bin/agtermctl.bin"
+  test -x "$payload/bin/zmx"
+  test -r "$payload/bin/agterm-linux_AgtermLinux.resources/hud/hud.sh"
+  test -f "$payload/lib/libghostty.so"
+  "$ROOT/scripts/verify-linux-resources.sh" "$payload/share"
+  test -x "$payload/share/agterm/agent-status/agterm-agent-status.sh"
+  test -x "$payload/share/agterm/agent-status/agterm-codex-status.sh"
+  verify_pi_extension "$payload/share/agterm/agent-status/pi/agterm-status.ts"
+  verify_opencode_plugin "$payload/share/agterm/agent-status/opencode/agterm-status.js"
+  test -f "$payload/share/agterm/agent-skill/SKILL.md"
+  test -s "$payload/share/agterm/ZMX-LICENSE"
+  for asset in render.js markdown-it-14.1.0.min.js highlight-11.11.1.min.js page.css \
+    markdown-it-14.1.0.LICENSE highlight-11.11.1.LICENSE; do
+    test -s "$payload/share/agterm/markdown/$asset"
+  done
+  for license in SWIFT-MARKDOWN-LICENSE.txt SWIFT-MARKDOWN-NOTICE.txt SWIFT-CMARK-COPYING.txt; do
+    test -s "$payload/share/agterm/licenses/$license"
+  done
+  [[ "$(<"$payload/share/agterm/VERSION")" == "$VERSION" ]]
+  test -s "$payload/share/agterm/COMMIT"
+  test -f "$payload/share/applications/io.github.melonamin.agterm.desktop"
+  desktop-file-validate "$payload/share/applications/io.github.melonamin.agterm.desktop"
+  "$VERIFY_ARCH" "$payload/bin/agterm-linux.bin"
+  for binary in agterm-linux.bin agtermctl.bin; do
+    LD_LIBRARY_PATH="$payload/lib" ldd "$payload/bin/$binary" > "$WORK/$binary.ldd"
+    if grep -q 'not found' "$WORK/$binary.ldd"; then
+      echo "$binary has unresolved runtime libraries in $payload" >&2
+      cat "$WORK/$binary.ldd" >&2
+      exit 1
+    fi
+  done
+  "$payload/bin/agtermctl" --help >/dev/null
+  ZMX_DIR="$WORK/zmx-help" "$payload/bin/zmx" help >/dev/null
+}
+
+mkdir -p "$WORK/tar" "$WORK/deb" "$WORK/rpm" "$WORK/rpmdb"
+tar -xzf "$TAR" -C "$WORK/tar"
+verify_payload "$WORK/tar/agterm-linux"
+
+[[ "$(dpkg-deb -f "$DEB" Package)" == 'agterm-linux' ]]
+[[ "$(dpkg-deb -f "$DEB" Architecture)" == "$PACKAGE_ARCH" ]]
+[[ "$(dpkg-deb -f "$DEB" Version)" == "$PACKAGE_VERSION-1" ]]
+dpkg-deb -f "$DEB" Depends | grep -Fq 'libwebkitgtk-6.0-4'
+dpkg-deb -f "$DEB" Depends | grep -Fq 'python3'
+dpkg-deb -f "$DEB" Depends | grep -Fq 'librsvg2-common'
+dpkg-deb -f "$DEB" Depends | grep -Fq 'webp-pixbuf-loader'
+dpkg-deb -x "$DEB" "$WORK/deb"
+verify_payload "$WORK/deb/opt/agterm-linux"
+[[ "$(readlink "$WORK/deb/usr/bin/agterm-linux")" == '/opt/agterm-linux/bin/agterm-linux' ]]
+[[ "$(readlink "$WORK/deb/usr/bin/agtermctl")" == '/opt/agterm-linux/bin/agtermctl' ]]
+
+[[ "$(rpm --dbpath "$WORK/rpmdb" -qp --queryformat '%{NAME}' "$RPM")" == 'agterm-linux' ]]
+[[ "$(rpm --dbpath "$WORK/rpmdb" -qp --queryformat '%{ARCH}' "$RPM")" == "$HOST_ARCH" ]]
+[[ "$(rpm --dbpath "$WORK/rpmdb" -qp --queryformat '%{VERSION}-%{RELEASE}' "$RPM")" == "$PACKAGE_VERSION-1" ]]
+rpm --dbpath "$WORK/rpmdb" -qp --requires "$RPM" | grep -Fq 'webkitgtk6.0'
+rpm --dbpath "$WORK/rpmdb" -qp --requires "$RPM" | grep -Fq 'python3'
+rpm --dbpath "$WORK/rpmdb" -qp --requires "$RPM" | grep -Fq 'webp-pixbuf-loader'
+(
+  cd "$WORK/rpm"
+  # Ubuntu's rpm2cpio can return 1 after emitting a complete archive. Trust cpio's status here; the
+  # payload checks immediately below still reject missing or truncated package contents.
+  set +o pipefail
+  rpm2cpio "$RPM" | cpio -idm --quiet --no-absolute-filenames
+  cpio_status="${PIPESTATUS[1]}"
+  set -o pipefail
+  (( cpio_status == 0 ))
+)
+verify_payload "$WORK/rpm/opt/agterm-linux"
+[[ "$(readlink "$WORK/rpm/usr/bin/agterm-linux")" == '/opt/agterm-linux/bin/agterm-linux' ]]
+[[ "$(readlink "$WORK/rpm/usr/bin/agtermctl")" == '/opt/agterm-linux/bin/agtermctl' ]]
+
+if [[ -f "$ARCH" ]]; then
+  [[ "$(awk -v name="$(basename "$ARCH")" '$2 == name { count++ } END { print count+0 }' "$CHECKSUMS")" == 1 ]]
+  mkdir -p "$WORK/arch"
+  tar -xf "$ARCH" -C "$WORK/arch"
+  grep -Fxq 'pkgname = agterm-linux-bin' "$WORK/arch/.PKGINFO"
+  grep -Fxq "pkgver = $VERSION-1" "$WORK/arch/.PKGINFO"
+  grep -Fxq "arch = $HOST_ARCH" "$WORK/arch/.PKGINFO"
+  for dependency in bash glibc gtk4 libadwaita libepoxy webkitgtk-6.0 python librsvg webp-pixbuf-loader; do
+    grep -Fxq "depend = $dependency" "$WORK/arch/.PKGINFO"
+  done
+  verify_payload "$WORK/arch/usr/lib/agterm-linux"
+  [[ "$(readlink "$WORK/arch/usr/bin/agterm-linux")" == '/usr/lib/agterm-linux/bin/agterm-linux' ]]
+  [[ "$(readlink "$WORK/arch/usr/bin/agtermctl")" == '/usr/lib/agterm-linux/bin/agtermctl' ]]
+  test -s "$WORK/arch/usr/share/licenses/agterm-linux-bin/LICENSE"
+  test ! -e "$WORK/arch/usr/bin/zmx"
+fi
+
+(
+  cd "$OUT"
+  sha256sum --check "$(basename "$CHECKSUMS")"
+)
+
+echo "→ verified tar, DEB, RPM, and any included Arch artifact"

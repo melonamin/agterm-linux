@@ -1,5 +1,8 @@
 import Foundation
 import agtermCore
+#if canImport(Glibc)
+import Glibc
+#endif
 
 /// Bridges a streaming control command between a pair of descriptors and the app's socket: the request
 /// goes out, its one ordinary reply comes back, and after an ok everything is copied both ways untouched.
@@ -102,7 +105,13 @@ struct StreamBridge: Sendable {
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return true }
             var offset = 0
             while offset < data.count {
+                #if canImport(Glibc)
+                let sent = Glibc.send(fd, base + offset, data.count - offset, Int32(MSG_NOSIGNAL))
+                let count = sent < 0 && errno == ENOTSOCK
+                    ? write(fd, base + offset, data.count - offset) : sent
+                #else
                 let count = write(fd, base + offset, data.count - offset)
+                #endif
                 if count < 0, errno == EINTR { continue }
                 guard count > 0 else { return false }
                 offset += count

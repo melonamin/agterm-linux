@@ -163,7 +163,7 @@ extension ControlDispatcher {
         }
     }
 
-    enum OverlayContent {
+    public enum OverlayContent {
         case rejected(ControlResponse)
         case program
         case page(HtmlSource)
@@ -184,7 +184,7 @@ extension ControlDispatcher {
         return nil
     }
 
-    static func overlayContent(command: String, args: ControlArgs?) -> OverlayContent {
+    public static func overlayContent(command: String, args: ControlArgs?) -> OverlayContent {
         let reject = { (error: String) in OverlayContent.rejected(ControlResponse(ok: false, error: error)) }
         if let error = textOnlyRefusal(args) { return reject(error) }
         if let image = args?.image {

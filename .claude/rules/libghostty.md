@@ -9,10 +9,36 @@ paths:
   - "agterm/Views/SplitRatioAccessor.swift"
   - "agterm/Views/TerminalView.swift"
   - "agterm/Views/TerminalSearchBar.swift"
+  - "agterm-linux/Sources/AgtermLinux/Ghostty*.swift"
+  - "agterm-linux/Sources/AgtermLinux/AppController*.swift"
+  - "agterm-linux/Sources/AgtermLinux/Dashboard*.swift"
   - "scripts/setup.sh"
 ---
 
 ## libghostty gotchas
+
+- Linux Dashboard mirrors live surfaces and never reparents a `GtkGLArea`. Unparenting unrealizes the
+  surface and invalidates its GL context. Keep one stable `GtkOverlay` child per session, map pages for
+  Dashboard without accepting input, and mirror each source through `GtkWidgetPaintable` + `GtkPicture`
+  beneath an opaque input-owning Dashboard host.
+- That GL-context invalidation is PERMANENT: `GhosttySurface`'s input-method unrealize handler only clears
+  the IM client; it does not repair rendering, and
+  `realize()`'s `createSurface()` no-ops on an existing surface, so a re-add realizes a NEW context while
+  libghostty keeps using the old context's objects with the new one current, and `refresh()` cannot repair it. `realize()` logs
+  `GLArea re-realized over a live surface` for exactly that, since no AT-SPI assertion can see a blank pane.
+  So a pane host's GtkPaned slot is fixed for its LIFETIME: promoting the survivor of a primary-pane exit
+  clears the DEAD pane's slot and leaves the survivor where it is, and `layoutSplit` is the single
+  placement authority that gives the next split the freed one.
+  Everything role-named stays keyed to the MODEL across that inversion — `AppControllerSurfaces`
+  `primaryInEndSlot` converts the divider fraction so `splitRatio` is always the primary's share, and
+  role-based focus/resize requests resolve to the model pane. Directional focus and resize requests follow
+  the live slots through that same `primaryInEndSlot` fact, as do `focusPane(left:)` and the arrow keys.
+  A caller naming a pane ROLE takes `focusPane(wantSplit:)`.
+  The one accepted consequence is placement: a split taken after a promotion appears on the freed SIDE
+  rather than beside the survivor.
+  Terminal zoom follows the same rule: `AppControllerZoom` never moves a surface. It hides the sidebar
+  column and the content header, shows the permanent `zoomHeader` strip, presents the zoomed session's deck
+  page and hides the sibling pane host; a zoomed `.quick` card is only allocated the whole content area.
 
 ## Rendering
 
@@ -57,6 +83,56 @@ paths:
   for the surface renderer and sets the flag once; no later Ghostty path replaces the layer or
   rewrites the flag. A `GHOSTTY_REV` bump has to recheck both, and that the synchronous reveal draw
   still restores the intended visible-resize path.
+- During normal operation the Linux main thread is the only consumer of the 64-slot app mailbox
+  (`ghostty_app_tick`), so nothing on it may push `.forever` there: once the mailbox is full, the push
+  waits on itself.
+  Feeding OSC into surfaces did that through `color_change` and froze the app with many sessions.
+  `PendingHealth` in `ghostty-embedded-opengl.patch` owns the non-blocking `renderer_health` contract.
+- Linux is the reverse of this section's first bullet.
+  `linux/ghostty-resources.env` pins the same `683d8db`, and `ghostty-embedded-opengl.patch` declares
+  `must_draw_from_app_thread` for OpenGL, so the render thread only posts `redraw_surface` and that
+  patch is the sole reason `GHOSTTY_ACTION_RENDER` arrives.
+  The arm in `GhosttyApp.handleAction` queues the `GtkGLArea`, whose `render` signal calls
+  `ghostty_surface_draw` on the main thread with the context current.
+- Hidden-surface GPU release is not enabled on Linux. `setVisible`, the only caller of
+  `releaseGpuResources`, compiles the call out under that constant: it runs on the render thread, and
+  GL teardown needs the `GtkGLArea` context on the main thread.
+  `ghostty_surface_set_occlusion(false)` therefore pauses render-thread updates and draw requests while
+  a hidden pane keeps its swap chain; terminal visibility and mode 2033 reports still apply.
+  Enabling the release needs an explicit host-thread path with that context current, and its own tests.
+- Linux frees every surface under its own retained GL context; no engine patch is involved.
+  `ghostty_surface_free` reaches `renderer.deinit`, which deletes on whatever context is current: on the unfixed code that
+  was GTK's on a session close, none after `closeQuick` unparented, and the replacement's in `replacePane`.
+  A wrong context can delete another pane's local names; no context silently leaves objects alive (measured on `quick-exit`).
+  `GhosttySurface+RetainedGLContext.swift` takes a ref on the pane's `GdkGLContext` for exactly one successful
+  `ghostty_surface_new`, and `LinuxRetainedGLTeardown.run` saves a strong prior, makes the owner current, frees and restores.
+  A separate ref keeps the context usable through `gtk_gl_area_unrealize`, `gdk_draw_context_dispose` and `gdk_surface_destroy`
+  (`tests/gl_retained_context_check.c`, EGL and GLX on 4.14; 4.22 by reading its sources).
+  A re-realize never replaces the ref and its error stays an error.
+  Workers are joined before `renderer.deinit` and `threadEnter` is a no-op on embedded, so free reaches no `make_current`
+  callback. `Pipeline.deinit` leaves its FBO and VAO for the context's death: not every object is explicitly released.
+- Regular cleanup must run with the display open. A ref protects against neither `gdk_display_close` nor real context loss, and
+  `gdk_gl_context_make_current`'s fast path has no closed-display test, so `run` checks first and a closed display goes straight
+  to the skip; GDK's clear would enter it. Linux never calls `gdk_display_close`, and `onShutdown` frees no surfaces: no
+  quit-time sweep exists, so a surface can still hold its owner at exit.
+- The last-chance free is the widget's `destroy` (`surfaceWidgetDestroyed`), GTK's last hold on the wrapper, and is the normal
+  free for `closeQuick`, which unparents before `teardown()`. `deinit` only asserts a discharged handle: it can run inside
+  `destroy` or later, so it frees nothing and touches no `glArea`. `destroy` also clears `awaitingSpawnPermit`, because
+  `resumePacedSpawn` is the one creation path that can outlive the widget. Any branch that called free consumes the handle,
+  whatever the restore did.
+- Anything but `ownerCurrent` with `restored` is degraded and logged with `agterm: retained GL context:`.
+  A failed make-current clears and frees with no context, a possible GPU leak; a clear that cannot be established, or a closed
+  display, skips the free. Read-back proves GDK's slot, not a native context: GDK clears the slot only when the backend clear
+  succeeds, GLX's clear ignores the native result, a retained ref does not prove the prior undisposed, and a disposed prior still
+  in the slot reads as restored. `tests/gl_teardown_analyze.py` compares the native context for that reason.
+- A skipped free leaves the engine running until process exit, still using its config buffers, the owner and its unretained
+  `userdata`. `LinuxSurfaceQuarantine`, keyed by raw `userdata` and never dereferencing it, pins all four for the process lifetime
+  and is the explicit state, since `surface == nil` also describes a wrapper before creation. Its entry checks return before
+  any GTK or model access: the top of `handleAction`, which must not fall through on a nil wrapper (`OPEN_URL`,
+  `DESKTOP_NOTIFICATION`, `RING_BELL` and `RELOAD_CONFIG` use none), `wrapper(from:)`, `wrapper(fromTarget:)`, the top of
+  `writeClipboard`, and `RetainedGhosttySurface.init`. A hop queued past those rechecks as it runs: the write prompt's
+  `writeAnswer` and the closing `exitHop`, since `finishExitCodeCapture` can mutate the store before `onExit`. `wakeup_cb` is
+  app-level and the platform `make_current` runs before any quarantine. A new callback or hop owes the same check.
 
 ## Theme and sidebar
 
@@ -232,7 +308,10 @@ paths:
 - A live OSC 11 override masks config defaults in the pinned libghostty. No embedding API clears
   it: RIS leaves colors, PTY writes bypass the parser, and COLOR_CHANGE is outbound-only.
   `session.background color` changes only the default and cannot override live OSC.
-- OSC 111 copies current default into override. Per-surface update also reseeds default from a
+- The Linux host never feeds colors into a surface, only config: `ghostty_app_update_config` and
+  per-surface overlays, so program OSC 10/11 overrides keep standard terminal semantics.
+- OSC 111 clears the override through `DynamicRGB.reset`, so reset shows the default.
+  Per-surface update also reseeds default from a
   `background` key. Restating OSC color in the overlay therefore made reset permanently retain it (#309).
   Opacity-only overlay leaves theme as default, so reset returns to theme.
 - `tree.background` reports the stored specification and may differ from a live OSC-rendered color.
@@ -282,7 +361,9 @@ paths:
 - Defaults load before user config and set `cursor-style = block` plus
   `shell-integration-features = no-cursor,no-title`. `no-cursor` prevents prompt DECSCUSR bar resets;
   `no-title` prevents abbreviated local cwd OSC 2 from overriding sidebar names. User/remote OSC titles
-  still work, and OSC 7 is unaffected.
+  still work, and OSC 7 is unaffected. Fish's built-in `fish_title` is independent of Ghostty's feature
+  bit, so Linux also normalizes an exact cwd or Fish's default `prompt_pwd -d 1 -D 1` title to blank in
+  `LinuxSessionTitlePolicy`; real program titles and host-prefixed remote titles remain intact.
 - `ssh-env` and `ssh-terminfo` are forced OFF after `ghostty_config_load_recursive_files`, so no user
   source including a `config-file` include can enable them: their wrappers call a `ghostty` CLI agterm
   does not bundle, and enabling either broke `ssh` outright (#463). The override reads the resolved
@@ -364,6 +445,8 @@ paths:
 - Default ungated writes are synchronous so a same-tick read sees them. Read defaults to ask; write defaults
   allow and can be changed in agterm `ghostty.conf`.
 - Deferred completion captures `GhosttySurfaceView`, then rereads its live surface. If a pane closed while
-  the sheet was open, skip completion rather than use the freed raw pointer; freeing already discards the
-  request. Keep request state `nonisolated(unsafe)` under the same lifetime check.
+  the sheet was open, skip completion rather than use the freed raw pointer.
+  Keep request state `nonisolated(unsafe)` under the same lifetime check.
+  At `683d8db` a read skipped after a close still leaks its request state, as does a prompted Kitty write:
+  `Surface.deinit` tracks none of them, and no C API frees one without the surface.
 - AppKit dialog behavior is manual-only; unit-test `ClipboardPromptPolicy`.

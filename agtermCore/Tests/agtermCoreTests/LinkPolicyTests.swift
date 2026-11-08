@@ -15,6 +15,33 @@ struct LinkPolicyTests {
     /// A fixed injected set so host matching is deterministic in tests (independent of the real machine).
     static let localHosts: Set<String> = ["myhost", "localhost"]
 
+    #if os(Linux)
+    @Test(arguments: ["document.md", "picture.png", "ordinary.txt"])
+    func linuxHomeFilesOpenThroughEveryLocalLinkForm(_ name: String) {
+        let path = "/home/tester/\(name)"
+        let url = URL(fileURLWithPath: path, isDirectory: false)
+        let expected: LinkPolicy.LinkDisposition
+        let route: LinkPolicy.Route
+        switch name {
+        case "document.md":
+            expected = .markdown(url)
+            route = .markdown(url, session: Self.session, sizePercent: nil)
+        case "picture.png":
+            expected = .image(url)
+            route = .image(url, session: Self.session)
+        default:
+            expected = .text(url, line: nil)
+            route = .text(LinkPolicy.TextLink(url: url, line: nil, session: Self.session, sizePercent: nil))
+        }
+        for raw in [path, "~/\(name)", "file://\(path)", "file://localhost\(path)",
+                    "/tmp/../home/tester/./\(name)", "file:///home/tester/sub/../\(name)"] {
+            #expect(LinkPolicy.disposition(for: raw, localHosts: Self.localHosts, home: "/home/tester") == expected)
+            #expect(LinkPolicy.route(for: raw, mode: .overlay, origin: .pane(Self.session),
+                                     localHosts: Self.localHosts, home: "/home/tester") == route)
+        }
+    }
+    #endif
+
     @Test(arguments: [
         "http://example.com",
         "https://example.com/path?q=1#frag",
@@ -48,7 +75,11 @@ struct LinkPolicyTests {
         #expect(url.absoluteString == expected)
     }
 
+    #if os(macOS)
     @Test(arguments: [
+        "/net/host/x.png",
+        "/tmp/../net/x.png",
+        "/home/someone/x.png",
         "file:///net/server/share/x.bin",         // /net (-hosts) auto-mount root
         "file:///Network/Servers/host/share",     // /Network auto-mount root
         "file:///home/someone/x.bin",              // /home (auto_home) auto-mount root
@@ -66,6 +97,7 @@ struct LinkPolicyTests {
     func autoMountPathsIgnored(_ raw: String) {
         #expect(LinkPolicy.disposition(for: raw, localHosts: Self.localHosts) == .ignore)
     }
+    #endif
 
     /// Sibling names that merely start with an auto-mount root are NOT auto-mount paths — still revealed.
     /// The last case is the boundary that keeps the Data denylist narrow: a normal file on the Data volume
@@ -188,9 +220,6 @@ struct LinkPolicyTests {
 
     @Test(arguments: [
         "//server/share/x.png",
-        "/net/host/x.png",
-        "/tmp/../net/x.png",
-        "/home/someone/x.png",
         "~",
         "~user/x.png",
         "src/x.png",
@@ -478,7 +507,11 @@ struct LinkPolicyTests {
 
     @Test(arguments: ["/net.", "/net/host/a.md.", "/Network.", "/home/me/a.md?", "//host/share/a.md.", "/tmp/../net/a.md."])
     func aTrimmedSpellingInsideARefusedRootIsNeverOffered(_ raw: String) {
+        #if os(macOS)
         #expect(!Self.locations(raw).contains { LinkPolicy.isAutomountPath($0.path) || $0.path.hasPrefix("//") })
+        #else
+        #expect(!Self.locations(raw).contains { $0.path.hasPrefix("//") })
+        #endif
     }
 
     @Test func aRemotePaneOffersNoShorterSpelling() {
@@ -500,19 +533,33 @@ struct LinkPolicyTests {
     @Test(arguments: ["/net/x/a.go:3", "/Network/a.go:3", "/home/me/a.go:3", "/tmp/../net/x/a.go:3",
                       "//host/share/a.go:3", "/System/Volumes/Data/home/me/a.go:3"])
     func refusedAbsolutePathsOfferNothingToStat(_ raw: String) {
+        #if os(macOS)
         #expect(Self.locations(raw, cwd: "/w").isEmpty)
+        #else
+        #expect(Self.locations(raw, cwd: "/w").isEmpty == raw.hasPrefix("//"))
+        #endif
     }
 
     @Test(arguments: [nil, "", "rel/dir", "/net/x", "/w\u{07}", "/w\nx", "//host/share", "/Network"] as [String?])
     func aRelativePathUnderAMissingOrRefusedDirectoryOffersNothing(_ cwd: String?) {
+        #if os(Linux)
+        if cwd == "/net/x" || cwd == "/Network" {
+            #expect(Self.locations("src/a.go:3", cwd: cwd).count == 2)
+            #expect(Self.locations("./a.go:3", cwd: cwd).count == 2)
+            return
+        }
+        #endif
         #expect(Self.locations("src/a.go:3", cwd: cwd).isEmpty)
         #expect(Self.locations("./a.go:3", cwd: cwd).isEmpty)
     }
 
+    #if os(macOS)
     @Test func aRelativePathEscapingIntoAnAutomountRootOffersNothing() {
         #expect(Self.locations("../../net/x/a.go:3", cwd: "/w/app").isEmpty)
         #expect(Self.locations("../../../home/x/a.go:3", cwd: "/w/a/b").isEmpty)
     }
+
+    #endif
 
     @Test func aRemotePaneOffersNothingToStat() {
         #expect(Self.locations("/x/a.go:42", origin: .remotePane(Self.session)).isEmpty)

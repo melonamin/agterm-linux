@@ -1,6 +1,11 @@
 import ArgumentParser
 import Foundation
 import agtermCore
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 // MARK: - keymap
 
@@ -878,9 +883,10 @@ struct Version: RequestCommand {
         }
     }
 
-    /// The running executable's real path. `_NSGetExecutablePath` rather than `argv[0]`, which is whatever
-    /// the caller chose to exec with, and `realpath` because the installed CLI is a symlink into the bundle.
+    /// The running executable's real path rather than `argv[0]`, which is whatever the caller chose to exec
+    /// with. Resolve symlinks because the installed CLI may be a launcher pointing into an app bundle.
     static func clientPath() -> String? {
+        #if canImport(Darwin)
         var size = UInt32(0)
         _ = _NSGetExecutablePath(nil, &size)
         var buffer = [CChar](repeating: 0, count: Int(size))
@@ -888,5 +894,11 @@ struct Version: RequestCommand {
         guard let resolved = realpath(buffer, nil) else { return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self) }
         defer { free(resolved) }
         return String(cString: resolved)
+        #elseif canImport(Glibc)
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
+        let count = readlink("/proc/self/exe", &buffer, buffer.count - 1)
+        guard count >= 0 else { return nil }
+        return String(decoding: buffer.prefix(Int(count)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        #endif
     }
 }
