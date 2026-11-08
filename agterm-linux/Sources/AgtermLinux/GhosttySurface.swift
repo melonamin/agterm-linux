@@ -559,7 +559,7 @@ final class GhosttySurface: PaneRoleMutableSurface {
     func mouseMoved(_ controller: OpaquePointer?, x: Double, y: Double) {
         guard let surface else { return }
         let point = GhosttySurfaceGeometry.pointerPosition(gtkX: x, gtkY: y)
-        ghostty_surface_mouse_pos(surface, point.x, point.y, currentMods(controller))
+        ghostty_surface_mouse_pos(surface, point.x, point.y, linkInputModifiers(currentMods(controller)))
     }
 
     /// Pointer left the surface: report an out-of-bounds position so libghostty clears
@@ -574,10 +574,11 @@ final class GhosttySurface: PaneRoleMutableSurface {
         let point = GhosttySurfaceGeometry.pointerPosition(gtkX: x, gtkY: y)
         let mods = currentMods(gesture)
         if pressed { rememberLinkModifiers(mods) }
-        ghostty_surface_mouse_pos(surface, point.x, point.y, mods)
+        let engineMods = linkInputModifiers(mods)
+        ghostty_surface_mouse_pos(surface, point.x, point.y, engineMods)
         let btn = gesture.map { gtk_gesture_single_get_current_button($0) } ?? 1
         let gbtn: ghostty_input_mouse_button_e = btn == 2 ? GHOSTTY_MOUSE_MIDDLE : (btn == 3 ? GHOSTTY_MOUSE_RIGHT : GHOSTTY_MOUSE_LEFT)
-        _ = ghostty_surface_mouse_button(surface, pressed ? GHOSTTY_MOUSE_PRESS : GHOSTTY_MOUSE_RELEASE, gbtn, mods)
+        _ = ghostty_surface_mouse_button(surface, pressed ? GHOSTTY_MOUSE_PRESS : GHOSTTY_MOUSE_RELEASE, gbtn, engineMods)
     }
 
     func setFocus(_ focused: Bool) {

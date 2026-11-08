@@ -2,17 +2,24 @@
 
 import http.server
 import os
+import re
 import shlex
 from pathlib import Path
 import subprocess
 import threading
 import time
+from urllib.parse import urlparse
 
 from atspi_smoke import (CTL, collect, launch, mouse_click, raw_control_json, sidebar_column,
                          stop, wait_for, window_extents, window_list)
 
 
 def verify_v0411(env, state):
+    reveal = Path(state, "file-reveal.url")
+    env = dict(env, AGTERM_ATSPI_URL_CAPTURE=str(reveal))
+    config = Path(state, "config")
+    config.mkdir(exist_ok=True)
+    (config / "ghostty.conf").write_text("mouse-shift-capture = true\n", encoding="utf-8")
     process, app = launch(env)
     requests = []
 
@@ -166,6 +173,18 @@ def verify_v0411(env, state):
             wait_for(lambda: page().get("state") == "loaded" and page().get("id") != previous,
                      "re-click did not replace hidden clicked page: " + kind + " " + str(row()))
             request("session.overlay.close", identity)
+            reveal.unlink(missing_ok=True)
+            for reveal_top in (retry_top, 80, 72, 88, 96, 64, 56, 48):
+                subprocess.run(["xdotool", "mousemove", "0", "0"], check=True, env=env)
+                mouse_click(lambda: frame, process.pid, button="left", modifier="ctrl+shift",
+                            x_fraction=(sidebar.x + sidebar.width + 45) / bounds.width,
+                            dy=-bounds.height // 2 + reveal_top)
+                time.sleep(0.15)
+                if reveal.exists():
+                    break
+            assert reveal.exists(), "Ctrl+Shift-click did not dispatch file-manager reveal: " + kind
+            assert urlparse(reveal.read_text()).path.rstrip("/") == state, reveal.read_text()
+            assert not row().get("htmlOverlays"), "reveal chord opened another page"
             request("session.close", identity)
         identity = original
         invalid = Path(state, "binary.txt")
@@ -174,6 +193,25 @@ def verify_v0411(env, state):
         assert not refused["ok"] and "UTF-8" in refused["error"], refused
         assert not row().get("htmlOverlays"), row()
         assert not requests, requests
+        mouse_report = Path(state, "mouse-report.bin")
+        reporter = Path(state, "mouse-report.py")
+        reporter.write_text("import os, tty\ntty.setraw(0)\n"
+                            "os.write(1, b'\\x1b[?1000h\\x1b[?1006hTUI pointer fixture')\n"
+                            "while True:\n"
+                            "    data = os.read(0, 4096)\n"
+                            "    if not data: break\n"
+                            f"    with open({str(mouse_report)!r}, 'ab') as output: output.write(data)\n", encoding="utf-8")
+        identity = request("session.new", args={"name": "Captured pointer fixture",
+                                                "command": "/usr/bin/python3 " + shlex.quote(str(reporter))})["id"]
+        wait_for(lambda: "TUI pointer fixture" in request("session.text", identity)["text"], "mouse-reporting TUI did not start")
+        reveal.unlink(missing_ok=True)
+        subprocess.run(["xdotool", "mousemove", "0", "0"], check=True, env=env)
+        mouse_click(lambda: frame, process.pid, button="left", modifier="ctrl+shift", x_fraction=0.75, dy=100)
+        wait_for(lambda: mouse_report.exists() and re.search(rb"\x1b\[<20;\d+;\d+M", mouse_report.read_bytes()),
+                 "mouse-reporting TUI lost Ctrl+Shift modifiers")
+        assert not reveal.exists(), "mouse-reporting TUI dispatched desktop reveal"
+        request("session.close", identity)
+        print("OK: Ctrl+Shift reveals clicked files and preserves captured TUI pointer modifiers")
         print("OK: v0.41 text/search/diff/log lifecycle, density, tint and status control/readback")
     finally:
         network.shutdown()

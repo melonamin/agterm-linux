@@ -2,6 +2,18 @@ import CGtk
 import Foundation
 import agtermCore
 
+enum LinuxLinkModifierPolicy {
+    static let revealChord = GHOSTTY_MODS_CTRL.rawValue | GHOSTTY_MODS_SHIFT.rawValue
+
+    static func reveals(_ mods: ghostty_input_mods_e, mouseCaptured: Bool) -> Bool {
+        mods.rawValue == revealChord && !mouseCaptured
+    }
+
+    static func forEngine(_ mods: ghostty_input_mods_e, mouseCaptured: Bool) -> ghostty_input_mods_e {
+        reveals(mods, mouseCaptured: mouseCaptured) ? GHOSTTY_MODS_CTRL : mods
+    }
+}
+
 @MainActor
 extension AppController {
     func linkOpenMode(_ mode: LinkOpenMode?) -> ControlResponse {
@@ -18,8 +30,18 @@ extension AppController {
 @MainActor
 extension GhosttySurface {
     func rememberLinkModifiers(_ mods: ghostty_input_mods_e) {
-        let browserChord = GHOSTTY_MODS_CTRL.rawValue | GHOSTTY_MODS_SHIFT.rawValue
-        linkBrowserOverride = mods.rawValue == browserChord && surface.map { !ghostty_surface_mouse_captured($0) } == true
+        linkBrowserOverride = LinuxLinkModifierPolicy.reveals(mods, mouseCaptured: mouseCapturedForLinks)
+    }
+
+    /// Match Ghostty's Ctrl-only links while retaining the reveal chord at the host boundary.
+    /// Mouse-reporting TUIs receive their original modifiers, including Shift.
+    func linkInputModifiers(_ mods: ghostty_input_mods_e) -> ghostty_input_mods_e {
+        guard mods.rawValue == LinuxLinkModifierPolicy.revealChord else { return mods }
+        return LinuxLinkModifierPolicy.forEngine(mods, mouseCaptured: mouseCapturedForLinks)
+    }
+
+    private var mouseCapturedForLinks: Bool {
+        surface.map { ghostty_surface_mouse_captured($0) } ?? true
     }
 
     var linkClickOrigin: LinkPolicy.ClickOrigin {
