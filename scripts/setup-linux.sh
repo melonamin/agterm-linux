@@ -38,14 +38,28 @@ for command in git curl tar sha256sum tic infocmp file; do
   command -v "$command" >/dev/null || { echo "$command is required to vendor Linux runtimes" >&2; exit 1; }
 done
 ZIG=""
-if command -v mise >/dev/null; then
-  ZIG="$(mise where zig@0.16.0 2>/dev/null || true)/bin/zig"
+if $need_zmx; then
+  if command -v mise >/dev/null; then
+    ZIG="$(mise where zig@0.16.0 2>/dev/null || true)/bin/zig"
+  fi
+  if [[ ! -x "$ZIG" ]]; then
+    ZIG="$(command -v zig || true)"
+  fi
+  [[ -x "$ZIG" ]] || { echo "zig 0.16.0 is required to build Linux runtimes" >&2; exit 1; }
+  [[ "$($ZIG version)" == "0.16.0" ]] || { echo "setup-linux.sh requires zig 0.16.0" >&2; exit 1; }
 fi
-if [[ ! -x "$ZIG" ]]; then
-  ZIG="$(command -v zig || true)"
+
+# Ghostty 1.4 uses Zig 0.17; zmx retains its independent 0.16 pin.
+GHOSTTY_ZIG="${GHOSTTY_ZIG:-}"
+if $need_ghostty; then
+  if [[ ! -x "$GHOSTTY_ZIG" ]] && command -v mise >/dev/null; then
+    GHOSTTY_ZIG="$(mise where zig@0.17.0 2>/dev/null || true)/bin/zig"
+  fi
+  [[ -x "$GHOSTTY_ZIG" ]] || GHOSTTY_ZIG="$(command -v zig || true)"
+  [[ -x "$GHOSTTY_ZIG" && "$($GHOSTTY_ZIG version)" == 0.17.0 ]] || {
+    echo "zig 0.17.0 is required for Ghostty (set GHOSTTY_ZIG)" >&2; exit 1;
+  }
 fi
-[[ -x "$ZIG" ]] || { echo "zig 0.16.0 is required to build Linux runtimes" >&2; exit 1; }
-[[ "$($ZIG version)" == "0.16.0" ]] || { echo "setup-linux.sh requires zig 0.16.0" >&2; exit 1; }
 
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
@@ -76,7 +90,7 @@ if $need_ghostty; then
     export ZIG_GLOBAL_CACHE_DIR="$GHOSTTY_BUILD/.zig-global-cache"
     export ZIG_LOCAL_CACHE_DIR="$GHOSTTY_BUILD/.zig-cache"
     export XDG_CACHE_HOME="$BUILD_DIR/xdg-cache"
-    "$ZIG" build -Doptimize=ReleaseFast -Dapp-runtime=none -Dtarget="$ZIG_TARGET" \
+    "$GHOSTTY_ZIG" build -Doptimize=ReleaseFast -Dapp-runtime=none -Dtarget="$ZIG_TARGET" \
       -Demit-themes=false -Demit-terminfo=true
   )
 

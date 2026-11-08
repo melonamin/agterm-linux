@@ -82,7 +82,7 @@ class Context:
 class Surface:
     def __init__(self):
         self.pointer = self.owner = self.gdk_owner = None
-        self.sampler_in_new = False
+        self.sampler_created = False
         self.drawn = False
         self.freed_in = None
 
@@ -218,8 +218,8 @@ class Replay:
                 self.diag("BRACKET_MISSING", f"libghostty create {record['kind']} {record['name']} outside a bracket")
                 return
             surface = opened[1]
-            if record["kind"] == "sampler" and opened[0] == "new":
-                surface.sampler_in_new = True
+            if record["kind"] == "sampler" and opened[0] in ("new", "draw"):
+                surface.sampler_created = True
         self.ledger[self.key(record["kind"], record["name"], current)] = Entry(
             record["kind"], record["name"], surface, caller)
 
@@ -398,9 +398,9 @@ class Replay:
             elif not seed.deleted_in_free:
                 self.diag("SEED_NOT_DELETED", seed.name)
         self.path = SHADER_SEED_PATH
-        if not any(surface.sampler_in_new and surface.drawn and surface.freed_in == SHADER_SEED_PATH
+        if not any(surface.sampler_created and surface.drawn and surface.freed_in == SHADER_SEED_PATH
                    for surface in self.seed_surfaces):
-            self.diag("SEED_NOT_UPLOADED", "shader: no sampler in the seeded surface's NEW bracket plus a draw")
+            self.diag("SEED_NOT_UPLOADED", "shader: no sampler in the seeded surface's NEW/DRAW brackets plus a draw")
         self.path = None
 
     def check_host(self):

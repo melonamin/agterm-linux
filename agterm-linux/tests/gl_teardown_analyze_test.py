@@ -300,6 +300,15 @@ class Seeds(Case):
                  for line in clean_log()]
         self.assert_diag(lines, "SEED_NOT_UPLOADED")
 
+    def test_a_shader_sampler_created_on_first_draw(self):
+        # Ghostty 1.4 creates GPU state lazily in its owner's first draw.
+        lines = clean_log()
+        sampler = next(line for line in lines if "GL_CREATE kind=sampler name=71" in line)
+        lines.remove(sampler)
+        drawn = next(index for index, line in enumerate(lines) if "DRAW_BEGIN surface=0xc0" in line)
+        lines.insert(drawn + 1, sampler)
+        self.assert_clean(lines)
+
     def test_a_missing_shader_sampler(self):
         block = [*seeded_surface(sampler=False), "MARK session-background begin",
                  *free("0xc0", "0xe0", OWNER, SEED_DELETES[:2]), "MARK session-background end"]

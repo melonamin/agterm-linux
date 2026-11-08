@@ -119,6 +119,12 @@ echo "agterm cache test reached the libghostty rebuild path" >&2
 exit 97
 EOF
 chmod 0755 "$WORK/git"
+cat > "$WORK/zig17" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == version ]] || exit 96
+printf '0.17.0\n'
+EOF
+chmod 0755 "$WORK/zig17"
 
 install -m755 "$WORK/libghostty-x86_64.so" \
   "$SETUP_ROOT/agterm-linux/vendor/ghostty/lib/libghostty.so"
@@ -127,7 +133,7 @@ AGTERM_TEST_UNAME=x86_64 PATH="$WORK:/usr/bin:/bin" "$SETUP_ROOT/scripts/setup-l
 install -m755 "$WORK/libghostty-aarch64.so" \
   "$SETUP_ROOT/agterm-linux/vendor/ghostty/lib/libghostty.so"
 setup_output=""
-if setup_output="$(AGTERM_TEST_UNAME=x86_64 PATH="$WORK:$PATH" \
+if setup_output="$(AGTERM_TEST_UNAME=x86_64 PATH="$WORK:$PATH" GHOSTTY_ZIG="$WORK/zig17" \
     "$SETUP_ROOT/scripts/setup-linux.sh" 2>&1)"; then
   echo "setup-linux.sh unexpectedly reused a stale aarch64 cache on x86_64" >&2
   exit 1
