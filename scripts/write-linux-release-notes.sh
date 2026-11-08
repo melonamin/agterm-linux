@@ -71,6 +71,9 @@ fi
   echo
   echo "- DEB: Ubuntu 24.04 / Debian 13 or newer compatible systems."
   echo "- RPM: modern Fedora-compatible systems with glibc 2.39 or newer."
+  if [[ "$VERSION" != *-* ]]; then
+    echo "- pkg.tar.zst: Arch Linux package; install with \`sudo pacman -U ./agterm-linux-bin-${VERSION#v}-1-x86_64.pkg.tar.zst\`."
+  fi
   echo "- tar.gz: relocatable payload for compatible modern distributions with GTK4, libadwaita, and WebKitGTK 6.0 installed."
   echo
   echo "Verify downloads with \`agterm-linux-${VERSION}-SHA256SUMS\` or GitHub's build provenance:"

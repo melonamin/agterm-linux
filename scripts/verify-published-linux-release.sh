@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Download and authenticate the exact public artifact set for a stable Linux release.
-# Usage: scripts/verify-published-linux-release.sh TAG
+# Usage: scripts/verify-published-linux-release.sh TAG [--require-arch]
 set -euo pipefail
 
-if (( $# != 1 )); then
-  echo "usage: scripts/verify-published-linux-release.sh TAG" >&2
+if (( $# < 1 || $# > 2 )) || [[ "${2:---require-arch}" != --require-arch ]]; then
+  echo "usage: scripts/verify-published-linux-release.sh TAG [--require-arch]" >&2
   exit 2
 fi
 
@@ -32,9 +32,6 @@ expected=(
 if [[ "$(printf '%s\n' "$VERSION" '0.33.1' | sort -V | head -n 1)" == "$VERSION" && "$VERSION" != 0.33.1* ]]; then
   expected+=("agterm-v${VERSION}-x86_64.AppImage")
 fi
-payloads=("${expected[@]}")
-expected+=("agterm-linux-v${VERSION}-SHA256SUMS")
-
 if [[ -n "$SOURCE" ]]; then
   [[ -d "$SOURCE" ]] || { echo "release fixture directory does not exist: $SOURCE" >&2; exit 1; }
   cp -a "$SOURCE/." "$DOWNLOAD/"
@@ -42,6 +39,15 @@ else
   command -v "$GH" >/dev/null || { echo "$GH is required to download and verify the release" >&2; exit 1; }
   "$GH" release download "$TAG" --repo "$REPOSITORY" --dir "$DOWNLOAD"
 fi
+
+# Older immutable releases have no Arch package. Authenticate it whenever present,
+# and require it explicitly for releases produced by the current stable workflow.
+arch_package="agterm-linux-bin-${VERSION}-1-x86_64.pkg.tar.zst"
+if [[ "${2:-}" == --require-arch || -f "$DOWNLOAD/$arch_package" ]]; then
+  expected+=("$arch_package")
+fi
+payloads=("${expected[@]}")
+expected+=("agterm-linux-v${VERSION}-SHA256SUMS")
 
 actual_list="$WORK/actual"
 expected_list="$WORK/expected"

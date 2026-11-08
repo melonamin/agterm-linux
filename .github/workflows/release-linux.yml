@@ -37,6 +37,10 @@ jobs:
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       aur_publish: ${{ steps.release.outputs.aur_publish }}
+      version: ${{ steps.release.outputs.version }}
+      package_version: ${{ steps.release.outputs.package_version }}
+      commit: ${{ steps.release.outputs.commit }}
+      source_date_epoch: ${{ steps.release.outputs.source_date_epoch }}
     timeout-minutes: 45
     container: swift:6.3.2-noble
     defaults:
@@ -221,11 +225,6 @@ jobs:
       - name: Verify Linux release formats
         run: scripts/verify-linux-packages.sh "${{ steps.release.outputs.package_version }}" dist-linux
 
-      - name: Generate artifact attestations
-        uses: actions/attest@v4
-        with:
-          subject-path: dist-linux/*
-
       - name: Write release notes
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -235,19 +234,80 @@ jobs:
           "${{ steps.release.outputs.commit }}"
           release-notes.md
 
+      - name: Transfer verified packages and release notes
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-release-build
+          path: |
+            dist-linux/*
+            release-notes.md
+          if-no-files-found: error
+          retention-days: 3
+
+  publish-linux:
+    name: Validate Arch and publish Linux release
+    needs: release-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-linux.outputs.commit }}
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: linux-release-build
+          path: .
+
+      - name: Build, install, and exercise the Arch release package
+        if: needs.release-linux.outputs.aur_publish == 'true'
+        env:
+          PACKAGE_VERSION: ${{ needs.release-linux.outputs.package_version }}
+          SOURCE_DATE_EPOCH: ${{ needs.release-linux.outputs.source_date_epoch }}
+        run: scripts/test-aur-package.sh "$PACKAGE_VERSION" dist-linux
+
+      - name: Upload Arch diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-release-arch-diagnostics
+          path: artifacts/aur
+          if-no-files-found: warn
+
+      - name: Check final release checksums
+        working-directory: dist-linux
+        env:
+          PACKAGE_VERSION: ${{ needs.release-linux.outputs.package_version }}
+        run: sha256sum --check --strict "agterm-linux-v${PACKAGE_VERSION}-SHA256SUMS"
+
+      - name: Generate artifact attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: dist-linux/*
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ steps.release.outputs.tag }}
-          target_commitish: ${{ steps.release.outputs.commit }}
+          tag_name: ${{ needs.release-linux.outputs.tag }}
+          target_commitish: ${{ needs.release-linux.outputs.commit }}
           files: dist-linux/*
           fail_on_unmatched_files: true
-          name: agterm-linux ${{ steps.release.outputs.version }}
+          name: agterm-linux ${{ needs.release-linux.outputs.version }}
           body_path: release-notes.md
           make_latest: true
 
+      - name: Verify public release assets and provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-linux.outputs.tag }}
+          ARCH_PACKAGE: ${{ needs.release-linux.outputs.aur_publish }}
+        run: |
+          args=("$RELEASE_TAG")
+          if [[ "$ARCH_PACKAGE" == true ]]; then args+=(--require-arch); fi
+          scripts/verify-published-linux-release.sh "${args[@]}"
+
   publish-aur:
-    needs: release-linux
+    needs: [release-linux, publish-linux]
     if: needs.release-linux.outputs.aur_publish == 'true'
     permissions:
       contents: read
