@@ -6,11 +6,14 @@ pkgdesc='Native terminal with a workspace and session sidebar, built on libghost
 arch=('x86_64')
 url='https://github.com/melonamin/agterm-linux'
 license=('MIT')
+provides=('agterm-linux')
+conflicts=('agterm-linux')
+options=('!strip' '!debug')
 depends=('bash' 'glibc' 'gtk4' 'libadwaita' 'libepoxy' 'webkitgtk-6.0' 'python' 'librsvg' 'webp-pixbuf-loader')
 makedepends=('patchelf')
-optdepends=('zsh: required for live session restore')
+optdepends=('zsh: live session restore with zsh' 'fish: live session restore with fish')
 source=(
-    "${url}/releases/download/linux-v${pkgver}/agterm-linux-v${pkgver}-x86_64.tar.gz"
+    "${url}/releases/download/linux-v${pkgver}/agterm-linux-v${pkgver}-${CARCH}.tar.gz"
     "LICENSE::${url}/raw/linux-v${pkgver}/LICENSE"
 )
 sha256sums=(
