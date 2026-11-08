@@ -28,6 +28,9 @@ for product in "$BIN" "$CTL"; do
 done
 "$PYTHON" -c 'import gi; gi.require_version("Atspi", "2.0"); from gi.repository import Atspi'
 "$PYTHON" "$ROOT/agterm-linux/tests/check_svg_icons.py" "$ROOT/agterm-linux/Resources/icons"
+"$PYTHON" "$ROOT/agterm-linux/tests/gl_teardown_analyze_test.py"
+"$PYTHON" "$ROOT/agterm-linux/tests/gl_teardown_paths_test.py"
+"$PYTHON" "$ROOT/agterm-linux/tests/gl_teardown_exit_test.py"
 
 mkdir -p "$ARTIFACT_DIR" "$RUN_ROOT/home" "$RUN_ROOT/state" "$RUN_ROOT/runtime" "$RUN_ROOT/tmp"
 chmod 0700 "$RUN_ROOT/runtime"

@@ -60,19 +60,19 @@ final class GhosttyApp: @unchecked Sendable {
         rt.supports_selection_clipboard = true
         rt.wakeup_cb = { _ in GhosttyApp.shared.scheduleTick() }
         rt.action_cb = { _, target, action in GhosttyApp.shared.handleAction(target, action) }
-        rt.read_clipboard_cb = { ud, loc, state in GhosttyApp.readClipboard(ud, loc, state) }
-        rt.confirm_read_clipboard_cb = { ud, content, state, request in
-            GhosttyApp.confirmReadClipboard(ud, content, state, request)
+        rt.read_clipboard_cb = { ud, loc, state, mimes, count, list in
+            GhosttyApp.readClipboard(ud, loc, state, LinuxClipboardAdapter.copyMimes(mimes, count: count), list)
+        }
+        rt.confirm_read_clipboard_cb = { ud, confirm, state, request in
+            GhosttyApp.confirmReadClipboard(ud, confirm, state, request)
         }
         rt.write_clipboard_cb = { ud, loc, content, len, confirm in
-            GhosttyApp.writeClipboard(ud, content, len, loc, confirm)
+            GhosttyApp.writeClipboard(ud, LinuxClipboardAdapter.copyItems(content, count: len), loc, confirm)
         }
         rt.close_surface_cb = { ud, _ in
-            guard let retained = RetainedGhosttySurface(ud) else { return }
-            runOnMain { MainActor.assumeIsolated {
-                retained.surface.handleProcessExit()
-                retained.release()
-            } }
+            // not "close": on a plain exit SHOW_CHILD_EXITED logs that first, and each kind logs once
+            guard let retained = RetainedGhosttySurface(ud, kind: "close_surface") else { return }
+            GhosttyApp.queueProcessExit(retained)
         }
 
         app = ghostty_app_new(&rt, cfg)
@@ -213,7 +213,9 @@ final class GhosttyApp: @unchecked Sendable {
     // MARK: - Action routing (runs on the main thread, during a tick)
 
     private func handleAction(_ target: ghostty_target_s, _ action: ghostty_action_s) -> Bool {
-        MainActor.assumeIsolated {
+        // true, because a false OPEN_URL runs the engine's own opener; SHOW_CHILD_EXITED's answer only picks its message
+        if Self.dropsQuarantined(target, action.tag) { return true }
+        return MainActor.assumeIsolated {
             switch action.tag {
             case GHOSTTY_ACTION_RENDER:
                 Self.wrapper(fromTarget: target)?.queueRender()
@@ -240,10 +242,7 @@ final class GhosttyApp: @unchecked Sendable {
                     return false
                 }
                 guard let retained else { return false }
-                runOnMain { MainActor.assumeIsolated {
-                    retained.surface.handleProcessExit()
-                    retained.release()
-                } }
+                Self.queueProcessExit(retained)
                 return true
             case GHOSTTY_ACTION_CELL_SIZE:
                 // fires when the cell pixel size changes (font-size via Ctrl+/-, or a DPI change):
@@ -373,98 +372,80 @@ final class GhosttyApp: @unchecked Sendable {
     }
 
     // MARK: - Clipboard (GTK4 reads are async)
+    //
+    // libghostty fires these from `ghostty_app_tick` and from the surface input calls, all on the GTK main
+    // thread, so GDK is safe here and each callback's result can be decided before it returns.
 
-    private static func gdkClipboard(for loc: ghostty_clipboard_e) -> OpaquePointer? {
-        guard let display = gdk_display_get_default() else { return nil }
-        if loc == GHOSTTY_CLIPBOARD_SELECTION {
-            return gdk_display_get_primary_clipboard(display)
-        }
-        return gdk_display_get_clipboard(display)
-    }
-
-    private static func readClipboard(_ ud: UnsafeMutableRawPointer?, _ loc: ghostty_clipboard_e, _ state: UnsafeMutableRawPointer?) -> Bool {
-        guard let retained = RetainedGhosttySurface(ud) else { return false }
+    private static func readClipboard(_ ud: UnsafeMutableRawPointer?, _ loc: ghostty_clipboard_e, _ state: UnsafeMutableRawPointer?,
+                                      _ mimes: [String], _ list: Bool) -> ghostty_clipboard_read_result_e {
+        nonisolated(unsafe) let userdata = ud
         nonisolated(unsafe) let requestState = state
-        runOnMain {
-            MainActor.assumeIsolated {
-                guard let surface = retained.surface.surface else {
-                    retained.release()
-                    return
-                }
-                guard let clipboard = gdkClipboard(for: loc) else {
-                    "".withCString { ghostty_surface_complete_clipboard_request(surface, $0, requestState, false) }
-                    retained.release()
-                    return
-                }
-                let req = ClipboardRequest(state: requestState, retained: retained)
-                gdk_clipboard_read_text_async(
-                    clipboard, nil,
-                    { source, result, data in
-                        let req = Unmanaged<ClipboardRequest>.fromOpaque(data!).takeRetainedValue()
-                        defer { req.retained.release() }
-                        guard let source else {
-                            MainActor.assumeIsolated { req.complete("") }
-                            return
-                        }
-                        let text = gdk_clipboard_read_text_finish(OpaquePointer(source), result, nil)
-                        let raw = text.map { String(cString: $0) } ?? ""
-                        // a file-manager copy lands as a file:// uri-list → paste the POSIX paths, like macOS.
-                        let value = PasteDecoder.posixPaths(fromURIList: raw) ?? raw
-                        MainActor.assumeIsolated { req.complete(value) }
-                        if let text { g_free(text) }
-                    },
-                    Unmanaged.passRetained(req).toOpaque()
-                )
+        return MainActor.assumeIsolated {
+            guard let surface = surface(from: userdata), let clipboard = LinuxClipboardAdapter.gdkClipboard(for: loc) else {
+                return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED
+            }
+            switch LinuxClipboardPolicy.readPlan(mimes: mimes, list: list) {
+            case .unavailable:
+                return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE
+            case .listOnly:
+                let available = LinuxClipboardPolicy.listing(hasText: LinuxClipboardAdapter.advertisesText(clipboard))
+                LinuxClipboardAdapter.complete(surface, items: [], available: available, state: requestState)
+                return GHOSTTY_CLIPBOARD_READ_STARTED
+            case .text(let wantsList):
+                guard let retained = RetainedGhosttySurface(userdata) else { return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
+                // Taken as the read starts, from the offer GDK reads.
+                let read = ClipboardTextRead(state: requestState, retained: retained, list: wantsList,
+                                             advertisesURIList: LinuxClipboardAdapter.advertisesURIList(clipboard))
+                LinuxClipboardAdapter.readText(clipboard, read)
+                return GHOSTTY_CLIPBOARD_READ_STARTED
             }
         }
-        return true
     }
 
-    private static func confirmReadClipboard(_ ud: UnsafeMutableRawPointer?, _ content: UnsafePointer<CChar>?,
+    private static func confirmReadClipboard(_ ud: UnsafeMutableRawPointer?, _ confirm: UnsafePointer<ghostty_clipboard_confirm_s>?,
                                              _ state: UnsafeMutableRawPointer?, _ request: ghostty_clipboard_request_e) {
-        guard let retained = RetainedGhosttySurface(ud) else { return }
-        guard request == GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ else {
-            let text = content.map { String(cString: $0) } ?? ""
-            nonisolated(unsafe) let requestState = state
+        nonisolated(unsafe) let userdata = ud
+        nonisolated(unsafe) let requestState = state
+        let payload = confirm.map { LinuxClipboardAdapter.copyConfirmation($0.pointee) }
+        MainActor.assumeIsolated {
+            guard let surface = surface(from: userdata) else { return }
+            guard let payload else {
+                ghostty_surface_deny_clipboard_request(surface, requestState)
+                return
+            }
+            guard let access = LinuxClipboardPolicy.access(for: LinuxClipboardAdapter.requestKind(request)) else {
+                LinuxClipboardAdapter.complete(surface, items: payload.items, available: payload.available,
+                                               state: requestState, confirmed: true)
+                return
+            }
+            guard let retained = RetainedGhosttySurface(userdata) else { return }
+            // a modal prompt inside this callback would reenter the tick that fired it
             runOnMain {
                 MainActor.assumeIsolated {
-                    defer { retained.release() }
-                    guard let surface = retained.surface.surface else { return }
-                    text.withCString { ghostty_surface_complete_clipboard_request(surface, $0, requestState, true) }
-                }
-            }
-            return
-        }
-        let text = content.map { String(cString: $0) } ?? ""
-        nonisolated(unsafe) let requestState = state
-        runOnMain {
-            MainActor.assumeIsolated {
-                let requester = retained.surface
-                guard requester.surface != nil else {
-                    retained.release()
-                    return
-                }
-                ClipboardPromptController.shared.request(.read, requester: requester) { allowed in
-                    defer { retained.release() }
-                    guard let surface = requester.surface else { return }
-                    let delivered = allowed ? text : ""
-                    delivered.withCString { ghostty_surface_complete_clipboard_request(surface, $0, requestState, true) }
+                    let requester = retained.surface
+                    guard requester.surface != nil else {
+                        retained.release()
+                        return
+                    }
+                    let answer = LinuxClipboardAdapter.confirmationAnswer(liveSurface: { requester.surface }, payload: payload,
+                                                                          state: requestState)
+                    ClipboardPromptController.shared.request(access, requester: requester) { allowed in
+                        defer { retained.release() }
+                        answer(allowed)
+                    }
                 }
             }
         }
     }
 
-    private static func writeClipboard(_ ud: UnsafeMutableRawPointer?, _ content: UnsafePointer<ghostty_clipboard_content_s>?,
-                                       _ len: Int, _ loc: ghostty_clipboard_e, _ confirm: Bool) {
-        guard let content, len > 0 else { return }
-        var text: String?
-        for item in UnsafeBufferPointer(start: content, count: len) {
-            guard let data = item.data, let mime = item.mime, String(cString: mime).hasPrefix("text/plain") else { continue }
-            text = String(cString: data)
-            break
+    private static func writeClipboard(_ ud: UnsafeMutableRawPointer?, _ items: [ClipboardItem], _ loc: ghostty_clipboard_e, _ confirm: Bool) {
+        guard !gSurfaceQuarantine.drops(quarantineKey(ud), kind: "clipboard write"), !items.isEmpty else { return }
+        guard confirm else {
+            // synchronous so a same-tick read sees it, which GDK allows only on its own thread
+            assert(g_main_context_is_owner(g_main_context_default()) != 0, "clipboard write off the GTK main thread")
+            LinuxClipboardAdapter.setClipboard(items, loc: loc)
+            return
         }
-        guard let text else { return }
-        guard confirm else { setClipboard(text, loc: loc); return }
         guard let retained = RetainedGhosttySurface(ud) else { return }
         runOnMain {
             MainActor.assumeIsolated {
@@ -473,17 +454,13 @@ final class GhosttyApp: @unchecked Sendable {
                     retained.release()
                     return
                 }
+                let answer = gSurfaceQuarantine.writeAnswer(key: retained.key) { LinuxClipboardAdapter.setClipboard(items, loc: loc) }
                 ClipboardPromptController.shared.request(.write, requester: requester) { allowed in
                     defer { retained.release() }
-                    if allowed { setClipboard(text, loc: loc) }
+                    answer(allowed)
                 }
             }
         }
-    }
-
-    private static func setClipboard(_ text: String, loc: ghostty_clipboard_e) {
-        guard let clipboard = gdkClipboard(for: loc) else { return }
-        text.withCString { gdk_clipboard_set_text(clipboard, $0) }
     }
 
     // MARK: - userdata recovery
@@ -492,14 +469,41 @@ final class GhosttyApp: @unchecked Sendable {
         wrapper(from: ud)?.surface
     }
     static func wrapper(from ud: UnsafeMutableRawPointer?) -> GhosttySurface? {
-        guard let ud else { return nil }
+        guard let ud, !gSurfaceQuarantine.drops(quarantineKey(ud), kind: "clipboard read") else { return nil }
         return Unmanaged<GhosttySurface>.fromOpaque(ud).takeUnretainedValue()
     }
     static func wrapper(fromTarget target: ghostty_target_s) -> GhosttySurface? {
-        guard target.tag == GHOSTTY_TARGET_SURFACE,
-              let surface = target.target.surface,
-              let ud = ghostty_surface_userdata(surface) else { return nil }
+        guard let ud = targetUserdata(target), !gSurfaceQuarantine.contains(quarantineKey(ud)) else { return nil }
         return Unmanaged<GhosttySurface>.fromOpaque(ud).takeUnretainedValue()
+    }
+    private static func targetUserdata(_ target: ghostty_target_s) -> UnsafeMutableRawPointer? {
+        guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface else { return nil }
+        return ghostty_surface_userdata(surface)
+    }
+    static func quarantineKey(_ ud: UnsafeMutableRawPointer?) -> UInt {
+        LinuxSurfaceQuarantine<GhosttySurfaceQuarantineRecord>.key(ud)
+    }
+    private static func dropsQuarantined(_ target: ghostty_target_s, _ tag: ghostty_action_tag_e) -> Bool {
+        guard let ud = targetUserdata(target) else { return false }
+        return gSurfaceQuarantine.drops(quarantineKey(ud), kind: actionName(tag))
+    }
+    private static func actionName(_ tag: ghostty_action_tag_e) -> String {
+        switch tag {
+        case GHOSTTY_ACTION_MOUSE_SHAPE: "MOUSE_SHAPE"
+        case GHOSTTY_ACTION_SET_TITLE: "SET_TITLE"
+        case GHOSTTY_ACTION_DESKTOP_NOTIFICATION: "DESKTOP_NOTIFICATION"
+        case GHOSTTY_ACTION_SHOW_CHILD_EXITED: "close"   // a `command` surface always waits, so close_surface_cb never fires
+        default: "action \(tag.rawValue)"
+        }
+    }
+
+    /// The closing hop for both `close_surface_cb` and `SHOW_CHILD_EXITED`.
+    private static func queueProcessExit(_ retained: RetainedGhosttySurface) {
+        let exit = gSurfaceQuarantine.exitHop(key: retained.key) { MainActor.assumeIsolated { retained.surface.handleProcessExit() } }
+        runOnMain { MainActor.assumeIsolated {
+            exit()
+            retained.release()
+        } }
     }
 
     /// Bundled config defaults select Ghostty's TERM only when its complete resource pair resolved.
@@ -534,22 +538,6 @@ final class GhosttyApp: @unchecked Sendable {
     }
 }
 
-final class ClipboardRequest: @unchecked Sendable {
-    let state: UnsafeMutableRawPointer?
-    let retained: RetainedGhosttySurface
-    init(state: UnsafeMutableRawPointer?, retained: RetainedGhosttySurface) {
-        self.state = state
-        self.retained = retained
-    }
-
-    /// Rereads the live surface, which a teardown during the GDK read frees.
-    /// The orphaned request state then leaks: no C API frees it without the surface.
-    @MainActor func complete(_ text: String) {
-        guard let surface = retained.surface.surface else { return }
-        text.withCString { ghostty_surface_complete_clipboard_request(surface, $0, state, false) }
-    }
-}
-
 /// Run a closure on the GTK main thread (callbacks may fire off-main).
 func runOnMain(_ body: @escaping @Sendable () -> Void) {
     let box = Unmanaged.passRetained(MainClosure(body)).toOpaque()
@@ -564,10 +552,12 @@ final class MainClosure: @unchecked Sendable { let body: @Sendable () -> Void; i
 final class RetainedGhosttySurface: @unchecked Sendable {
     private let retained: Unmanaged<GhosttySurface>
 
-    init?(_ ud: UnsafeMutableRawPointer?) {
-        guard let ud else { return nil }
+    init?(_ ud: UnsafeMutableRawPointer?, kind: String = "close") {
+        guard let ud, !gSurfaceQuarantine.drops(GhosttyApp.quarantineKey(ud), kind: kind) else { return nil }
         retained = Unmanaged<GhosttySurface>.fromOpaque(ud).retain()
     }
+
+    var key: UInt { GhosttyApp.quarantineKey(retained.toOpaque()) }
 
     @MainActor var surface: GhosttySurface { retained.takeUnretainedValue() }
 

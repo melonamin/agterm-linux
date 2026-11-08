@@ -1,8 +1,8 @@
 diff --git i/src/apprt/embedded.zig w/src/apprt/embedded.zig
-index 7310159..b3fcc80 100644
+index 8a5f5fc58..f7725108e 100644
 --- i/src/apprt/embedded.zig
 +++ w/src/apprt/embedded.zig
-@@ -1576,6 +1576,8 @@ pub const CAPI = struct {
+@@ -1873,6 +1873,8 @@ pub const CAPI = struct {
          surface: *Surface,
          source: apprt.surface.NewSurfaceContext,
      ) Surface.Options {
@@ -10,17 +10,17 @@ index 7310159..b3fcc80 100644
 +        defer demand.deinit();
          return surface.newSurfaceOptions(source);
      }
-
-@@ -1748,6 +1750,8 @@ pub const CAPI = struct {
-
+ 
+@@ -2038,6 +2040,8 @@ pub const CAPI = struct {
+ 
      /// Update the focused state of a surface.
      export fn ghostty_surface_set_focus(surface: *Surface, focused: bool) void {
 +        const demand = surface.core_surface.renderer_state.demandGuard(global.io());
 +        defer demand.deinit();
          surface.focusCallback(focused);
      }
-
-@@ -1782,6 +1786,8 @@ pub const CAPI = struct {
+ 
+@@ -2072,6 +2076,8 @@ pub const CAPI = struct {
          surface: *Surface,
          event: KeyEvent,
      ) bool {
@@ -29,7 +29,7 @@ index 7310159..b3fcc80 100644
          return surface.app.keyEvent(
              .{ .surface = surface },
              event.keyEvent(),
-@@ -1820,6 +1826,8 @@ pub const CAPI = struct {
+@@ -2110,6 +2116,8 @@ pub const CAPI = struct {
          ptr: [*]const u8,
          len: usize,
      ) void {
@@ -37,8 +37,8 @@ index 7310159..b3fcc80 100644
 +        defer demand.deinit();
          surface.textCallback(ptr[0..len]);
      }
-
-@@ -1830,6 +1838,8 @@ pub const CAPI = struct {
+ 
+@@ -2120,6 +2128,8 @@ pub const CAPI = struct {
          ptr: [*]const u8,
          len: usize,
      ) void {
@@ -46,8 +46,8 @@ index 7310159..b3fcc80 100644
 +        defer demand.deinit();
          surface.preeditCallback(if (len == 0) null else ptr[0..len]);
      }
-
-@@ -1846,6 +1856,8 @@ pub const CAPI = struct {
+ 
+@@ -2136,6 +2146,8 @@ pub const CAPI = struct {
          button: input.MouseButton,
          mods: c_int,
      ) bool {
@@ -56,7 +56,7 @@ index 7310159..b3fcc80 100644
          return surface.mouseButtonCallback(
              action,
              button,
-@@ -1863,6 +1875,8 @@ pub const CAPI = struct {
+@@ -2153,6 +2165,8 @@ pub const CAPI = struct {
          y: f64,
          mods: c_int,
      ) void {
@@ -65,7 +65,7 @@ index 7310159..b3fcc80 100644
          surface.cursorPosCallback(
              x,
              y,
-@@ -1879,6 +1893,8 @@ pub const CAPI = struct {
+@@ -2169,6 +2183,8 @@ pub const CAPI = struct {
          y: f64,
          scroll_mods: c_int,
      ) void {
@@ -75,7 +75,7 @@ index 7310159..b3fcc80 100644
              x,
              y,
 diff --git i/src/renderer/State.zig w/src/renderer/State.zig
-index 43b5c50..6b47a89 100644
+index 1e38d64a9..5efd72d15 100644
 --- i/src/renderer/State.zig
 +++ w/src/renderer/State.zig
 @@ -75,6 +75,30 @@ pub fn lockDemand(self: *State, io: std.Io) void {
