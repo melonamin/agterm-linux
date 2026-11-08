@@ -41,6 +41,7 @@ docker run --rm \
         test ! -e /usr/bin/zmx
         cd /repo
         AGTERM_TEST_BIN=/usr/bin/agterm-linux AGTERM_TEST_CTL=/usr/bin/agtermctl \
+            AGTERM_RESOURCE_ROOT=/usr/lib/agterm-linux/share/agterm \
             AGTERM_ATSPI_SCENARIO=upstream-v0400 AGTERM_UI_ARTIFACT_DIR=/artifacts \
             scripts/test-linux-ui.sh
     '
