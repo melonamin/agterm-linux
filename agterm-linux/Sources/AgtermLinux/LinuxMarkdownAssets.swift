@@ -7,6 +7,8 @@ struct MarkdownAssets: Sendable {
     static let shared = MarkdownAssets(root: IntegrationEnvironment.process().resource(named: "markdown"))
     let script: String
     let style: String
+    let textScript: String
+    let textStyle: String
 
     init(root: URL?) {
         func read(_ name: String) -> String {
@@ -17,6 +19,9 @@ struct MarkdownAssets: Sendable {
         let scripts = names.map(read)
         script = scripts.allSatisfy { !$0.isEmpty } ? scripts.joined(separator: ";\n") : ""
         style = read("page.css")
+        let text = [read("highlight-11.11.1.min.js"), read("text.js")]
+        textScript = text.allSatisfy { !$0.isEmpty } ? text.joined(separator: ";\n") : ""
+        textStyle = style + "\n" + read("text.css")
     }
 
     var available: Bool { !script.isEmpty && !style.isEmpty }

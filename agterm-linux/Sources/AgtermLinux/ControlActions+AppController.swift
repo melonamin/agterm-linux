@@ -101,7 +101,8 @@ extension AppController: ControlActions {
             }, app: LinuxAppMetadata.identity,
             flaggedLayout: linuxSettingsStore().load().effectiveFlaggedViewLayout,
             htmlZoom: linuxSettingsStore().load().effectiveHtmlOverlayZoom,
-            linkOpenMode: linuxSettingsStore().load().effectiveLinkOpenMode
+            linkOpenMode: linuxSettingsStore().load().effectiveLinkOpenMode,
+            sidebarDensity: linuxSettingsStore().load().effectiveSidebarDensity
         )
         let tree = projectingLinuxAutoFollow(baseTree)
         return ControlResponse(ok: true, result: ControlResult(tree: tree))

@@ -51,9 +51,9 @@ extension LinuxControlDispatcher {
         }
     }
 
-    private static func tintColor(_ raw: String) -> Result<TintColor, LinuxTintRejection> {
-        guard let color = TintColor(rawValue: raw.lowercased()) else {
-            return .failure(LinuxTintRejection(message: "invalid tint: \(raw) (\(TintColor.validNamesList))"))
+    private static func tintColor(_ raw: String) -> Result<TintValue, LinuxTintRejection> {
+        guard let color = TintValue(rawValue: raw) else {
+            return .failure(LinuxTintRejection(message: "invalid tint: \(raw) (\(TintValue.validValuesList))"))
         }
         return .success(color)
     }

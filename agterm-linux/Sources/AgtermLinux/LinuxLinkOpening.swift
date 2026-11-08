@@ -34,18 +34,47 @@ extension GhosttySurface {
     }
 
     func openLink(_ raw: String) -> Bool {
+        let session = controller?.store.session(withID: sessionID)
+        let directory = isSplitPane ? session?.splitCwd ?? session?.effectiveCwd : session?.effectiveCwd
+        let locations = LinkPolicy.locations(for: raw, origin: linkClickOrigin, cwd: directory)
+        guard !locations.isEmpty else { return openResolvedLink(raw) }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let location = locations.first { FileManager.default.fileExists(atPath: $0.path) }
+            runOnMain { MainActor.assumeIsolated {
+                guard let self else { return }
+                if !self.openResolvedLink(raw, location: location) { GhosttyApp.openTerminalURL(raw) }
+            } }
+        }
+        return true
+    }
+
+    private func openResolvedLink(_ raw: String, location: LinkPolicy.LinkLocation? = nil) -> Bool {
         guard let controller else { return false }
         let mode = linkBrowserOverride ? LinkOpenMode.browser : linuxSettingsStore().load().effectiveLinkOpenMode
-        switch LinkPolicy.route(for: raw, mode: mode, origin: linkClickOrigin) {
+        let route = location.map { LinkPolicy.route(for: $0, mode: mode, origin: linkClickOrigin) }
+            ?? LinkPolicy.route(for: raw, mode: mode, origin: linkClickOrigin)
+        if linkBrowserOverride, let file = route.localFile {
+            GhosttyApp.openTerminalURL(file.absoluteString)
+            return true
+        }
+        switch route {
         case .image(let url, let id):
             return controller.openClickedFile(url, session: id, markdown: false)
         case .markdown(let url, let id, let sizePercent):
             return controller.openClickedFile(url, session: id, markdown: true, sizePercent: sizePercent)
+        case .text(let link):
+            let log = link.opensAsLog && !controller.store.pageBelongsRemote(link.session, pane: nil)
+            return controller.openClickedPage(.text(path: link.url.path, line: link.line), session: link.session,
+                                              sizePercent: link.sizePercent,
+                                              log: log ? TextLog(tail: TextPage.defaultTail, follow: true) : nil)
+        case .document(let url, let id, let sizePercent):
+            return controller.openClickedPage(.document(path: url.path), session: id, sizePercent: sizePercent)
         case .overlay(let url, let id, let sizePercent):
             guard controller.terminalZoom.target == nil, controller.store.session(withID: id)?.hudActive != true else { return false }
+            controller.store.releaseHiddenClickedPage(id)
             return controller.openSessionOverlay(id.uuidString, window: nil, options: ControlSessionOverlayOpenOptions(
                 command: "", cwd: nil, wait: false, sizePercent: sizePercent, backgroundColor: nil, follow: false,
-                pane: nil, page: .url(url), navigation: true, javascript: true, persistent: true, browse: true)).ok
+                pane: nil, page: .url(url), navigation: true, javascript: true, persistent: true, browse: true, clicked: true)).ok
         case .browser, .reveal, .ignore: return false
         }
     }

@@ -23,6 +23,12 @@ enum LinuxFilePageLoader {
             return MarkdownProbe.load(path: path)
                 .map { MarkdownPage.html(markdown: $0.markdown, images: $0.images, style: assets.style) }
                 .mapError { .message($0.description) }
+        case .text(let path, let line):
+            return TextProbe.load(path: path).map {
+                TextPage.html(text: $0, language: TextPage.language(forFile: path), line: line, style: MarkdownAssets.shared.textStyle)
+            }.mapError { .message($0.description) }
+        case .document(let path):
+            return DocumentProbe.load(path: path).mapError { .message($0.description) }
         default: return .failure(.message("not a generated file page"))
         }
     }

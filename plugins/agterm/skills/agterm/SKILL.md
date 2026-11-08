@@ -1103,3 +1103,9 @@ See **reference.md** for the JSON shapes, states, package behavior, and exit sta
 - **scripts/show-image.sh** — bundled helper that displays an image inline in an overlay (see above).
 
 Read those files when you need exact flags, return shapes, or worked examples.
+
+### Linux file-page shortcuts
+
+On Linux, Ctrl-click opens a file page; Ctrl+Shift-click reveals it in the file manager.
+Ctrl+F searches the visible text or log page.
+Remote text pages support their local find bar, but control search and file following are unavailable, as upstream.

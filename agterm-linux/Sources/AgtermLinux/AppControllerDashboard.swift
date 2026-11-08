@@ -243,7 +243,7 @@ extension AppController {
             gtk_widget_set_valign(W(caption), GTK_ALIGN_END)
             gtk_widget_set_margin_start(W(caption), 8)
             gtk_widget_set_margin_bottom(W(caption), 8)
-            let statusIcon = OpaquePointer(gtk_label_new(nil))
+            let statusIcon = Self.makeEmptyStatusGlyph()
             dashboardRuntime.statusIcons[member] = statusIcon
             gtk_box_append(cast(caption), W(statusIcon))
             let captionLabel = OpaquePointer(gtk_label_new("\(sessionName) · \(paneName)"))

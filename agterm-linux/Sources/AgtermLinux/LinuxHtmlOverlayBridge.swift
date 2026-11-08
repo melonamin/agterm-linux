@@ -6,8 +6,7 @@ import agtermCore
 @MainActor
 extension LinuxHtmlOverlayPage {
     func installBridge() {
-        if overlay.source.imagePath != nil || overlay.source.markdownPath != nil { return }
-        if case .url = overlay.source { return }
+        guard overlay.source.kind == .file else { return }
         let data = Unmanaged.passUnretained(self).toOpaque()
         connect(manager, "script-message-with-reply-received::agterm", unsafeBitCast(onHtmlBridgeRequest, to: GCallback.self), data)
         for world in overlay.javascript ? ["agterm-bridge", ""] : ["agterm-bridge"] {
@@ -22,17 +21,18 @@ extension LinuxHtmlOverlayPage {
         if overlay.javascript { addBridgeScript(LinuxHtmlBridgeScripts.helper(nonce: bridgeNonce), world: nil) }
     }
 
-    private func addBridgeScript(_ text: String, world: String?) {
+    func addBridgeScript(_ text: String, world: String?, atEnd: Bool = false) {
+        let injection = atEnd ? WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END : WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START
         text.withCString { source in
             let script: OpaquePointer?
             if let world {
                 script = world.withCString {
                     webkit_user_script_new_for_world(source, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
-                                                     WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, $0, nil, nil)
+                                                     injection, $0, nil, nil)
                 }
             } else {
                 script = webkit_user_script_new(source, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
-                                                WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, nil, nil)
+                                                injection, nil, nil)
             }
             webkit_user_content_manager_add_script(manager, script)
             webkit_user_script_unref(script)
@@ -41,7 +41,7 @@ extension LinuxHtmlOverlayPage {
 
     func bridgeRequest(_ value: OpaquePointer?, reply: OpaquePointer?) {
         guard let reply else { return }
-        guard overlay.source.imagePath == nil, overlay.source.markdownPath == nil,
+        guard overlay.source.kind == .file,
               !closed, let store, let controller, let slot = store.htmlOverlaySlot(id),
               let uri = webkit_web_view_get_uri(cast(webView)).map(String.init(cString:)),
               uri == "about:blank" || uri.hasPrefix("agterm-file://\(id.uuidString.lowercased())/")

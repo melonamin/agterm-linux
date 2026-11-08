@@ -450,6 +450,7 @@ extension AppController {
         settings.backgroundOpacity = nil
         settings.sidebarBackgroundShift = nil
         settings.sidebarFontSize = nil
+        settings.sidebarDensity = nil
         settings.interfaceFontSize = nil
         settings.inactivePaneMuteStrength = nil
         settings.quickTerminalSizePercent = nil

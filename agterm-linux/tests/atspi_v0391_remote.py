@@ -128,6 +128,8 @@ def verify_remote_v0391(env, state):
         wait_for(lambda: row(viewer_env, viewer).get("overlaySizePercent") == 50, "remote resize did not reach viewer")
         request(origin_env, "session.overlay.close", origin)
         wait_for(lambda: not page(), "origin close did not release the replica page")
+        from atspi_v0411_remote import verify_remote_content
+        verify_remote_content(origin_env, viewer_env, viewer_app, origin, viewer, pages, request, row)
         print("OK: remote assets, bridge, hide/show, resize, and close", flush=True)
 
         terminfo_report = os.path.join(origin_state, "remote-terminfo.txt")

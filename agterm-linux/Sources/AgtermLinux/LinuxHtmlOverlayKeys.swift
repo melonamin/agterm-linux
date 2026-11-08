@@ -8,6 +8,9 @@ extension LinuxHtmlOverlayPage {
         guard let controller, let slot = store?.htmlOverlaySlot(id) else { return false }
         let keyval = gdk_key_event_get_keyval(event), keycode = gdk_key_event_get_keycode(event)
         let state = UInt32(gdk_event_get_modifier_state(event).rawValue)
+        if gdk_keyval_to_lower(keyval) == UInt32(GDK_KEY_f), state & UInt32(GDK_CONTROL_MASK.rawValue) != 0, let textPage {
+            textPage.focusSearch(); return true
+        }
         if let chord = shortcutChord(fromKeyval: keyval, keycode: keycode, state: state,
                                      context: shortcutKeyContext(event: event, keycode: keycode)),
            let shortcut = linuxFixedShortcut(for: chord) {

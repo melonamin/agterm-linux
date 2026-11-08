@@ -7,8 +7,8 @@ import Glibc
 /// Bounded process adapter for the pinned zmx CLI. Every invocation owns its Process and pipes, so the
 /// immutable client can serve local inventory and remote-control workers concurrently.
 final class LinuxZmxClient: @unchecked Sendable {
-    /// With `LinuxRemoteCommand`'s 250 ms kill grace, a hung listing still ends inside the 500 ms exit budget.
-    static let captureInvocationTimeout: TimeInterval = 0.1
+    /// With `LinuxRemoteCommand`'s 250 ms kill grace, a hung listing ends inside a 600 ms exit budget.
+    static let captureInvocationTimeout: TimeInterval = 0.3
     static let terminationGrace: TimeInterval = 0.25
 
     struct Invocation: Sendable {

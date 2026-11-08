@@ -14,6 +14,14 @@ def verify_restart_v0351(env, state):
                     os.path.join(ROOT, "tests/login_shell_zsh_fixture.c"), "-ldl"], check=True)
     with open(os.path.join(state, "settings.json"), "w", encoding="utf-8") as file:
         json.dump({"restoreMode": "live", "closeGraceUndoEnabled": False}, file)
+    configured = env.get("AGTERM_TEST_COMMAND_SHELL")
+    if configured:
+        config = os.path.join(state, "config")
+        os.makedirs(config, exist_ok=True)
+        with open(os.path.join(config, "ghostty.conf"), "w", encoding="utf-8") as file:
+            file.write("config-file = " + os.path.join(config, "shell.ghostty") + "\n")
+        with open(os.path.join(config, "shell.ghostty"), "w", encoding="utf-8") as file:
+            file.write("command = " + configured + "\n")
     env = dict(env, LD_PRELOAD=fixture)
     process, _app = launch(env)
     try:
@@ -25,9 +33,18 @@ def verify_restart_v0351(env, state):
         def sessions():
             return [row for workspace in window_tree(env, window)["workspaces"] for row in workspace["sessions"]]
 
-        if env.get("AGTERM_TEST_LOGIN_SHELL") == "/usr/bin/fish":
+        if configured or env.get("AGTERM_TEST_LOGIN_SHELL") == "/usr/bin/fish":
             wait_for(lambda: any(row.get("foregroundShell") == "fish" for row in sessions()),
                      "Live fish did not start an integrated fish shell")
+
+        if configured:
+            with open(os.path.join(state, "config", "shell.ghostty"), "w", encoding="utf-8") as file:
+                file.write("command = /usr/bin/zsh\n")
+            created = request("session.new", args={"name": "latched shell"})
+            assert created["ok"], created
+            wait_for(lambda: any(row["id"] == created["result"]["id"] and row.get("foregroundShell") == "fish"
+                                 for row in sessions()), "config edit changed this app run's Live shell identity")
+            print("OK: Ghostty included command overrides password shell and remains latched", flush=True)
 
         pid_file = os.path.join(state, "old-job.pid")
         command = f"/bin/sh -c {shlex.quote('echo $$ > ' + shlex.quote(pid_file) + '; exec sleep 3600')}"

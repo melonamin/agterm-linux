@@ -10,12 +10,14 @@ from x11_capture import capture
 
 def verify_sidebar_v0400(env, state):
     artifacts = os.environ.get("AGTERM_UI_ARTIFACT_DIR", state)
-    for mode, hidden, font, theme in (("always", False, 13, "Catppuccin Mocha"),
-                                      ("off", True, 20, "Catppuccin Latte"),
-                                      ("flagged", True, 13, "Catppuccin Mocha")):
+    standard_height = None
+    for mode, hidden, font, theme, density in (("always", False, 13, "Catppuccin Mocha", "default"),
+                                               ("always", False, 13, "Catppuccin Mocha", "compact"),
+                                               ("off", True, 20, "Catppuccin Latte", "default"),
+                                               ("flagged", True, 13, "Catppuccin Mocha", "default")):
         with open(os.path.join(state, "settings.json"), "w", encoding="utf-8") as file:
             json.dump({"welcomeShown": True, "theme": theme, "sidebarFontSize": font,
-                       "followSystemAppearance": False, "sessionInfoDisplay": mode,
+                       "followSystemAppearance": False, "sessionInfoDisplay": mode, "sidebarDensity": density,
                        "hiddenInterfaceElements": ["sessionIcons", "workspaceIcons"] if hidden else []}, file)
         process, app = launch(env)
 
@@ -34,7 +36,7 @@ def verify_sidebar_v0400(env, state):
             # Info is deliberately runtime-only; none of the previous launch's values may survive.
             assert not any(row.get("info") for workspace in request("tree")["tree"]["workspaces"]
                            for row in workspace["sessions"])
-            parent_name, child_name = "Info parent " + mode, "Info child " + mode
+            parent_name, child_name = "Info parent " + mode + density, "Info child " + mode + density
             parent = request("session.new", args={"name": parent_name})["id"]
             child = request("session.companion.new", parent, {"name": child_name})["id"]
             request("session.info", parent, {"mode": "set", "text": "**Build** ^[ready](color: 'green')", "markdown": True})
@@ -47,7 +49,14 @@ def verify_sidebar_v0400(env, state):
                 wait_for(lambda: info_visible("Build ready"), "Always info did not render")
                 parent_info = window_extents(named(app, "Build ready", role="label"))
                 child_info = window_extents(named(app, "child info <literal> & safe", role="label"))
-                assert 20 <= child_info.x - parent_info.x <= 28, (parent_info.x, child_info.x)
+                indent = 20 if density == "compact" else 24
+                assert indent - 2 <= child_info.x - parent_info.x <= indent + 2, (parent_info.x, child_info.x)
+                height = window_extents(row_label(parent_name)).height
+                if density == "default":
+                    standard_height = height
+                else:
+                    assert height < standard_height, (height, standard_height)
+                    assert request("tree")["tree"]["sidebarDensity"] == "compact"
                 assert window_extents(row_label(parent_name)).height > window_extents(row_label("home")).height
             else:
                 assert not info_visible("Build ready"), mode
@@ -56,7 +65,7 @@ def verify_sidebar_v0400(env, state):
             request("sidebar.mode", args={"mode": "flagged"})
             time.sleep(0.2)
             assert info_visible("Build ready") == (mode != "off"), mode
-            capture(os.path.join(artifacts, f"v0400-info-{mode}-{font}.png"))
+            capture(os.path.join(artifacts, f"v0400-info-{mode}-{font}-{density}.png"))
             request("sidebar.mode", args={"mode": "tree"})
             request("session.info", child, {"mode": "set", "text": "timed close info", "hideAfter": 10})
             request("session.close", child, {"undoable": True})

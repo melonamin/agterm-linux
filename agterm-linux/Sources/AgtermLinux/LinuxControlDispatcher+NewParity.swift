@@ -5,6 +5,7 @@ import agtermCore
 extension LinuxControlDispatcher {
     func dispatchNewParityCommand(_ request: ControlRequest) -> ControlResponse? {
         switch request.cmd {
+        case .sessionOverlaySearch, .sessionOverlayChanges: return dispatchTextPage(request)
         case .sessionOverlayOpen, .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayResult,
              .sessionOverlayReload, .sessionOverlayNavigate, .sessionOverlaySubmit, .sessionOverlayCopy,
              .sessionOverlayText, .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle:

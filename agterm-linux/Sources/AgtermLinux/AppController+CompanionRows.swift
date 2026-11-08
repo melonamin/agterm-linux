@@ -36,7 +36,8 @@ extension AppController {
     }
 
     func applyCompanionRowWidgets(_ widgets: SessionRowWidgets, content: SidebarSnapshot.RowContent) {
-        gtk_widget_set_margin_start(W(widgets.box), content.indented ? 24 : 0)
+        let indent = linuxSettingsStore().load().effectiveSidebarDensity == .compact ? 20 : 24
+        gtk_widget_set_margin_start(W(widgets.box), content.indented ? Int32(indent) : 0)
         gtk_widget_set_visible(W(widgets.row), content.shown ? 1 : 0)
         if let slot = widgets.disclosureSlot {
             gtk_widget_set_visible(W(slot), store.sidebarMode == .tree ? 1 : 0)

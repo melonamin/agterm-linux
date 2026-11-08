@@ -1,3 +1,4 @@
+import CGtk
 import Foundation
 import agtermCore
 
@@ -12,14 +13,25 @@ struct LinuxReplicaPageRecord {
 extension AppController {
     func showReplicaPage(_ page: PresentationPage, forSession id: UUID) -> String? {
         guard let session = store.session(withID: id) else { return "no such session" }
+        var page = page
         var command: [String]?
-        if case .file = page.source {
+        if case .url = page.source {
+            if page.persistent, let failure = LinuxBrowserStore.shared.failure() { return failure }
+        } else {
             guard let host = session.remoteHost,
                   let argv = try? RemoteSession.pageServeCommand(host: host, token: page.token) else {
                 return "the origin cannot be reached for this page"
             }
             command = argv
-        } else if page.persistent, let failure = LinuxBrowserStore.shared.failure() { return failure }
+        }
+        if case .image(_, let width, let height) = page.source, page.pane == nil, page.sizePercent == nil, page.points.isEmpty {
+            cacheOverlayBounds(session)
+            let scale = Double(max(1, gtk_widget_get_scale_factor(W(windowPointer))))
+            let natural = ImagePage.natural(pixelWidth: width, pixelHeight: height, orientation: 1, scale: scale)
+            let points = ImagePage.points(natural: natural, zoom: linuxSettingsStore().load().effectiveHtmlOverlayZoom,
+                                          bounds: session.hudPaneFrames.detail)
+            (page.sizePercent, page.width, page.height) = (ImagePage.basePercent, points.width, points.height)
+        }
         if let reason = store.presentReplicaPage(page, forSession: id) { return reason }
         guard let slot = store.replicaPage(page.page, forSession: id), let origin = slot.page.replicaOf else { return "page not shown" }
         let channel = command.map { _ in LinuxPageChannel() }

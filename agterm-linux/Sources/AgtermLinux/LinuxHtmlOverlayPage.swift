@@ -51,7 +51,8 @@ final class LinuxHtmlOverlayPage {
     private var pendingExternalURL: URL?
     private var pendingDialog: OpaquePointer?
     private var promptSilenced = false
-    private var onScreen = false
+    var onScreen = false
+    var textPage: LinuxTextPage?
     let manager: OpaquePointer
     private var inputController: OpaquePointer?
     private var strip: OpaquePointer?
@@ -97,7 +98,7 @@ final class LinuxHtmlOverlayPage {
             webkit_user_content_manager_add_script(manager, script)
             webkit_user_script_unref(script)
         }
-        if overlay.source.markdownPath != nil {
+        if overlay.source.kind == .markdown {
             MarkdownAssets.shared.script.withCString { source in
                 let script = "agterm-markdown".withCString { world in
                     webkit_user_script_new_for_world(source, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
@@ -106,6 +107,9 @@ final class LinuxHtmlOverlayPage {
                 webkit_user_content_manager_add_script(manager, script)
                 webkit_user_script_unref(script)
             }
+        }
+        if overlay.source.kind == .text {
+            installTextRenderer()
         }
         installBridge()
         buildUI()
@@ -118,6 +122,7 @@ final class LinuxHtmlOverlayPage {
 
     func close() {
         closed = true
+        textPage?.stop()
         agterm_disconnect_signals(RAW(manager), Unmanaged.passUnretained(self).toOpaque())
         let data = Unmanaged.passUnretained(self).toOpaque()
         let dialog = pendingDialog
@@ -138,6 +143,7 @@ final class LinuxHtmlOverlayPage {
 
     func setOnScreen(_ visible: Bool) {
         onScreen = visible
+        textPage?.apply()
         guard !visible, let dialog = pendingDialog else { return }
         pendingDialog = nil
         pendingExternalURL = nil
@@ -146,6 +152,7 @@ final class LinuxHtmlOverlayPage {
 
     func apply(_ newer: HtmlOverlay) {
         overlay = newer
+        textPage?.apply()
         refreshToolbar()
         guard newer.reloadRevision != appliedRevision else { return }
         controller?.replicaPages[id]?.channel?.cancelResources()
@@ -161,9 +168,9 @@ final class LinuxHtmlOverlayPage {
         guard theme != newer || webkit_web_view_get_uri(cast(webView)) == nil else { return }
         theme = newer
         webkit_user_content_manager_remove_all_style_sheets(manager)
-        let themed: Bool = switch overlay.source {
-        case .url, .image: false
-        case .file, .replica, .markdown: true
+        let themed: Bool = switch overlay.source.kind {
+        case .url, .image, .document: false
+        case .file, .markdown, .text: true
         }
         let look = themed ? "color-scheme: \(newer.dark ? "dark" : "light"); color: \(newer.foreground); " : ""
         let palette = newer.palette.enumerated().compactMap { index, color in
@@ -234,7 +241,7 @@ final class LinuxHtmlOverlayPage {
     }
 
     private var pageURL: URL {
-        if let path = overlay.source.imagePath ?? overlay.source.markdownPath { return URL(fileURLWithPath: path) }
+        if let path = overlay.source.imagePath ?? overlay.source.markdownPath ?? overlay.source.textPath ?? overlay.source.linuxDocumentPath { return URL(fileURLWithPath: path) }
         if let raw = webkit_web_view_get_uri(cast(webView)), let url = URL(string: String(cString: raw)),
            url.scheme == HtmlSource.replicaScheme { return URL(fileURLWithPath: url.path) }
         if case .file(let path, let grantRoot) = overlay.source {
@@ -260,9 +267,12 @@ final class LinuxHtmlOverlayPage {
         loadFailed = false
         store?.setHtmlLoadState(id, state: .loading, error: nil)
         switch overlay.source {
-        case .image, .markdown:
+        case .text:
+            textPage?.load()
+        case .image, .markdown, .document:
             loadGeneratedPage(overlay.source, revision: sourceLoadRevision)
-        case .replica(let path):
+        case .replica(let path, let content):
+            if content != .html { return loadReplicaContent(path: path, content: content) }
             var uri = URLComponents()
             uri.scheme = HtmlSource.replicaScheme
             uri.host = id.uuidString.lowercased()

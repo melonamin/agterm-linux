@@ -6,10 +6,12 @@ enum LinuxSidebarPolicy {
     /// default): the row text size, plus a `min-height` derived from the shared
     /// `AppSettings.sidebarRowHeight` that lowers libadwaita's `navigation-sidebar` row pin.
     /// That height is a FLOOR, not a cap — taller content still grows the row.
-    static func sidebarCSS(fontSize: Double?) -> String {
+    static func sidebarCSS(fontSize: Double?, density: SidebarDensity = .standard) -> String {
         let size = AppSettings.clampSidebarFontSize(fontSize ?? AppSettings.defaultSidebarFontSize)
-        let rowHeight = Int(AppSettings.sidebarRowHeight(fontSize: size))
+        let rowHeight = Int(AppSettings.sidebarRowHeight(fontSize: size, density: density))
+        let padding = density == .compact ? ".agterm-sidebar .navigation-sidebar > row { padding-top: 0; padding-bottom: 0; }" : ""
         return """
+            \(padding)
             .agterm-sidebar label { font-size: \(size)pt; }
             .agterm-sidebar entry.agterm-rename > text { font-size: \(size)pt; }
             .agterm-sidebar .navigation-sidebar > row { min-height: \(rowHeight)px; }

@@ -357,7 +357,7 @@ final class GhosttyApp: @unchecked Sendable {
         switch LinkPolicy.disposition(for: raw) {
         case .open(let url):
             uri = url.absoluteString
-        case .reveal(let url), .image(let url), .markdown(let url):
+        case .reveal(let url), .image(let url), .markdown(let url), .text(let url, _), .document(let url):
             uri = url.deletingLastPathComponent().absoluteString
         case .ignore:
             return

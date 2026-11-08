@@ -205,6 +205,11 @@ extension AppController {
         addContextButton(box, store.focusedWorkspaceIDs.contains(wsID) ? "Remove from Focus" : "Add to Focus",
                          unsafeBitCast(onCtxWorkspaceFocusMembership as @convention(c)
                             (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
+        let expanded = isWorkspaceEffectivelyExpanded(wsID)
+        appendSidebarAction(to: box, title: expanded ? "Collapse Workspace" : "Expand Workspace") { [weak self] in
+            self?.dismissContextMenu()
+            _ = self?.setWorkspaceExpansion(wsID.uuidString, window: nil, expanded: !expanded)
+        }
         appendTintMenu(to: box, workspaceID: wsID)
         let allFlagged = store.workspaces.first { $0.id == wsID }?.sessions.allSatisfy(\.flagged) == true
         appendSidebarAction(to: box, title: allFlagged ? "Unflag All Sessions" : "Flag All Sessions") { [weak self] in

@@ -7,10 +7,11 @@ extension AppController {
     func openResolvedPageOverlay(_ id: UUID, page: HtmlSource, options: ControlSessionOverlayOpenOptions) -> ControlResponse {
         let overlay = HtmlOverlay(source: page, navigation: options.navigation,
                                   javascript: options.javascript, chromeless: options.chromeless,
-                                  persistent: options.persistent, browse: options.browse)
+                                  persistent: options.persistent, browse: options.browse,
+                                  clicked: options.clicked, textLog: options.textLog)
         switch store.openRemotePage(id, overlay: overlay, options: options) {
         case .opened:
-            if case .file = page { gControlServer.schedulePageClaimExpiry(after: AppStore.pageClaimWindow) }
+            if page.kind != .url { gControlServer.schedulePageClaimExpiry(after: AppStore.pageClaimWindow) }
             return ControlResponse(ok: true, result: ControlResult(id: id.uuidString, pageID: overlay.id.uuidString))
         case .slotTaken: return err(options.pane == nil ? "overlay already open" : PaneOverlayError.alreadyOpen)
         case .paneMissing: return err(PaneOverlayError.paneNotVisible)
@@ -37,8 +38,9 @@ extension AppController {
     func openProbedImage(_ id: UUID, path: String, probe: ImageProbe,
                          options: ControlSessionOverlayOpenOptions) -> ControlResponse {
         guard store.session(withID: id)?.overlayHidden(options.pane) != true else { return err(OverlayVisibilityError.hidden) }
-        guard options.pane == nil, options.sizePercent == nil, options.points.isEmpty else {
-            return openResolvedPageOverlay(id, page: .image(path: path), options: options)
+        let pixels = probe.natural(scale: 1)
+        guard options.pane == nil, options.sizePercent == nil, options.points.isEmpty, !store.pageBelongsRemote(id, pane: options.pane) else {
+            return openResolvedPageOverlay(id, page: .image(path: path), options: options.with(imagePixels: ImagePixels(width: Int(pixels.width), height: Int(pixels.height))))
         }
         if let session = store.session(withID: id) { cacheOverlayBounds(session) }
         let scale = Double(max(1, gtk_widget_get_scale_factor(W(windowPointer))))
@@ -46,7 +48,7 @@ extension AppController {
                                       bounds: store.session(withID: id)?.hudPaneFrames.detail)
         let sized = ControlSessionOverlayOpenOptions(command: "", cwd: nil, wait: false, sizePercent: ImagePage.basePercent,
                                                      backgroundColor: options.backgroundColor, follow: options.follow,
-                                                     page: .image(path: path), points: points)
+                                                     page: .image(path: path), points: points, clicked: options.clicked)
         return openResolvedPageOverlay(id, page: .image(path: path), options: sized)
     }
 
@@ -60,9 +62,10 @@ extension AppController {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     guard checked, self.canShowFileLink(id) else { return GhosttyApp.openTerminalURL(url.absoluteString) }
+                    self.store.releaseHiddenClickedPage(id)
                     let options = ControlSessionOverlayOpenOptions(command: "", cwd: nil, wait: false,
                                                                    sizePercent: sizePercent, backgroundColor: nil,
-                                                                   page: markdown ? .markdown(path: path) : .image(path: path))
+                                                                   page: markdown ? .markdown(path: path) : .image(path: path), clicked: true)
                     let response = image.map { self.openProbedImage(id, path: path, probe: $0, options: options) }
                         ?? self.openResolvedPageOverlay(id, page: .markdown(path: path), options: options)
                     if !response.ok { GhosttyApp.openTerminalURL(url.absoluteString) }
@@ -72,9 +75,33 @@ extension AppController {
         return true
     }
 
+    func openClickedPage(_ source: HtmlSource, session id: UUID, sizePercent: Int?, log: TextLog? = nil) -> Bool {
+        guard canShowFileLink(id) else { return false }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let checked: Bool
+            switch source {
+            case .text(let path, _): checked = (try? (log.map { TextProbe.checkLog(path: path, tail: $0.tail) } ?? TextProbe.check(path: path)).get()) != nil
+            case .document(let path): checked = (try? DocumentProbe.load(path: path).get()) != nil
+            default: checked = false
+            }
+            runOnMain { MainActor.assumeIsolated {
+                guard let self else { return }
+                let path = source.textPath ?? source.linuxDocumentPath ?? ""
+                guard checked, self.canShowFileLink(id) else { return GhosttyApp.openTerminalURL(URL(fileURLWithPath: path).absoluteString) }
+                self.store.releaseHiddenClickedPage(id)
+                let options = ControlSessionOverlayOpenOptions(command: "", cwd: nil, wait: false, sizePercent: sizePercent,
+                                                               backgroundColor: nil, page: source, clicked: true, textLog: log)
+                if !self.openResolvedPageOverlay(id, page: source, options: options).ok {
+                    GhosttyApp.openTerminalURL(URL(fileURLWithPath: path).absoluteString)
+                }
+            } }
+        }
+        return true
+    }
+
     private func canShowFileLink(_ id: UUID) -> Bool {
         guard let session = store.session(withID: id) else { return false }
         return session.content == .terminal && session.remoteHost == nil && !session.hudActive
-            && !session.overlayActive && terminalZoom.target == nil
+            && (!session.overlayActive || (session.overlayHidden && session.htmlOverlay?.clicked == true)) && terminalZoom.target == nil
     }
 }

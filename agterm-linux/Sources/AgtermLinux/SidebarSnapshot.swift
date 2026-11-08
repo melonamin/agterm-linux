@@ -20,6 +20,7 @@ struct SidebarSnapshot: Equatable {
         var expanded: Bool
         var tint: SidebarTint?
         var iconVisible = true
+        var chevronVisible = true
     }
 
     struct RowContent: Equatable {
@@ -119,7 +120,8 @@ extension SidebarSnapshot {
                                            renaming: builder.renamingID == workspace.id,
                                            focusMember: store.focusedWorkspaceIDs.contains(workspace.id),
                                            addVisible: false, expanded: expanded, tint: workspace.tint,
-                                           iconVisible: !settings.isInterfaceElementHidden(.workspaceIcons))
+                                           iconVisible: !settings.isInterfaceElementHidden(.workspaceIcons),
+                                           chevronVisible: !settings.isInterfaceElementHidden(.workspaceChevrons))
                 return builder.section(key: .workspace(workspace.id), header: header,
                                        sessions: flagged, expanded: expanded, showsHint: false)
             }
@@ -140,7 +142,8 @@ extension SidebarSnapshot {
                     focusMember: store.focusedWorkspaceIDs.contains(workspace.id),
                     addVisible: !settings.isInterfaceElementHidden(.workspaceAddSession),
                     expanded: expanded, tint: workspace.tint,
-                    iconVisible: !settings.isInterfaceElementHidden(.workspaceIcons))
+                    iconVisible: !settings.isInterfaceElementHidden(.workspaceIcons),
+                    chevronVisible: !settings.isInterfaceElementHidden(.workspaceChevrons))
                 return builder.section(key: .workspace(workspace.id), header: header,
                                        sessions: workspace.sessions, expanded: expanded,
                                        showsHint: false)

@@ -97,6 +97,7 @@ extension AppController {
                 Self.applyAddSessionTooltip(add, workspace: content.name)
             }
         }
+        if let disc = widgets.disc { gtk_widget_set_visible(W(disc), content.chevronVisible ? 1 : 0) }
         if previous?.expanded != content.expanded, let disc = widgets.disc {
             gtk_button_set_icon_name(BUTTON(disc), Self.disclosureIconName(expanded: content.expanded))
         }

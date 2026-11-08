@@ -46,6 +46,14 @@ extension AppController {
 
     /// Ctrl+Shift+F: open search on the active surface, or close it if already open.
     func toggleSearch() {
+        if quickVisible { return }
+        if let session = store.activeSession, session.visibleCover != nil {
+            if let overlay = session.topmostHtmlOverlay, overlay.source.kind == .text,
+               let page = LinuxHtmlOverlayRegistry.shared.existing(overlay.id) {
+                page.focusTextSearch()
+            }
+            return
+        }
         if let owner = searchSurface {
             owner.endSearch()
             return

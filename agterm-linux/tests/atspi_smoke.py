@@ -7450,7 +7450,7 @@ def main():
     if scenario is None:
         failures = []
         for child_scenario in (
-            "normal", "upstream-controls", "upstream-v0391", "upstream-v0400", "sidebar-v0400", "links-v0400", "remote-v0391", "html-overlay", "overlay-visual", "live-restart", "live-fish-restart",
+            "normal", "upstream-controls", "upstream-v0391", "upstream-v0400", "upstream-v0411", "sidebar-v0400", "links-v0400", "remote-v0391", "html-overlay", "overlay-visual", "live-restart", "live-fish-restart", "live-command-restart",
             "live-wait-output", "startup-environment",
             "dashboard-modal", "context-menu",
             "window-key-dispatch",
@@ -7546,6 +7546,9 @@ def main():
         elif scenario == "upstream-v0400":
             from atspi_v0400 import verify_v0400
             verify_v0400(env, state)
+        elif scenario == "upstream-v0411":
+            from atspi_v0411 import verify_v0411
+            verify_v0411(env, state)
         elif scenario == "sidebar-v0400":
             from atspi_v0400_sidebar import verify_sidebar_v0400
             verify_sidebar_v0400(env, state)
@@ -7572,10 +7575,12 @@ def main():
         elif scenario == "overlay-visual":
             from atspi_overlay_visual import verify_overlay_visual
             verify_overlay_visual(env, state)
-        elif scenario in ("live-restart", "live-fish-restart"):
+        elif scenario in ("live-restart", "live-fish-restart", "live-command-restart"):
             from atspi_restart_v0351 import verify_restart_v0351
             if scenario == "live-fish-restart":
                 env = dict(env, AGTERM_TEST_LOGIN_SHELL="/usr/bin/fish")
+            if scenario == "live-command-restart":
+                env = dict(env, AGTERM_TEST_COMMAND_SHELL="/usr/bin/fish")
             verify_restart_v0351(env, state)
         elif scenario == "live-wait-output":
             from atspi_live_wait_output import verify_live_wait_output

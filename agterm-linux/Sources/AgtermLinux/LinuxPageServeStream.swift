@@ -145,6 +145,26 @@ final class LinuxPageServeStream {
         let cancelled = { transfers.withLock { $0.cancelled.contains(id) } }
         let stop = { _ = sendWaiting(.failure(id: id, error: PageServeFrame.cancelled), owner) }
         guard !cancelled() else { return stop() }
+        if let resource = RemotePageResources.content(path, source: source) {
+            let read: Result<Data, BoundedFile.Failure>
+            if resource.picture {
+                read = ImageProbe.load(path: resource.path, maxBytes: resource.maxBytes)
+                    .map { $0.1 }.mapError { _ in .unreadable }
+            } else { read = BoundedFile.read(path: resource.path, maxBytes: resource.maxBytes) }
+            guard case .success(let data) = read else {
+                _ = sendWaiting(.failure(id: id, error: "content cannot be read"), owner); return
+            }
+            guard sendWaiting(.head(id: id, mimeType: mimeType(resource.path)), owner) else { return }
+            var offset = 0
+            while offset < data.count, !cancelled() {
+                let end = min(data.count, offset + PageServeCodec.maxChunkBytes)
+                guard sendWaiting(.chunk(id: id, data: data.subdata(in: offset..<end)), owner) else { return }
+                offset = end
+            }
+            if cancelled() { return stop() }
+            _ = sendWaiting(.end(id: id), owner)
+            return
+        }
         guard let file = RemotePageResources.resolve(path, source: source) else {
             _ = sendWaiting(.failure(id: id, error: "file is outside the page's folder"), owner)
             return
@@ -176,7 +196,7 @@ final class LinuxPageServeStream {
         guard let server, let place = companion.map(server.companionPagePlace) ?? server.remotePagePlace(page) else {
             return reply(.failure(id: id, error: "page closed"))
         }
-        if companion != nil, case .url = source { return reply(.failure(id: id, error: "a URL page has no bridge")) }
+        if source.kind != .file { return reply(.failure(id: id, error: "a content page has no bridge")) }
         let origin = HtmlBridgePage(window: place.window?.uuidString, session: place.session, pane: place.pane)
         let built: ControlRequest
         switch HtmlBridge.request(from: Data(request.utf8), page: origin) {

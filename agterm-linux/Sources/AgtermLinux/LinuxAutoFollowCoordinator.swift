@@ -185,7 +185,8 @@ extension AppController {
             pickPending: tree.pickPending,
             askPending: tree.askPending,
             app: tree.app,
-            liveReset: tree.liveReset, indexUnsaved: tree.indexUnsaved, linkOpenMode: tree.linkOpenMode
+            liveReset: tree.liveReset, indexUnsaved: tree.indexUnsaved, snapshotUnsaved: tree.snapshotUnsaved,
+            linkOpenMode: tree.linkOpenMode, sidebarDensity: tree.sidebarDensity
         )
     }
 

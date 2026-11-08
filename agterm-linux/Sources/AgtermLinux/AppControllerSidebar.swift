@@ -88,7 +88,7 @@ extension AppController {
     func applySidebarFontSize() {
         guard let display = gdk_display_get_default() else { return }
         let settings = linuxSettingsStore().load()
-        let css = LinuxSidebarPolicy.sidebarCSS(fontSize: settings.sidebarFontSize)
+        let css = LinuxSidebarPolicy.sidebarCSS(fontSize: settings.sidebarFontSize, density: settings.effectiveSidebarDensity)
         if Self.sidebarFontProvider == nil {
             let provider = OpaquePointer(gtk_css_provider_new())
             Self.sidebarFontProvider = provider
@@ -203,6 +203,7 @@ extension AppController {
             gtk_widget_set_margin_start(W(row), 4)
             if let button = op(gtk_button_new_from_icon_name(Self.disclosureIconName(expanded: section.expanded))) {
                 disc = button
+                gtk_widget_set_visible(W(button), content.chevronVisible ? 1 : 0)
                 gtk_button_set_has_frame(BUTTON(button), 0)
                 gtk_widget_set_focus_on_click(W(button), 0)
                 gtk_widget_add_css_class(W(button), "flat")
@@ -264,7 +265,7 @@ extension AppController {
 
         guard let header, let listBox = op(gtk_list_box_new()) else { return nil }
         gtk_widget_add_css_class(W(listBox), "navigation-sidebar")
-        if case .workspace = section.key { gtk_widget_set_margin_start(W(listBox), 14) }
+        if case .workspace = section.key { gtk_widget_set_margin_start(W(listBox), linuxSettingsStore().load().effectiveSidebarDensity == .compact ? 8 : 14) }
         // Selection mode NONE: the custom shift/ctrl logic owns selection (painted through the
         // `agterm-selected` class), which lets the session-row click gesture run WITHOUT claiming
         // the sequence — see agterm-linux/docs/sidebar.md (no claiming click gesture).
@@ -346,8 +347,8 @@ extension AppController {
             ? op(gtk_label_new(content.name))
             : makeNameWidget(id: id, text: content.name, isWorkspace: false) else { return nil }
         gtk_widget_set_hexpand(W(widget), 1)
-        gtk_widget_set_margin_top(W(widget), 4)
-        gtk_widget_set_margin_bottom(W(widget), 4)
+        gtk_widget_set_margin_top(W(widget), linuxSettingsStore().load().effectiveSidebarDensity == .compact ? 1 : 4)
+        gtk_widget_set_margin_bottom(W(widget), linuxSettingsStore().load().effectiveSidebarDensity == .compact ? 1 : 4)
         gtk_widget_set_margin_start(W(widget), 4)
         if breadcrumb {
             gtk_label_set_xalign(widget, 0)
@@ -364,7 +365,7 @@ extension AppController {
               let body = op(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)), let info = op(gtk_label_new(nil)),
               let lead = op(gtk_image_new_from_icon_name(content.leadIconName)),
               let name = makeSessionNameWidget(id, content: content),
-              let glyph = op(gtk_label_new(nil)), let star = op(gtk_image_new_from_icon_name("starred-symbolic")),
+              let glyph = Self.makeEmptyStatusGlyph(), let star = op(gtk_image_new_from_icon_name("starred-symbolic")),
               let badge = op(gtk_label_new(nil)) else { return nil }
         "session-row".withCString { gtk_widget_set_name(W(row), $0) }
         gtk_widget_add_css_class(W(box), "agterm-session-row-content")

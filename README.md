@@ -77,7 +77,11 @@ Markdown uses the bundled renderer with contained local pictures; authored scrip
 the control bridge are unavailable in generated image and Markdown pages.
 The per-pane message bus supports send, read, acknowledgement, and waiting, with pending counts in `tree`.
 Runtime session info supports one-line Markdown, timed expiry, and Always, Flagged, or Off sidebar display.
-Preferences also controls workspace and session icon visibility.
+Preferences also controls workspace and session icon visibility, workspace chevrons, and compact sidebar density.
+Source/text pages, path:line links, bounded log following, page search, diff highlighting and change navigation,
+and inert HTML documents follow upstream v0.41.1.
+Generated content pages also work on a session's remote viewer; remote text stays static.
+See [Linux file pages](agterm-linux/docs/file-pages.md) for controls, limits, and the renderer boundary.
 Session and workspace tints, plain or grouped flagged lists, membership editors, and flagged ordering are
 available through GTK actions and the control socket.
 Overlay hide/show preserves the running program or page, and floating program and page overlays accept
@@ -96,10 +100,11 @@ Preferences exposes Quick Terminal sizing, cursor shape and blink, and Fresh she
 experimental Live sessions restore.
 Live mode uses the bundled pinned zmx runtime for primary and split panes; scratch, overlay, and Quick
 terminals remain temporary.
-It requires zsh or fish as the password-database login shell and the matching bundled Ghostty integration.
+It requires zsh or fish as the password-database login shell or as the absolute shell path in Ghostty’s `command` setting,
+with the matching bundled Ghostty integration.
 The mode is latched at process startup, and a missing daemon after reboot falls back to recreating the pane
 from its last cleanly captured command.
-The libghostty pin matches upstream v0.39.1.
+The libghostty pin matches upstream v0.41.1 (Ghostty v1.4.0).
 Kitty clipboard (OSC 5522) text reads and multi-representation writes are supported.
 Kitty image reads are not: reads serve text only.
 Kitty writes to PRIMARY are unsupported; copy-on-select to PRIMARY still works.
@@ -317,7 +322,7 @@ Requirements:
 - SVG image loading at runtime for toolbar and sidebar icons (`librsvg2-common` on Ubuntu/Debian).
 - WebP image loading at runtime for image and Markdown pages (`webp-pixbuf-loader`).
 - zsh, required by the shared `agtermCore` tests.
-- Zig 0.16.0 for the vendored libghostty and zmx builds.
+- Zig 0.17.0 for Ghostty and Zig 0.16.0 for zmx (install both with mise; set `GHOSTTY_ZIG` when not using mise).
 
 ```sh
 scripts/setup-linux.sh
@@ -329,7 +334,7 @@ dependency, shell integration, and compiled `xterm-ghostty` terminfo.
 It reuses vendored caches only when libghostty matches the current architecture, the Ghostty resources are
 complete, and the zmx revision matches; release staging rejects a partial cache.
 The libghostty cache stamp includes every applied patch.
-Linux applies upstream's mailbox teardown patch as is at `683d8db`, before its renderer patches.
+Linux applies upstream's mailbox teardown patch at `83fb956` (Ghostty v1.4.0), before its renderer patches.
 At runtime Linux advertises `TERM=xterm-ghostty` only when both shell integration and the sibling terminfo database
 resolve, and safely uses `TERM=xterm-256color` when they do not.
 

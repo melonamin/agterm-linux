@@ -115,6 +115,11 @@ extension AppController {
         connect(tint, "notify::value", unsafeBitCast(onSettingsSidebarTint, to: GCallback.self))
         adw_preferences_group_add(cast(window), W(tint))
 
+        adw_preferences_group_add(cast(window), W(preferencesCombo(
+            "Sidebar density", values: SidebarDensity.allCases.map(\.displayName),
+            selected: settings.effectiveSidebarDensity == .compact ? 1 : 0,
+            handler: unsafeBitCast(onSettingsSidebarDensity, to: GCallback.self))))
+
         let sidebarFont = OpaquePointer(
             adw_spin_row_new_with_range(
                 AppSettings.sidebarFontSizeRange.lowerBound, AppSettings.sidebarFontSizeRange.upperBound, 1)
@@ -235,4 +240,8 @@ private let onResetTerminalAppearance: @MainActor @convention(c) (OpaquePointer?
 }
 private let onResetWindowAppearance: @MainActor @convention(c) (OpaquePointer?, gpointer?) -> Void = { button, _ in
     MainActor.assumeIsolated { controllerForWidget(button)?.resetWindowAppearance() }
+}
+
+private let onSettingsSidebarDensity: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { row, _, _ in
+    _ = controllerForWidget(row)?.setSidebarDensity(adw_combo_row_get_selected(cast(row)) == 0 ? .standard : .compact)
 }

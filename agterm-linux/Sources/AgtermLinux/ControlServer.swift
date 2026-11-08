@@ -437,7 +437,7 @@ final class ControlServer: @unchecked Sendable {
              .sessionCopy, .sessionPaste, .sessionSelectAll, .sessionSearch,
              .sessionOverlayOpen, .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayResult,
              .sessionOverlayReload, .sessionOverlayNavigate,
-             .sessionOverlayCopy, .sessionOverlayText,
+             .sessionOverlayCopy, .sessionOverlayText, .sessionOverlaySearch, .sessionOverlayChanges, .sessionOverlayFollow,
              .sessionHudOpen, .sessionHudUpdate, .sessionHudClose,
              .askOpen,
              .sessionBackground, .sessionResize, .sessionText, .notify,
@@ -457,7 +457,7 @@ final class ControlServer: @unchecked Sendable {
         case .surfaceZoom, .surfaceCursor:
             return routeOwningSurface(req.target) ?? .controller(gController)
         case .tree, .eventsRead, .workspaceNew, .workspaceGo, .quick, .quickType, .quickText, .dashboard,
-             .sidebar, .sidebarMode, .sidebarFlaggedLayout, .sidebarExpand, .sidebarCollapse, .workspaceFilter,
+             .sidebar, .sidebarMode, .sidebarDensity, .sidebarFlaggedLayout, .sidebarExpand, .sidebarCollapse, .workspaceFilter,
              .windowNew, .windowList, .windowSelect, .windowGo, .windowClose, .windowRename, .windowDelete,
              .windowResize, .windowMove, .windowZoom, .windowFullscreen, .windowMinimize,
              .keymapReload, .keymapList, .hooksReload, .hooksList, .configReload, .themeSet, .themeList,
