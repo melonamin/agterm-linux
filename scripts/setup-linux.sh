@@ -11,10 +11,10 @@ GHOSTTY_REPO="https://github.com/ghostty-org/ghostty"
 source "$ROOT/linux/ghostty-build.sh"
 # shellcheck source=../linux/zmx.env
 source "$ROOT/linux/zmx.env"
-ZMX_PATCH_DIGEST="$(cat "$ROOT/scripts/zmx-patches"/*.patch "$ROOT/scripts/zmx-patches/ghostty"/*.patch | sha256sum | cut -c1-16)"
-ZMX_STAMP="$ZMX_REV $ZMX_PATCH_DIGEST"
 # shellcheck source=../linux/arch.sh
 source "$ROOT/linux/arch.sh"
+ZMX_PATCH_DIGEST="$(cat "$ROOT/scripts/zmx-patches"/*.patch "$ROOT/scripts/zmx-patches/ghostty"/*.patch | sha256sum | cut -c1-16)"
+ZMX_STAMP="$ZMX_REV $ZIG_TARGET $ZMX_PATCH_DIGEST"
 
 cache_is_complete() {
   "$VERIFY_CACHE" "$VENDOR" >/dev/null 2>&1
@@ -146,7 +146,8 @@ if $need_zmx; then
     export ZIG_GLOBAL_CACHE_DIR="$ZMX_BUILD/.zig-global-cache"
     export ZIG_LOCAL_CACHE_DIR="$ZMX_BUILD/.zig-cache"
     export XDG_CACHE_HOME="$BUILD_DIR/xdg-cache"
-    "$ZIG" build -Doptimize=ReleaseSafe
+    # Explicit targets use the baseline CPU; native defaults can SIGILL on another runner or user host.
+    "$ZIG" build -Doptimize=ReleaseSafe -Dtarget="$ZIG_TARGET"
   )
   mkdir -p "$ZMX_STAGE"
   install -m0755 "$ZMX_BUILD/zig-out/bin/zmx" "$ZMX_STAGE/zmx"

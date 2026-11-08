@@ -111,8 +111,24 @@ chmod 0755 "$SETUP_ROOT/agterm-linux/vendor/zmx/zmx"
 printf 'test license\n' > "$SETUP_ROOT/agterm-linux/vendor/zmx/LICENSE"
 # shellcheck source=../linux/zmx.env
 source "$ROOT/linux/zmx.env"
+# shellcheck source=../linux/arch.sh
+source "$ROOT/linux/arch.sh"
 ZMX_PATCH_DIGEST="$(cat "$ROOT/scripts/zmx-patches"/*.patch "$ROOT/scripts/zmx-patches/ghostty"/*.patch | sha256sum | cut -c1-16)"
+printf '%s %s %s\n' "$ZMX_REV" "$ZIG_TARGET" "$ZMX_PATCH_DIGEST" > "$SETUP_ROOT/agterm-linux/vendor/zmx/REVISION"
+AGTERM_TEST_UNAME=x86_64 PATH="$WORK:$PATH" \
+  "$SETUP_ROOT/scripts/verify-linux-zmx-cache.sh" "$SETUP_ROOT/agterm-linux/vendor/zmx" >/dev/null
+if AGTERM_TEST_UNAME=aarch64 PATH="$WORK:$PATH" \
+    "$SETUP_ROOT/scripts/verify-linux-zmx-cache.sh" "$SETUP_ROOT/agterm-linux/vendor/zmx" >/dev/null 2>&1; then
+  echo "zmx cache with the wrong target unexpectedly passed verification" >&2
+  exit 1
+fi
 printf '%s %s\n' "$ZMX_REV" "$ZMX_PATCH_DIGEST" > "$SETUP_ROOT/agterm-linux/vendor/zmx/REVISION"
+if AGTERM_TEST_UNAME=x86_64 PATH="$WORK:$PATH" \
+    "$SETUP_ROOT/scripts/verify-linux-zmx-cache.sh" "$SETUP_ROOT/agterm-linux/vendor/zmx" >/dev/null 2>&1; then
+  echo "zmx cache without a baseline target unexpectedly passed verification" >&2
+  exit 1
+fi
+printf '%s %s %s\n' "$ZMX_REV" "$ZIG_TARGET" "$ZMX_PATCH_DIGEST" > "$SETUP_ROOT/agterm-linux/vendor/zmx/REVISION"
 cat > "$WORK/git" <<'EOF'
 #!/usr/bin/env bash
 echo "agterm cache test reached the libghostty rebuild path" >&2

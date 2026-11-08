@@ -334,6 +334,7 @@ dependency, shell integration, and compiled `xterm-ghostty` terminfo.
 It reuses vendored caches only when libghostty matches the current architecture, the Ghostty resources are
 complete, and the zmx revision matches; release staging rejects a partial cache.
 The libghostty cache stamp includes every applied patch.
+Both runtimes use explicit Linux targets with baseline CPUs; the zmx cache stamp includes its target and patches.
 Linux applies upstream's mailbox teardown patch at `83fb956` (Ghostty v1.4.0), before its renderer patches.
 At runtime Linux advertises `TERM=xterm-ghostty` only when both shell integration and the sibling terminfo database
 resolve, and safely uses `TERM=xterm-256color` when they do not.

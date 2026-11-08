@@ -12,8 +12,10 @@ VENDOR="$1"
 [[ "$VENDOR" = /* ]] || VENDOR="$ROOT/$VENDOR"
 # shellcheck source=../linux/zmx.env
 source "$ROOT/linux/zmx.env"
+# shellcheck source=../linux/arch.sh
+source "$ROOT/linux/arch.sh"
 ZMX_PATCH_DIGEST="$(cat "$ROOT/scripts/zmx-patches"/*.patch "$ROOT/scripts/zmx-patches/ghostty"/*.patch | sha256sum | cut -c1-16)"
-ZMX_STAMP="$ZMX_REV $ZMX_PATCH_DIGEST"
+ZMX_STAMP="$ZMX_REV $ZIG_TARGET $ZMX_PATCH_DIGEST"
 
 [[ -x "$VENDOR/zmx" ]] || { echo "missing executable zmx: $VENDOR/zmx" >&2; exit 1; }
 [[ -s "$VENDOR/LICENSE" ]] || { echo "missing zmx license: $VENDOR/LICENSE" >&2; exit 1; }
