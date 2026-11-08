@@ -2,7 +2,11 @@
 
 Let Claude Code and Codex hold a conversation with each other in one agterm split.
 
+Author: [@umputun](https://github.com/umputun)
+
 *A simplified version of the setup I run myself, cut down to the part worth publishing. Tested for real, with two agents talking to each other through it, but this is a first version and it will be updated as it gets used.*
+
+*[two-agent-mailbox-chat](../two-agent-mailbox-chat/) does the same job through agterm's pane mailboxes instead of typing into the composer, and is the recommended replacement.*
 
 ## What it does
 

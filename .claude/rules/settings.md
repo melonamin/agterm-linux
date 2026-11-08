@@ -109,8 +109,8 @@ paths:
   `com_apple_SwiftUI_Settings_selectedTabIndex` persistence. General holds Mouse and Sessions; the
   global-Ghostty-config toggle and its hint close Sessions, since a third section made the tab scroll.
   Appearance holds Terminal and Window. Interface groups `InterfaceElement`s two per row, with the
-  Multiple Windows toggle as the Sidebar section's last row, the Session info picker in that grid's empty
-  half-cell (`sessionInfoDisplay`, owned by [[sidebar]]), plus the quick terminal's panel size,
+  Session info picker (`sessionInfoDisplay`, owned by [[sidebar]]) and the Multiple Windows toggle sharing the
+  Sidebar section's last row, since the grid's eight toggles leave no half-cell, plus the quick terminal's panel size,
   which sits there rather than under Appearance's Window because the panel belongs to no window.
   Notifications holds banner/badge/attention/bounce/sound. Agent Status holds colors/shapes, sound,
   status reset, Navigation (attention-includes-active, attention-across-windows, auto-follow), and Reset,
@@ -171,8 +171,9 @@ paths:
   cached diagnostics.
 - **Process restore mode is frozen at launch; capture follows the configured next mode.** `none` restores fresh shells, `rerun` uses the captured-command path
   below, and `live` is zmx-backed. Settings changes apply after restart. A live request falls back to
-  `none` when the bundled executable, the bundled zsh or fish integration, or the password-database login
-  shell (zsh or fish) is unsupported, and Settings reports the reason. The requested-live latch still claims persisted daemons during fallback; only
+  `none` when the bundled executable, the bundled zsh or fish integration, or the Live shell is unsupported
+  (the password-database login shell, replaced by an absolute zsh or fish `command` that `GhosttyApp` reads
+  with the restore decision), and Settings reports the reason. The requested-live latch still claims persisted daemons during fallback; only
   a deliberate `none` or `rerun` launch reaps them. Factories, control status, and reap read the immutable
   requested or active mode. Exit capture and `restore.capture` read the configured next-launch mode.
 - **Command replay is launch-scoped; capture runs at two exits and on demand.**
@@ -277,7 +278,8 @@ paths:
   `sessionContext`, `recentSessions`, `scratch`, `split`, `dashboard`, `quickTerminal`, `customCommands`,
   `overlayToggle`;
   sidebar cases are `newWorkspace`, `newSession`, `flaggedView`, `focusFilter`, and row-level
-  `workspaceAddSession`, `workspaceIcons` and `sessionIcons`. The two icon toggles show the glyph their rows
+  `workspaceAddSession`, `workspaceIcons`, `sessionIcons` and `workspaceChevrons` ([[sidebar]] owns its layout).
+  The two icon toggles show the glyph their rows
   draw, so they share it with `focusFilter` and `quickTerminal`.
   A `hiddenByDefault` case (`workspaceName`, `customCommands` and `overlayToggle`) is governed by
   `shownInterfaceElements` instead, the same shape with the opposite sense, and its name in the hidden list is ignored. Attention
@@ -312,9 +314,15 @@ paths:
   the section's bottom inset does not; `assertGeneralTabFits` in `SettingsUITests` scrolls the tab and
   requires the closing hint not to move.
   The control catalog carries it as `sidebar.flagged-layout` ([[control-api]]).
+- `sidebarDensity` is a raw `SidebarDensity` (`default`|`compact`), nil for the default, resolved by
+  `effectiveSidebarDensity` and mirrored to `GhosttyApp.sidebarDensity`; app-wide. `SidebarDensity` owns every
+  metric it changes, and [[sidebar]] owns how a mounted outline applies them. Its picker sits under Sidebar font
+  size in Appearance, which `testSidebarDensityPickerPersistsAndTheAppearanceTabFits` keeps from scrolling.
+  The control catalog carries it as `sidebar.density`.
 - `terminalInputSource` is a macOS input source id, nil = off. `InputSourceLock` in `agtermCore` decides and
   `TerminalInputSource` is the only caller of Text Input Source selection: it selects the id while the key
-  window's first responder is a `GhosttySurfaceView`, reselects on every source-change notification, and
+  window's first responder is a live `GhosttySurfaceView` or sits inside an `HtmlOverlayWebView`, page form
+  fields included, reselects on every source-change notification, and
   restores the earlier source when that stops being true and in `applicationWillTerminate`.
   It keys on key-window and responder changes, never app activation, because the quick terminal takes key
   while agterm stays inactive. The source-change notification is delivered to an inactive app (measured

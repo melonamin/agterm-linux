@@ -53,6 +53,21 @@ public extension ControlActions {
         ControlResponse(ok: false, error: ControlActionsUnsupported.message("session.overlay.\(mode.rawValue)"))
     }
 
+    func setSessionOverlayFollow(_: String?, window _: String?, pane _: OverlayPane?,
+                                 mode _: ControlToggleMode) -> ControlResponse {
+        ControlResponse(ok: false, error: ControlActionsUnsupported.message("session.overlay.follow"))
+    }
+
+    func searchSessionOverlay(_: String?, window _: String?, pane _: OverlayPane?,
+                              request _: TextSearchRequest) async -> ControlResponse {
+        ControlResponse(ok: false, error: ControlActionsUnsupported.message("session.overlay.search"))
+    }
+
+    func stepSessionOverlayChanges(_: String?, window _: String?, pane _: OverlayPane?,
+                                   forward _: Bool) async -> ControlResponse {
+        ControlResponse(ok: false, error: ControlActionsUnsupported.message("session.overlay.changes"))
+    }
+
     // outcomes live in agtermCore, so every host answers the read the same way and owes no conformance
     func htmlPageResult(_ pageID: UUID) -> ControlResponse {
         HtmlPageOutcomes.shared.response(for: pageID)
@@ -73,6 +88,10 @@ public extension ControlActions {
 
     func setFlaggedViewLayout(_: ControlFlaggedLayoutMode) -> ControlResponse {
         ControlResponse(ok: false, error: ControlActionsUnsupported.message("sidebar.flagged-layout"))
+    }
+
+    func setSidebarDensity(_: ControlSidebarDensityMode) -> ControlResponse {
+        ControlResponse(ok: false, error: ControlActionsUnsupported.message("sidebar.density"))
     }
 
     func moveFlaggedSession(_: String?, window _: String?, anchor _: String,

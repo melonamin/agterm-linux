@@ -18,6 +18,13 @@ public struct ControlDispatcher {
         switch request.cmd {
         case .msgSend, .msgRead, .msgAck: return dispatchMessageCommand(request)
         case .sessionInfo: return dispatchSessionInfo(request)
+        case .sidebarDensity: return dispatchAppCommand(request)
+        case .sessionTint, .workspaceTint: return dispatchTint(request)
+        case .sessionOverlayOpen, .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayResult,
+             .sessionOverlayReload, .sessionOverlayNavigate, .sessionOverlaySubmit, .sessionOverlayCopy,
+             .sessionOverlayText, .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle,
+             .sessionOverlayFollow, .sessionOverlayJobRun, .sessionOverlayPageServe:
+            return dispatchSessionOverlayCommand(request)
         default: return nil
         }
     }
@@ -41,8 +48,8 @@ public struct ControlDispatcher {
                 .sessionCopy, .sessionPaste, .sessionSelectAll, .sessionSearch, .sessionOverlayOpen,
                 .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayReload, .sessionOverlayNavigate,
                 .sessionOverlayResult, .sessionOverlaySubmit, .sessionOverlayCopy, .sessionOverlayText,
-                .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle,
-                .sessionBackground, .sessionText:
+                .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle, .sessionOverlayFollow,
+                .sessionOverlaySearch, .sessionOverlayChanges, .sessionBackground, .sessionText:
             return await dispatchSessionSurfaceCommand(request)
         case .sessionOverlayJobRun, .sessionOverlayPageServe:
             return dispatchSessionOverlayCommand(request)
@@ -53,9 +60,8 @@ public struct ControlDispatcher {
                 .workspaceFlag:
             return dispatchWorkspaceCommand(request)
         case .quick, .fontInc, .fontDec, .fontReset, .keymapReload, .keymapList, .keymapRun,
-                .configReload, .notify, .themeSet, .themeList, .sidebar, .sidebarMode, .sidebarExpand,
-                .sidebarCollapse, .sidebarFlaggedLayout, .sidebarWidth, .restoreClear, .restoreCapture,
-                .version:
+                .configReload, .notify, .themeSet, .themeList, .sidebar, .sidebarMode, .sidebarFlaggedLayout,
+                .sidebarDensity, .sidebarExpand, .sidebarCollapse, .sidebarWidth, .restoreClear, .restoreCapture, .version:
             return dispatchAppCommand(request)
         case .restoreMode, .zmxList, .zmxPrune, .zmxKill, .zmxReset, .zmxTree, .zmxAttach, .zmxAttachGroup, .zmxPresent, .zmxScreen:
             return await dispatchZmxCommand(request)
@@ -421,9 +427,13 @@ public struct ControlDispatcher {
         case .sessionSearch:
             return await actions.searchSession(request.target, window: request.args?.window,
                                                text: request.args?.text, to: request.args?.to)
+        case .sessionOverlaySearch:
+            return await dispatchSessionOverlaySearch(request)
+        case .sessionOverlayChanges:
+            return await dispatchSessionOverlayChanges(request)
         case .sessionOverlayOpen, .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayReload,
              .sessionOverlayNavigate, .sessionOverlayResult, .sessionOverlaySubmit, .sessionOverlayCopy,
-             .sessionOverlayText, .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle:
+             .sessionOverlayText, .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle, .sessionOverlayFollow:
             return dispatchSessionOverlayCommand(request)
         case .sessionBackground:
             return dispatchSessionBackground(request)
@@ -483,6 +493,11 @@ public struct ControlDispatcher {
                 return ControlResponse(ok: false, error: "invalid flagged layout: \(request.args?.mode ?? "toggle")")
             }
             return actions.setFlaggedViewLayout(mode)
+        case .sidebarDensity:
+            guard let mode = ControlSidebarDensityMode.parse(request.args?.mode) else {
+                return ControlResponse(ok: false, error: "invalid sidebar density: \(request.args?.mode ?? "toggle")")
+            }
+            return actions.setSidebarDensity(mode)
         case .sidebarExpand:
             return actions.expandSidebar(window: request.args?.window)
         case .sidebarCollapse:

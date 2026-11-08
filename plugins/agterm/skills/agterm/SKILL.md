@@ -1,11 +1,11 @@
 ---
 name: agterm
 description: >
-  Drive agterm on macOS or GTK Linux via agtermctl. Use in an agterm session:
-  manage sessions, companions and workspaces; split panes; toggle the scratch terminal; run, hide or show overlays;
-  read exit status; show HTML pages, URLs or dev servers in an overlay with saved logins;
-  post a HUD/caption/notification/sidebar activity line; message panes; show a picker, question or input dialog; show images/markdown; type
-  into or restart a pane by id, copy its selection, set the clipboard, search its scrollback; manage windows; set font size and
+  Drive agterm on macOS or GTK Linux, via agtermctl. Use in an agterm session:
+  manage sessions, companions and workspaces; split panes; toggle the scratch; run, hide or show overlays;
+  read exit status; show HTML pages, interactive too, URLs or dev servers in an overlay with saved logins;
+  post a HUD/caption/notification/sidebar activity line; message panes; show a picker, question or input dialog; show images/markdown/code; type
+  into or restart a pane by id, copy its selection, set the clipboard, search its scrollback; manage windows, font size and
   theme; reload or edit the keymap, event hooks and agterm-scoped ghostty config; run a custom command; read
   a closed window's session screen; subscribe to status, notify, lifecycle, selection,
   pane, tree and launch events; wait on agent status.
@@ -16,7 +16,7 @@ when_to_use: >
   Trigger on: agterm, agtermctl, AGTERM_SESSION_ID, and, from inside a session, plain requests such as
   split the pane, close the overlay, hide the overlay for a moment, show a message over the session, show a question dialog, agtermctl ask,
   ask the user to type a value or a message, let the user pick one or several items from a list,
-  show an image inline, show this markdown file rendered, show this HTML page or artifact, make an HTML page or explainer for this and show
+  show an image inline, show this markdown file rendered, show this source file or log at a line, show me the diff of a file or the changes as links, tail or follow this log file, search the log or text page in the overlay, show this HTML page or artifact, make an HTML page or explainer for this and show
   it, make a page that switches sessions or returns a choice, preview the report you generated, show this URL or the running dev server, keep me logged in to a page shown in an overlay, search the scrollback, flag every session in a workspace, tint a session or workspace row a color, show status or activity under a session in the sidebar, make a companion session, keep a related program next to a session, duplicate this session with its programs as a companion, open a sub-session under this one, fold a session's companions, show a page as a companion of this session, run my custom command, send a message to the other pane or another agent, read my messages, wait for a message, tell me when the selected session changes, wait until that worker session finishes, bring back the session I just closed, attach a session from another Mac, attach a remote session with all its companions, copy this to the clipboard, was agterm upgraded under the running app, upgrade agterm without losing sessions, what recipes are there,
   the keymap editor will not open.
 allowed-tools: Bash(agtermctl *)
@@ -121,7 +121,8 @@ navigation walks every open window; `session go` stays in its window), `sidebarV
 sidebar is currently shown — the read side of the write-only `sidebar` command), `sidebarMode`
 (`tree` or `flagged` — the read side of `sidebar mode`), `linkOpenMode` (`browser`, `overlay`, `overlay95`, `overlay75` or `overlay50`, app-wide —
 the read side of `browser links`), `sidebarFlaggedLayout` (`flat`, `plain` or `tree`, app-wide —
-the read side of `sidebar flagged-layout`), `flaggedOrder` (the window's flagged session ids in the flat list's
+the read side of `sidebar flagged-layout`), `sidebarDensity` (`default` or `compact`, app-wide — the read side of
+`sidebar density`), `flaggedOrder` (the window's flagged session ids in the flat list's
 saved order — the read side of `session flag move`, omitted when nothing is flagged), `sidebarWidth` (the sidebar divider position in
 points — the read side of `sidebar width`, on `tree` only), `workspaceFilter`, `quickVisible` (whether the
 quick terminal is shown — the read side of the write-only `quick` command; app-level, so every window
@@ -166,8 +167,9 @@ you open overlays / type into whatever the user has selected, not your own sessi
 - **Fresh shells** restores the saved windows, workspaces, sessions, directories, and split layout with new shells.
 - **Re-run commands** starts each captured foreground command again. It does not reconnect to the old process.
 - **Live sessions** runs every primary and split pane through zmx and reattaches to the same process. It requires
-  zsh or fish as the password-database login shell on macOS and Linux, with matching bundled shell integration.
-  Scratch, overlay, and quick terminals stay temporary.
+  zsh or fish as the password-database login shell on macOS and Linux, or as the absolute path in the ghostty `command` agterm loads
+  (ghostty.conf, an inherited global config, or their includes), which then replaces the login shell in
+  Live panes. Scratch, overlay, and quick terminals stay temporary.
 
 Upgrading: with Live sessions already active, install the new version, quit agterm and open it again. Local
 primary and split panes reattach to the same processes and no reset is needed. `agtermctl version` adds an
@@ -455,7 +457,7 @@ omitted when expanded).
   the absolute primary-role pane fraction (0..1, clamped to 0.05..0.95). On macOS, the area excludes
   the titlebar. Primary/split grow selectors follow model roles; left/right/top/bottom follow physical
   sides. Prints the applied primary fraction.
-- `session status <idle|active|completed|blocked> [--blink] [--auto-reset] [--sound NAME] [--color #rrggbb] [--shape SHAPE] [--pane left|right|scratch] [--pane-id TOKEN]` — set the sidebar agent glyph (`--sound default` or a system sound name plays a one-shot sound; `--color` tints the glyph for this call only, reverting on the next status set without it; `--shape` (`circle`, `square`, `triangle`, `diamond`, `capsule`, `star`) picks its silhouette for this call only and reverts the same way, read back as the tree `statusShape` field; `--pane` records which pane set it — `left`=main, `right`=split, `scratch` — so foreground typing in another pane won't clear it, and while the session is `blocked` a status from another pane that is not itself `blocked` is refused with `blocked status owned by pane <pane>` so one pane's agent cannot erase the other's request for input, `idle` included since the bundled hooks emit it unprompted; any user-initiated GUI selection (auto-follow, attention-nav ⌃⌥↑/↓, plain session nav, the command palettes, a Dock-menu session, a sidebar row click) reveals that pane when the status needs attention (`blocked`/`completed`); `active` preserves the existing pane selection; the pane reads back as the tree `statusPane` field; the socket `session go next-attention` only steps the selection, it does not itself reveal the pane; `--pane-id` is the hook-forwarded stable surface token (`$AGTERM_PANE_ID`) that resolves the pane's live slot and overrides a stale `--pane` after a promote + re-split — scripts set `--pane` directly and leave `--pane-id` to the hook).
+- `session status <idle|active|completed|blocked> [--blink] [--auto-reset] [--sound NAME] [--color #rrggbb] [--shape SHAPE] [--pane left|right|scratch] [--pane-id TOKEN]` — set the sidebar agent glyph (`--sound default` or a system sound name plays a one-shot sound; `--color` tints the glyph for this call only, reverting on the next status set without it; `--shape` (one of the names `reference.md` lists) picks its silhouette for this call only and reverts the same way, read back as the tree `statusShape` field; `--pane` records which pane set it — `left`=main, `right`=split, `scratch` — so foreground typing in another pane won't clear it, and while the session is `blocked` a status from another pane that is not itself `blocked` is refused with `blocked status owned by pane <pane>` so one pane's agent cannot erase the other's request for input, `idle` included since the bundled hooks emit it unprompted; any user-initiated GUI selection (auto-follow, attention-nav ⌃⌥↑/↓, plain session nav, the command palettes, a Dock-menu session, a sidebar row click) reveals that pane when the status needs attention (`blocked`/`completed`); `active` preserves the existing pane selection; the pane reads back as the tree `statusPane` field; the socket `session go next-attention` only steps the selection, it does not itself reveal the pane; `--pane-id` is the hook-forwarded stable surface token (`$AGTERM_PANE_ID`) that resolves the pane's live slot and overrides a stale `--pane` after a promote + re-split — scripts set `--pane` directly and leave `--pane-id` to the hook).
 - `session wait --until STATUS [--until STATUS ...] [--timeout SECONDS]` — block until the session's agent
   status is one of the values, returning at once when it already is. Exit 0 and print the status on a match,
   2 when the session closes, 124 on timeout, 1 on failure. Use it to wait for a worker started with
@@ -475,7 +477,8 @@ omitted when expanded).
   whole line, so pass every flag every time. A process reporting activity must pass a positive `--hide-after`
   and set the line again before it runs out, so the line goes away if the process dies. Not kept across a
   relaunch. Read back as the tree's `info`; details in reference.md.
-- `session tint <red|orange|yellow|green|blue|purple|gray|clear> [--on icon|name|icon,name]` and `workspace tint`
+- `session tint <COLOR|#rrggbb|clear> [--on icon|name|icon,name]` (COLOR: red, orange, yellow, green, blue,
+  purple, gray, teal, pink, brown, indigo, mint) and `workspace tint`
   (same arguments) - color a sidebar row so it stands out, e.g. red for production; a workspace tint colors only
   its own row. `session new`/`workspace new` take `--tint`/`--tint-on`. Read back as the tree node's `tint`/`tintOn`;
   details in reference.md.
@@ -506,7 +509,7 @@ omitted when expanded).
   and `clear --pane` returns the pane to the default. `--opacity` 0.0–1.0. (An image/text watermark
   renders the pane opaque, overriding window translucency, so it shows; a `color` takes no opacity and
   honors the Settings window translucency instead.)
-- `session overlay open (<command> [--cwd DIR] [--wait] [--block] | --html FILE [--cwd DIR] [--navigation | --chromeless] [--js] [--block] | --url URL [--navigation | --chromeless] [--js] | --image FILE | --markdown FILE) [--size-percent N [--width PT] [--height PT]] [--background-color #rrggbb] [--follow] [--pane left|right]` ·
+- `session overlay open (<command> [--cwd DIR] [--wait] [--block] | --html FILE [--cwd DIR] [--navigation | --chromeless] [--js] [--block] | --url URL [--navigation | --chromeless] [--js] | --image FILE | --markdown FILE | --text FILE [--line N]) [--size-percent N [--width PT] [--height PT]] [--background-color #rrggbb] [--follow] [--pane left|right]` ·
   `session overlay resize (--size-percent N [--width PT] [--height PT] | --width PT [--height PT] | --height PT | --full)` ·
   `session overlay close [--pane left|right]` ·
   `session overlay hide|show|toggle [--pane left|right]` ·
@@ -546,8 +549,8 @@ omitted when expanded).
   use `--follow` when you want the user pulled to the overlay, omit it to open quietly on your own or
   another session.
   `--background-color` gives the overlay pane its own solid color, independent of the session's.
-  `--image FILE` is how you **display an image inline**, and `--markdown FILE` how you **show a markdown file
-  rendered** (see below).
+  `--image FILE` is how you **display an image inline**, `--markdown FILE` how you **show a markdown file
+  rendered**, and `--text FILE [--line N]` how you **show a source file or log at a line** (see below).
 - `session hud [open] <message> [--detail T] [--spinner] [--spinner-style S] [--position P] [--background-color #rrggbb] [--text-color #rrggbb] [--size-percent N] [--sticky] [--no-frame] [--hide-after SECONDS] [--pane P] [--pane-id ID]` ·
   `session hud update <message> [--detail T] [--spinner] [--spinner-style S] [--position P] [--text-color #rrggbb] [--size-percent N] [--sticky] [--no-frame] [--hide-after SECONDS] [--pane P] [--pane-id ID]` ·
   `session hud close` — post a small **passive** panel over the session saying what you are doing
@@ -686,7 +689,9 @@ per app, so none of them take `--target`/`--window`/`--pane`; all three still ne
 `sidebar mode [tree|flagged|toggle]` (flip between the workspace tree and the flagged working set; read
 back from the tree's top-level `sidebarMode`) · `sidebar flagged-layout [flat|plain|tree|toggle]` (arrange the flagged
 view as one flat list, `plain` for the same list without workspace names, or nested under workspace rows; app-wide, no `--window`, echoes the resulting layout; read
-back from `sidebarFlaggedLayout`) · `sidebar expand [--window W]` (expand every workspace) ·
+back from `sidebarFlaggedLayout`) · `sidebar density [default|compact|toggle]` (sidebar row spacing, `compact` for
+shorter rows and a smaller indent; app-wide, no `--window`, echoes the result; read back from `sidebarDensity`) ·
+`sidebar expand [--window W]` (expand every workspace) ·
 `sidebar collapse [--window W]` (collapse all workspaces except the active one, which stays expanded) ·
 `sidebar width <points> [--window W]` (move the divider, clamped to 160...560pt; prints the stored width
 and reads back from the tree's top-level `sidebarWidth`).
@@ -821,8 +826,64 @@ agtermctl session overlay open --markdown /path/to/plan.md --size-percent 95 --t
 ```
 
 Pictures kept in the file's own folder show; other pictures show their alt text, raw HTML stays text, and a web
-link opens in the browser after the user confirms. The user gets the same view by ⌘-clicking the file's path, so
-printing the absolute path of a plan or report you wrote is often enough. Read back `markdown` in `htmlOverlays`.
+link opens in the browser after the user confirms. The user gets the same view by ⌘-clicking the file's path in a
+local pane, so printing the absolute path of a plan or report you wrote is often enough there; for a user watching
+from another Mac, open it with `--markdown`. Read back `markdown` in `htmlOverlays`.
+
+A ⌘-clicked `.html` or `.htm` path shows as a page with scripts off, no tagged controls, no access to other
+files and no network loads, read back as `document`. A page that needs its scripts, its controls or files beside it opens with `--html`.
+
+## Showing a source file or log at a line
+
+Show a source, config, text or log file read-only with `--text`, scrolled to and marking `--line`:
+
+```bash
+agtermctl session overlay open --text /path/to/main.go --line 42 --size-percent 95 --target "$AGTERM_SESSION_ID"
+```
+
+It is highlighted when its name maps to a known language, up to 256 KB, and plain above; a file over 4 MB is
+refused. FILE is taken literally,
+never as `path:line`. The page runs nothing, loads nothing and has no links. Markdown, HTML and SVG are not text
+pages. The user gets the same view by ⌘-clicking a path or a `path:line` location in a local pane, and reveals any
+file in Finder with ⌘⌥-click; for a user watching from another Mac, open it with `--text`. Read back `text`
+(`{file, language?, line?}`) in `htmlOverlays`.
+
+To watch a log, open its end and follow it as it grows:
+
+```bash
+agtermctl session overlay open --text /path/to/app.log --follow-file --size-percent 95 --target "$AGTERM_SESSION_ID"
+agtermctl session overlay follow off --target "$AGTERM_SESSION_ID"   # pause; on resumes, toggle flips
+```
+
+`--follow-file` shows the last 5,000 lines, read from the end so a log of any size opens; `--tail N` sets the count
+(1 to 100,000) and alone shows them once without following. It is not `--follow`, which selects the session. A
+⌘-click on a `.log` or `.out` path opens the same following page; `app.log:120` still opens the plain page at that
+line. The user pauses by scrolling up and resumes at the bottom or with Resume. Read back `text.tail`, `following`,
+`lines`, `clipped`, `waiting` (file missing) and `unreadable`. A log page is refused on a session another Mac presents.
+
+Search a text or log page, not the terminal under it:
+
+```bash
+agtermctl session overlay search ERROR --target "$AGTERM_SESSION_ID"   # highlights every match
+agtermctl session overlay search --next --target "$AGTERM_SESSION_ID"  # prints "2 of 7"; --prev, --close
+```
+
+Matching is case-insensitive plain text. A step pauses a following log page, so the match stays in view; setting the
+query does not. Read back `text.search` (`{query, matches, current}`). The user has the same search in the page's
+bar: `/` or ⌘F focuses it, `n`/`N` step, Esc clears; on a log page `F` toggles follow, `G`/End goes to the bottom and
+follows, `g`/Home to the top. A step before the page loads is refused `page not loaded`.
+
+To show the user changes, write each changed file's diff to its own `.diff` file and list them as links; a ⌘-click
+opens it as a read-only text page:
+
+```bash
+git diff --no-color HEAD~3 HEAD -- src/app.go > /tmp/src_app.go.diff
+```
+
+Then print `[src/app.go diff](/tmp/src_app.go.diff)`, one link per file, since a multi-file patch shows as one stream
+with no file list. Use absolute, space-free output paths so the printed paths are clickable without OSC 8.
+The page steps between changes with `]`/`[` or `agtermctl session overlay changes --next|--prev`, which prints
+`N of M`; read back `text.changes` (`{count, current}`).
 
 ## Displaying an image inline
 
@@ -833,9 +894,11 @@ Show a png, jpg, gif or webp picture with `--image`; the panel takes the picture
 agtermctl session overlay open --image /tmp/shot.png --target "$AGTERM_SESSION_ID"
 ```
 
-The user can open the same view by ⌘-clicking a picture's path in the terminal, so printing the absolute
-path of an image you produced is often enough. When `--image` is rejected, by an older CLI as an unknown
-option or by an older app, fall back to the script below.
+The user can open the same view by ⌘-clicking a picture's path in a local pane, so printing the absolute
+path of an image you produced is often enough there. When the user watches your session from another Mac,
+a click on a printed path does nothing; open it with `--image`, which shows it on that Mac, as `--markdown`
+and `--text` pages do. When `--image` is rejected, by an older CLI as an unknown option, by an older app, or
+by a presenting Mac too old for these pages (`a viewer presents this session`), fall back to the script below.
 
 This skill also bundles `scripts/show-image.sh`. It opens an overlay (a real terminal) and renders the
 image there via the kitty graphics protocol, which ghostty draws natively — no kitty binary and no
@@ -990,7 +1053,8 @@ subsystem `com.umputun.agterm`. If it turns out to be a bug, offer to help file 
 
 **Filing is opt-in and draft-first.** Never run a `gh` command without the user's explicit approval.
 Decide first whether it is a bug (a supported feature misbehaving → a GitHub **issue**) or something
-not supported / a question / an idea (→ a GitHub **Discussion**, category `Ideas` or `Q&A`). Draft the
+not supported / a question / an idea (→ a GitHub **Discussion**, category `Ideas` or `Q&A`); a
+cookbook recipe by another author takes a pull request instead (`troubleshooting.md`). Draft the
 title and body, show it to the user, scrub anything private (tokens, hostnames, usernames in paths,
 selection/clipboard text), and only post after an explicit go-ahead. If `gh` is missing or not
 authenticated, hand the user the prefilled text plus the new-issue / new-discussion URL instead.

@@ -2,6 +2,7 @@
 paths:
   - "agterm/Views/WorkspaceSidebar*.swift"
   - "agterm/Views/SidebarRowViews.swift"
+  - "agterm/Views/SidebarOutlineView.swift"
   - "agterm/Views/SidebarRenameController.swift"
   - "agtermCore/Sources/agtermCore/SidebarDrop.swift"
   - "agtermCore/Sources/agtermCore/SidebarMode.swift"
@@ -19,12 +20,26 @@ paths:
   reloads retain identity, expansion, and selection.
 - The `RowContent` reload-scoping below has a GTK counterpart — a keyed snapshot diff that updates one
   row's widgets in place — whose contract is `agterm-linux/docs/sidebar.md`.
+- `SidebarDensity` ([[settings]]) sets row padding, indent, info-line spacing, the name's lift and the selection
+  inset. Rows sit edge to edge, so the padding is the only gap between items and the selection pill shrinks with
+  the row. A density change re-applies `rowHeight` and `indentationPerLevel` and rebuilds; cells are reused, so
+  `viewFor` resets `titleCenter` and `SidebarInfoCellView.apply` resets `infoTop` on every configure.
+  `SidebarDensityTests` switches a mounted outline both ways.
 - macOS 27 reserves a wider leading strip than the disclosure triangle occupies, stranding the row icon
   mid-gap. `SidebarOutlineView.frameOfCell` trims the surplus, gated on that version; its doc comment owns
-  the reasoning. Leave `frameOfOutlineCell` alone: the triangle keeps its place and `handleSingleClick`
-  reads that frame. `SidebarRowIndentTests` splits by version: the tight-gap cases run on 27 and up, the
-  indent and trailing-edge cases everywhere, and `testBelowTheGateFramesMatchAPlainOutline` only below the
-  gate, where it is the only thing pinning earlier layouts as untouched. Do not re-gate or drop it.
+  the reasoning. While the strip is reserved, `frameOfOutlineCell` is native: the triangle keeps its place and
+  `handleSingleClick` reads that frame. `SidebarRowIndentTests` splits by version: the tight-gap cases run on 27
+  and up, the indent and trailing-edge cases everywhere, and `testBelowTheGateFramesMatchAPlainOutline` only
+  below the gate, where it is the only thing pinning earlier layouts as untouched. Do not re-gate or drop it.
+- `reservesDisclosureColumn` drops that strip on every version while `InterfaceElement.workspaceChevrons` is
+  hidden and in the flat and plain flagged lists, which never draw a level-0 triangle. Level-0 triangles then get
+  an empty frame and a companion parent's ends at its content; never hide one through
+  `shouldShowOutlineCellForItem`, which makes AppKit refuse to collapse that item. A dropped strip also narrows
+  the scroll view's left inset from 8 to 6, keyed on the flag, never the setting. Every workspace row menu offers Collapse/Expand Workspace through the
+  row click's `toggleExpansion`, so a hidden chevron with row click off still leaves a mouse fold.
+- macOS 27 hides `NSMenuItem` images under the default `preferredImageVisibility` (`.automatic`), which is
+  how the Tint submenu's swatches vanished. Any menu item whose image carries meaning sets `.visible`, by key
+  (`setValue(1, forKey: "preferredImageVisibility")`) while CI builds with the macOS 26 SDK, which lacks the property.
 
 ## Drag and row actions
 
@@ -141,6 +156,8 @@ paths:
 - A row's tint (`Session.tint`, `Workspace.tint`) colors its icon and/or name through `SidebarCellView.setColors`,
   selected rows included, so every retint keeps it; `RowContent.tint` reloads that row alone. The Tint submenu
   checks an entry only when every target shares it and disables Show On unless every target is tinted.
+  An untinted row counts as the last Show On pick (`Coordinator.tintPlacement`, app-wide, never persisted), which a
+  menu color pick starts it on; the palette and `session.tint` keep starting on the icon.
 - A session with an info line (`session.info`, [[control-api]]) uses the `session-info-cell` identifier and a
   taller row from `SidebarInfoMetrics`: the plain row, plus one line set 1.5 points smaller with a 9-point
   minimum, lifted 6 points into the plain row's bottom padding. The title row centers in a band of plain
@@ -152,7 +169,7 @@ paths:
   and low. A text-default symbol counts as emoji only with VS16, and VS15 always keeps text form.
 - `AppSettings.sessionInfoDisplay` (`always`|`flagged`|`off`, nil = always) decides where the line shows,
   mirrored to `GhosttyApp.sessionInfoDisplay`. `flagged` shows it in the flagged view only. Hiding never
-  clears the line. The picker shares the Settings ▸ Interface Sidebar grid.
+  clears the line. The picker shares the Settings ▸ Interface Sidebar section's last row.
 
 ## Workspace focus
 

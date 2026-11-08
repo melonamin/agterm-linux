@@ -566,7 +566,8 @@ struct Session: ParsableCommand {
     struct Overlay: ParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Open, read, resize, or close an ephemeral overlay terminal on a session.",
-            subcommands: [Open.self, Close.self, Hide.self, Show.self, Toggle.self, Resize.self, Reload.self, Navigate.self,
+            subcommands: [Open.self, Close.self, Hide.self, Show.self, Toggle.self, Follow.self, Search.self, Changes.self, Resize.self,
+                          Reload.self, Navigate.self,
                           Result.self, Submit.self, Copy.self, Text.self, RunJob.self, PageServe.self, PageAttach.self]
         )
 
@@ -593,8 +594,8 @@ struct Session: ParsableCommand {
 
         struct Open: RequestCommand {
             static let configuration = CommandConfiguration(
-                abstract: "Open an overlay running COMMAND (it closes when COMMAND exits), or showing a page with --html, --url, --image or --markdown.")
-            @Argument(help: "Program to run in the overlay (e.g. revdiff); omit with --html, --url, --image or --markdown.") var command: String?
+                abstract: "Open an overlay running COMMAND (it closes when COMMAND exits), or showing a page with --html, --url, --image, --markdown or --text.")
+            @Argument(help: "Program to run in the overlay (e.g. revdiff); omit with --html, --url, --image, --markdown or --text.") var command: String?
             @Option(name: .long, help: "Show this local HTML file instead of running COMMAND.") var html: String?
             @Option(name: .long, help: """
                 Show this http or https URL instead of running COMMAND; links to its own origin load in place. \
@@ -611,6 +612,22 @@ struct Session: ParsableCommand {
                 in its own folder are shown, and a web link opens in the browser after a confirmation.
                 """)
             var markdown: String?
+            @Option(name: .long, help: """
+                Show this source, config, text or log file read-only with the terminal theme instead of running COMMAND, \
+                highlighted when its language is known; FILE is taken literally, never as path:line.
+                """)
+            var text: String?
+            @Option(name: .long, help: "With --text, open scrolled to line N (from 1) and mark it.") var line: Int?
+            @Option(name: .long, help: """
+                With --text, show only the file's last N lines (1...\(TextPage.maxTail)), read from its end so a log of any \
+                size opens.
+                """)
+            var tail: Int?
+            @Flag(name: .customLong("follow-file"), help: """
+                With --text, follow the file's end as it grows, with the last \(TextPage.defaultTail) lines unless --tail \
+                says otherwise. Not --follow, which selects the session.
+                """)
+            var followFile = false
             @Flag(name: .long, help: "With --html or --url, add back, forward, reload, open in browser, and Show in Finder or Copy Link buttons.")
             var navigation = false
             @Flag(name: .customLong("js"), help: "With --html or --url, let the page run its own JavaScript (off by default).") var javascript = false
@@ -647,6 +664,15 @@ struct Session: ParsableCommand {
             @OptionGroup var target: TargetOptions
             @OptionGroup var options: ClientOptions
 
+            private func validateLog() throws {
+                guard tail != nil || followFile else { return }
+                if text == nil { throw ValidationError("--tail and --follow-file require --text") }
+                if line != nil { throw ValidationError("--tail and --follow-file cannot be combined with --line") }
+                if let tail, !(1...TextPage.maxTail).contains(tail) {
+                    throw ValidationError("--tail must be 1...\(TextPage.maxTail)")
+                }
+            }
+
             // reject the mutually-exclusive combos + a malformed color at parse time (before any connection),
             // so it's a clean usage error and is unit-testable without a socket.
             func validate() throws {
@@ -655,14 +681,20 @@ struct Session: ParsableCommand {
                     throw ValidationError("--companion is full size: it takes no --pane, --size-percent, --width or --height")
                 }
                 if block && wait { throw ValidationError("--block cannot be combined with --wait") }
-                if [command, html, url, image, markdown].compactMap({ $0 }).count != 1 {
-                    throw ValidationError("provide exactly one of COMMAND, --html, --url, --image or --markdown")
+                if [command, html, url, image, markdown, text].compactMap({ $0 }).count != 1 {
+                    throw ValidationError("provide exactly one of COMMAND, --html, --url, --image, --markdown or --text")
                 }
+                if line != nil, text == nil { throw ValidationError("--line requires --text") }
+                if let line, line < 1 { throw ValidationError("--line must be 1 or more") }
+                try validateLog()
                 if image != nil, companion || block || wait || navigation || javascript || chromeless || persistent || browse || cwd != nil {
                     throw ValidationError("--image takes no --companion, --block, --wait, --navigation, --js, --chromeless, --persistent, --browse or --cwd")
                 }
                 if markdown != nil, companion || block || wait || navigation || javascript || chromeless || persistent || browse || cwd != nil {
                     throw ValidationError("--markdown takes no --companion, --block, --wait, --navigation, --js, --chromeless, --persistent, --browse or --cwd")
+                }
+                if text != nil, companion || block || wait || navigation || javascript || chromeless || persistent || browse || cwd != nil {
+                    throw ValidationError("--text takes no --companion, --block, --wait, --navigation, --js, --chromeless, --persistent, --browse or --cwd")
                 }
                 if command == nil, wait || (url != nil && block) { throw ValidationError("a page takes no --wait, and a --url page no --block") }
                 if navigation, command != nil { throw ValidationError("--navigation requires --html or --url") }
@@ -705,7 +737,9 @@ struct Session: ParsableCommand {
                                                                      javascript: javascript ? true : nil, chromeless: chromeless ? true : nil, persistent: persistent ? true : nil,
                                                                      browse: browse ? true : nil,
                                                                      image: image.map(Overlay.absolutePath),
-                                                                     markdownFile: markdown.map(Overlay.absolutePath))))
+                                                                     markdownFile: markdown.map(Overlay.absolutePath),
+                                                                     textFile: text.map(Overlay.absolutePath), line: line,
+                                                                     tail: tail, followFile: followFile ? true : nil)))
             }
 
             func run() throws {

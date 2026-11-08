@@ -27,14 +27,21 @@ paths:
   It runs under `scripts/watchdog.sh`: past 600s the watchdog tries, within a 120s budget, to save the test
   processes' tree, open files and stacks, kills the tree, and the `test-hang` artifact carries what it got.
   A hang otherwise reaches only the job timeout, which records nothing.
+  A prior `swift build --build-tests --enable-code-coverage` step compiles outside it, so compile time on a
+  slow runner does not count against the 600s; `swift test` with the same flag reuses that build. The
+  35-minute job cap leaves room for a slow build plus the watchdog's 600s and 120s.
   `coverage`, the only Swift-gated Linux job, downloads it for best-effort Coveralls.
   `lint` installs SwiftLint and runs `swiftlint lint --strict`; every warning fails.
 - `build` and `hosted` each restore separate revision-keyed caches for libghostty and zmx, including each
   build stamp, and install xcodegen. A zmx pin change does not rebuild libghostty. `build` runs Release
   `scripts/build.sh`, the surface teardown script and the entitlement assertions. `build.sh` and
   `release.sh` both pass `ARCHS=arm64`, so CI compiles the same slices the shipped app does.
-  `hosted` runs Debug `scripts/test-app.sh` and needs nothing from `build`; it builds the bundled helpers
-  itself. Keep both app builds: Release exercises the whole-module optimizer and its SIL-deserializer
+  `hosted` runs the Debug tests `scripts/test-app.sh` runs and needs nothing from `build`; it builds the
+  bundled helpers itself. Staging and `xcodebuild build-for-testing` run in steps of their own, since one
+  cache-hit run spent 1412s building and testing, and only `xcodebuild test-without-building` runs under the
+  watchdog, at 600s, with `WATCHDOG_RUNNER` naming the DerivedData test host, which xcodebuild launches
+  outside the command's process tree. The `hosted-test-hang` artifact adds the xcresult under
+  `build/DerivedData/Logs/Test`. The 35-minute job cap mirrors `test`'s. Keep both app builds: Release exercises the whole-module optimizer and its SIL-deserializer
   failure. Debug provides `ENABLE_TESTABILITY` for `DockMenuTests`'s `@testable import agterm`. Do not
   enable testability in the notarized Release app.
 - `hosted` sets the runner account's login shell to zsh, installs fish, and passes
@@ -72,7 +79,7 @@ paths:
   changed; its Swift membership also runs macOS jobs.
 - The cookbook job builds nothing. It compares the `cookbook/README.md` table and recipe directories in
   both directions; requires kebab-case directories, a `README.md` with all six exact
-  (`grep -qxF`) headings, and shebangs for `.sh`/`.zsh`/`.fish`/`.py`; runs `shellcheck` on `.sh`; parses
+  (`grep -qxF`) headings and an `Author: [@login](https://github.com/login)` line, and shebangs for `.sh`/`.zsh`/`.fish`/`.py`; runs `shellcheck` on `.sh`; parses
   `.zsh` with `zsh -n` and `.fish` with `fish --no-execute`; runs `ruff check` on `.py`; and runs every
   `test_*.py` regression script through `python3`. `shellcheck` is preinstalled. Install absent `zsh` and `fish`
   together before the shell gates, and install `ruff` through `pipx` because the runner's python is

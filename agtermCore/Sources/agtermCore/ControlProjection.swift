@@ -458,18 +458,81 @@ public struct ControlSessionNode: Codable, Sendable, Equatable {
     }
 }
 
+/// ControlTextSearchNode is a text page's query with the page's last count of matches and the current one, 0 for none.
+public struct ControlTextSearchNode: Codable, Sendable, Equatable {
+    public let query: String
+    public let matches: Int
+    public let current: Int
+
+    public init(query: String, matches: Int, current: Int) {
+        self.query = query
+        self.matches = matches
+        self.current = current
+    }
+}
+
+/// ControlTextChangesNode is a diff page's count of changes and the one it last stepped to, 0 before any step.
+public struct ControlTextChangesNode: Codable, Sendable, Equatable {
+    public let count: Int
+    public let current: Int
+
+    public init(count: Int, current: Int) {
+        self.count = count
+        self.current = current
+    }
+}
+
+/// ControlTextOverlayNode is a text page's source: the file, the highlight.js language its name maps to
+/// (omitted when unmapped, and still reported for a file too large to highlight), and the line it was
+/// opened at, not the line in view.
+public struct ControlTextOverlayNode: Codable, Sendable, Equatable {
+    public let file: String
+    public let language: String?
+    public let line: Int?
+    /// tail is a log page's line limit; the other log fields are its live state, all omitted on a plain text page.
+    public let tail: Int?
+    public let following: Bool?
+    public let lines: Int?
+    public let clipped: Bool?
+    public let waiting: Bool?
+    public let unreadable: Bool?
+    /// search is the page's search, omitted with no query.
+    public let search: ControlTextSearchNode?
+    /// changes is a diff page's change count and current change, omitted until the page reports and on other pages.
+    public let changes: ControlTextChangesNode?
+
+    public init(file: String, language: String?, line: Int?, tail: Int? = nil, following: Bool? = nil, lines: Int? = nil,
+                clipped: Bool? = nil, waiting: Bool? = nil, unreadable: Bool? = nil, search: ControlTextSearchNode? = nil,
+                changes: ControlTextChangesNode? = nil) {
+        self.search = search
+        self.changes = changes
+        self.file = file
+        self.language = language
+        self.line = line
+        self.tail = tail
+        self.following = following
+        self.lines = lines
+        self.clipped = clipped
+        self.waiting = waiting
+        self.unreadable = unreadable
+    }
+}
+
 /// ControlHtmlOverlayNode is one HTML page in an overlay slot. `file` or `url` is what was opened and what
 /// `session.overlay.reload` loads; `page` is where the user has navigated since, nil until the first load.
 public struct ControlHtmlOverlayNode: Codable, Sendable, Equatable {
     /// pane is the pane role, omitted for the session-wide slot.
     public let pane: String?
-    /// file, url, image and markdown name the source; exactly one is set.
+    /// file, url, image, markdown, document and text name the source; exactly one is set.
     public let file: String?
     /// cwd is a file page's read grant, omitted when it has none.
     public let cwd: String?
     public let url: String?
     public let image: String?
     public let markdown: String?
+    /// document is an HTML file a terminal click opened, shown with no file grant or bridge.
+    public let document: String?
+    public let text: ControlTextOverlayNode?
     /// state is `loading`, `loaded` or `failed`.
     public let state: String
     public let error: String?
@@ -501,14 +564,19 @@ public struct ControlHtmlOverlayNode: Codable, Sendable, Equatable {
     public let remote: Bool?
     /// replica is true for a page shown here for the Mac that opened it, omitted otherwise.
     public let replica: Bool?
+    /// clicked is true for a page a terminal click opened, omitted otherwise. It names the origin only:
+    /// `AppStore.releaseHiddenClickedPage` decides whether a click replaces the page, and `hidden` here also
+    /// covers states it leaves alone.
+    public let clicked: Bool?
 
     public init(pane: String?, file: String? = nil, cwd: String? = nil, url: String? = nil, image: String? = nil,
-                markdown: String? = nil, state: String,
+                markdown: String? = nil, document: String? = nil, text: ControlTextOverlayNode? = nil, state: String,
                 error: String?, page: String? = nil, title: String? = nil, canGoBack: Bool? = nil,
                 canGoForward: Bool? = nil, navigation: Bool? = nil, javascript: Bool = false, chromeless: Bool = false,
                 zoom: Double? = nil, id: String? = nil, persistent: Bool = false, browse: Bool = false,
-                hidden: Bool? = nil, remote: Bool? = nil, replica: Bool? = nil) {
+                hidden: Bool? = nil, remote: Bool? = nil, replica: Bool? = nil, clicked: Bool? = nil) {
         self.id = id
+        self.clicked = clicked
         self.hidden = hidden
         self.remote = remote
         self.replica = replica
@@ -518,6 +586,8 @@ public struct ControlHtmlOverlayNode: Codable, Sendable, Equatable {
         self.url = url
         self.image = image
         self.markdown = markdown
+        self.document = document
+        self.text = text
         self.state = state
         self.error = error
         self.page = page
@@ -533,8 +603,8 @@ public struct ControlHtmlOverlayNode: Codable, Sendable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case pane, file, cwd, url, image, markdown, state, error, page, title, canGoBack, canGoForward, navigation, javascript
-        case chromeless, persistent, browse, zoom, id, hidden, remote, replica
+        case pane, file, cwd, url, image, markdown, document, text, state, error, page, title, canGoBack, canGoForward, navigation, javascript
+        case chromeless, persistent, browse, zoom, id, hidden, remote, replica, clicked
     }
 
     public init(from decoder: Decoder) throws {
@@ -545,6 +615,8 @@ public struct ControlHtmlOverlayNode: Codable, Sendable, Equatable {
         url = try c.decodeIfPresent(String.self, forKey: .url)
         image = try c.decodeIfPresent(String.self, forKey: .image)
         markdown = try c.decodeIfPresent(String.self, forKey: .markdown)
+        document = try c.decodeIfPresent(String.self, forKey: .document)
+        text = try c.decodeIfPresent(ControlTextOverlayNode.self, forKey: .text)
         state = try c.decode(String.self, forKey: .state)
         error = try c.decodeIfPresent(String.self, forKey: .error)
         page = try c.decodeIfPresent(String.self, forKey: .page)
@@ -561,6 +633,7 @@ public struct ControlHtmlOverlayNode: Codable, Sendable, Equatable {
         hidden = try c.decodeIfPresent(Bool.self, forKey: .hidden)
         remote = try c.decodeIfPresent(Bool.self, forKey: .remote)
         replica = try c.decodeIfPresent(Bool.self, forKey: .replica)
+        clicked = try c.decodeIfPresent(Bool.self, forKey: .clicked)
     }
 }
 
@@ -687,6 +760,9 @@ public struct ControlTree: Codable, Sendable, Equatable {
     /// is dormant. The read side of `sidebar.flagged-layout` and a term of the workspace-row visibility
     /// predicate on `ControlWorkspaceNode.focused`.
     public let sidebarFlaggedLayout: String?
+    /// sidebarDensity is the app-wide row spacing, `SidebarDensity.rawValue` (`default` | `compact`), the same on
+    /// every window's `tree`. The read side of `sidebar.density`.
+    public let sidebarDensity: String?
     /// flaggedOrder is the window's saved flagged order as session ids, the flat and plain rows' order and the
     /// read side of `session.flag move`; omitted when nothing is flagged.
     public let flaggedOrder: [String]?
@@ -745,6 +821,9 @@ public struct ControlTree: Codable, Sendable, Equatable {
     /// indexUnsaved is true while the last `windows.json` write failed, omitted otherwise. App-global like
     /// `app`.
     public let indexUnsaved: Bool?
+    /// snapshotUnsaved is true after this window's AppStore save fails until its next successful save,
+    /// omitted otherwise. Per window, unlike `indexUnsaved`.
+    public let snapshotUnsaved: Bool?
 
     public init(workspaces: [ControlWorkspaceNode], idleMs: Int? = nil, autoFollowMs: Int? = nil,
                 attentionIncludesActive: Bool? = nil, attentionNavigationAcrossWindows: Bool? = nil,
@@ -755,8 +834,11 @@ public struct ControlTree: Codable, Sendable, Equatable {
                 dashboardHighlighted: String? = nil, dashboardFontSize: Double? = nil,
                 dashboardFontMode: String? = nil, pickPending: String? = nil, askPending: String? = nil,
                 app: AppIdentity? = nil, liveReset: ControlLiveResetReadback? = nil,
-                indexUnsaved: Bool? = nil, linkOpenMode: String? = nil) {
+                indexUnsaved: Bool? = nil, snapshotUnsaved: Bool? = nil, linkOpenMode: String? = nil,
+                sidebarDensity: String? = nil) {
         self.workspaces = workspaces
+        self.snapshotUnsaved = snapshotUnsaved
+        self.sidebarDensity = sidebarDensity
         self.linkOpenMode = linkOpenMode
         self.liveReset = liveReset
         self.indexUnsaved = indexUnsaved

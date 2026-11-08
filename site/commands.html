@@ -502,7 +502,7 @@
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">right</span>, omitted when none is hidden; see
                 <a href="#overlay" style="color: #6d82f3">session overlay hide</a>),
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">htmlOverlays</span> (the pages in the overlay slots as
-                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">{pane?, file?, cwd?, url?, image?, markdown?, state, error?, page?, title?, canGoBack?, canGoForward?, navigation?, javascript, chromeless, persistent, browse, zoom?, id, hidden?, remote?, replica?}</span>, one of file, url, image and markdown set; <span style="font-family: &quot;JetBrains Mono&quot;, monospace">remote</span> marks a page shown on the presenting Mac, whose live fields are as that Mac reports them, and <span style="font-family: &quot;JetBrains Mono&quot;, monospace">replica</span> the presenting Mac's copy, whose <span style="font-family: &quot;JetBrains Mono&quot;, monospace">file</span> is the path on the origin for a file page,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">{pane?, file?, cwd?, url?, image?, markdown?, document?, text?, state, error?, page?, title?, canGoBack?, canGoForward?, navigation?, javascript, chromeless, persistent, browse, zoom?, id, hidden?, remote?, replica?, clicked?}</span>, one of file, url, image, markdown, document and text set, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">document</span> being a ⌘-clicked HTML file shown with its scripts off and no bridge, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">clicked</span> marking a page a terminal click opened (see <span style="font-family: &quot;JetBrains Mono&quot;, monospace">browser links</span> for when a click replaces it), <span style="font-family: &quot;JetBrains Mono&quot;, monospace">text</span> being <span style="font-family: &quot;JetBrains Mono&quot;, monospace">{file, language?, line?}</span>; <span style="font-family: &quot;JetBrains Mono&quot;, monospace">remote</span> marks a page shown on the presenting Mac, whose live fields are as that Mac reports them, and <span style="font-family: &quot;JetBrains Mono&quot;, monospace">replica</span> the presenting Mac's copy, whose <span style="font-family: &quot;JetBrains Mono&quot;, monospace">file</span> is the path on the origin for a file page,
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">state</span> being loading, loaded or failed; omitted when none is open),
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">hud</span> (the message panel holding the session-wide
                 slot — <span style="font-family: &quot;JetBrains Mono&quot;, monospace">{message, detail?, spinner, backgroundColor?, textColor?, sizePercent?, heightPercent?, position, pane?, hideAfter, markdown, fontSize?, sticky, frame}</span>, where
@@ -626,6 +626,9 @@
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">tree</span>, the read side of
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">sidebar flagged-layout</span>; app-wide, so every window reports the
                 same value, under the ordinary tree too),
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">sidebarDensity</span> (<span style="font-family: &quot;JetBrains Mono&quot;, monospace">default</span> or
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">compact</span>, the read side of
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">sidebar density</span>; app-wide),
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">flaggedOrder</span> (the window's flagged session ids in
                 the flat list's saved order, the read side of
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">session flag move</span>; omitted when
@@ -646,11 +649,13 @@
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">app</span> (which agterm is serving this socket —
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">version</span>, plus
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">commit</span> when the build recorded one; the same value
-                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">agtermctl version</span> returns), and
-                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">indexUnsaved</span> (true while the last write of the window index failed, omitted otherwise).
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">agtermctl version</span> returns),
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">indexUnsaved</span> (true while the last write of the window index failed, omitted otherwise), and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">snapshotUnsaved</span> (true while the last save of this window's sessions failed, omitted otherwise).
                 All are read-only, and all but
-                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">app</span> and
-                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">indexUnsaved</span> are projections of live GUI state.
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">app</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">indexUnsaved</span> and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">snapshotUnsaved</span> are projections of live GUI state.
               </p>
             </div>
           </section>
@@ -1066,7 +1071,7 @@
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #f2b45c; white-space: nowrap">--command "zsh -lc 'htop'"</span>. The
                 command is persisted and runs again when a restored session launches in rerun mode.
                 All of that describes <em>Fresh shells</em> and <em>Re-run commands</em>. In <em>Live sessions</em> mode the
-                command is instead a create-only zmx payload your login shell runs, so the line uses that
+                command is instead a create-only zmx payload the pane's Live shell runs, so the line uses that
                 shell's syntax (zsh or fish), shell operators are interpreted, and the <span style="font-family: &quot;JetBrains Mono&quot;, monospace">PATH</span> is that shell's
                 rather than the launchd default.
               </p>
@@ -1708,9 +1713,14 @@
                 (<span style="font-family: &quot;JetBrains Mono&quot;, monospace">circle</span>,
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">square</span>,
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">triangle</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">triangle-down</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">play</span>,
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">diamond</span>,
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">capsule</span>,
-                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">star</span>) overrides the glyph silhouette the same
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">seal</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">star</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">bolt</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">bell</span>) overrides the glyph silhouette the same
                 way, falling back to the Settings shape for that state; an unknown name errors and leaves the status unchanged.
               </p>
               <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
@@ -1875,8 +1885,12 @@
                 Color a session's sidebar row so it stands out at a glance, for example red for production and green for
                 development. COLOR is one of <span style="font-family: &quot;JetBrains Mono&quot;, monospace">red</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">orange</span>,
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">yellow</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">green</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">blue</span>,
-                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">purple</span> or <span style="font-family: &quot;JetBrains Mono&quot;, monospace">gray</span>, the macOS system colors, so they
-                follow light and dark mode. <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--on</span> picks what the color shows on:
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">purple</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">gray</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">teal</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">pink</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">brown</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">indigo</span> or
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">mint</span>, the macOS system colors, so they follow light and dark mode, or a
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">#rrggbb</span> hex for any other color, which stays the same in both modes and reads back
+                lowercase with its <span style="font-family: &quot;JetBrains Mono&quot;, monospace">#</span>. <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--on</span> picks what the color shows on:
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">icon</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">name</span> or
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">icon,name</span>. Without it a recolor keeps the row's placement and an untinted row starts on
                 the icon. <span style="font-family: &quot;JetBrains Mono&quot;, monospace">clear</span> removes the tint and refuses <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--on</span>.
@@ -2186,8 +2200,8 @@
                 size the panel takes the picture's shape: its natural size on this display, scaled up to 240 points wide when
                 narrower and down to fit 80% of the session when larger, and the picture fills it. The page embeds the file, so it
                 runs no script, reads nothing else and gets no bridge; the page flags, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--cwd</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--block</span> and
-                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--companion</span> are refused. A path that is not a regular file, contents that are not png, jpg, gif or webp whatever the name, a file over 64 MB and a picture over 100 megapixels are refused. The file is read before the command answers, so one on slow or network storage stalls the app until it is read. An image page is
-                local-only: when placement would send the page to the Mac presenting the session, the open is refused. Read back <span style="font-family: &quot;JetBrains Mono&quot;, monospace">image</span> in <span style="font-family: &quot;JetBrains Mono&quot;, monospace">htmlOverlays</span>.
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--companion</span> are refused. A path that is not a regular file, contents that are not png, jpg, gif or webp whatever the name, a file over 64 MB and a picture over 100 megapixels are refused. The file is read before the command answers, so one on slow or network storage stalls the app until it is read. On a session another Mac
+                presents, an image page opens there (see Remote sessions). Read back <span style="font-family: &quot;JetBrains Mono&quot;, monospace">image</span> in <span style="font-family: &quot;JetBrains Mono&quot;, monospace">htmlOverlays</span>.
               </p>
             </div>
             <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
@@ -2203,8 +2217,98 @@
                 default browser after the usual confirmation, a <span style="font-family: &quot;JetBrains Mono&quot;, monospace">#heading</span> link scrolls, and any other link is plain text. The page
                 gets no bridge, and Open in Browser and Show in Finder are refused; the page flags, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--cwd</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--block</span> and
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--companion</span> are refused. A path that is not a regular file or a file over 4 MB is refused before the open answers.
-                The wire field is <span style="font-family: &quot;JetBrains Mono&quot;, monospace">markdownFile</span>, apart from the HUD's <span style="font-family: &quot;JetBrains Mono&quot;, monospace">markdown</span> flag. A markdown page is local-only, like an image page.
+                The wire field is <span style="font-family: &quot;JetBrains Mono&quot;, monospace">markdownFile</span>, apart from the HUD's <span style="font-family: &quot;JetBrains Mono&quot;, monospace">markdown</span> flag. A markdown page opens on a presenting Mac like an image page.
                 Read back <span style="font-family: &quot;JetBrains Mono&quot;, monospace">markdown</span> in <span style="font-family: &quot;JetBrains Mono&quot;, monospace">htmlOverlays</span>.
+              </p>
+            </div>
+            <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
+                agtermctl session overlay open --text FILE [--line N | --tail N [--follow-file] | --follow-file] [--size-percent N [--width PT] [--height PT]] [--background-color #rrggbb] [--follow] [--pane left|right] [--target T] [--window W]
+              </div>
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">session.overlay.open</div>
+              <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
+                Show a source, config, text or log file read-only in the terminal's theme, the same view a ⌘-click on its path opens:
+                line numbers, and highlighting when its name maps to a known language, up to 256 KB; a larger file shows plain.
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--line N</span> opens it scrolled to line N, from 1, and marks it. FILE is taken literally, never read
+                as <span style="font-family: &quot;JetBrains Mono&quot;, monospace">path:line</span>. The page runs none of the file's text as code, loads nothing and has no links. It
+                gets no bridge, and Open in Browser and Show in Finder are refused; the page flags, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--cwd</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--block</span> and <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--companion</span> are refused. A path that is not a regular file, a file
+                over 4 MB, or one that is not UTF-8 text or holds a NUL byte is refused before the open answers. Markdown, HTML
+                and SVG files are not text pages. The wire fields are <span style="font-family: &quot;JetBrains Mono&quot;, monospace">textFile</span> and <span style="font-family: &quot;JetBrains Mono&quot;, monospace">line</span>. A text
+                page opens on a presenting Mac like an image page. Read back <span style="font-family: &quot;JetBrains Mono&quot;, monospace">text</span> in <span style="font-family: &quot;JetBrains Mono&quot;, monospace">htmlOverlays</span>: the
+                file, the language its name maps to, and the line it was opened at, not the line in view.
+              </p>
+              <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--tail N</span> makes it a log page: the file's last N lines, 1 to 100,000, read from its
+                end within 2 MB, so a file of any size opens and none is refused for size. <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--follow-file</span> follows
+                the end as the file grows, with the last 5,000 lines unless <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--tail</span> says otherwise; it is not
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--follow</span>, which selects the session. A bar on the page shows the follow state and the lines shown; a
+                scroll up pauses, and scrolling back to the bottom or Resume follows again. A rotated, truncated or recreated
+                file is picked up by the next check, and a missing one shows waiting until it returns. Neither takes
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--line</span>, and a log page is refused on a session a presenting Mac shows. The wire fields are
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">tail</span> and <span style="font-family: &quot;JetBrains Mono&quot;, monospace">followFile</span>. Read back on
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">text</span>: <span style="font-family: &quot;JetBrains Mono&quot;, monospace">tail</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">following</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">lines</span>,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">clipped</span> (the first line is the end of one longer than 2 MB),
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">waiting</span> and <span style="font-family: &quot;JetBrains Mono&quot;, monospace">unreadable</span> (binary data
+                arrived and the last text stays), all omitted on a plain text page.
+              </p>
+            </div>
+            <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
+                agtermctl session overlay follow on|off|toggle [--pane left|right] [--target T] [--window W]
+              </div>
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">session.overlay.follow</div>
+              <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
+                Follow a log page's end, pause it, or toggle between the two, as its bar does. It acts on a page opened with
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--tail</span> or <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--follow-file</span> or a clicked
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">.log</span> or <span style="font-family: &quot;JetBrains Mono&quot;, monospace">.out</span> file, and refuses
+                every other overlay, a plain text page with <span style="font-family: &quot;JetBrains Mono&quot;, monospace">no log page</span>. <strong style="color: #bfbab0">Returns</strong>
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">result.text</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">following</span> or
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">paused</span>; read back <span style="font-family: &quot;JetBrains Mono&quot;, monospace">htmlOverlays[].text.following</span>.
+              </p>
+            </div>
+            <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
+                agtermctl session overlay search TEXT | --next | --prev | --close [--pane left|right] [--target T] [--window W]
+              </div>
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">session.overlay.search</div>
+              <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
+                Search the text or log page in the slot, never the terminal under it, which is
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">session search</span>. Matching is case-insensitive
+                plain text and every match is highlighted; give exactly one of a query and a step. A step moves to the next or
+                previous match, wrapping, and pauses a following log page; it is refused
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">no search query: set one first</span> without a query and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">page not loaded</span> before the page exists, while a query
+                set then runs when it loads. An empty slot answers <span style="font-family: &quot;JetBrains Mono&quot;, monospace">no overlay</span>,
+                a program <span style="font-family: &quot;JetBrains Mono&quot;, monospace">the overlay is not an html page</span>, any other page
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">no text page</span>, and a slot shown on a presenting Mac
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">remote page</span>.
+                <strong style="color: #bfbab0">Returns</strong> <span style="font-family: &quot;JetBrains Mono&quot;, monospace">result.text</span> as
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">N of M</span> for a step; read back
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">htmlOverlays[].text.search</span>:
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">query</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">matches</span>
+                and <span style="font-family: &quot;JetBrains Mono&quot;, monospace">current</span> (from 1, 0 with no match), omitted with no query.
+              </p>
+            </div>
+            <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
+                agtermctl session overlay changes --next | --prev [--pane left|right] [--target T] [--window W]
+              </div>
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">session.overlay.changes</div>
+              <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
+                Step the <span style="font-family: &quot;JetBrains Mono&quot;, monospace">.diff</span> or
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">.patch</span> page in the slot to its next or previous change,
+                a change being one run of removed and added lines inside a hunk. It wraps, and after the user scrolled away it
+                goes on from what is shown. It is refused <span style="font-family: &quot;JetBrains Mono&quot;, monospace">no diff page</span> for
+                any other page, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">no changes</span> for a patch without any,
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">page not loaded</span> before the page exists, and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">remote page</span> for a slot shown on a presenting Mac.
+                <strong style="color: #bfbab0">Returns</strong> <span style="font-family: &quot;JetBrains Mono&quot;, monospace">result.text</span> as
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">N of M</span>; read back
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">htmlOverlays[].text.changes</span>:
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">count</span> and
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">current</span> (from 1, 0 before any step), omitted on any other page.
               </p>
             </div>
             <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
@@ -2338,7 +2442,8 @@
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">overlay hidden</span>
                 while it is hidden and the usual
                 <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">overlay already open</span>
-                once it is shown.
+                once it is shown. The one thing that replaces a hidden page is a terminal click over a page an earlier click
+                opened (see <span style="font-family: &quot;JetBrains Mono&quot;, monospace">browser links</span>).
               </p>
               <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
                 Errors <span style="font-family: &quot;JetBrains Mono&quot;, monospace; white-space: nowrap">no overlay</span> when
@@ -3463,6 +3568,22 @@
 
             <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
               <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
+                agtermctl sidebar density [default|compact|toggle]
+              </div>
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">sidebar.density</div>
+              <p style="font-size: 15px; line-height: 1.65; color: #cbc6bc; margin: 10px 0 0">
+                Pick the sidebar's row spacing: <span style="font-family: &quot;JetBrains Mono&quot;, monospace">compact</span> shortens rows and
+                their indent, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">default</span> restores the standard spacing.
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">toggle</span> is the default; an unknown density errors. App-wide, the
+                same setting as Settings ▸ Appearance: it takes no <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--window</span>, needs
+                no open window, and applies to every window's sidebar at once. <strong style="color: #bfbab0">Returns</strong> the
+                resulting density in <span style="font-family: &quot;JetBrains Mono&quot;, monospace">result.text</span>. Read back via the tree's
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">sidebarDensity</span>.
+              </p>
+            </div>
+
+            <div style="background: #22272b; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 11px; padding: 18px 20px; margin-bottom: 12px">
+              <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 13.5px; color: #6d82f3; line-height: 1.6; word-break: break-word">
                 agtermctl sidebar expand [--window W]
               </div>
               <div style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11.5px; color: #6b727a; margin-top: 6px">sidebar.expand</div>
@@ -3881,7 +4002,12 @@
               <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
                 The link still opens in the browser when it was ⌘⇧-clicked in a program that does not capture the mouse, when it was clicked in a HUD, a program overlay or the quick terminal,
                 when a HUD is up on the session, when the window has a zoomed terminal, when the session-wide overlay slot
-                is taken, when the saved store cannot be used, or when the overlay cannot be opened. A plain http link
+                is taken, when the saved store cannot be used, or when the overlay cannot be opened. The exception is a
+                slot holding a page an earlier click opened (<span style="font-family: &quot;JetBrains Mono&quot;, monospace">clicked</span>
+                in <span style="font-family: &quot;JetBrains Mono&quot;, monospace">htmlOverlays</span>) that was hidden on this Mac with ⇧⌘J or
+                <span style="font-family: &quot;JetBrains Mono&quot;, monospace">session overlay hide</span>: the click replaces it and shows the new
+                page, and a clicked picture, markdown, HTML or text file does the same. A page that is only out of sight under a newer
+                pane overlay, or one the presenting Mac shows, is not replaced. A plain http link
                 uses the overlay only for an unqualified host name such as localhost, a .local name or an IP address;
                 http to any other host name opens in the browser. mailto, ftp and file links are unaffected. Same setting as Settings ▸ General ▸ Open links in.
               </p>
@@ -4258,6 +4384,9 @@
               </p>
               <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
                 An HTML page (<span style="font-family: &quot;JetBrains Mono&quot;, monospace">--html</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--url</span>) follows the same rule and opens on the presenting Mac, which renders it and keeps its own <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--persistent</span> storage. A file page's files, and the commands its <span style="font-family: &quot;JetBrains Mono&quot;, monospace">data-agterm</span> tags and <span style="font-family: &quot;JetBrains Mono&quot;, monospace">agterm.request</span> send, go back to the origin over a channel that Mac opens (<span style="font-family: &quot;JetBrains Mono&quot;, monospace">session overlay page-serve</span>), so they act on the origin's session and <span style="font-family: &quot;JetBrains Mono&quot;, monospace">overlay submit</span> answers the caller there; <span style="font-family: &quot;JetBrains Mono&quot;, monospace">result --page</span> and <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--html --block</span> work as usual. A loopback <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--url</span> is refused, since it names a server on the origin, and so is a page for a presenting agterm too old to show pages, or an open request too large for a presentation frame (<span style="font-family: &quot;JetBrains Mono&quot;, monospace">page too large to show on another Mac</span>). On the origin, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">close</span> ends the page there at once; <span style="font-family: &quot;JetBrains Mono&quot;, monospace">resize</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">reload</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">navigate back|forward</span> and <span style="font-family: &quot;JetBrains Mono&quot;, monospace">hide|show|toggle</span> are requests the reply does not wait on; <span style="font-family: &quot;JetBrains Mono&quot;, monospace">navigate browser</span> reaches that Mac for a URL page, while <span style="font-family: &quot;JetBrains Mono&quot;, monospace">finder</span> and <span style="font-family: &quot;JetBrains Mono&quot;, monospace">browser</span> on a file page answer <span style="font-family: &quot;JetBrains Mono&quot;, monospace">page is shown on another Mac</span>; bare <span style="font-family: &quot;JetBrains Mono&quot;, monospace">result</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">copy</span> and <span style="font-family: &quot;JetBrains Mono&quot;, monospace">text</span> give the page answers. A page the presenting Mac refuses has already been answered ok and ends <span style="font-family: &quot;JetBrains Mono&quot;, monospace">dismissed</span>; losing the presenter ends it <span style="font-family: &quot;JetBrains Mono&quot;, monospace">dismissed</span> too, keeping an answer already submitted.
+              </p>
+              <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
+                An image, markdown or text page (<span style="font-family: &quot;JetBrains Mono&quot;, monospace">--image</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--markdown</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--text</span>) follows the same rule. The presenting Mac fetches the file over the same channel, the origin serving only that file, or a markdown file's pictures in its own folder, under the same size limits, and shows the same page with no bridge; an image opened without a size is sized for that Mac's screen. Its <span style="font-family: &quot;JetBrains Mono&quot;, monospace">htmlOverlays</span> lists <span style="font-family: &quot;JetBrains Mono&quot;, monospace">image</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">markdown</span> or <span style="font-family: &quot;JetBrains Mono&quot;, monospace">text</span> with <span style="font-family: &quot;JetBrains Mono&quot;, monospace">replica: true</span>. A presenting agterm too old for these pages keeps the refusal. A log page (<span style="font-family: &quot;JetBrains Mono&quot;, monospace">--tail</span>, <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--follow-file</span>) is refused there, and a clicked <span style="font-family: &quot;JetBrains Mono&quot;, monospace">.log</span> opens as the plain text page.
               </p>
               <p style="font-size: 13.5px; line-height: 1.6; color: #949ba4; margin: 8px 0 0">
                 When the stream drops, a <span style="font-family: &quot;JetBrains Mono&quot;, monospace">--wait</span> overlay whose program already ended closes on the presenting Mac, and a running one keeps running and closes when its ssh ends; nothing is handed back later. While the stream is not up, the row's indicator says so and names the host. It retries on its own, at once when the Mac wakes or the network changes; close and reattach the session to retry by hand.
@@ -5061,7 +5190,7 @@
                     padding: 4px 9px;
                     white-space: nowrap;
                   "
-                  >invalid shape: &lt;value&gt; (circle|square|triangle|diamond|capsule|star)</span
+                  >invalid shape: &lt;value&gt; (circle|square|triangle|triangle-down|play|diamond|capsule|seal|star|bolt|bell)</span
                 >
                 <span
                   style="

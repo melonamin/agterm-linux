@@ -11,8 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  UPSTREAM_BASE_TAG: "v0.40.0"
-  UPSTREAM_BASE_COMMIT: "c63e5158e637662ded7ba3a12eac4881b24caef1"
+  UPSTREAM_BASE_TAG: "v0.41.1"
+  UPSTREAM_BASE_COMMIT: "911345a87df1aa32c8617ce0445b0be8975abb49"
   SWIFTLINT_VERSION: "0.65.0"
   SWIFTLINT_SHA256: "79306a34e5c7cc55a220cd108cbb861dcad5f10138dcdf261e2624ae8b0a486b"
   LINUX_SOURCEKIT_LIB_PATH: "/usr/lib/libsourcekitdInProc.so"
@@ -196,6 +196,11 @@ jobs:
           echo "${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum --check
           tar -xJf /tmp/zig.tar.xz -C /opt
           echo "/opt/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
+          curl -fsSLo /tmp/zig17.tar.xz \
+            https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
+          echo "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026  /tmp/zig17.tar.xz" | sha256sum --check
+          tar -xJf /tmp/zig17.tar.xz -C /opt
+          echo "GHOSTTY_ZIG=/opt/zig-x86_64-linux-0.17.0/zig" >> "$GITHUB_ENV"
       - name: Materialize and verify upstream boundary tag
         run: |
           git tag --force "$UPSTREAM_BASE_TAG" "$UPSTREAM_BASE_COMMIT"
@@ -299,6 +304,9 @@ jobs:
                 echo "::error::$name README is missing the '$h' heading"; fail=1
               fi
             done
+            if ! grep -qE '^Author: \[@[A-Za-z0-9-]+\]\(https://github\.com/[A-Za-z0-9-]+\)' "$d/README.md"; then
+              echo "::error::$name README has no 'Author: [@login](https://github.com/login)' line"; fail=1
+            fi
           done
 
           # every script carries a shebang
