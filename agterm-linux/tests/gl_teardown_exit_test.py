@@ -20,7 +20,10 @@ SOURCES = ("agterm-linux/Sources/a.swift", "agtermCore/Sources/b.swift", "linux/
 ON_TERM = {
     "clean": "trap 'exit 0' TERM",
     "exit7": "trap 'exit 7' TERM",
-    "abort": "trap 'trap - ABRT; kill -ABRT $$' TERM",
+    # A piped host core collector can hold an aborting process beyond the fixture's one-second bound.
+    # Keep the same PID and signal status without generating a core; real app diagnostics are unchanged.
+    "abort": ("trap 'exec python3 -c \"import ctypes, os, signal; "
+              "assert ctypes.CDLL(None).prctl(4, 0) == 0; os.kill(os.getpid(), signal.SIGABRT)\"' TERM"),
     "default": ":",
     "ignore": "trap '' TERM",
 }
