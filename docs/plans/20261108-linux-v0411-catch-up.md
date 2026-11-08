@@ -48,8 +48,8 @@ Existing worktrees and the main checkout's older local branch are preserved.
 - [x] Strict SwiftLint, actionlint/ShellCheck, whitespace, CLI drift, and core-boundary gates.
 - [x] Focused real GTK/WebKit/control scenarios for all new capabilities and failure/disposal paths.
 - [x] Rendering, font increase/resize, input, process lifetime, and control socket after Ghostty adoption.
-- [ ] Full GTK suite and native multi-instance remote page checks.
-- [ ] Local tar/DEB/RPM/Arch build, metadata, checksums, runtime closure, and clean package installation.
+- [x] Full GTK suite and native multi-instance remote page checks.
+- [x] Local tar/DEB/RPM/Arch build, metadata, checksums, runtime closure, and clean package installation.
 - [x] Review final downstream diff and confirm exclusions.
 - [ ] Prepare exact branch/ref push gate, then green branch CI.
 - [ ] Prepare full release notes and immutable `linux-v0.41.1` tag gate.
@@ -86,13 +86,18 @@ git diff --check
 - Tar/DEB/RPM metadata, runtime closure and checksums passed.
   DEB and RPM installed and ran the CLI in clean Ubuntu 24.04 and Fedora 44 containers.
   Arch built and installed in clean Arch, then passed the installed GTK/WebKit scenario.
-- The first complete UI run passed 68 of 72 scenarios.
-  Compact-sidebar fixture identity was corrected and its focused rerun passed.
-  EGL and GLX teardown traces passed after teaching the checker about Ghostty 1.4's first-draw shader allocation.
-  Its 42 regression tests still reject missing samplers and invalid ownership/deletion.
-- Hidden clicked-page replacement exposed stale modifier/link-hit caching in Ghostty's embedded pointer path.
-  The final native regression passes for hidden document, text and log pages after refreshing the modifier-dependent link cache.
-  The complete final UI suite is running against that corrected runtime.
+- All 72 scenarios in the final complete UI run passed.
+  The final package set passed metadata, runtime-library closure and SHA-256 verification.
+- Hidden workspace chevrons retain working Collapse/Expand Workspace menus with row-click expansion disabled.
+  All five new status shapes were inspected in rendered GTK screenshots.
+  Real snapshot write failure and successful-write recovery remain visible through Linux tree readback.
+- Hidden clicked-page replacement passes for document, text and log pages after refreshing the embedded modifier-dependent link cache.
+- EGL and GLX teardown traces pass with Ghostty 1.4's first-draw shader allocation.
+  The checker's 42 regression tests still reject missing samplers and invalid ownership/deletion.
+- GitHub's unit, lint, cookbook and Arch jobs passed on `feea9e22`.
+  The GTK job completed builds and continued passing UI scenarios until its 45-minute job cap cancelled it.
+  Its cold setup/build phase consumed about 24 minutes, so the job cap is now 75 minutes.
+  Complete branch CI remains required before publication.
 
 ## Platform assessments
 

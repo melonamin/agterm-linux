@@ -173,9 +173,11 @@ jobs:
     needs: [changes, test-linux, lint-linux]
     if: needs.changes.outputs.swift == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    # Compile-check the GTK port. The official Swift image carries the toolchain; apt adds GTK4,
-    # libadwaita, GL deps, and zig builds libghostty.
+    # A cold Ghostty/Swift build takes about 24 minutes before the 72-scenario UI suite.
+    # Keep headroom for both on a hosted runner, including runtime-cache misses.
+    timeout-minutes: 75
+    # The official Swift image carries the toolchain; apt adds GTK4, libadwaita and GL deps,
+    # and the independently pinned Zig versions build libghostty and zmx.
     container: swift:6.3.2-noble
     steps:
       - uses: actions/checkout@v7
