@@ -26,6 +26,7 @@ jobs:
     outputs:
       swift: ${{ steps.filter.outputs.swift }}
       cookbook: ${{ steps.filter.outputs.cookbook }}
+      aur: ${{ steps.filter.outputs.aur }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
@@ -53,6 +54,29 @@ jobs:
             cookbook:
               - "cookbook/**"
               - ".github/workflows/ci.yml"
+            aur:
+              - "packaging/aur/**"
+              - "scripts/aur_release.py"
+              - "scripts/test_aur_release.py"
+              - "scripts/test-aur-package.sh"
+              - ".github/workflows/publish-aur.yml"
+              - ".github/workflows/release-linux.yml"
+              - ".github/workflows/ci.yml"
+
+  test-aur-package:
+    name: Validate AUR package in Arch
+    needs: changes
+    if: needs.changes.outputs.aur == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test AUR release tag handling
+        run: python3 scripts/test_aur_release.py
+      - name: Build and smoke-test current release in Arch
+        run: scripts/test-aur-package.sh
 
   test-linux:
     name: Unit tests (Linux)

@@ -18,13 +18,21 @@ jobs:
   publish:
     if: startsWith(inputs.tag, 'linux-v')
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Check out release
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag }}
 
+      - name: Validate AUR release tag
+        id: tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: python3 scripts/aur_release.py validate-tag "$TAG" "$GITHUB_OUTPUT"
+
       - name: Download release checksum
+        if: steps.tag.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
@@ -38,32 +46,17 @@ jobs:
             | awk '{print $1}' > /tmp/agterm-tarball.sha256
 
       - name: Update package metadata
+        if: steps.tag.outputs.publish == 'true'
         env:
           TAG: ${{ inputs.tag }}
         run: |
-          VERSION="${TAG#linux-v}"
           TARBALL_SHA256="$(cat /tmp/agterm-tarball.sha256)"
-          python - "$VERSION" "$TARBALL_SHA256" <<'PY'
-          from pathlib import Path
-          import re
-          import sys
-
-          path = Path("packaging/aur/PKGBUILD")
-          text = path.read_text()
-          text = re.sub(r"^pkgver=.*$", f"pkgver={sys.argv[1]}", text, count=1, flags=re.MULTILINE)
-          text, count = re.subn(
-              r"(^sha256sums=\(\n\s*')[0-9a-f]{64}(')",
-              rf"\g<1>{sys.argv[2]}\g<2>",
-              text,
-              count=1,
-              flags=re.MULTILINE,
-          )
-          if count != 1:
-              raise SystemExit("could not update tarball checksum")
-          path.write_text(text)
-          PY
+          LICENSE_SHA256="$(sha256sum LICENSE | awk '{print $1}')"
+          python3 scripts/aur_release.py update-pkgbuild \
+            packaging/aur/PKGBUILD "$TAG" "$TARBALL_SHA256" "$LICENSE_SHA256"
 
       - name: Regenerate .SRCINFO
+        if: steps.tag.outputs.publish == 'true'
         run: |
           docker run --rm \
             --user "$(id -u):$(id -g)" \
@@ -73,6 +66,7 @@ jobs:
             bash -c 'cd /pkg && makepkg --printsrcinfo > .SRCINFO'
 
       - name: Publish package to AUR
+        if: steps.tag.outputs.publish == 'true'
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           VERSION: ${{ inputs.tag }}
