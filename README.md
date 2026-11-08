@@ -226,7 +226,7 @@ A file open in the quick terminal, the window's shared scratch overlay:
 
 ### Linux
 
-Linux releases are published from this fork as DEB, RPM, and relocatable tar artifacts.
+Linux releases are published from this fork as DEB, RPM, Arch, and relocatable tar artifacts.
 Download them from the [agterm-linux releases page](https://github.com/melonamin/agterm-linux/releases).
 These formats use the host's WebKitGTK 6.0 package, including its web and network process helpers.
 
@@ -242,6 +242,16 @@ On a modern Fedora-compatible system with glibc 2.39 or newer:
 sudo dnf install ./agterm-linux-vX.Y.Z-x86_64.rpm
 ```
 
+On Arch Linux, install the release package directly; no AUR account or helper is required:
+
+```sh
+sudo pacman -U ./agterm-linux-bin-X.Y.Z-1-x86_64.pkg.tar.zst
+```
+
+Arch packages are included for stable releases and `+linux.N` revisions, starting with the next release.
+Prereleases retain DEB, RPM, and tar formats.
+Download a new package and repeat `pacman -U` to upgrade; GitHub Releases is not a pacman repository.
+
 The tarball bundles the Swift runtime, libghostty, Ghostty resources, and zmx but expects GTK4,
 libadwaita, and WebKitGTK 6.0 from the host:
 
@@ -250,8 +260,14 @@ tar xzf agterm-linux-vX.Y.Z-x86_64.tar.gz
 ./agterm-linux/bin/agterm-linux
 ```
 
-All artifacts are built for x86_64 on Ubuntu 24.04.
-Each release includes consolidated SHA-256 checksums and GitHub build-provenance attestations.
+All release binaries are built for x86_64 on Ubuntu 24.04.
+Each release includes consolidated SHA-256 checksums and GitHub build-provenance attestations,
+including the Arch package when present.
+
+```sh
+sha256sum --ignore-missing --check agterm-linux-vX.Y.Z-SHA256SUMS
+gh attestation verify agterm-linux-bin-X.Y.Z-1-x86_64.pkg.tar.zst --repo melonamin/agterm-linux
+```
 
 Arch users can build the binary package by running `makepkg -si` inside `packaging/aur/`.
 The `agterm-linux-bin` AUR package is maintained separately; automated updates require an SSH key
@@ -330,13 +346,25 @@ cd ..
 scripts/dist-linux.sh
 ```
 
-The release set uses one staged payload for tar, DEB, and RPM.
-It additionally requires nFPM, ImageMagick, RPM tools, and `cpio`:
+The release set uses one staged payload for tar, DEB, RPM, and Arch.
+It additionally requires nFPM, ImageMagick, RPM tools, `cpio`, and Docker for the Arch build
+(plus `zstd` to extract the resulting Arch package for local verification):
 
 ```sh
 scripts/package-linux.sh 0.33.1
 scripts/verify-linux-packages.sh 0.33.1
+# Stable releases/revisions: Docker builds and tests the same local payload in clean Arch,
+# exports the package to dist-linux, and updates its consolidated checksum manifest.
+scripts/test-aur-package.sh 0.33.1 dist-linux
+scripts/verify-linux-packages.sh 0.33.1
 ```
+
+The Arch build reuses `packaging/aur/PKGBUILD` with local, checksum-verified sources;
+it does not require the release to exist on GitHub or AUR credentials.
+It installs the package and exercises the installed GTK/WebKit/resources before exporting it.
+The release workflow attests and publishes the complete artifact set only after this check passes.
+Use `scripts/verify-published-linux-release.sh TAG --require-arch` to verify a new stable release;
+omit the option when checking historical releases that predate Arch artifacts.
 
 The GitHub release workflow pins and verifies nFPM before packaging.
 Branch and release CI compile the GTK package in Swift 6 language mode and run the complete real GTK

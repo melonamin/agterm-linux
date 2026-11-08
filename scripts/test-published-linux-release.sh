@@ -86,4 +86,38 @@ printf 'unexpected\n' > "$FIXTURE/agterm-v0.33.1-x86_64.AppImage"
 must_fail env AGTERM_GH="$WORK/gh" AGTERM_RELEASE_DOWNLOAD_DIR="$FIXTURE" \
   "$VERIFY" linux-v0.33.1
 
-echo "→ public release verifier accepts the authenticated historical and current artifact sets"
+for version in 0.40.0 0.40.0+linux.1; do
+  rm -rf "$FIXTURE"
+  mkdir -p "$FIXTURE"
+  payloads=(
+    "agterm-linux-v${version}-x86_64.tar.gz"
+    "agterm-linux-v${version}-x86_64.deb"
+    "agterm-linux-v${version}-x86_64.rpm"
+    "agterm-linux-bin-${version}-1-x86_64.pkg.tar.zst"
+  )
+  manifest="agterm-linux-v${version}-SHA256SUMS"
+  for artifact in "${payloads[@]}"; do
+    printf 'fixture for %s\n' "$artifact" > "$FIXTURE/$artifact"
+  done
+  (cd "$FIXTURE" && sha256sum "${payloads[@]}" > "$manifest")
+  for option in '' --require-arch; do
+    args=("linux-v$version")
+    [[ -z "$option" ]] || args+=("$option")
+    AGTERM_GH="$WORK/gh" AGTERM_RELEASE_DOWNLOAD_DIR="$FIXTURE" "$VERIFY" "${args[@]}" >/dev/null
+  done
+  must_fail env AGTERM_GH="$WORK/gh" AGTERM_RELEASE_DOWNLOAD_DIR="$FIXTURE" \
+    AGTERM_TEST_FAIL_ASSET="${payloads[3]}" "$VERIFY" "linux-v$version" --require-arch
+  must_fail env AGTERM_GH="$WORK/gh" AGTERM_RELEASE_DOWNLOAD_DIR="$FIXTURE" \
+    AGTERM_TEST_FAIL_ASSET="$manifest" "$VERIFY" "linux-v$version" --require-arch
+  printf 'tampered\n' >> "$FIXTURE/${payloads[3]}"
+  must_fail env AGTERM_GH="$WORK/gh" AGTERM_RELEASE_DOWNLOAD_DIR="$FIXTURE" \
+    "$VERIFY" "linux-v$version" --require-arch
+  rm "$FIXTURE/${payloads[3]}"
+  must_fail env AGTERM_GH="$WORK/gh" AGTERM_RELEASE_DOWNLOAD_DIR="$FIXTURE" \
+    "$VERIFY" "linux-v$version"
+  (cd "$FIXTURE" && sha256sum "${payloads[@]:0:3}" > "$manifest")
+  must_fail env AGTERM_GH="$WORK/gh" AGTERM_RELEASE_DOWNLOAD_DIR="$FIXTURE" \
+    "$VERIFY" "linux-v$version" --require-arch
+done
+
+echo "→ public release verifier accepts authenticated historical, Arch, and revision artifact sets"

@@ -22,6 +22,7 @@ source "$ROOT/linux/arch.sh"
 TAR="$OUT/agterm-linux-v${VERSION}-${HOST_ARCH}.tar.gz"
 DEB="$OUT/agterm-linux-v${VERSION}-${HOST_ARCH}.deb"
 RPM="$OUT/agterm-linux-v${VERSION}-${HOST_ARCH}.rpm"
+ARCH="$OUT/agterm-linux-bin-${VERSION}-1-${HOST_ARCH}.pkg.tar.zst"
 CHECKSUMS="$OUT/agterm-linux-v${VERSION}-SHA256SUMS"
 
 for artifact in "$TAR" "$DEB" "$RPM" "$CHECKSUMS"; do
@@ -128,9 +129,26 @@ verify_payload "$WORK/rpm/opt/agterm-linux"
 [[ "$(readlink "$WORK/rpm/usr/bin/agterm-linux")" == '/opt/agterm-linux/bin/agterm-linux' ]]
 [[ "$(readlink "$WORK/rpm/usr/bin/agtermctl")" == '/opt/agterm-linux/bin/agtermctl' ]]
 
+if [[ -f "$ARCH" ]]; then
+  [[ "$(awk -v name="$(basename "$ARCH")" '$2 == name { count++ } END { print count+0 }' "$CHECKSUMS")" == 1 ]]
+  mkdir -p "$WORK/arch"
+  tar -xf "$ARCH" -C "$WORK/arch"
+  grep -Fxq 'pkgname = agterm-linux-bin' "$WORK/arch/.PKGINFO"
+  grep -Fxq "pkgver = $VERSION-1" "$WORK/arch/.PKGINFO"
+  grep -Fxq "arch = $HOST_ARCH" "$WORK/arch/.PKGINFO"
+  for dependency in bash glibc gtk4 libadwaita libepoxy webkitgtk-6.0 python librsvg webp-pixbuf-loader; do
+    grep -Fxq "depend = $dependency" "$WORK/arch/.PKGINFO"
+  done
+  verify_payload "$WORK/arch/usr/lib/agterm-linux"
+  [[ "$(readlink "$WORK/arch/usr/bin/agterm-linux")" == '/usr/lib/agterm-linux/bin/agterm-linux' ]]
+  [[ "$(readlink "$WORK/arch/usr/bin/agtermctl")" == '/usr/lib/agterm-linux/bin/agtermctl' ]]
+  test -s "$WORK/arch/usr/share/licenses/agterm-linux-bin/LICENSE"
+  test ! -e "$WORK/arch/usr/bin/zmx"
+fi
+
 (
   cd "$OUT"
   sha256sum --check "$(basename "$CHECKSUMS")"
 )
 
-echo "→ verified tar, DEB, and RPM artifacts"
+echo "→ verified tar, DEB, RPM, and any included Arch artifact"

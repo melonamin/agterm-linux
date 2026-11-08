@@ -48,10 +48,13 @@ dist: ## signed + notarized DMG — usage: make dist VERSION=x.y.z [PUBLISH=1]
 dist-linux: ## self-contained Linux tarball (binary + Swift runtime + libghostty + launcher)
 	./scripts/dist-linux.sh
 
-packages-linux: ## Linux tar/DEB/RPM — usage: make packages-linux VERSION=x.y.z
+packages-linux: ## Linux tar/DEB/RPM/Arch — usage: make packages-linux VERSION=x.y.z
 	@test -n "$(VERSION)" || { echo "usage: make packages-linux VERSION=x.y.z" >&2; exit 1; }
 	./scripts/package-linux.sh "$(VERSION)"
 	./scripts/verify-linux-packages.sh "$(VERSION)"
+	@case "$(VERSION)" in *-*) ;; *) \
+		./scripts/test-aur-package.sh "$(VERSION)" dist-linux && \
+		./scripts/verify-linux-packages.sh "$(VERSION)" ;; esac
 
 clean: ## remove build artifacts (build/)
 	rm -rf build

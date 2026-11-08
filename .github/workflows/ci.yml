@@ -57,6 +57,8 @@ jobs:
             aur:
               - "packaging/aur/**"
               - "scripts/*aur*"
+              - "scripts/verify-linux-packages.sh"
+              - "scripts/verify-published-linux-release.sh"
               - "scripts/test-linux-ui.sh"
               - "agterm-linux/tests/gl_teardown_exit_test.py"
               - ".github/workflows/publish-aur.yml"
@@ -75,6 +77,14 @@ jobs:
       - uses: actions/checkout@v7
       - name: Build, install, and exercise the release in clean Arch
         run: scripts/test-aur-package.sh
+      - name: Build and test the direct-release Arch artifact from local sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(sed -n 's/^pkgver=//p' packaging/aur/PKGBUILD)"
+          gh release download "linux-v$version" --repo melonamin/agterm-linux \
+            --pattern "agterm-linux-v${version}-*" --dir dist-linux
+          scripts/test-aur-package.sh "$version" dist-linux
       - name: Upload Arch diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v6
