@@ -34,6 +34,9 @@ jobs:
   release-linux:
     name: Build Linux x86_64 release
     runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      aur_publish: ${{ steps.release.outputs.aur_publish }}
     timeout-minutes: 45
     container: swift:6.3.2-noble
     defaults:
@@ -78,6 +81,12 @@ jobs:
             echo "package_version=$PACKAGE_VERSION"
             echo "commit=$COMMIT"
             echo "source_date_epoch=$(git show -s --format=%ct "$COMMIT")"
+            # Arch pkgver forbids prerelease hyphens; +linux.N revisions remain eligible.
+            if [[ "$PACKAGE_VERSION" == *-* ]]; then
+              echo "aur_publish=false"
+            else
+              echo "aur_publish=true"
+            fi
           } >> "$GITHUB_OUTPUT"
 
       - name: Install Linux build and test dependencies
@@ -236,3 +245,14 @@ jobs:
           name: agterm-linux ${{ steps.release.outputs.version }}
           body_path: release-notes.md
           make_latest: true
+
+  publish-aur:
+    needs: release-linux
+    if: needs.release-linux.outputs.aur_publish == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/publish-aur.yml
+    with:
+      tag: ${{ needs.release-linux.outputs.tag }}
+    secrets:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}

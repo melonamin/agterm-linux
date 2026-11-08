@@ -253,6 +253,15 @@ tar xzf agterm-linux-vX.Y.Z-x86_64.tar.gz
 All artifacts are built for x86_64 on Ubuntu 24.04.
 Each release includes consolidated SHA-256 checksums and GitHub build-provenance attestations.
 
+Arch users can build the binary package by running `makepkg -si` inside `packaging/aur/`.
+The `agterm-linux-bin` AUR package is maintained separately; automated updates require an SSH key
+authorized by its existing maintainer, configured as this repository's `AUR_SSH_PRIVATE_KEY` secret.
+Stable Linux releases and `+linux.N` revisions update AUR after GitHub publication.
+Prereleases are excluded, older release rebuilds cannot downgrade AUR, and an unconfigured key skips
+publication with a notice while preserving the GitHub release.
+The publisher uses the maintained workflow's package template, so older tags need not contain AUR files.
+CI builds and installs the current packaged release in clean Arch and exercises its GTK and WebKit paths.
+
 ### macOS
 
 This fork does not publish macOS builds. Use [upstream agterm](https://github.com/umputun/agterm)

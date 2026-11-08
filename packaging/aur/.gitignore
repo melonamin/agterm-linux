@@ -1,0 +1,5 @@
+/pkg/
+/src/
+/*.pkg.tar.*
+/agterm-linux-v*-x86_64.tar.gz
+/LICENSE
