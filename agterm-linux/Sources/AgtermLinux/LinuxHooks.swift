@@ -56,6 +56,27 @@ extension AppController {
     }
 }
 
+/// The environment a hook's shell runs with. PATH follows the same Linux policy as keymap custom commands
+/// (`LinuxCommandPath`), so a helper that a custom command can find, such as one in `~/.local/bin`, is
+/// also found by a hook.
+enum LinuxHookEnvironment {
+    static func make(event: ControlEvent, socket: String, baseEnvironment: [String: String]) -> [String: String] {
+        var environment = gdkEnvironment.restoringChildEnvironment(baseEnvironment)
+        environment["AGT_EVENT_KIND"] = event.kind.rawValue
+        environment["AGT_EVENT_STATUS"] = event.payload.status ?? ""
+        environment["AGT_EVENT_HOST"] = event.payload.host ?? ""
+        environment["AGT_SESSION_ID"] = event.session ?? ""
+        environment["AGT_WORKSPACE_ID"] = event.workspace ?? ""
+        environment["AGT_WINDOW_ID"] = event.window ?? ""
+        environment["AGT_SOCKET"] = socket
+        let home = baseEnvironment["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
+        environment["PATH"] = LinuxCommandPath.widened(
+            environment["PATH"], bundledCLIDirectory: LinuxCommandPath.bundledCLIDirectory,
+            homeDirectory: home)
+        return environment
+    }
+}
+
 /// Launch one shell per event and finish on GLib's main thread after stdin closes and the child exits.
 /// The control server ignores SIGPIPE, so a hook exiting before reading yields EPIPE to the writer.
 @MainActor
@@ -63,17 +84,9 @@ private final class LinuxHookLauncher: HookLauncher {
     func launch(entry: HookEntry, event: ControlEvent,
                 onDeliveryFailure: @escaping @MainActor @Sendable (String) -> Void,
                 onExit: @escaping @MainActor @Sendable (Int32) -> Void) throws -> Int32 {
-        var environment = gdkEnvironment.restoringChildEnvironment(ProcessInfo.processInfo.environment)
-        environment["AGT_EVENT_KIND"] = event.kind.rawValue
-        environment["AGT_EVENT_STATUS"] = event.payload.status ?? ""
-        environment["AGT_EVENT_HOST"] = event.payload.host ?? ""
-        environment["AGT_SESSION_ID"] = event.session ?? ""
-        environment["AGT_WORKSPACE_ID"] = event.workspace ?? ""
-        environment["AGT_WINDOW_ID"] = event.window ?? ""
-        environment["AGT_SOCKET"] = gControlServer.resolvedSocketPath
-        let executableDirectory = URL(fileURLWithPath: CommandLine.arguments[0])
-            .standardizedFileURL.resolvingSymlinksInPath().deletingLastPathComponent().path
-        environment["PATH"] = CommandPath.widened(environment["PATH"], bundledCLIDirectory: executableDirectory)
+        let environment = LinuxHookEnvironment.make(
+            event: event, socket: gControlServer.resolvedSocketPath,
+            baseEnvironment: ProcessInfo.processInfo.environment)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
