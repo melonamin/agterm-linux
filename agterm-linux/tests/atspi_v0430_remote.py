@@ -5,6 +5,7 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
+import tempfile
 
 from atspi_smoke import ROOT, launch, raw_control_json, stop, wait_for
 
@@ -15,8 +16,8 @@ def verify_v0430_remote(env, state):
     root = Path(state)
     origin = root / "origin"
     origin.mkdir()
-    runtime = Path("/work", "rt43-" + str(os.getpid()))
-    runtime.mkdir(mode=0o700)
+    # Only Unix sockets live here; keep paths short without reusing container PIDs across test runs.
+    runtime = Path(tempfile.mkdtemp(prefix="rt43-", dir="/tmp"))
     resources = root / "server-resources"
     resources.mkdir()
     (resources / "shell-integration").symlink_to(Path(ROOT, "vendor/ghostty/share/ghostty/shell-integration"))
@@ -101,9 +102,9 @@ def verify_v0430_remote(env, state):
         if viewer:
             stop(viewer)
         try:
-            sessions = request(origin_env, "zmx.list").get("zmx", {}).get("sessions", [])
-            for session in sessions:
-                request(origin_env, "zmx.kill", session["name"], {"force": True})
+            entries = request(origin_env, "zmx.list").get("zmx", {}).get("entries", [])
+            for identity in {entry["sessionID"] for entry in entries if entry.get("sessionID")}:
+                request(origin_env, "session.close", identity)
         except (AssertionError, OSError):
             pass
         server.terminate()
@@ -111,3 +112,4 @@ def verify_v0430_remote(env, state):
         log.close()
         if artifacts := os.environ.get("AGTERM_UI_ARTIFACT_DIR"):
             shutil.copyfile(root / "server.log", Path(artifacts, "server.log"))
+        shutil.rmtree(runtime, ignore_errors=True)
