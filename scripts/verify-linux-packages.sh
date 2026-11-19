@@ -53,6 +53,15 @@ verify_opencode_plugin() {
   grep -Fq 'export const AgtermStatusPlugin' "$plugin"
 }
 
+verify_app_icons() {
+  local share="$1" size
+  for size in 16 32 48 64 128 256 512; do
+    file "$share/icons/hicolor/${size}x${size}/apps/io.github.melonamin.agterm.png" \
+      | grep -Fq "PNG image data, $size x $size,"
+  done
+  file "$share/pixmaps/io.github.melonamin.agterm.png" | grep -Fq 'PNG image data, 256 x 256,'
+}
+
 verify_payload() {
   local payload="$1"
   test -x "$payload/bin/agterm-linux"
@@ -80,6 +89,7 @@ verify_payload() {
   test -s "$payload/share/agterm/COMMIT"
   test -f "$payload/share/applications/io.github.melonamin.agterm.desktop"
   desktop-file-validate "$payload/share/applications/io.github.melonamin.agterm.desktop"
+  verify_app_icons "$payload/share"
   "$VERIFY_ARCH" "$payload/bin/agterm-linux.bin"
   for binary in agterm-linux.bin agtermctl.bin; do
     LD_LIBRARY_PATH="$payload/lib" ldd "$payload/bin/$binary" > "$WORK/$binary.ldd"
