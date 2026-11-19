@@ -54,7 +54,7 @@ Preserve all other branches and worktrees.
 - [x] Architecture, core boundary, CLI drift, resources and vendor-cache gates.
 - [x] Real isolated GTK/WebKit/control coverage of new and changed features.
 - [x] Real SSH/headless-server and multi-instance workflows.
-- [ ] Full GTK suite and Linux packages, metadata/runtime closure and clean-container installation.
+- [x] Full GTK suite and Linux packages, metadata/runtime closure and clean-container installation.
 - [x] Review complete downstream diff and protected test equality.
 - [ ] Commit candidate, present branch push gate, then inspect exact-commit branch CI.
 - [ ] Prepare and inspect full release notes, artifact set and immutable release-tag gate.
@@ -99,12 +99,17 @@ Keep build logs, caches and temporary data on persistent disk under `/mnt/bulk/a
 - A GTK Live origin serves catalog snapshots and create/rename/close receipts over both real SSH and the local transport fixture.
   A background command starts without changing the origin selection, retains its PID when the origin widget realizes,
   and ends with its session.
-- Tar/DEB/RPM metadata, checksum and runtime-closure validation pass on the initial candidate.
-  An Arch package builds, installs and passes the installed GTK/WebKit scenario.
-  A clean Ubuntu install exposed the new libcurl dependency; final packages must include the corrected metadata.
-  RPM execution works on Fedora 43 with libcurl installed.
-- The full GTK run and rebuilt package/install checks are pending final closeout.
-  Earlier failures in old status/Recent expectations and page/job offer tokens have focused passing coverage.
+- All four rebuilt tar/DEB/RPM/Arch artifacts pass metadata, SHA-256 and runtime-closure checks.
+  Fresh Ubuntu 24.04 and Fedora 43 containers install the packages with their declared dependencies and execute
+  both CLI help and server-installer help.
+  The Arch package builds, installs and passes the installed GTK/WebKit scenario.
+  The libcurl dependency is declared for every package, and the release container now provisions zstd for Arch extraction.
+  The packaged upstream version and server SHA-256 pins match the exact v0.43.0 metadata.
+- The full GTK run passed 73 of 74 scenarios.
+  Its only failure exercised the pre-fix hidden-origin launch path; rerunning the entire remote-v0391 scenario
+  after that fix passed, completing coverage of all 74 scenarios.
+  The real-SSH GUI-origin scenario also passed, and the 20-row headless scenario passed on repeated runs.
+  Earlier old status/Recent expectations and page/job offer-token failures are resolved.
 - The protected ConfigPaths test equals v0.43.0, and macOS application sources equal the selected tag.
   The unrelated site screenshot and all other worktrees are unchanged.
 - The headless server systemd installation was not run on the host.
@@ -112,3 +117,16 @@ Keep build logs, caches and temporary data on persistent disk under `/mnt/bulk/a
 
 Local validation artifacts live under `/mnt/bulk/agterm-catch-up-20261119`.
 The plan remains open through branch CI and the separate release-tag/publication gate.
+
+## Local integration commits
+
+- `ac92b931`: merge exact upstream v0.43.0 with the GTK parity adapters and portable callback seams.
+- `8dc06e03`: declare libcurl in Linux packages and verify the dependency metadata.
+- `0676a404`: update exact-tag CI pins and require real headless-server lifecycle coverage.
+- `8931f8c4`: provision zstd for Arch package verification.
+- `f04e68f4`: use unique short socket-only runtime directories and clean up repeatable real-SSH fixtures.
+
+`origin/master` already points to `be92bc63eca595a2955a0dc5c9a2b1e593e31a66` with approval.
+`origin/linux-port` is still `7f95d856d10df58d1d3964e1416d668aae721708`.
+The local candidate is clean and awaits the Linux branch push gate.
+Exact-commit hosted CI, release notes, release-tag approval, publication and artifact attestations remain pending.
