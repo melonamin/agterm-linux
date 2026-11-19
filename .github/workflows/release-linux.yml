@@ -21,8 +21,8 @@ permissions:
   attestations: write
 
 env:
-  UPSTREAM_BASE_TAG: "v0.41.1"
-  UPSTREAM_BASE_COMMIT: "911345a87df1aa32c8617ce0445b0be8975abb49"
+  UPSTREAM_BASE_TAG: "v0.43.0"
+  UPSTREAM_BASE_COMMIT: "be92bc63eca595a2955a0dc5c9a2b1e593e31a66"
   SWIFTLINT_VERSION: "0.65.0"
   SWIFTLINT_SHA256: "79306a34e5c7cc55a220cd108cbb861dcad5f10138dcdf261e2624ae8b0a486b"
   LINUX_SOURCEKIT_LIB_PATH: "/usr/lib/libsourcekitdInProc.so"
@@ -99,7 +99,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libepoxy-dev pkg-config \
             librsvg2-dev librsvg2-common webp-pixbuf-loader libgirepository1.0-dev gobject-introspection \
-            git curl jq ca-certificates xz-utils unzip zsh fish gcc file imagemagick ripgrep \
+            git curl jq ca-certificates xz-utils unzip zsh fish csh tcsh gcc file imagemagick ripgrep \
             rpm cpio desktop-file-utils patchelf ncurses-bin \
             at-spi2-core dbus-x11 gir1.2-atspi-2.0 openbox python3-gi xdotool xvfb xauth x11-xkb-utils ibus ibus-gtk4 \
             libatk-bridge2.0-0 libgl1-mesa-dri libegl-mesa0 mesa-utils
@@ -194,6 +194,19 @@ jobs:
 
       - name: Verify built zmx cache
         run: scripts/verify-linux-zmx-cache.sh agterm-linux/vendor/zmx
+
+      - name: Exercise headless server lifecycle with bundled runtimes
+        working-directory: agtermCore
+        env:
+          AGTERM_REQUIRE_ZMX: "1"
+          AGTERM_REQUIRE_FISH: "1"
+        run: |
+          export AGTERM_ZMX_BIN="$GITHUB_WORKSPACE/agterm-linux/vendor/zmx/zmx"
+          export AGTERM_SHELL_INTEGRATION="$GITHUB_WORKSPACE/agterm-linux/vendor/ghostty/share/ghostty/shell-integration"
+          chown -R agterm-test:agterm-test "$GITHUB_WORKSPACE"
+          runuser --user agterm-test -- env HOME=/home/agterm-test AGTERM_REQUIRE_ZMX=1 AGTERM_REQUIRE_FISH=1 \
+            AGTERM_ZMX_BIN="$AGTERM_ZMX_BIN" AGTERM_SHELL_INTEGRATION="$AGTERM_SHELL_INTEGRATION" \
+            swift test --filter ServerLifecycleTests
 
       - name: Test Linux package
         working-directory: agterm-linux
