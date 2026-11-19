@@ -1,16 +1,23 @@
 import Foundation
 import Observation
-
 /// A relative step through the flattened session list for keyboard navigation. `next`/`previous` step one
 /// and wrap, `first`/`last` jump to a tree end, `nextAttention`/`previousAttention` step (wrapping) through
 /// only the sessions needing attention — status `blocked` or `completed`, plus `active` under
-/// `AppStore.attentionIncludesActive`.
-public enum SessionNavigation: Sendable { case next, previous, first, last, nextAttention, previousAttention }
+/// `AppStore.attentionIncludesActive`. `position` jumps to a 1-based place in that list and never wraps.
+public enum SessionNavigation: Sendable, Hashable {
+    case next, previous, first, last, nextAttention, previousAttention
+    case position(Int)
+}
 
 extension SessionNavigation {
     /// Maps a control-channel direction string to a case, nil for an unknown one. Both `prev` (the CLI's
-    /// spelling) and `previous` are accepted.
+    /// spelling) and `previous` are accepted; a positive integer is a `position`.
     public init?(wire: String) {
+        if let position = Int(wire) {
+            guard position >= 1 else { return nil }
+            self = .position(position)
+            return
+        }
         switch wire {
         case "next": self = .next
         case "prev", "previous": self = .previous
@@ -143,12 +150,32 @@ public final class AppStore {
     @ObservationIgnored var pendingCloseCancels: [UUID: @MainActor () -> Void] = [:]
 
     @ObservationIgnored let persistence: PersistenceStore
+    /// catalogOperations is the operation table of the catalog this store serves, written in every save; nil before its first operation.
+    @ObservationIgnored public var catalogOperations: CatalogOperationTable?
+    /// catalogMirrored is set once a remote window's store holds its first catalog; until then its saved view state is kept.
+    @ObservationIgnored public internal(set) var catalogMirrored = false
+    /// catalogState is a remote window's connection to its server, nil for a local window. Observed: the window
+    /// strip draws it.
+    public internal(set) var catalogState: RemoteCatalogMirror.State?
+    /// remoteActions sends a remote window's structural actions to its server; nil for a local window, whose actions
+    /// change this store directly.
+    @ObservationIgnored public weak var remoteActions: RemoteCatalogActions?
+    /// catalogDetachedSessions and catalogDetachedWorkspaces are what a remote window hides and leaves running on its
+    /// server; empty for a local window.
+    public internal(set) var catalogDetachedSessions: Set<UUID> = []
+    public internal(set) var catalogDetachedWorkspaces: Set<UUID> = []
+    /// catalogHiddenViews keeps the view of each row a detach hides, so it comes back on reattach and is saved meanwhile.
+    @ObservationIgnored var catalogHiddenViews: [UUID: RemoteWindowViewState.SessionView] = [:]
+    /// catalogHiddenCollapsed and catalogHiddenFocus keep whether each workspace a detach hides was collapsed or focused.
+    @ObservationIgnored var catalogHiddenCollapsed: [UUID: Bool] = [:]
+    @ObservationIgnored var catalogHiddenFocus: Set<UUID> = []
     /// snapshotDidSave runs after each snapshot write that landed.
     @ObservationIgnored let snapshotDidSave: (() -> Void)?
     /// snapshotUnsaved is true from a failed snapshot write until the next one that lands.
-    @ObservationIgnored var snapshotUnsaved = false
+    @ObservationIgnored public internal(set) var snapshotUnsaved = false
     @ObservationIgnored let recentClosedStore: RecentClosedStore?
     @ObservationIgnored var recentClosedDidChange: (() -> Void)?
+    @ObservationIgnored var recentClosedWindow: UUID?
     @ObservationIgnored let controlEventSink: ((ControlEventDraft) -> Void)?
     /// The settled selected-pane identity per session that `pane.focused` diffs against.
     @ObservationIgnored var paneFocusBaseline: [UUID: UUID] = [:]
@@ -160,8 +187,13 @@ public final class AppStore {
     @ObservationIgnored public var overlayJobs: OverlayJobs?
     /// Told when an attached session's row is shown or leaves, undo and restoration included.
     @ObservationIgnored public var onRemoteRowVisibility: ((Session, Bool) -> Void)?
+    /// onOriginFrame sends a frame to an attached session's origin; false when the origin does not take it.
+    @ObservationIgnored public var onOriginFrame: ((UUID, PresentationFrame.Body) -> Bool)?
     /// onReplicaPageChanged is told the local id of a page shown for an origin whose reported state changed.
     @ObservationIgnored public var onReplicaPageChanged: ((UUID) -> Void)?
+    @ObservationIgnored var remoteTextWaits: [RemoteTextWait: @MainActor (RemoteTextOutcome) -> Void] = [:]
+    /// remoteTextDeadline is how long a text page action waits for the presenter's result.
+    @ObservationIgnored public var remoteTextDeadline = PresentationPageResult.deadline
     @ObservationIgnored let paneFinalizer: (([UUID]) -> Void)?
 
     /// Told the pane identities of every session or split leaving the visible model, hard or soft, which
@@ -213,6 +245,14 @@ public final class AppStore {
     /// and mutated only through the two public methods, so the app target cannot desync it.
     @ObservationIgnored var autoFollowSuppressionCount = 0
 
+    /// headless marks agterm-server's store: every pane is a detached zmx daemon with no surface, so pane
+    /// structure keys on `Session.daemonBackedPanes` and session effects go to the presenting Mac. Only the
+    /// server sets it; a store on the Mac keeps every surface rule.
+    public let headless: Bool
+
+    /// askRegistry indexes this store's session asks and keeps their results.
+    public let askRegistry: AskRegistry
+
     public init(workspaces: [Workspace] = [], selectedSessionID: UUID? = nil,
                 persistence: PersistenceStore = PersistenceStore(),
                 recentClosedStore: RecentClosedStore? = nil,
@@ -220,7 +260,11 @@ public final class AppStore {
                 snapshotDidSave: (() -> Void)? = nil,
                 controlEventSink: ((ControlEventDraft) -> Void)? = nil,
                 paneFinalizer: (([UUID]) -> Void)?,
-                launchPaneDrop: (([UUID]) -> Void)? = nil) {
+                launchPaneDrop: (([UUID]) -> Void)? = nil,
+                headless: Bool = false,
+                askRegistry: AskRegistry = .shared) {
+        self.headless = headless
+        self.askRegistry = askRegistry
         self.workspaces = workspaces
         self.selectedSessionID = selectedSessionID
         self.persistence = persistence
@@ -310,6 +354,7 @@ public final class AppStore {
     public func controlTree(paneForeground: (Session) -> CommandRestore.PaneForeground?,
                             splitPaneForeground: (Session) -> CommandRestore.PaneForeground? = { _ in nil },
                             liveAttribution: (UUID) -> SessionHost.Attribution? = { _ in nil },
+                            liveHostStale: (UUID) -> Bool = { _ in false },
                             fontSize: (Session) -> Double? = { _ in nil },
                             splitFontSize: (Session) -> Double? = { _ in nil },
                             scratchFontSize: (Session) -> Double? = { _ in nil },
@@ -339,6 +384,8 @@ public final class AppStore {
                     ? liveAttribution(session.paneIdentity) ?? .unknown : nil
                 let splitAttribution: SessionHost.Attribution? = local && session.hasSplit && session.splitSurface?.backedByZmx == true
                     ? session.splitPaneIdentity.flatMap(liveAttribution) ?? .unknown : nil
+                let mainStale = mainAttribution != nil && liveHostStale(session.paneIdentity)
+                let splitStale = splitAttribution != nil && session.splitPaneIdentity.map(liveHostStale) == true
                 let idle = session.agentIndicator.status == .idle
                 let status = idle ? nil : session.agentIndicator.status.rawValue
                 let statusPane = idle ? nil : session.agentIndicator.statusPane?.rawValue
@@ -347,13 +394,15 @@ public final class AppStore {
                     let id = TerminalSurfaceID(sessionID: session.id, surface: surface).rawValue
                     let pane = session.paneIdentity(for: surface)
                     let token = surface.surface(in: session)?.paneToken
+                        ?? pane.flatMap { session.daemonBackedPanes.contains($0) ? $0.uuidString : nil }
                     return ControlSurfaceNode(id: id, kind: surface.rawValue, active: surface.isActive(in: session),
                                               visible: surface.isVisible(in: session),
                                               backedByZmx: session.zmxBacking(for: surface),
                                               lead: ZmxLeadBook.shared.role(pane: pane),
-                                              reconnect: RemoteReconnectBook.shared.readback(pane: pane),
+                                              reconnect: RemoteReconnectBook.shared.readback(pane: pane), attachEnded: attachEnded(pane),
                                               paneID: token?.isEmpty == false ? token : nil,
-                                              pendingMessages: pendingMessages(token: token))
+                                              pendingMessages: pendingMessages(session, pane: pane, token: token),
+                                              remote: remotelyPresented(session, pane: pane))
                 }
                 return ControlSessionNode(id: session.id.uuidString, name: session.displayName,
                                           cwd: (session.content == .page ? parent(of: session) : nil)?.effectiveCwd
@@ -375,7 +424,14 @@ public final class AppStore {
                                                                 remote: session.askPresentedRemotely ? true : nil,
                                                                 replica: session.askReplica ? true : nil)
                                           },
+                                          pick: SessionPickBook.shared.node(forSession: session.id),
                                           scratch: session.scratchActive, flagged: session.flagged,
+                                          ended: session.ended ? true : nil,
+                                          pending: remoteActions?.pendingState(of: session.id),
+                                          scratchBacked: isRemoteWindow && session.scratchDaemon != nil ? true : nil,
+                                          scratchPaneID: session.scratchDaemon?.identity.uuidString,
+                                          scratchPendingMessages: scratchPendingMessages(session),
+                                          interactions: interactionNodes(session),
                                           commandWait: (session.initialCommand != nil && session.commandWait) ? true : nil,
                                           splitCommandWait: (session.splitInitialCommand != nil && session.splitCommandWait)
                                               ? true : nil,
@@ -389,7 +445,7 @@ public final class AppStore {
                                           statusBlink: idle ? nil : (session.agentIndicator.blink ? true : nil),
                                           statusColor: idle ? nil : session.agentIndicator.color,
                                           statusShape: idle ? nil : session.agentIndicator.shape?.rawValue,
-                                          statusChangedAt: session.statusChangedAt?.timeIntervalSince1970,
+                                          statusChangedAt: session.statusChangedAt?.timeIntervalSince1970, activePanes: activePanes(of: session),
                                           background: session.backgroundWatermark,
                                           paneBackgrounds: session.paneBackgrounds.isEmpty ? nil : session.paneBackgrounds,
                                           unseen: session.unseenCount > 0 ? session.unseenCount : nil,
@@ -403,7 +459,9 @@ public final class AppStore {
                                           realized: session.surface?.isRealized ?? false,
                                           context: session.effectiveContext, remoteHost: session.remoteHost,
                                           splitCwd: session.hasSplit ? session.cwd(for: .right) : nil,
+                                          scratchCwd: session.scratchSurface == nil ? nil : session.cwd(for: .scratch),
                                           liveAttribution: mainAttribution?.rawValue, splitLiveAttribution: splitAttribution?.rawValue,
+                                          liveHostStale: mainStale ? true : nil, splitLiveHostStale: splitStale ? true : nil,
                                           presentation: presentationNode(of: session), presenters: presentersNode(of: session),
                                           remoteOverlays: remoteOverlayNodes(of: session),
                                           htmlOverlays: htmlOverlayNodes(session, zoom: htmlZoom),
@@ -412,7 +470,8 @@ public final class AppStore {
                                           tint: session.tint?.color.rawValue, tintOn: session.tint?.parts.map(\.rawValue),
                                           parent: session.parentID?.uuidString,
                                           collapsed: !session.isExpanded && parents.contains(session.id) ? true : nil,
-                                          content: session.content == .page ? "page" : nil, info: session.effectiveInfo)
+                                          content: session.content == .page ? "page" : nil, info: session.effectiveInfo,
+                                          remoteSessionID: session.remoteSessionID)
             }
             return ControlWorkspaceNode(id: workspace.id.uuidString, name: workspace.name,
                                         active: workspace.id == activeWorkspaceID,
@@ -508,7 +567,8 @@ public final class AppStore {
     @discardableResult
     public func addSession(toWorkspace workspaceID: UUID, cwd: String, command: String? = nil,
                            name: String? = nil, wait: Bool = false, at index: Int? = nil, select: Bool = true,
-                           remoteHost: String? = nil, tint: SidebarTint? = nil, parentID: UUID? = nil,
+                           remoteHost: String? = nil, remoteSessionID: String? = nil, tint: SidebarTint? = nil,
+                           parentID: UUID? = nil,
                            content: SessionContent = .terminal) -> Session? {
         guard let wsIndex = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return nil }
         // both reach a custom command's expansion — cwd through initialCwd, name through customName — so
@@ -516,7 +576,7 @@ public final class AppStore {
         // `remoteHost` arrives here rather than being assigned after, because this call saves.
         let session = Session(initialCwd: TerminalText.sanitized(cwd),
                               customName: name.map(TerminalText.sanitized)?.trimmedOrNil,
-                              remoteHost: remoteHost, content: content)
+                              remoteHost: remoteHost, remoteSessionID: remoteSessionID, content: content)
         session.initialCommand = command
         session.commandWait = wait
         session.tint = tint
@@ -557,9 +617,9 @@ public final class AppStore {
             replaceSidebarSelection(with: sessionID)
         }
         disableFocusIfSelectionOutsideSet(sessionID)
-        if let sessionID { clearUnseen(sessionID) }
+        if let sessionID { markSeen(sessionID) }
         clearAutoResetIndicator(sessionID)
-        clearAutoResetIndicator(previous)
+        if previous != sessionID { clearAutoResetIndicator(previous) }
         recordRecency()
         scheduleSave()
         return destinationIndicator
@@ -568,7 +628,7 @@ public final class AppStore {
     /// Reset a session's indicator to idle when marked `autoReset`; no-op for nil, unknown, or non-autoReset.
     private func clearAutoResetIndicator(_ id: UUID?) {
         guard let id, let session = session(withID: id), session.agentIndicator.autoReset else { return }
-        setAgentIndicator(AgentIndicator(), forSession: id)
+        clearStatus(id, reason: .select)
     }
 
     /// Clears a session's unseen-notification badge; no-op for an unknown id, and never saves (ephemeral).
@@ -586,19 +646,30 @@ public final class AppStore {
     }
 
     /// Removes a session, tears down its surface, and — if it was active — reselects the most-recently-active
-    /// surviving session in scope (`closeReselectionTarget(after:removing:)`), falling back to the positional neighbor.
-    public func closeSession(_ sessionID: UUID, alreadyFinalized: UUID? = nil) {
+    /// surviving session in scope (`closeReselectionTarget(after:removing:)`), falling back to the positional neighbor;
+    /// returns the Recent Closed entry written for it, if any.
+    @discardableResult
+    public func closeSession(_ sessionID: UUID, alreadyFinalized: UUID? = nil) -> UUID? {
         // a parent closes with its companions; one Recent Closed entry carries the whole group
         let companions = companions(of: sessionID)
+        // recorded before the companions close, which takes a page companion's page with it
+        let recorded = companions.filter(\.isPersistable).map(sessionSnapshot)
         for companion in companions.reversed() {
-            closeSession(companion.id, alreadyFinalized: alreadyFinalized, recordsRecent: false)
+            _ = closeSession(companion.id, alreadyFinalized: alreadyFinalized, recordsRecent: false)
         }
-        closeSession(sessionID, alreadyFinalized: alreadyFinalized, recordsRecent: true, companions: companions)
-        finalizeParkedCompanions(of: [sessionID])
+        // a converted companion can still own a parked companion recorded under it
+        defer { finalizeParkedCompanions(of: [sessionID] + companions.map(\.id)) }
+        return closeSession(sessionID, alreadyFinalized: alreadyFinalized, recordsRecent: true, companions: recorded)
     }
 
-    private func closeSession(_ sessionID: UUID, alreadyFinalized: UUID?, recordsRecent: Bool, companions: [Session] = []) {
-        guard let location = location(ofSession: sessionID) else { return }
+    /// closeSessionRow closes one row and none of its companions: a catalog row's companions leave only when
+    /// their own catalog sessions do.
+    func closeSessionRow(_ sessionID: UUID, alreadyFinalized: UUID? = nil) {
+        _ = closeSession(sessionID, alreadyFinalized: alreadyFinalized, recordsRecent: false)
+    }
+
+    private func closeSession(_ sessionID: UUID, alreadyFinalized: UUID?, recordsRecent: Bool, companions: [SessionSnapshot] = []) -> UUID? {
+        guard let location = location(ofSession: sessionID) else { return nil }
         let wasActive = selectedSessionID == sessionID
         let workspace = workspaces[location.workspaceIndex]
         let removed = workspace.sessions[location.sessionIndex]
@@ -606,11 +677,7 @@ public final class AppStore {
         workspaces[location.workspaceIndex].sessions.remove(at: location.sessionIndex)
         emitSessionClosed(removed, workspace: workspace.id)
         dropLaunchPanes([removed])
-        if recordsRecent {
-            recordRecentClosedSession(removed, workspaceID: workspace.id, workspaceName: workspace.name,
-                                      workspaceIndex: location.workspaceIndex, sessionIndex: location.sessionIndex,
-                                      companions: companions)
-        }
+        let recent = recordClosedSession(removed, workspace: workspace, at: location, local: recordsRecent, companions: companions)
         finalizePaneIdentities([removed], alreadyFinalized: alreadyFinalized)
         removed.surface?.teardown()
         removed.splitSurface?.teardown()
@@ -631,6 +698,7 @@ public final class AppStore {
         }
         dropFromFlaggedOrder([sessionID])
         save()
+        return recent
     }
 
     /// Whether a workspace may be removed: one is always kept, so only when more than one exists.
@@ -646,7 +714,7 @@ public final class AppStore {
         let removingActive = selectedSessionID.map { id in workspace.sessions.contains { $0.id == id } } ?? false
         // record the membership BEFORE `dropFocusMember` below prunes it, so Reopen Closed Item can re-mark it
         recordRecentClosedWorkspace(workspace, selectedSessionID: removingActive ? selectedSessionID : nil,
-                                    focusMember: focusedWorkspaceIDs.contains(workspaceID))
+                                    focusMember: focusedWorkspaceIDs.contains(workspaceID), workspaceIndex: index)
         for session in workspace.sessions {
             releaseLeavingSession(session)
             emitSessionClosed(session, workspace: workspace.id)
@@ -713,7 +781,8 @@ public final class AppStore {
     /// (`navigableSessions`: the flagged set in `.flagged` mode, the MARKED workspaces' sessions while the
     /// focus filter is applied, else all). `next`/`previous` move one and WRAP WITHIN that set, never leaking
     /// across the filter; `first`/`last` jump to its ends; with no/invalid selection `next`/`previous` land
-    /// on the first session. No-op on an empty list. Routes through `selectSession`, inheriting recency,
+    /// on the first session; `position` selects that place or no-ops past the end (`navigationError`
+    /// says why). No-op on an empty list. Routes through `selectSession`, inheriting recency,
     /// badge clearing, persistence and workspace derivation. Targets are always in-set, so nav never triggers
     /// `disableFocusIfSelectionOutsideSet` — that stays the safety net for an explicit cross-set select.
     @discardableResult
@@ -735,8 +804,19 @@ public final class AppStore {
         case .nextAttention, .previousAttention:
             guard let found = attentionTarget(in: sessions, forward: direction == .nextAttention) else { return nil }
             target = found
+        case .position(let position):
+            guard ids.indices.contains(position - 1) else { return nil }
+            target = ids[position - 1]
         }
         return selectSession(target)
+    }
+
+    /// The error for a `position` past the end of `navigableSessions`; nil for any other direction.
+    public func navigationError(_ direction: SessionNavigation) -> String? {
+        guard case .position(let position) = direction else { return nil }
+        let count = navigableSessions.count
+        guard position > count else { return nil }
+        return "no session at position \(position): \(count) navigable"
     }
 
     /// Steps the CURRENT workspace one place through `visibleWorkspaces`, WRAPPING, via `selectWorkspace`, so

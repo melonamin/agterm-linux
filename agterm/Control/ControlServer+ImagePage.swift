@@ -3,18 +3,18 @@ import agtermCore
 
 extension ControlServer {
     /// openImageLink shows a clicked local picture over its session, sized to the picture, and reports whether
-    /// it did through `completion`; false reveals the file instead. The file is read off the main actor, and
+    /// it did through `completion`. The file is read off the main actor, and
     /// everything the open depends on is checked again after the read, since it may have changed meanwhile.
-    func openImageLink(_ url: URL, session id: UUID, completion: @escaping @MainActor (Bool) -> Void) {
-        guard canShowLinkOverlay(session: id) else { return completion(false) }
+    func openImageLink(_ url: URL, session id: UUID, forward: Int? = nil, completion: @escaping @MainActor (Bool) -> Void) {
+        guard canShowLinkOverlay(session: id, forwarded: forward != nil) else { return completion(false) }
         let path = url.path(percentEncoded: false)
         Task { @MainActor [weak self] in
             let loaded = await ImageProbe.loadDetached(path: path)
-            guard let self, case .success(let (probe, _)) = loaded, canShowLinkOverlay(session: id),
-                  let store = library.store(forSession: id) else { return completion(false) }
-            releaseHiddenClickedPage(session: id, persistent: false)
+            guard let self, case .success(let (probe, _)) = loaded, canShowLinkOverlay(session: id, forwarded: forward != nil),
+                  forwardIsCurrent(forward), let store = library.store(forSession: id) else { return completion(false) }
+            if forward == nil { releaseHiddenClickedPage(session: id, persistent: false) }
             completion(openImageOverlay(in: store, sessionID: id, path: path, probe: probe,
-                                        options: Self.imageOptions(path: path)).ok)
+                                        options: Self.imageOptions(path: path, forwardedTo: forward)).ok)
         }
     }
 
@@ -40,13 +40,14 @@ extension ControlServer {
         let pixels = ImagePixels(width: Int(natural.width), height: Int(natural.height))
         // the presenting Mac sizes an unsized picture for its own screen, so it gets the pixels and no points
         guard options.pane == nil, options.sizePercent == nil, options.points.isEmpty,
-              !store.pageBelongsRemote(id, pane: nil) else {
+              !options.forwarded, !store.pageBelongsRemote(id, pane: nil) else {
             return openHtmlOverlay(in: store, sessionID: id, page: .image(path: path), options: options.with(imagePixels: pixels))
         }
         let points = imagePoints(in: store, sessionID: id, pixels: pixels)
         let sized = ControlSessionOverlayOpenOptions(command: "", cwd: nil, wait: false, sizePercent: ImagePage.basePercent,
                                                      backgroundColor: options.backgroundColor, follow: options.follow,
-                                                     page: options.page, points: points, clicked: options.clicked)
+                                                     page: options.page, points: points, clicked: options.clicked,
+                                                     imagePixels: pixels, forwardedTo: options.forwardedTo)
         return openHtmlOverlay(in: store, sessionID: id, page: .image(path: path), options: sized)
     }
 
@@ -60,8 +61,8 @@ extension ControlServer {
                                 bounds: store.session(withID: id)?.hudPaneFrames.detail)
     }
 
-    private static func imageOptions(path: String) -> ControlSessionOverlayOpenOptions {
+    private static func imageOptions(path: String, forwardedTo: Int?) -> ControlSessionOverlayOpenOptions {
         ControlSessionOverlayOpenOptions(command: "", cwd: nil, wait: false, sizePercent: nil, backgroundColor: nil,
-                                         page: .image(path: path), clicked: true)
+                                         page: .image(path: path), clicked: true, forwardedTo: forwardedTo)
     }
 }

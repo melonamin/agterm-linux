@@ -9,7 +9,7 @@ import subprocess
 from atspi_smoke import CTL, ROOT, collect, launch, press_return, raw_control_json, stop, type_x11_text, wait_for, window_extents
 
 
-def verify_remote_v0391(env, state):
+def verify_remote_v0391(env, state, catalog_only=False):
     origin_state, viewer_state, tools = [os.path.join(state, name) for name in ("origin", "viewer", "remote-bin")]
     for directory in (origin_state, viewer_state, tools):
         os.makedirs(directory)
@@ -21,6 +21,7 @@ def verify_remote_v0391(env, state):
     ssh = os.path.join(tools, "ssh")
     with open(ssh, "w", encoding="utf-8") as file:
         file.write('#!/bin/sh\n[ "$1" = "-G" ] && { printf "serveraliveinterval 0\\n"; exit 0; }\n'
+                   '[ "$1" = "-O" ] && exit 0\n'
                    'for argument do remote=$argument; done\n'
                    'export AGTERM_STATE_DIR="$AGTERM_TEST_ORIGIN_STATE"\n'
                    'export AGTERM_CONTROL_SOCKET="$AGTERM_TEST_ORIGIN_SOCKET"\n'
@@ -29,7 +30,8 @@ def verify_remote_v0391(env, state):
     os.chmod(ssh, 0o755)
     if ssh_config := env.get("AGTERM_TEST_SSH_CONFIG"):
         with open(ssh, "w", encoding="utf-8") as file:
-            forwarded = "SetEnv=AGTERM_STATE_DIR=" + origin_state + " AGTERM_CONTROL_SOCKET=" + os.path.join(origin_state, "agterm.sock")
+            forwarded = ("SetEnv=AGTERM_STATE_DIR=" + origin_state + " AGTERM_CONTROL_SOCKET=" + os.path.join(origin_state, "agterm.sock")
+                         + " AGTERM_TEST_REMOTE_CLI=" + os.path.join(tools, "agtermctl"))
             file.write("#!/bin/sh\nexec /usr/bin/ssh -F " + shlex.quote(ssh_config)
                        + " -o " + shlex.quote(forwarded) + ' "$@"\n')
     # A real installed CLI resolves terminfo beside itself, rather than beside its build tree.
@@ -66,6 +68,9 @@ def verify_remote_v0391(env, state):
         origin = offered[0]["id"]
         request(origin_env, "session.companion.new", origin, {"name": "Keep parent alive", "noSelect": True})
         viewer_process, viewer_app = launch(viewer_env)
+        if catalog_only:
+            verify_gui_origin_catalog(origin_env, viewer_env, origin, request, row)
+            return
         viewer = request(viewer_env, "zmx.attach", origin, {"host": "local-test"})["id"]
         wait_for(lambda: row(viewer_env, viewer).get("presentation", {}).get("state") == "connected",
                  "viewer presentation did not connect", timeout=20)
@@ -241,6 +246,7 @@ def verify_remote_v0391(env, state):
         assert row(viewer_env, partial["result"]["id"]), "partial failure discarded the attached parent"
         request(viewer_env, "session.close", partial["result"]["id"])
         print("OK: partial group failure preserves the parent/successful companions and reports the missing member")
+        verify_gui_origin_catalog(origin_env, viewer_env, origin, request, row)
         print("OK: v0.40 remote info, page/program point open/resize, standalone adoption, and terminal/page group attach")
     except AssertionError:
         if origin_process is not None:
@@ -254,3 +260,35 @@ def verify_remote_v0391(env, state):
             stop(viewer_process)
         if origin_process is not None:
             stop(origin_process)
+
+
+def verify_gui_origin_catalog(origin_env, viewer_env, origin, request, row):
+    origin_window = request(origin_env, "window.list")["windows"][0]["id"]
+    catalog = request(viewer_env, "window.remote.open", args={"host": "local-test", "originWindow": origin_window})["id"]
+
+    def catalog_rows():
+        return [item for workspace in request(viewer_env, "tree", args={"window": catalog})["tree"]["workspaces"]
+                for item in workspace["sessions"]]
+
+    wait_for(lambda: any(item["id"] == origin for item in catalog_rows()), "GTK origin catalog did not arrive", timeout=30)
+    marker = os.path.join(origin_env["AGTERM_STATE_DIR"], "catalog-job.pid")
+    command = "/bin/sh -c " + shlex.quote("echo $$ > " + shlex.quote(marker) + "; exec sleep 3600")
+    selected = next(item["id"] for item in request(origin_env, "tree")["tree"]["workspaces"][0]["sessions"] if item["active"])
+    catalog_created = request(viewer_env, "session.new", args={"window": catalog, "name": "Created in GTK origin", "command": command})["id"]
+    wait_for(lambda: row(origin_env, catalog_created) and any(item["id"] == catalog_created for item in catalog_rows()),
+             "GTK origin create receipt did not reconcile")
+    wait_for(lambda: os.path.exists(marker), "GTK catalog command did not start while the origin row was hidden")
+    with open(marker, encoding="utf-8") as stream:
+        pid = int(stream.read())
+    assert row(origin_env, selected)["active"], "catalog creation stole the origin's selection"
+    request(origin_env, "session.select", catalog_created)
+    with open(marker, encoding="utf-8") as stream:
+        assert int(stream.read()) == pid, "realizing the origin row restarted its daemon command"
+    request(viewer_env, "session.rename", catalog_created, {"window": catalog, "name": "Renamed through GTK catalog"})
+    wait_for(lambda: row(origin_env, catalog_created).get("name") == "Renamed through GTK catalog", "GTK catalog rename stayed local")
+    request(viewer_env, "session.close", catalog_created, {"window": catalog})
+    wait_for(lambda: row(origin_env, catalog_created) is None, "GTK catalog close stayed local")
+    wait_for(lambda: not os.path.exists(f"/proc/{pid}") or open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[0] == "Z",
+             "GTK catalog close left its detached program running")
+    request(viewer_env, "window.close", catalog)
+    print("OK: GTK Live origin serves catalog snapshots and create/rename/close receipts", flush=True)

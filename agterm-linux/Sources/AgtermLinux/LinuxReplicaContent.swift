@@ -43,7 +43,7 @@ extension LinuxHtmlOverlayPage {
 /// Fetch images through the origin's grant, never the same path on the viewer's filesystem.
 /// Each continuation owns this finite load; closing/reloading the page drops it before the next fetch.
 @MainActor
-private final class LinuxRemoteMarkdown {
+final class LinuxRemoteMarkdown {
     weak var page: LinuxHtmlOverlayPage?
     let channel: LinuxPageChannel
     let revision: Int
@@ -53,11 +53,13 @@ private final class LinuxRemoteMarkdown {
     private var bytes = 0
     private var pixels = 0
     private var seen: [String: Int] = [:]
+    private let completion: (@MainActor (String?) -> Void)?
 
-    init(page: LinuxHtmlOverlayPage, channel: LinuxPageChannel, revision: Int) {
+    init(page: LinuxHtmlOverlayPage, channel: LinuxPageChannel, revision: Int, completion: (@MainActor (String?) -> Void)? = nil) {
         self.page = page
         self.channel = channel
         self.revision = revision
+        self.completion = completion
     }
 
     func load(_ resource: LinuxPageResource, origin: String) {
@@ -69,7 +71,10 @@ private final class LinuxRemoteMarkdown {
             } ?? []
             runOnMain { MainActor.assumeIsolated {
                 guard self.current else { return }
-                guard let markdown else { return self.page?.fail(MarkdownProbe.Failure.notText(origin).description) ?? () }
+                guard let markdown else {
+                    if let completion = self.completion { completion(nil) } else { self.page?.fail(MarkdownProbe.Failure.notText(origin).description) }
+                    return
+                }
                 self.markdown = markdown
                 self.pending = Array(references.prefix(MarkdownPage.maxImages))
                 self.next()
@@ -113,11 +118,12 @@ private final class LinuxRemoteMarkdown {
     private func finish() {
         guard let page, current else { return }
         let markdown = markdown, embedded = embedded
+        let links = page.overlay.markdownLinks != nil
         DispatchQueue.global(qos: .userInitiated).async { [weak page] in
-            let html = MarkdownPage.html(markdown: markdown, images: embedded, style: MarkdownAssets.shared.style)
+            let html = MarkdownPage.html(markdown: markdown, images: embedded, style: MarkdownAssets.shared.style, links: links)
             runOnMain { MainActor.assumeIsolated {
                 guard let page, !page.closed, page.overlay.reloadRevision == self.revision else { return }
-                html.withCString { webkit_web_view_load_html(cast(page.webView), $0, nil) }
+                if let completion = self.completion { completion(html) } else { html.withCString { webkit_web_view_load_html(cast(page.webView), $0, nil) } }
             } }
         }
     }

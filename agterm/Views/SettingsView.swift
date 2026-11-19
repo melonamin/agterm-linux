@@ -197,7 +197,7 @@ private struct GeneralSettingsView: View {
                 set: { model.setFlaggedViewLayout($0) })
     }
 
-    /// Default ON; turning it off stores false and leaves only the disclosure triangle as the hit target.
+    /// workspaceRowClickExpands defaults on; off stores false and leaves the triangle and row icon as hit targets.
     private var workspaceRowClickExpands: Binding<Bool> {
         Binding(get: { model.settings.workspaceRowClickExpands ?? true },
                 set: { model.setWorkspaceRowClickExpands($0 ? nil : false) })
@@ -371,6 +371,13 @@ private struct NotificationsSettingsView: View {
                 Toggle("Show notification badges", isOn: notificationBadgeEnabled)
                     .accessibilityIdentifier("settings-notification-badges")
 
+                Picker("Badge reset", selection: badgeReset) {
+                    Text("On first key").tag(StatusReset.firstKey)
+                    Text("On Enter").tag(StatusReset.enter)
+                    Text("Disabled").tag(StatusReset.never)
+                }
+                .accessibilityIdentifier("settings-badge-reset")
+
                 Picker("Bounce Dock icon", selection: dockBounce) {
                     Text("None").tag(DockBounce.off)
                     Text("Once").tag(DockBounce.once)
@@ -404,6 +411,11 @@ private struct NotificationsSettingsView: View {
     private var notificationBadgeEnabled: Binding<Bool> {
         Binding(get: { model.settings.notificationBadgeEnabled ?? true },
                 set: { model.setNotificationBadgeEnabled($0 ? nil : false) })
+    }
+
+    private var badgeReset: Binding<StatusReset> {
+        Binding(get: { model.settings.effectiveBadgeReset },
+                set: { model.setBadgeReset($0 == .firstKey ? nil : $0) })
     }
 
     /// Resolves nil (the default) to `.off`.
@@ -572,7 +584,7 @@ private struct AgentStatusSettingsView: View {
     /// with the status's current color. NON-template — a menu recolors a template symbol to its own text color
     /// and would wash out the previewed tint.
     private static func shapeImage(_ shape: StatusShape, tint: NSColor) -> NSImage {
-        let config = NSImage.SymbolConfiguration(pointSize: StatusIconView.glyphPointSize, weight: .regular)
+        let config = NSImage.SymbolConfiguration(pointSize: StatusIconView.glyphPointSize, weight: GhosttyApp.symbolWeight(shape))
             .applying(NSImage.SymbolConfiguration(paletteColors: [tint]))
         guard let image = NSImage(systemSymbolName: shape.symbolName, accessibilityDescription: shape.displayName)?
             .withSymbolConfiguration(config) else {
@@ -662,7 +674,7 @@ private struct KeyMappingSettingsView: View {
     var body: some View {
         Form {
             Section("Keyboard Layout") {
-                Picker("Lock in terminals", selection: terminalInputSource) {
+                Picker("Lock in agterm", selection: terminalInputSource) {
                     Text("Off").tag(String?.none)
                     ForEach(inputSources, id: \.id) { source in
                         Text(source.name).tag(String?.some(source.id))

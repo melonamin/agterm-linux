@@ -11,7 +11,14 @@ enum LinuxPageChannelError: Error, Sendable {
 final class LinuxPageResource: Sendable {
     let path: String
     let mime: String
-    init(path: String, mime: String) { self.path = path; self.mime = mime }
+    let logStamp: BoundedFile.FileStamp?
+    let logOffset: Int
+    init(path: String, mime: String, logStamp: BoundedFile.FileStamp? = nil, logOffset: Int = 0) {
+        self.path = path
+        self.mime = mime
+        self.logStamp = logStamp
+        self.logOffset = logOffset
+    }
     deinit { _ = Glibc.unlink(path) }
 }
 
@@ -19,10 +26,13 @@ final class LinuxPageResource: Sendable {
 @MainActor
 final class LinuxPageChannel {
     typealias FetchReply = @MainActor (Result<LinuxPageResource, LinuxPageChannelError>) -> Void
+    typealias LogReply = @MainActor (Result<BoundedFile.TailRead?, LinuxPageChannelError>) -> Void
     typealias BridgeReply = @MainActor (Result<String, LinuxPageChannelError>) -> Void
     private struct Fetch {
         let path: String
         var reply: FetchReply?
+        var logReply: LogReply?
+        var logStamp: BoundedFile.FileStamp?
     }
 
     private var owner: LinuxControlStreamOwner?
@@ -79,6 +89,13 @@ final class LinuxPageChannel {
         drain()
     }
 
+    func logTail(unchangedFrom stamp: BoundedFile.FileStamp?, reply: @escaping LogReply) {
+        guard !closed else { return reply(.failure(.closed)) }
+        nextID += 1
+        queued.append((nextID, Fetch(path: "", reply: nil, logReply: reply, logStamp: stamp)))
+        drain()
+    }
+
     func bridge(_ request: String, reply: @escaping BridgeReply) {
         guard !closed else { return reply(.failure(.closed)) }
         nextID += 1
@@ -90,11 +107,14 @@ final class LinuxPageChannel {
     func cancelResources() {
         let waiting = queued
         queued.removeAll()
-        for (_, fetch) in waiting { fetch.reply?(.failure(.closed)) }
+        for (_, fetch) in waiting { fetch.reply?(.failure(.closed)); fetch.logReply?(.failure(.closed)) }
         for id in Array(resources.keys) {
             let reply = resources[id]?.reply
             resources[id]?.reply = nil
+            let logReply = resources[id]?.logReply
+            resources[id]?.logReply = nil
             reply?(.failure(.closed))
+            logReply?(.failure(.closed))
             send(.cancel(id: id))
         }
     }
@@ -109,7 +129,7 @@ final class LinuxPageChannel {
         let pendingResources = Array(resources.values) + queued.map(\.1)
         let pendingBridges = Array(bridges.values) + queuedBridges.map(\.2)
         resources.removeAll(); queued.removeAll(); bridges.removeAll(); queuedBridges.removeAll()
-        for fetch in pendingResources { fetch.reply?(.failure(.closed)) }
+        for fetch in pendingResources { fetch.reply?(.failure(.closed)); fetch.logReply?(.failure(.closed)) }
         for reply in pendingBridges { reply(.failure(.closed)) }
         let finished = onClose
         onClose = nil
@@ -122,7 +142,7 @@ final class LinuxPageChannel {
             let (id, fetch) = queued.removeFirst()
             resources[id] = fetch
             expected.withLock { _ = $0.insert(id) }
-            send(.resource(id: id, path: fetch.path))
+            send(fetch.logReply != nil ? .logTail(id: id, stamp: fetch.logStamp) : .resource(id: id, path: fetch.path))
         }
         while bridges.count < ControlServer.pageServeBridgeLimit, !queuedBridges.isEmpty {
             let (id, request, reply) = queuedBridges.removeFirst()
@@ -141,10 +161,26 @@ final class LinuxPageChannel {
         switch event {
         case .resource(let id, let resource):
             expected.withLock { _ = $0.remove(id) }
-            resources.removeValue(forKey: id)?.reply?(.success(resource))
+            guard let fetch = resources.removeValue(forKey: id) else { break }
+            fetch.reply?(.success(resource))
+            if let reply = fetch.logReply {
+                DispatchQueue.global(qos: .utility).async {
+                    let read = BoundedFile.read(path: resource.path, maxBytes: TextPage.maxTailBytes)
+                    runOnMain { MainActor.assumeIsolated {
+                        guard case .success(let data) = read, let stamp = resource.logStamp else {
+                            return reply(.failure(.refused("invalid log response")))
+                        }
+                        reply(.success(BoundedFile.TailRead(data: data, offset: resource.logOffset, stamp: stamp)))
+                    } }
+                }
+            }
+        case .unchanged(let id):
+            resources.removeValue(forKey: id)?.logReply?(.success(nil))
         case .failure(let id, let error):
             expected.withLock { _ = $0.remove(id) }
-            resources.removeValue(forKey: id)?.reply?(.failure(.refused(error)))
+            let fetch = resources.removeValue(forKey: id)
+            fetch?.reply?(.failure(.refused(error)))
+            fetch?.logReply?(.failure(.refused(error)))
             bridges.removeValue(forKey: id)?(.failure(.refused(error)))
         case .bridge(let id, let response): bridges.removeValue(forKey: id)?(.success(response))
         }
@@ -159,6 +195,7 @@ private final class LinuxPageSpooler: @unchecked Sendable {
         case resource(Int, LinuxPageResource)
         case failure(Int, String)
         case bridge(Int, String)
+        case unchanged(Int)
     }
     struct Spool {
         let handle: FileHandle
@@ -179,14 +216,12 @@ private final class LinuxPageSpooler: @unchecked Sendable {
         guard let frame = try? PageServeCodec.decode(line) else { return false }
         switch frame {
         case .head(let id, let mime):
-            guard expected.withLock({ $0.contains(id) }), spools[id] == nil else { return false }
-            var template = Array((NSTemporaryDirectory() + "/agterm-page-XXXXXX").utf8CString)
-            let fd = mkstemp(&template)
-            guard fd >= 0 else { return false }
-            _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
-            let path = String(decoding: template.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self)
-            let resource = LinuxPageResource(path: path, mime: mime)
-            spools[id] = Spool(handle: FileHandle(fileDescriptor: fd, closeOnDealloc: true), resource: resource)
+            guard begin(id, mime: mime) else { return false }
+        case .logHead(let id, let stamp, let offset):
+            guard offset >= 0, begin(id, mime: "application/octet-stream", logStamp: stamp, logOffset: offset) else { return false }
+        case .logUnchanged(let id):
+            guard expected.withLock({ $0.remove(id) != nil }), spools[id] == nil else { return false }
+            deliver(.unchanged(id))
         case .chunk(let id, let data):
             guard let spool = spools[id] else { return false }
             do { try spool.handle.write(contentsOf: data) } catch { return false }
@@ -202,8 +237,20 @@ private final class LinuxPageSpooler: @unchecked Sendable {
             if resource || bridge { deliver(.failure(id, error)) }
         case .reply(let id, let response):
             if expectedBridges.withLock({ $0.remove(id) != nil }) { deliver(.bridge(id, response)) }
-        case .resource, .bridge, .cancel: return false
+        case .resource, .bridge, .cancel, .logTail: return false
         }
+        return true
+    }
+
+    private func begin(_ id: Int, mime: String, logStamp: BoundedFile.FileStamp? = nil, logOffset: Int = 0) -> Bool {
+        guard expected.withLock({ $0.contains(id) }), spools[id] == nil else { return false }
+        var template = Array((NSTemporaryDirectory() + "/agterm-page-XXXXXX").utf8CString)
+        let fd = mkstemp(&template)
+        guard fd >= 0 else { return false }
+        _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
+        let path = String(decoding: template.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        let resource = LinuxPageResource(path: path, mime: mime, logStamp: logStamp, logOffset: logOffset)
+        spools[id] = Spool(handle: FileHandle(fileDescriptor: fd, closeOnDealloc: true), resource: resource)
         return true
     }
 

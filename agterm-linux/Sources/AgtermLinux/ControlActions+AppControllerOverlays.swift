@@ -16,7 +16,9 @@ extension AppController {
                     case .success(let (probe, _)): return openProbedImage(id, path: path, probe: probe, options: options)
                     }
                 case .text(let path, _):
-                    if options.textLog != nil, store.pageBelongsRemote(id, pane: options.pane) { return err(OverlayHtmlError.logRemote) }
+                    if options.textLog != nil, !supportsTextLog(id, pane: options.pane, forwardedTo: options.forwardedTo) {
+                        return err(OverlayHtmlError.logRemote)
+                    }
                     let checked = options.textLog.map { TextProbe.checkLog(path: path, tail: $0.tail) } ?? TextProbe.check(path: path)
                     if case .failure(let failure) = checked { return err("session.overlay.open: \(failure)") }
                     guard !MarkdownAssets.shared.textScript.isEmpty else { return err("Text renderer resources are not bundled") }
@@ -25,6 +27,8 @@ extension AppController {
                 case .markdown(let path):
                     if case .failure(let failure) = MarkdownProbe.check(path: path) { return err("session.overlay.open: \(failure)") }
                     guard MarkdownAssets.shared.available else { return err("Markdown renderer resources are not bundled") }
+                    let links = options.navigation ? MarkdownPage.linkGrant(for: path) : nil
+                    return openResolvedPageOverlay(id, page: page, options: options.with(markdownLinks: links))
                 default: break
                 }
                 return openResolvedPageOverlay(id, page: page, options: options)

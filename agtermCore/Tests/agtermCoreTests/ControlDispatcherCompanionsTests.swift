@@ -142,4 +142,125 @@ struct ControlDispatcherCompanionsTests {
         let request = try JSONDecoder().decode(ControlRequest.self, from: Data(#"{"cmd":"session.companion.page","target":"p1"}"#.utf8))
         #expect(request.cmd == .sessionCompanionPage)
     }
+
+    @Test func pageSessionRoutesAFullSizePageWithItsGrant() async {
+        let actions = MockControlActions()
+        let request = ControlRequest(cmd: .sessionPage, target: "p1", args: ControlArgs(
+            cwd: "/tmp/a", follow: true, window: "win", color: "#112233", html: "/tmp/a/page.html", javascript: true))
+
+        let response = await ControlDispatcher(actions: actions).dispatch(request)
+
+        #expect(response == ControlResponse(ok: true))
+        #expect(actions.calls == [.pageSession(target: "p1", window: "win", options: ControlSessionOverlayOpenOptions(
+            command: "", cwd: nil, wait: false, sizePercent: nil, backgroundColor: "#112233", follow: true,
+            page: .file(path: "/tmp/a/page.html", grantRoot: "/tmp/a"), javascript: true))])
+    }
+
+    @Test func pageSessionRoutesAURLPage() async throws {
+        let actions = MockControlActions()
+
+        _ = await ControlDispatcher(actions: actions).dispatch(ControlRequest(
+            cmd: .sessionPage, args: ControlArgs(url: "https://example.com/", persistent: true)))
+
+        guard case .pageSession(let target, _, let options)? = actions.calls.first else {
+            Issue.record("no page session call: \(actions.calls)")
+            return
+        }
+        #expect(target == nil)
+        #expect(options.page == .url(try #require(URL(string: "https://example.com/"))))
+        #expect(options.persistent && !options.follow)
+    }
+
+    @Test(arguments: [
+        (ControlArgs(command: "top"), OverlayHtmlError.pageSessionNeedsPage),
+        (ControlArgs(image: "/tmp/a.png"), OverlayHtmlError.pageSessionNeedsPage),
+        (ControlArgs(markdownFile: "/tmp/r.md"), OverlayHtmlError.pageSessionNeedsPage),
+        (ControlArgs(textFile: "/tmp/a.go"), OverlayHtmlError.pageSessionNeedsPage),
+        (ControlArgs(pane: "right", html: "/tmp/p.html"), "a page session is full size: it takes no --pane, --size-percent, --width or --height"),
+        (ControlArgs(sizePercent: 50, html: "/tmp/p.html"), "a page session is full size: it takes no --pane, --size-percent, --width or --height"),
+        (ControlArgs(height: 300, html: "/tmp/p.html"), "a page session is full size: it takes no --pane, --size-percent, --width or --height"),
+        (ControlArgs(color: "red", html: "/tmp/p.html"), "invalid color: red (#rrggbb)"),
+    ])
+    func pageSessionRefusesAnythingButAFullSizeFileOrURLPage(args: ControlArgs, error: String) async {
+        let actions = MockControlActions()
+
+        let response = await ControlDispatcher(actions: actions).dispatch(ControlRequest(cmd: .sessionPage, target: "p1", args: args))
+
+        #expect(response == ControlResponse(ok: false, error: error))
+        #expect(actions.calls.isEmpty)
+    }
+
+    @Test func pageSessionRawStringMapsToItsCommand() throws {
+        let request = try JSONDecoder().decode(ControlRequest.self, from: Data(#"{"cmd":"session.page","target":"p1"}"#.utf8))
+        #expect(request.cmd == .sessionPage)
+    }
+
+    @Test func companionConvertRoutesTargetAndWindow() async throws {
+        let actions = MockControlActions()
+
+        let response = await ControlDispatcher(actions: actions).dispatch(
+            ControlRequest(cmd: .sessionCompanionConvert, target: "s1", args: ControlArgs(window: "win")))
+
+        #expect(response == ControlResponse(ok: true))
+        #expect(actions.calls == [.companionConvert(target: "s1", window: "win")])
+        let decoded = try JSONDecoder().decode(ControlRequest.self, from: Data(#"{"cmd":"session.companion.convert"}"#.utf8))
+        #expect(decoded.cmd == .sessionCompanionConvert)
+    }
+
+    @Test func companionMoveRoutesParentIndexAndWindow() async throws {
+        let actions = MockControlActions()
+        var args = ControlArgs(window: "win")
+        args.parent = " p2 "
+        args.index = 1
+
+        let response = await ControlDispatcher(actions: actions).dispatch(ControlRequest(cmd: .sessionCompanionMove, target: "c1", args: args))
+
+        #expect(response == ControlResponse(ok: true))
+        #expect(actions.calls == [.companionMove(target: "c1", parent: "p2", index: 1, window: "win")])
+        #expect(!ControlDispatcher.refusesArguments(ControlRequest(cmd: .sessionCompanionMove, target: "c1", args: args)))
+        let decoded = try JSONDecoder().decode(ControlRequest.self, from: Data(
+            #"{"cmd":"session.companion.move","target":"c1","args":{"parent":"p2","index":0}}"#.utf8))
+        #expect(decoded.cmd == .sessionCompanionMove)
+        #expect(decoded.args?.parent == "p2")
+        #expect(decoded.args?.index == 0)
+    }
+
+    nonisolated private static func moveArgs(parent: String?, index: Int? = nil, workspace: String? = nil) -> ControlArgs {
+        var args = ControlArgs(workspace: workspace)
+        args.parent = parent
+        args.index = index
+        return args
+    }
+
+    @Test(arguments: [
+        (moveArgs(parent: nil), "session.companion.move needs a parent"),
+        (moveArgs(parent: "  "), "session.companion.move needs a parent"),
+        (moveArgs(parent: "p2", index: -1), "index must be 0 or more"),
+        (moveArgs(parent: "p2", workspace: "w1"), "session.companion.move takes no workspace, --to, --after or --before"),
+    ])
+    func companionMoveRefusesBadArgumentsBeforeActing(args: ControlArgs, error: String) async {
+        let actions = MockControlActions()
+        let request = ControlRequest(cmd: .sessionCompanionMove, target: "c1", args: args)
+
+        let response = await ControlDispatcher(actions: actions).dispatch(request)
+
+        #expect(response == ControlResponse(ok: false, error: error))
+        #expect(ControlDispatcher.refusesArguments(request))
+        #expect(actions.calls.isEmpty)
+    }
+
+    @Test(arguments: [ControlArgs(to: "up"), ControlArgs(after: "a"), ControlArgs(before: "b"), ControlArgs(targets: ["c1", "c2"]),
+                      ControlArgs(targets: ["c1"]), ControlArgs(targets: [])])
+    func companionMoveRefusesPlacementAndTargetLists(args: ControlArgs) async {
+        let actions = MockControlActions()
+        var args = args
+        args.parent = "p2"
+        let request = ControlRequest(cmd: .sessionCompanionMove, target: "c1", args: args)
+
+        let response = await ControlDispatcher(actions: actions).dispatch(request)
+
+        #expect(response?.ok == false)
+        #expect(ControlDispatcher.refusesArguments(request))
+        #expect(actions.calls.isEmpty)
+    }
 }

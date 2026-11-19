@@ -182,7 +182,7 @@ holds the pane the shortcut fired from, so `session type --pane "$AGT_PANE"` typ
 Run a command AS the session's process (closes when it exits, no echoed command line):
 
 ```bash
-agtermctl session new --command "ssh host -p 22"     # a default-PATH binary: argv-split (quotes respected), no shell, no echo
+agtermctl session new --command "ssh host -p 22"     # a default-PATH binary, no echoed command line; wrap a ; or && list in sh -c
 agtermctl session new --command "zsh -lc 'htop'"     # Homebrew/non-default binary: --command has the app's GUI PATH, so wrap in a login shell (or use an absolute path); bare "htop" exits 127
 agtermctl session new --command "zsh -lc 'make test'" --wait   # HOLD the row open after the command exits (press any key to close) so its final output stays readable; --wait needs --command
 ```
@@ -534,7 +534,7 @@ agtermctl session flag clear                              # unflag everything in
 
 An orchestrator relaying a session's output elsewhere (Telegram, another agent) fires `notify` to signal
 "your turn", which raises the session's red unseen badge. Nothing normally clears that badge except
-visiting the session — which pulls the selection to it. `session seen` clears it in place, so the badge
+typing in the session (as Settings ▸ Notifications ▸ Badge reset allows) or visiting it, which pulls the selection to it. `session seen` clears it in place, so the badge
 stays a real attention signal on the sessions a human tends while the driven ones stay clean.
 
 ```bash
@@ -815,9 +815,11 @@ Without `--pane` the status is treated as coming from the main (`left`) pane, so
 can be wiped by typing in the main pane and the reveal lands on the wrong surface.
 
 The tag also protects a block from the OTHER pane's agent: while the session is `blocked`, a status from a
-different pane that is not itself `blocked` is refused with `blocked status owned by pane <pane>`,
-so an agent reporting `active` after every tool call cannot erase its neighbour's request for input. With
-an agent in each pane, tag both or the second one's ordinary work looks like it comes from the first.
+different pane that is not itself `blocked` leaves the block shown, so an agent reporting `active` after every
+tool call cannot erase its neighbour's request for input. It keeps the row active while either pane works,
+too: one agent finishing leaves the row on the other's work, and `tree`'s `activePanes` says which panes are
+still working. With an agent in each pane, tag both or the second one's ordinary work looks like it comes
+from the first.
 
 ```bash
 # an agent working in the split pane; $AGT_PANE is set in a custom keymap command, else name it
@@ -1123,6 +1125,7 @@ file is read once per command; nothing watches it, so push each change with an `
 ```bash
 agtermctl session go --to next            # step selection to the next session
 agtermctl session go --to next-attention  # jump to the next blocked/completed session (plus active when enabled)
+agtermctl session go --to 3               # select the third session in sidebar order
 agtermctl workspace go --to next          # step a whole workspace, landing on its first session
 agtermctl workspace go --to prev          # wraps at both ends; no --target, it is relative
 w=$(agtermctl window new "scratch" --json | jq -r '.result.id')

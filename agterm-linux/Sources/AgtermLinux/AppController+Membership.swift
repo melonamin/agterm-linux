@@ -30,7 +30,7 @@ extension AppController {
             (row: LinuxPaletteRow(title: store.listLabel(for: session), badge: session.flagged ? "✓" : nil,
                                   indicator: session.agentIndicator), run: { [weak self] in
                 guard let self, let current = self.store.session(withID: session.id) else { return }
-                self.store.setFlag(!current.flagged, forSession: current.id)
+                self.setFlagsFromGUI([current.id], on: !current.flagged)
                 self.syncSidebar()
             })
         }

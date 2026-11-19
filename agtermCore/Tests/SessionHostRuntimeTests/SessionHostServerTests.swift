@@ -498,6 +498,92 @@ private let sessionHostFixtureReady = Responsibility.system.isAvailable
     }
 
     @Test(.enabled(if: sessionHostFixtureReady, "needs the responsibility SPI and the staged zmx from scripts/setup.sh"))
+    func disclaimedHostServesItsOwnKeyedEndpointOnly() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let child = try fixture.start()
+        #expect(fixture.paths.socket.contains("/session-host-"))
+        #expect(!FileManager.default.fileExists(atPath: try SessionHost.paths(socketDirectory: fixture.socketDirectory).socket))
+        #expect(try String(contentsOfFile: fixture.paths.pidfile, encoding: .utf8) == "\(child)\n")
+        #expect(try fixture.exchange(.stop).last == .stopped)
+        try fixture.waitForExit()
+    }
+
+    @Test(.enabled(if: sessionHostFixtureReady, "needs the responsibility SPI and the staged zmx from scripts/setup.sh"))
+    func jobHostWhoseJobIsAbsentStillStopsCleanly() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let key = try Fixture.endpointKey(of: fixture.executable)
+        let child = try fixture.start(job: [key, HostJob.labelPrefix(bundleID: fixture.identity.bundleID, key: key) + "deadbeef"])
+        #expect(try String(contentsOfFile: fixture.paths.pidfile, encoding: .utf8) == "\(child)\n")
+        #expect(try fixture.exchange(.stop).last == .stopped)
+        try fixture.waitForExit()
+        #expect(!FileManager.default.fileExists(atPath: fixture.paths.socket))
+    }
+
+    enum JobMismatch: CaseIterable { case key, label }
+
+    @Test(.enabled(if: sessionHostFixtureReady, "needs the responsibility SPI and the staged zmx from scripts/setup.sh"),
+          arguments: JobMismatch.allCases)
+    func jobHostRefusesAnotherEndpointBeforeTakingOne(_ mismatch: JobMismatch) throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let own = try Fixture.endpointKey(of: fixture.executable)
+        let key = mismatch == .key ? "000000000000-1" : own
+        let bundleID = mismatch == .label ? "com.example.other" : fixture.identity.bundleID
+        let error = #expect(throws: FixtureCommandError.self) {
+            try fixture.run(fixture.executable, arguments: ["host", fixture.socketDirectory, key, HostJob.labelPrefix(bundleID: bundleID, key: key) + "deadbeef"])
+        }
+        #expect(error?.status == 1)
+        #expect(!FileManager.default.fileExists(atPath: fixture.paths.socket))
+        #expect(!FileManager.default.fileExists(atPath: fixture.paths.pidfile))
+    }
+
+    @Test(.enabled(if: sessionHostFixtureReady, "needs the responsibility SPI and the staged zmx from scripts/setup.sh"))
+    func stopCommandSkipsTheCurrentEndpointAndReportsAbsentOnes() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        try fixture.start()
+        let legacy = URL(fileURLWithPath: fixture.socketDirectory).appendingPathComponent(SessionHost.legacyEndpoint)
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: URL(fileURLWithPath: fixture.socketDirectory).appendingPathComponent("unrelated"),
+                                                withIntermediateDirectories: true)
+
+        let report = try fixture.stopOthers()
+
+        #expect(report == ["session-host absent"])
+        #expect(kill(try #require(fixture.pid), 0) == 0)
+        #expect(try fixture.exchange(.stop).last == .stopped)
+        try fixture.waitForExit()
+    }
+
+    @Test(.enabled(if: sessionHostFixtureReady, "needs the responsibility SPI and the staged zmx from scripts/setup.sh"))
+    func stopCommandRetiresAnotherEndpointOnlyOnceItRootsNothing() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let host = try fixture.start()
+        let legacy = URL(fileURLWithPath: fixture.socketDirectory).appendingPathComponent(SessionHost.legacyEndpoint)
+        try FileManager.default.createSymbolicLink(at: legacy, withDestinationURL: URL(fileURLWithPath: fixture.paths.socket).deletingLastPathComponent())
+        let name = ZmxSupport.daemonName(for: UUID())
+        fixture.names.append(name)
+        let request = SessionHost.Ensure(name: name, argv: [fixture.zmx.path, "attach", name], cwd: fixture.directory.path,
+                                        env: fixture.environment, rows: 24, cols: 80)
+        guard case .ok(let ready) = try fixture.exchange(.ensure(request)).last else {
+            Issue.record("daemon was not created; host log: \(fixture.hostLog())")
+            return
+        }
+
+        #expect(try fixture.stopOthers() == ["session-host refused: live rooted daemons remain"])
+        #expect(kill(host, 0) == 0)
+
+        _ = try fixture.run(fixture.zmx, arguments: ["kill", name])
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline, kill(ready.leaderPid, 0) == 0 { Thread.sleep(forTimeInterval: 0.05) }
+        #expect(try fixture.stopOthers() == ["session-host stopped"])
+        try fixture.waitForExit()
+    }
+
+    @Test(.enabled(if: sessionHostFixtureReady, "needs the responsibility SPI and the staged zmx from scripts/setup.sh"))
     func hostSocketIsNotEnumeratedByStockZmx() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -861,19 +947,26 @@ private let sessionHostFixtureReady = Responsibility.system.isAvailable
         var ended = false
         var lastWait: pid_t = 0
         var lastErrno: Int32 = 0
+        var screen = ""
         let clock = ContinuousClock()
         let windowStart = clock.now
         let attachDeadline = Date().addingTimeInterval(3)
         while !ended, Date() < attachDeadline {
+            // zmx restores the terminal with TCSAFLUSH on exit, which blocks until the master reads its output
+            screen += Self.available(pane.ptyFD)
             lastWait = waitpid(pane.pid, &status, WNOHANG)
             lastErrno = lastWait == -1 ? errno : 0
             ended = lastWait == pane.pid
             if !ended { Thread.sleep(forTimeInterval: 0.02) }
         }
-        let report = ended ? "" : StalledAttach(pane: pane, argv: paneArgv, daemon: name, elapsed: clock.now - windowStart,
-                                                lastWait: lastWait, lastErrno: lastErrno).report(fixture: fixture)
-        #expect(ended, "the pane's attach to an ended command kept running\n\(report)")
+        let elapsed = clock.now - windowStart
+        #expect(ended, "the pane's attach to an ended command kept running")
         if !ended {
+            Issue.record("""
+                stall report:
+                \(StalledAttach(pane: pane, argv: paneArgv, daemon: name, elapsed: elapsed, lastWait: lastWait,
+                                lastErrno: lastErrno, screen: screen).report(fixture: fixture))
+                """)
             kill(pane.pid, SIGKILL)
             _ = waitpid(pane.pid, &status, 0)
         }
@@ -888,6 +981,7 @@ private let sessionHostFixtureReady = Responsibility.system.isAvailable
         let elapsed: Duration
         let lastWait: pid_t
         let lastErrno: Int32
+        let screen: String
 
         func report(fixture: Fixture) -> String {
             let listing: String
@@ -899,12 +993,54 @@ private let sessionHostFixtureReady = Responsibility.system.isAvailable
             return """
                 pid=\(pane.pid) elapsed=\(elapsed) waitpid=\(lastWait) errno=\(lastErrno) \
                 p_stat=\(SessionHostServerTests.processState(pane.pid)) argv=\(argv) daemon=\(daemon)
-                pty: \(SessionHostServerTests.available(pane.ptyFD).debugDescription)
+                pty: \((screen + SessionHostServerTests.available(pane.ptyFD)).debugDescription)
                 exec error: \(SessionHostServerTests.available(pane.execErrorFD).debugDescription)
                 zmx list: \(listing)
                 host log: \(fixture.hostLog())
+                \(stacks())
                 """
         }
+
+        private func stacks() -> String {
+            let rows = SessionHostServerTests.capture(["/bin/ps", "-axo", "pid,ppid,pgid,stat,etime,command"], timeout: 5)
+                .split(separator: "\n").filter { row in
+                    let fields = row.split(separator: " ")
+                    return fields.count > 1 && (fields[0] == "\(pane.pid)" || fields[1] == "\(pane.pid)" || row.contains(daemon))
+                }
+            let pids = rows.compactMap { Int32($0.split(separator: " ").first ?? "") }
+            let samples = pids.map { pid in
+                let output = SessionHostServerTests.capture(["/usr/bin/sample", "\(pid)", "1"], timeout: 10)
+                let lines = output.split(separator: "\n", omittingEmptySubsequences: false)
+                let graph = lines.drop { !$0.hasPrefix("Call graph:") }.prefix { !$0.hasPrefix("Total number in stack") }.prefix(80)
+                return "sample \(pid):\n" + (graph.isEmpty ? lines.prefix(5) : graph).joined(separator: "\n")
+            }
+            return (["processes:"] + rows.map(String.init) + samples).joined(separator: "\n")
+        }
+    }
+
+    // output goes to a file: a full pipe would stall the command until the deadline killed it
+    private static func capture(_ argv: [String], timeout: TimeInterval) -> String {
+        let path = NSTemporaryDirectory() + "agterm-capture-\(UUID().uuidString)"
+        defer { unlink(path) }
+        guard FileManager.default.createFile(atPath: path, contents: nil), let output = FileHandle(forWritingAtPath: path) else {
+            return "\(argv[0]): no output file"
+        }
+        defer { try? output.close() }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: argv[0])
+        process.arguments = Array(argv.dropFirst())
+        process.standardOutput = output
+        process.standardError = output
+        do { try process.run() } catch { return "\(argv[0]) failed: \(error)" }
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        let timedOut = process.isRunning
+        if timedOut {
+            kill(process.processIdentifier, SIGKILL)
+            process.waitUntilExit()
+        }
+        let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        return timedOut ? text + "\n\(argv[0]) timed out after \(Int(timeout)) s" : text
     }
 
     private static func available(_ fd: Int32) -> String {
@@ -1255,7 +1391,7 @@ private let sessionHostFixtureReady = Responsibility.system.isAvailable
             directory = URL(fileURLWithPath: "/tmp/shs-\(UUID().uuidString)", isDirectory: true)
             let socketDirectory = directory.appendingPathComponent("zmx").path
             paths = try SessionHost.paths(socketDirectory: socketDirectory)
-            endpoint = try HostEndpoint(socketDirectory: socketDirectory)
+            endpoint = try HostEndpoint(socketDirectory: socketDirectory, paths: paths)
             log = paths.log
             logDescriptor = open(log, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0o600)
             let clock = clock
@@ -1319,7 +1455,6 @@ private let sessionHostFixtureReady = Responsibility.system.isAvailable
             zmx = bundle.appendingPathComponent("Contents/MacOS/zmx")
             client = bundle.appendingPathComponent("Contents/MacOS/test-client")
             let socketDirectory = directory.appendingPathComponent("zmx").path
-            paths = try SessionHost.paths(socketDirectory: socketDirectory)
             identity = .init(bundleID: "com.umputun.hosttest.\(UUID().uuidString)", bundlePath: bundle.path)
             environment = ["ZMX_DIR": socketDirectory, "ZMX_SESSION": "", "ZMX_SESSION_PREFIX": "", "ZMX_NO_DETACH_KEY": "1",
                            "SHELL": "/bin/sh", "HOME": directory.path, "PATH": "/usr/bin:/bin", "TERM": "xterm-256color"]
@@ -1331,14 +1466,28 @@ private let sessionHostFixtureReady = Responsibility.system.isAvailable
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: client.path)
             let info = ["CFBundleIdentifier": identity.bundleID, "CFBundleExecutable": "agterm-session-host", "CFBundlePackageType": "APPL"]
             try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: bundle.appendingPathComponent("Contents/Info.plist"))
+            paths = try SessionHost.paths(socketDirectory: socketDirectory, key: Self.endpointKey(of: executable))
             try FileManager.default.createDirectory(at: URL(fileURLWithPath: paths.spawnLock).deletingLastPathComponent(), withIntermediateDirectories: true)
             let lock = open(paths.spawnLock, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
             if lock >= 0 { close(lock) }
         }
 
-        @discardableResult func start() throws -> Int32 {
+        static func endpointKey(of executable: URL) throws -> String {
+            let process = Process()
+            process.executableURL = executable
+            process.arguments = ["key"]
+            let output = Pipe()
+            process.standardOutput = output
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { throw POSIXError(.EIO) }
+            return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        @discardableResult func start(job: [String] = []) throws -> Int32 {
             let child = try Responsibility.system.spawnDisclaimed(executable: executable.path,
-                                                                  argv: [executable.path, "host", environment["ZMX_DIR"]!], env: environment)
+                                                                  argv: [executable.path, "host", environment["ZMX_DIR"]!] + job, env: environment)
             pid = child
             let deadline = Date().addingTimeInterval(5)
             while Date() < deadline {
@@ -1348,6 +1497,13 @@ private let sessionHostFixtureReady = Responsibility.system.isAvailable
                 Thread.sleep(forTimeInterval: 0.01)
             }
             throw POSIXError(.ETIMEDOUT)
+        }
+
+        var socketDirectory: String { environment["ZMX_DIR"]! }
+
+        func stopOthers() throws -> [String] {
+            let data = try run(executable, arguments: ["stop", socketDirectory])
+            return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
         }
 
         func list() throws -> [ZmxSessionRecord] {
@@ -1446,7 +1602,7 @@ private let sessionHostFixtureReady = Responsibility.system.isAvailable
             try? FileManager.default.removeItem(at: directory)
         }
 
-        private func run(_ command: URL, arguments: [String], input: URL? = nil, stall: Bool = false) throws -> Data {
+        func run(_ command: URL, arguments: [String], input: URL? = nil, stall: Bool = false) throws -> Data {
             let process = Process()
             process.executableURL = command
             process.arguments = arguments

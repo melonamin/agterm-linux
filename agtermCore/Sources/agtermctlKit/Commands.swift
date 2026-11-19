@@ -28,10 +28,9 @@ struct BasicOptions: ParsableArguments, ConnectionOptions {
     @Flag(name: .long, help: "Print the raw JSON response.")
     var json = false
 
-    /// Resolve the socket path: explicit `--socket`, else the agtermCore rendezvous resolver. Precedence:
-    /// `--socket` → `<AGTERM_STATE_DIR>/agterm.sock` → `<platform application support>/agterm/agterm.sock` →
-    /// `/tmp/agterm/agterm.sock`. Production asks Foundation for the platform directory; the resolved
-    /// directory is injectable below so macOS and Linux path behavior remain unit-testable.
+    /// Resolve the socket path, in precedence order: `--socket` → `<AGTERM_STATE_DIR>/agterm.sock` →
+    /// `<ControlResolve.defaultStateDirectory>/agterm.sock`. `env` is injectable so the precedence is
+    /// unit-testable; production passes the process environment.
     func socketPath(env: [String: String] = ProcessInfo.processInfo.environment) -> String {
         let directory = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
@@ -41,8 +40,8 @@ struct BasicOptions: ParsableArguments, ConnectionOptions {
 
     func socketPath(env: [String: String], applicationSupportDirectory: String?) -> String {
         if let socket { return socket }
-        let appSupport = applicationSupportDirectory ?? "/tmp/agterm"
-        return ControlResolve.socketPath(stateDir: env["AGTERM_STATE_DIR"], appSupport: appSupport)
+        return ControlResolve.socketPath(stateDir: env["AGTERM_STATE_DIR"],
+                                         appSupport: ControlResolve.defaultStateDirectory(environment: env))
     }
 }
 
@@ -90,30 +89,26 @@ struct SurfaceTargetOptions: ParsableArguments {
     var target: String = "active"
 }
 
-/// The shared control-socket command catalog. Platform hosts can append genuinely host-owned commands
-/// without copying the common parser types; the upstream `Agtermctl` root continues to use this catalog
-/// unchanged.
+/// The shared CLI catalog used by each platform host.
 public enum AgtermctlCommandCatalog {
     public static var subcommands: [ParsableCommand.Type] {
         [Tree.self, Events.self, Workspace.self, Session.self, Surface.self, Dashboard.self, Window.self, Quick.self,
-         Sidebar.self, Notify.self, Msg.self, Font.self, Keymap.self, Hooks.self, Browser.self, Config.self, Theme.self, Pick.self, Ask.self,
-         Restore.self, Recent.self, Zmx.self, Terminfo.self, Clipboard.self, Version.self]
+         Sidebar.self, Notify.self, Msg.self, Font.self, Keymap.self, Hooks.self, Browser.self, Config.self, Theme.self,
+         Pick.self, Ask.self, Restore.self, Recent.self, Zmx.self, Catalog.self, Terminfo.self, Clipboard.self,
+         Update.self, Version.self, Server.self]
     }
 
     public static func rootConfiguration(
         abstract: String = "Drive agterm over its control socket, and install its terminfo entry on other hosts.",
         appending additionalSubcommands: [ParsableCommand.Type] = []
     ) -> CommandConfiguration {
-        CommandConfiguration(
-            commandName: "agtermctl", abstract: abstract,
-            subcommands: subcommands + additionalSubcommands)
+        CommandConfiguration(commandName: "agtermctl", abstract: abstract,
+                             subcommands: subcommands + additionalSubcommands)
     }
 }
 
-/// The root `agtermctl` command. Subcommands mirror the control catalog.
 public struct Agtermctl: ParsableCommand {
     public static let configuration = AgtermctlCommandCatalog.rootConfiguration()
-
     public init() {}
 }
 

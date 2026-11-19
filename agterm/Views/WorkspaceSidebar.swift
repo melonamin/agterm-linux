@@ -102,7 +102,7 @@ struct WorkspaceSidebar: NSViewRepresentable {
         _ = store.workspaces.map {
             ($0.id, $0.name, $0.unseenCount, $0.tint, $0.sessions.map {
                 ($0.id, $0.displayName, $0.hasSplit, $0.splitAxis, $0.unseenCount, $0.agentIndicator, $0.flagged,
-                 $0.remoteConnection, $0.tint, $0.effectiveInfo)
+                 $0.remoteConnection, $0.tint, $0.effectiveInfo, $0.ended)
             })
         }
         _ = store.selectedSessionID
@@ -114,6 +114,7 @@ struct WorkspaceSidebar: NSViewRepresentable {
         // a membership change or a filter flip takes the rebuild branch.
         _ = store.focusedWorkspaceIDs
         _ = store.focusEnabled
+        context.coordinator.applyAddButtonEnabled(!store.serverActionsBlocked)
         context.coordinator.reconcile()
         context.coordinator.syncSelection()
     }
@@ -129,6 +130,8 @@ struct WorkspaceSidebar: NSViewRepresentable {
 
         /// Root workspace nodes in store order, rebuilt from the store on each reload from cached instances.
         private var roots: [SidebarNode] = []
+        private var deferredRebuild = false
+        private var deferredRenameNodes: [UUID: SidebarNode] = [:]
         /// Cache of node instances keyed by id, so identity is stable across reloads.
         var nodeCache: [UUID: SidebarNode] = [:]
         /// Guards `syncSelection` against re-entering the store via the selection-change callback it fires.
@@ -137,6 +140,8 @@ struct WorkspaceSidebar: NSViewRepresentable {
         /// reveal so unrelated updates (cwd/title/badge) to the already-selected session don't re-expand a
         /// collapsed workspace or yank the scroll position back.
         private var lastRevealedSelection: UUID?
+        // a moved companion keeps its id, so only its parent tells the reveal it now sits under another row
+        private var lastRevealedParent: UUID?
         /// Last-seen `TreeShape`; a change is structural and forces a full rebuild.
         private var lastShape: [TreeShape] = []
         /// The sidebar mode and flagged layout the outline was last BUILT for, written by `rebuildAndReload`
@@ -213,7 +218,9 @@ struct WorkspaceSidebar: NSViewRepresentable {
         init(store: AppStore, actions: AppActions) {
             self.store = store
             self.actions = actions
-            self.renameController = SidebarRenameController(store: store)
+            self.renameController = SidebarRenameController(store: store) { [weak actions] operation in
+                actions?.performRemote(operation, in: store) ?? false
+            }
             super.init()
             // seed from the live mirror (SettingsModel applies the persisted size before any sidebar is
             // built) so the first appearanceChanged doesn't rebuild for no change.
@@ -221,15 +228,11 @@ struct WorkspaceSidebar: NSViewRepresentable {
             lastSidebarDensity = GhosttyApp.shared.sidebarDensity
             lastChevronsHidden = chevronsHidden
             renameController.onRenameEnded = { [weak self] node in
-                guard let self, !renameController.isEditing, !renameController.isCommitting else { return }
-                if let node, let outline = outlineView, outline.row(forItem: node) >= 0 {
-                    outline.reloadItem(node)
-                }
-                // row updates were skipped while the editor was open, and a cancel changes no model value to retrigger them
-                reconcile()
-                syncSelection()
-                focusActiveTerminal()
+                guard let self else { return }
+                if let node { deferredRenameNodes[node.id] = node }
+                flushDeferredRenameUpdates()
             }
+            renameController.onMouseTrackingEnded = { [weak self] in self?.flushDeferredRenameUpdates() }
             // the menu/palette can't reach the inline editor directly, so they post a notification. Scoped
             // by `object: store`: the handlers' selected-session guard is NOT a per-window scope, so an
             // `object: nil` pairing starts an inline edit in EVERY window — each leaving an unopened editor
@@ -270,7 +273,10 @@ struct WorkspaceSidebar: NSViewRepresentable {
                 let selected = outline.selectedRowIndexes.contains(row)
                 (outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCellView)?.setColors(selected: selected)
             }
-            outline.enumerateAvailableRowViews { rowView, _ in rowView.needsDisplay = true }
+            outline.enumerateAvailableRowViews { rowView, _ in
+                rowView.needsDisplay = true
+                (rowView as? SidebarRowView)?.applyDisclosureAppearance()
+            }
         }
 
         /// Pin the outline's appearance to the terminal theme's brightness so AppKit-drawn chrome — the
@@ -316,11 +322,13 @@ struct WorkspaceSidebar: NSViewRepresentable {
 
         /// Re-apply the row height, indent and fonts when the sidebar font size, density or chevron visibility
         /// changed. None is part of `reconcile`'s per-row content diff, so they need explicit outline updates
-        /// plus a full `rebuildAndReload` to re-run the cell builder, guarded on the tracked values.
+        /// plus a full `rebuildAndReload` to re-run the cell builder, guarded on the tracked values. Waits out a
+        /// rename in flight; `flushDeferredRenameUpdates` applies it once the rename settles.
         private func applySidebarMetricsIfChanged() {
             let size = GhosttyApp.shared.sidebarFontSize
             let density = GhosttyApp.shared.sidebarDensity
             guard size != lastSidebarFontSize || density != lastSidebarDensity || chevronsHidden != lastChevronsHidden else { return }
+            guard !renameController.isRenameInFlight else { return }
             lastSidebarFontSize = size
             lastSidebarDensity = density
             lastChevronsHidden = chevronsHidden
@@ -329,14 +337,29 @@ struct WorkspaceSidebar: NSViewRepresentable {
             rebuildAndReload()
         }
 
-        /// Re-apply the status glyph on every visible session row so a global agent-status color change
-        /// (from Settings) re-renders it. Appearance changes are rare, so the full sweep is cheap.
+        private func flushDeferredRenameUpdates() {
+            guard !renameController.isRenameInFlight else { return }
+            applySidebarMetricsIfChanged()
+            if deferredRebuild { rebuildAndReload() }
+            if let outline = outlineView {
+                for node in deferredRenameNodes.values where outline.row(forItem: node) >= 0 {
+                    outline.reloadItem(node)
+                }
+            }
+            deferredRenameNodes.removeAll()
+            reconcile()
+            syncSelection()
+            focusActiveTerminal()
+        }
+
+        // global status colors are absent from RowContent, so a settings change needs this sweep
         private func reapplyStatusGlyphs() {
             guard let outline = outlineView else { return }
             for row in 0 ..< outline.numberOfRows {
                 guard let node = outline.item(atRow: row) as? SidebarNode, node.kind == .session,
                       let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCellView else { continue }
                 cell.statusIcon.apply(effectiveIndicator(forSession: node.id))
+                cell.setCompanionMarker(foldedAttention(forSession: node.id))
             }
         }
 
@@ -413,8 +436,7 @@ struct WorkspaceSidebar: NSViewRepresentable {
             var presentationNotice: String?
             /// The row's own tint, so a recolor or a clear reloads just that row.
             var tint: SidebarTint?
-            /// Names of a folded parent's companions that need attention.
-            var foldedAttention: [String] = []
+            var foldedAttention: [CompanionStatus] = []
             /// info is the shown info line; a change reloads the row and re-asks its height.
             var info: [SessionInfoSpan]?
 
@@ -470,7 +492,7 @@ struct WorkspaceSidebar: NSViewRepresentable {
         /// delta takes a per-row `reloadItem`, which re-renders at the row's stable frame, so a name/cwd
         /// update never re-lays-out the tree. Skipped mid-rename so it can't drop an in-progress edit.
         private func reloadChangedContentRows() {
-            guard let outline = outlineView, !renameController.isCommitting, !renameController.isEditing else { return }
+            guard let outline = outlineView, !renameController.isRenameInFlight else { return }
             func reloadIfChanged(_ id: UUID, _ content: RowContent) {
                 let previous = lastRowContent[id]
                 guard content != previous else { return }
@@ -531,14 +553,20 @@ struct WorkspaceSidebar: NSViewRepresentable {
                        unseen: effectiveUnseen(session.unseenCount),
                        indicator: session.agentIndicator, flagged: session.flagged,
                        focusMember: false, presentationNotice: presentationNotice(for: session), tint: session.tint,
-                       foldedAttention: foldedAttention(forSession: session.id).map(\.displayName),
+                       foldedAttention: foldedAttention(forSession: session.id),
                        info: sessionInfo(for: session))
         }
 
         /// Rebuilds `roots` from the store, reusing cached node instances by id so NSOutlineView item
-        /// identity and expansion state stay stable, then reloads the outline preserving expansion.
+        /// identity and expansion state stay stable, then reloads the outline preserving expansion. A reload
+        /// would detach an open rename editor, so a rename in flight defers it to `flushDeferredRenameUpdates`.
         func rebuildAndReload() {
             guard let outline = outlineView else { return }
+            guard !renameController.isRenameInFlight else {
+                deferredRebuild = true
+                return
+            }
+            deferredRebuild = false
             // a mode or layout switch moves the selected row, possibly under a collapsed workspace, while the
             // selected id stays the same: forget the last reveal so the next `syncSelection` reveals it again.
             // Only a switch does this. Any other rebuild must leave a deliberate fold alone.
@@ -550,6 +578,7 @@ struct WorkspaceSidebar: NSViewRepresentable {
             lastShape = currentShape()
             snapshotRowContent()
             (outline as? SidebarOutlineView)?.reservesDisclosureColumn = rendersWorkspaceRows && !chevronsHidden
+            (outline as? SidebarOutlineView)?.listsSessionsFlat = !rendersWorkspaceRows
             applySidebarContentInset(outline.enclosingScrollView)
 
             // flat flagged list: non-expandable session rows; no workspace nodes, so they leave the cache.
@@ -726,6 +755,7 @@ struct WorkspaceSidebar: NSViewRepresentable {
         /// Workspace rows are never auto-selected.
         func syncSelection() {
             guard let outline = outlineView else { return }
+            guard !renameController.isRenameInFlight else { return }
             applyingSelection = true
             defer { applyingSelection = false }
             guard let selectedID = store.selectedSessionID, let node = nodeCache[selectedID], node.kind == .session else {
@@ -733,10 +763,10 @@ struct WorkspaceSidebar: NSViewRepresentable {
                 lastRevealedSelection = nil
                 return
             }
-            // the row-selection sync runs every call, but the intrusive reveal — expanding a collapsed owner
-            // and scrolling into view — only fires on a real selection change, so unrelated cwd/title/badge
-            // updates leave a user-collapsed workspace and a user-moved scroll position alone.
-            let selectionChanged = selectedID != lastRevealedSelection
+            // the intrusive reveal (expanding a collapsed owner, scrolling into view) fires only when the selection
+            // or its parent changes, so cwd/title/badge updates leave a user-collapsed workspace and scroll alone.
+            let parentID = store.session(withID: selectedID)?.parentID
+            let selectionChanged = selectedID != lastRevealedSelection || parentID != lastRevealedParent
             // a session selected by keyboard nav may live in a collapsed workspace, whose row is -1 until
             // expanded; expand its owner first so the row resolves. A VIEW action, so suppress the persist:
             // navigating into a deliberately collapsed workspace shows the session without un-collapsing it
@@ -765,6 +795,7 @@ struct WorkspaceSidebar: NSViewRepresentable {
                 outline.scrollRowToVisible(row)
             }
             lastRevealedSelection = selectedID
+            lastRevealedParent = parentID
         }
 
         /// The workspace node holding `sessionID` and, for a nested companion, its parent's node, outermost
@@ -819,7 +850,7 @@ struct WorkspaceSidebar: NSViewRepresentable {
         /// cover owns the keyboard and hides the pane, so focusing a pane would starve the overlay/scratch
         /// program of input and send keystrokes to a surface the user can't see.
         func focusActiveTerminal(attempt: Int = 0) {
-            if renameController.isEditing { return }
+            if renameController.isRenameInFlight { return }
             let window = outlineView?.window
             if let window, window.firstResponder is NSText { return }
             if let session = store.activeSession, HtmlOverlayRegistry.shared.focusCover(of: session) { return }
@@ -869,8 +900,12 @@ struct WorkspaceSidebar: NSViewRepresentable {
         lazy var flaggedPageSessionIcon = Self.rowIcon("list.bullet.rectangle.fill")
         lazy var remoteSessionIcon = Self.rowIcon("cloud")
         lazy var remoteSplitSessionIcon = Self.rowIcon("cloud", weight: .bold)
+        lazy var flaggedRemoteSessionIcon = Self.rowIcon("cloud.fill")
+        lazy var flaggedRemoteSplitSessionIcon = Self.rowIcon("cloud.fill", weight: .bold)
         lazy var remoteDisconnectedSessionIcon = Self.rowIcon("icloud.slash")
         lazy var remoteDisconnectedSplitSessionIcon = Self.rowIcon("icloud.slash", weight: .bold)
+        lazy var flaggedRemoteDisconnectedSessionIcon = Self.rowIcon("icloud.slash.fill")
+        lazy var flaggedRemoteDisconnectedSplitSessionIcon = Self.rowIcon("icloud.slash.fill", weight: .bold)
 
         private static func rowIcon(_ symbolName: String, weight: NSFont.Weight = .regular) -> NSImage? {
             let config = NSImage.SymbolConfiguration(pointSize: 13, weight: weight)

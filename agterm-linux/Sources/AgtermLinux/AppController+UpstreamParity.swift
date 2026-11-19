@@ -65,6 +65,7 @@ extension AppController {
         guard pickController.pending == nil,
               let id = store.selectedSessionID,
               store.session(withID: id)?.hasSplit == true else { return }
+        if sendRemoteGUI(ControlRequest(cmd: .sessionSwap, target: id.uuidString)) { return }
         _ = swapSessionPanes(id)
     }
 
@@ -76,6 +77,7 @@ extension AppController {
             reconcile()
             return
         }
+        if sendRemoteGUI(ControlRequest(cmd: .sessionSplitClose, target: id.uuidString)) { return }
         store.closeSplit(id)
         reconcile()
         sessionFocusTarget(for: id, wantSplit: false)?.grabFocus(supersedingPopoverCapture: true)

@@ -55,6 +55,98 @@ final class RemotePageChannelTests: XCTestCase {
         frames.compactMap { if case .cancel(let id) = $0 { id } else { nil } }
     }
 
+    private final class Outcome {
+        var entered = false
+        var done = false
+        var error: Error?
+    }
+
+    private func untilEntered(_ outcomes: Outcome...) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while !outcomes.allSatisfy(\.entered) {
+            guard Date() < deadline else { return XCTFail("a call never reached the channel") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    // regression: a catalog row's channel starts once its pooled master is up, and the page's first load came earlier
+    func testRequestsMadeBeforeStartWaitForIt() async throws {
+        let channel = RemotePageChannel()
+        channels.append(channel)
+        let fetched = Outcome()
+        let fetch = Task { () -> Data in
+            defer { fetched.done = true }
+            fetched.entered = true
+            return try await read(channel.fetch("/docs/index.html", current: { true }))
+        }
+        let bridged = Outcome()
+        let bridge = Task { () -> String in
+            defer { bridged.done = true }
+            bridged.entered = true
+            return try await channel.bridge(Data(#"{"cmd":"tree"}"#.utf8))
+        }
+        try await untilEntered(fetched, bridged)
+        XCTAssertFalse(fetched.done)
+        XCTAssertFalse(bridged.done)
+
+        channel.start(["ssh", "-T", "origin", "page-serve", "tok"], launcher: launcher)
+
+        let data = try await fetch.value
+        XCTAssertEqual(data, Data("<p>index</p>".utf8))
+        let reply = try await bridge.value
+        XCTAssertEqual(reply, #"{"ok":true,"result":{}}"#)
+        XCTAssertEqual(resources(origin.received).count, 1)
+    }
+
+    func testAChannelClosedBeforeStartFailsItsWaitingRequests() async throws {
+        try await assertWaitingRequestsFail { $0.close("page closed") }
+    }
+
+    func testAHelperThatCannotStartFailsTheWaitingRequests() async throws {
+        launcher.failsLaunch = true
+        try await assertWaitingRequestsFail { $0.start(["ssh", "-T", "origin", "page-serve", "tok"], launcher: self.launcher) }
+    }
+
+    func testARequestAfterCloseFailsWithoutWaiting() async throws {
+        let channel = RemotePageChannel()
+        channels.append(channel)
+        channel.close("page closed")
+
+        do {
+            _ = try await channel.fetch("/docs/index.html", current: { true })
+            XCTFail("a closed channel takes no request")
+        } catch {
+            XCTAssertEqual(error as? RemotePageChannel.Failure, .closed)
+        }
+    }
+
+    private func assertWaitingRequestsFail(_ end: (RemotePageChannel) -> Void) async throws {
+        let channel = RemotePageChannel()
+        channels.append(channel)
+        let fetched = Outcome()
+        let fetch = Task {
+            fetched.entered = true
+            do { _ = try await channel.fetch("/docs/index.html", current: { true }) } catch { fetched.error = error }
+            fetched.done = true
+        }
+        let bridged = Outcome()
+        let bridge = Task {
+            bridged.entered = true
+            do { _ = try await channel.bridge(Data(#"{"cmd":"tree"}"#.utf8)) } catch { bridged.error = error }
+            bridged.done = true
+        }
+        try await untilEntered(fetched, bridged)
+        XCTAssertFalse(fetched.done)
+        XCTAssertFalse(bridged.done)
+
+        end(channel)
+
+        await fetch.value
+        await bridge.value
+        XCTAssertEqual(fetched.error as? RemotePageChannel.Failure, .closed)
+        XCTAssertEqual(bridged.error as? RemotePageChannel.Failure, .closed)
+    }
+
     func testAFetchStreamsTheFileInOrder() async throws {
         let channel = channel()
 
@@ -64,6 +156,37 @@ final class RemotePageChannelTests: XCTestCase {
         XCTAssertEqual(resource.mimeType, "application/octet-stream")
         XCTAssertEqual(data, launcher.files["/docs/big.bin"]?.1)
         XCTAssertEqual(resources(origin.received), [1])
+    }
+
+    func testALogTailReturnsTheOriginsBytesAndNilWhileUnchanged() async throws {
+        let stamp = BoundedFile.FileStamp(device: 1, inode: 2, size: 3000, modifiedSeconds: 4, modifiedNanoseconds: 5)
+        let tail = BoundedFile.TailRead(data: Data((0..<3000).map { UInt8($0 % 251) }), offset: 7, stamp: stamp)
+        launcher.log = tail
+        let channel = channel()
+
+        let fresh = try await channel.logTail(since: nil)
+        let unchanged = try await channel.logTail(since: stamp)
+
+        XCTAssertEqual(fresh, tail)
+        XCTAssertNil(unchanged)
+        let next = try await channel.fetch("/docs/index.html", current: { true })
+        let data = try await read(next)
+        XCTAssertEqual(data, Data("<p>index</p>".utf8))
+    }
+
+    func testALogTailTheOriginRefusesThrowsAndTheChannelStays() async throws {
+        let channel = channel()
+
+        do {
+            _ = try await channel.logTail(since: nil)
+            XCTFail("a page that is not a log must refuse")
+        } catch {
+            XCTAssertEqual(error as? RemotePageChannel.Failure, .refused("not a log page"))
+        }
+
+        let next = try await channel.fetch("/docs/index.html", current: { true })
+        let data = try await read(next)
+        XCTAssertEqual(data, Data("<p>index</p>".utf8))
     }
 
     func testAStalledConsumerStopsTheReaderUntilItPulls() async throws {

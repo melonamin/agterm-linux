@@ -54,12 +54,14 @@ final class ControlServerRemotePageTests: XCTestCase {
         let session: Session
         let transport: Transport
         let launcher: FakePageLauncher
+        let forwards: FakeForwardLauncher
     }
 
     private static let origin = UUID(uuidString: "BBBBBBBB-0000-0000-0000-000000000002")!
     private var stateDir: URL!
     private var servers: [ControlServer] = []
     private var launchers: [FakePageLauncher] = []
+    private var forwardLaunchers: [FakeForwardLauncher] = []
     private var windows: [NSWindow] = []
     private var savedBrowser: (any HtmlBrowser)?
 
@@ -82,6 +84,8 @@ final class ControlServerRemotePageTests: XCTestCase {
         servers.removeAll()
         for launcher in launchers { launcher.closeAll() }
         launchers.removeAll()
+        for forwards in forwardLaunchers { forwards.processes.forEach { $0.terminate() } }
+        forwardLaunchers.removeAll()
         if let savedBrowser { HtmlOverlayRegistry.shared.browser = savedBrowser }
         try? FileManager.default.removeItem(at: stateDir)
         try await super.tearDown()
@@ -102,6 +106,9 @@ final class ControlServerRemotePageTests: XCTestCase {
         launcher.reply = reply
         launchers.append(launcher)
         server.pageLauncher = launcher
+        let forwards = FakeForwardLauncher()
+        forwardLaunchers.append(forwards)
+        server.forwardLauncher = forwards
         let transport = Transport()
         server.remoteTransport = transport
         let store = try XCTUnwrap(library.activeStore)
@@ -112,7 +119,7 @@ final class ControlServerRemotePageTests: XCTestCase {
         server.startRemotePresentation(for: session)
         try transport.feed(.hello(PresentationHello(version: 1, kinds: PresentationHub.supportedKinds, mode: .presenter)))
         try transport.feed(.snapshot(PresentationSnapshot(status: nil, hud: nil)))
-        return Fixture(server: server, store: store, session: session, transport: transport, launcher: launcher)
+        return Fixture(server: server, store: store, session: session, transport: transport, launcher: launcher, forwards: forwards)
     }
 
     private func page(_ source: PresentationPageSource, javascript: Bool = true) -> PresentationPage {
@@ -156,6 +163,16 @@ final class ControlServerRemotePageTests: XCTestCase {
             .htmlOverlays?.first)
         XCTAssertEqual(node.replica, true)
         XCTAssertEqual(node.file, "/docs/index.html")
+    }
+
+    func testAReplicaAwaitsItsFirstContentUntilItsChannelDeliversIt() async throws {
+        let fix = try fixture(files: ["/docs/index.html": html("<title>R</title><p>x</p>")])
+
+        _ = try present(fix, page(.file(path: "/docs/index.html", grantRoot: "/docs")))
+        XCTAssertEqual(fix.session.htmlOverlay?.awaitsFirstContent, true)
+
+        try await waitFor("the page loaded") { fix.session.htmlOverlay?.loadState == .loaded }
+        XCTAssertEqual(fix.session.htmlOverlay?.awaitsFirstContent, false)
     }
 
     func testThePageScriptsBridgeRelaysToTheOriginAndKeepsUnknownFields() async throws {
@@ -204,6 +221,88 @@ final class ControlServerRemotePageTests: XCTestCase {
         XCTAssertEqual(closedNotices(fix), 1)
     }
 
+    func testEveryReportOnAReplicaEchoesTheOfferItWasShownUnder() async throws {
+        let fix = try fixture(files: ["/src/a.diff": ("text/plain", Data("@@ -1 +1 @@\n-a\n+b\n".utf8))])
+        var shown = page(.text(path: "/src/a.diff", line: nil))
+        shown.offer = 7
+        var refused = page(.url("http://127.0.0.1:9/b"))
+        refused.page = UUID().uuidString
+        refused.offer = 8
+        _ = try present(fix, shown)
+        try await waitFor("the diff reports its changes") { fix.session.htmlOverlay?.textChanges?.count == 1 }
+
+        try fix.transport.feed(.pageRequest(refused))
+        try fix.transport.feed(.pageCommand(PresentationPageCommand(page: shown.page, seq: 1, action: .wrap, toggle: .on)))
+        try await waitFor("the action is answered") { !self.results(fix).isEmpty }
+        fix.store.closeOverlay(fix.session.id)
+
+        let rejected = fix.transport.sent.compactMap { if case .pageRejected(let change) = $0 { change } else { nil } }
+        XCTAssertEqual(rejected.map(\.offer), [8])
+        XCTAssertEqual(results(fix).map(\.offer), [7])
+        XCTAssertFalse(states(fix).isEmpty)
+        XCTAssertTrue(states(fix).allSatisfy { $0.offer == 7 })
+        XCTAssertEqual(fix.transport.sent.last, .pageClosed(PresentationPageChange(page: shown.page, offer: 7)))
+    }
+
+    private func waitUntil(_ what: String, _ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(10)
+        while !condition(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        XCTAssertTrue(condition(), what)
+    }
+
+    func testAForwardedPageLoadsItsOwnHostAtALocalPortAndReloadsOnceTheForwardAnswers() throws {
+        let fix = try fixture()
+
+        _ = try present(fix, page(.forwarded("https://localhost:8443/app?x=1")))
+
+        let port = try XCTUnwrap(fix.forwards.localPort)
+        let script = try XCTUnwrap(fix.forwards.launches.first?.last)
+        XCTAssertTrue(script.hasSuffix("'-L' 'localhost:\(port):localhost:8443' 'buildbox'"))
+        XCTAssertTrue(script.contains("'ControlPath=none'"))
+        XCTAssertEqual(fix.session.htmlOverlay?.source, .url(try XCTUnwrap(URL(string: "https://localhost:\(port)/app?x=1"))))
+        let before = try XCTUnwrap(fix.session.htmlOverlay?.reloadRevision)
+        waitUntil("the page reloads once the forward answers") { fix.session.htmlOverlay?.reloadRevision == before + 1 }
+    }
+
+    func testAForwardEndingAfterItAnsweredPinsTheFailure() throws {
+        let fix = try fixture()
+        _ = try present(fix, page(.forwarded("http://localhost:3000/")))
+        let before = try XCTUnwrap(fix.session.htmlOverlay?.reloadRevision)
+        waitUntil("the forward answers") { fix.session.htmlOverlay?.reloadRevision == before + 1 }
+
+        fix.forwards.processes[0].onExit?("channel 2: open failed: connect failed: Connection refused\n")
+        fix.store.setHtmlLoadState(try XCTUnwrap(fix.session.htmlOverlay?.id), state: .loaded, error: nil)
+
+        XCTAssertEqual(fix.session.htmlOverlay?.loadState, .failed)
+        XCTAssertEqual(fix.session.htmlOverlay?.loadError, "the port forward ended: channel 2: open failed: connect failed: Connection refused")
+    }
+
+    func testClosingAForwardedPageBeforeItsForwardAnswersStopsIt() throws {
+        let fix = try fixture()
+        fix.forwards.listens = false
+        _ = try present(fix, page(.forwarded("http://localhost:3000/")))
+
+        fix.store.closeOverlay(fix.session.id)
+        let port = try XCTUnwrap(fix.forwards.localPort)
+        let late = FakeForwardLauncher.listen(port)
+        defer { close(late) }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+
+        XCTAssertTrue(fix.forwards.processes[0].terminated)
+        XCTAssertEqual(closedNotices(fix), 1)
+        XCTAssertNil(fix.session.htmlOverlay)
+    }
+
+    func testAForwardedPageTheStoreRefusesStartsNoForward() throws {
+        let fix = try fixture()
+        XCTAssertTrue(fix.store.openOverlay(fix.session.id, command: "htop"))
+
+        try fix.transport.feed(.pageRequest(page(.forwarded("http://localhost:3000/"))))
+
+        XCTAssertTrue(fix.forwards.launches.isEmpty)
+        XCTAssertTrue(fix.server.replicaPages.isEmpty)
+    }
+
     func testFinderAndBrowserAreRefusedOnAFileReplicaButBrowserOpensAUrlReplica() throws {
         let browser = Browser()
         HtmlOverlayRegistry.shared.browser = browser
@@ -243,11 +342,13 @@ final class ControlServerRemotePageTests: XCTestCase {
         _ = try present(fix, page(file))
         fix.launcher.helpers[1].exit()
         XCTAssertFalse(fix.session.overlayActive)
-        XCTAssertEqual(closedNotices(fix), 2)
+        XCTAssertEqual(fix.transport.sent.last, .pageClosed(PresentationPageChange(page: Self.origin.uuidString,
+                                                                                   reason: PresentationPageChange.channelLost)))
+        XCTAssertEqual(closedNotices(fix), 1)
 
         _ = try present(fix, page(file))
         fix.store.closeOverlay(fix.session.id)
-        XCTAssertEqual(closedNotices(fix), 3)
+        XCTAssertEqual(closedNotices(fix), 2)
         XCTAssertTrue(fix.launcher.helpers[2].terminated)
 
         _ = try present(fix, page(file))
@@ -255,6 +356,18 @@ final class ControlServerRemotePageTests: XCTestCase {
         XCTAssertFalse(fix.session.overlayActive)
         XCTAssertTrue(fix.launcher.helpers[3].terminated)
         XCTAssertTrue(fix.server.replicaPages.isEmpty)
+    }
+
+    // regression: the reply to an origin's withdrawal read as a dismissal, which ended a page the origin still held
+    func testAPageTheOriginWithdrewIsReportedAsALostChannel() throws {
+        let fix = try fixture(files: ["/docs/index.html": html("<p>x</p>")])
+        _ = try present(fix, page(.file(path: "/docs/index.html", grantRoot: nil)))
+
+        try fix.transport.feed(.pageClose(PresentationPageChange(page: Self.origin.uuidString, reason: PresentationPageChange.channelLost)))
+
+        XCTAssertFalse(fix.session.overlayActive)
+        XCTAssertEqual(fix.transport.sent.last, .pageClosed(PresentationPageChange(page: Self.origin.uuidString,
+                                                                                   reason: PresentationPageChange.channelLost)))
     }
 
     func testAnOriginCommandIsAppliedAndReportedWithItsSequence() async throws {
@@ -266,6 +379,104 @@ final class ControlServerRemotePageTests: XCTestCase {
         XCTAssertTrue(fix.session.overlayHidden(nil))
         try await waitFor("the state is reported") { self.states(fix).last?.appliedSeq == 5 }
         XCTAssertEqual(states(fix).last?.hidden, true)
+    }
+
+    func testATextActionOnAPageThatIsNotTextAnswersTheLocalRefusalAndAdvancesNoSequence() async throws {
+        let fix = try fixture(files: ["/docs/index.html": html("<p>x</p>")])
+        _ = try present(fix, page(.file(path: "/docs/index.html", grantRoot: nil)))
+        try fix.transport.feed(.pageCommand(PresentationPageCommand(page: Self.origin.uuidString, seq: 5, action: .hide)))
+        try await waitFor("the loaded page reports the hide") {
+            self.states(fix).last.map { $0.appliedSeq == 5 && $0.load == .loaded } == true
+        }
+        let before = states(fix).count
+
+        try fix.transport.feed(.pageCommand(PresentationPageCommand(page: Self.origin.uuidString, seq: 6, action: .search,
+                                                                    query: "x")))
+        try fix.transport.feed(.pageCommand(PresentationPageCommand(page: Self.origin.uuidString, seq: 7, action: .search)))
+
+        try await waitFor("both actions are answered") { self.results(fix).count == 2 }
+        XCTAssertEqual(results(fix), [
+            PresentationPageResult(page: Self.origin.uuidString, seq: 7, ok: false, error: "invalid text page action"),
+            PresentationPageResult(page: Self.origin.uuidString, seq: 6, ok: false, error: TextSearchFailure.notText.message),
+        ])
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(states(fix).count, before)
+    }
+
+    func testAnOriginTextActionRunsAsTheLocalCommandAndAnswersWithThePageState() async throws {
+        let fix = try fixture(files: ["/src/a.diff": ("text/plain", Data("@@ -1 +1 @@\n-a\n+b\n".utf8))])
+        _ = try present(fix, page(.text(path: "/src/a.diff", line: nil)))
+        try await waitFor("the diff reports its changes") { fix.session.htmlOverlay?.textChanges?.count == 1 }
+        let origin = Self.origin.uuidString
+
+        try fix.transport.feed(.pageCommand(PresentationPageCommand(page: origin, seq: 1, action: .wrap, toggle: .on)))
+        try fix.transport.feed(.pageCommand(PresentationPageCommand(page: origin, seq: 2, action: .changes, step: .next)))
+        try fix.transport.feed(.pageCommand(PresentationPageCommand(page: origin, seq: 3, action: .follow, toggle: .on)))
+
+        try await waitFor("every action is answered") { self.results(fix).count == 3 }
+        let answered = results(fix)
+        XCTAssertEqual(answered.map(\.seq), [1, 2, 3])
+        XCTAssertEqual(answered[0].text, "wrapped")
+        XCTAssertEqual(answered[0].state?.wrap, true)
+        XCTAssertEqual(answered[1].text, "1 of 1")
+        XCTAssertEqual(answered[1].state?.changes, TextChanges(count: 1, current: 1))
+        XCTAssertEqual(answered[2], PresentationPageResult(page: origin, seq: 3, ok: false, error: "no log page",
+                                                           state: answered[1].state))
+    }
+
+    func testAnOriginExpandRunsOnAJSONLinesReplicaAndAnswersWithThePageState() async throws {
+        let fix = try fixture(files: ["/src/a.jsonl": ("text/plain", Data("{\"a\":1}\n".utf8))])
+        _ = try present(fix, page(.text(path: "/src/a.jsonl", line: nil)))
+        let origin = Self.origin.uuidString
+
+        try fix.transport.feed(.pageCommand(PresentationPageCommand(page: origin, seq: 1, action: .expand, toggle: .on)))
+
+        try await waitFor("the action is answered") { !self.results(fix).isEmpty }
+        let answered = results(fix)
+        XCTAssertEqual(answered.first?.text, "expanded")
+        XCTAssertEqual(answered.first?.state?.expand, true)
+        XCTAssertEqual(fix.session.htmlOverlay?.textExpand, true)
+    }
+
+    func testAQueuedTextActionNeverReachesAPageThatReplacedItsOwn() async throws {
+        let fix = try fixture(files: ["/src/a.txt": ("text/plain", Data("a\n".utf8))])
+        _ = try present(fix, page(.text(path: "/src/a.txt", line: nil)))
+        let first = try XCTUnwrap(fix.session.htmlOverlay?.id)
+
+        try fix.transport.feed(.pageCommand(PresentationPageCommand(page: Self.origin.uuidString, seq: 1, action: .wrap, toggle: .on)))
+        fix.store.closeReplicaPage(Self.origin.uuidString, forSession: fix.session.id)
+        _ = try present(fix, page(.text(path: "/src/a.txt", line: nil)))
+
+        try await waitFor("the action is answered") { !self.results(fix).isEmpty }
+        XCTAssertEqual(results(fix), [PresentationPageResult(page: Self.origin.uuidString, seq: 1, ok: false, error: "page not shown")])
+        XCTAssertNotEqual(fix.session.htmlOverlay?.id, first)
+        XCTAssertEqual(fix.session.htmlOverlay?.textWrap, false)
+    }
+
+    private func results(_ fix: Fixture) -> [PresentationPageResult] {
+        fix.transport.sent.compactMap { if case .pageResult(let result) = $0 { result } else { nil } }
+    }
+
+    func testTextCommandsOnAReplicaAnswerAsLocallyAndReachTheOrigin() async throws {
+        let fix = try fixture(files: ["/src/a.diff": ("text/plain", Data("@@ -1 +1 @@\n-a\n+b\n".utf8))])
+        _ = try present(fix, page(.text(path: "/src/a.diff", line: nil)))
+        let target = fix.session.id.uuidString
+        try await waitFor("the diff reports its changes") { fix.session.htmlOverlay?.textChanges?.count == 1 }
+
+        let search = await fix.server.searchSessionOverlay(target, window: nil, pane: nil, request: .query("b"))
+        let wrap = await fix.server.setSessionOverlayWrap(target, window: nil, pane: nil, mode: .on)
+        let follow = await fix.server.setSessionOverlayFollow(target, window: nil, pane: nil, mode: .on)
+        let step = await fix.server.stepSessionOverlayChanges(target, window: nil, pane: nil, forward: true)
+
+        XCTAssertTrue(search.ok, search.error ?? "")
+        XCTAssertEqual(wrap.result?.text, "wrapped")
+        XCTAssertEqual(follow.error, "no log page")
+        XCTAssertEqual(step.result?.text, "1 of 1", step.error ?? "")
+        try await waitFor("the origin is told") { self.states(fix).last?.text?.changes?.current == 1 }
+        let text = try XCTUnwrap(states(fix).last?.text)
+        XCTAssertEqual(text.query, "b")
+        XCTAssertTrue(text.wrap)
+        XCTAssertNil(text.following)
     }
 
     func testStateChangesInOneTurnAreReportedOnce() async throws {

@@ -12,6 +12,10 @@ final class LinuxTextPage {
     private var reading = false
     private var generation = 0
     private var ready = false
+    private var staticText: String?
+    private var appliedWrap: Bool?
+    private var appliedExpand = false
+    private var searchSelection: (Int, Int)?
     private var stopped = false
     private var stamp: BoundedFile.FileStamp?
     private var snapshot: LogTail.Snapshot?
@@ -29,63 +33,71 @@ final class LinuxTextPage {
         cancel = nil
     }
 
-    func load() {
-        guard let page, case .text(let path, let line) = page.overlay.source else { return }
-        let anchor = ready ? evaluate("({top:document.scrollingElement.scrollTop})")?["top"] as? Double : nil
+    func load(fresh: Bool = true) {
+        guard let page, let location = LinuxTextReads.location(page) else { return }
+        let place = ready ? evaluate("agtermTextNavigation()") : nil
+        searchSelection = place?["focused"] as? Bool == true
+            ? (place?["start"] as? Int ?? 0, place?["end"] as? Int ?? 0) : nil
+        let document = LinuxTextDocument(path: location.path, line: location.line, anchor: place?["top"] as? Double,
+            search: TextPage.SearchState(query: page.overlay.textSearch?.query ?? "", revision: page.overlay.searchRevision,
+                                         current: page.overlay.textSearch?.current ?? 0),
+            wrap: page.overlay.textWrap, expand: page.overlay.textExpand,
+            top: page.overlay.textExpand != appliedExpand ? place?["line"] as? Int : nil)
+        appliedExpand = document.expand
+        appliedWrap = document.wrap
         generation += 1
+        let mine = generation
         ready = false
         reading = false
         cancel?(); cancel = nil
         appliedFollowing = nil
         searchRevision = -1
-        let mine = generation, log = page.overlay.textLog
-        let following = page.overlay.logState?.following ?? false
-        let cached = snapshot
-        let search = TextPage.SearchState(query: page.overlay.textSearch?.query ?? "",
-                                         revision: page.overlay.searchRevision, current: page.overlay.textSearch?.current ?? 0)
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            var result: Result<(String, TextProbe.LogRead?), TextProbe.Failure>
-            if let log {
-                result = TextProbe.loadLog(path: path, tail: log.tail).map { read in
-                    let shown = read?.snapshot ?? LogTail.Snapshot(text: "", lines: 0, clipped: false)
-                    let state = TextLogState(following: following, report: TextLogReport(lines: shown.lines, clipped: shown.clipped))
-                    return (TextPage.html(text: shown.text, language: TextPage.language(forFile: path), line: nil,
-                                          style: MarkdownAssets.shared.textStyle, log: state, anchor: anchor, search: search), read)
-                }
-                if case .failure = result {
-                    let report = TextLogReport(waiting: true)
-                    let html = TextPage.html(text: cached?.text ?? "", language: TextPage.language(forFile: path), line: nil,
-                                             style: MarkdownAssets.shared.textStyle,
-                                             log: TextLogState(following: following, report: report), anchor: anchor, search: search)
-                    result = .success((html, nil))
-                }
-            } else {
-                result = TextProbe.load(path: path).map {
-                    (TextPage.html(text: $0, language: TextPage.language(forFile: path), line: line,
-                                   style: MarkdownAssets.shared.textStyle, anchor: anchor, search: search), nil)
+        if page.overlay.textLog != nil {
+            LinuxTextReads.log(page, stamp: nil) { [weak self] result in
+                guard let self, !stopped, mine == generation, let page = self.page, !page.closed else { return }
+                let read = try? result.get()
+                stamp = read?.stamp
+                if let shown = read?.snapshot { snapshot = shown }
+                let report = read?.snapshot.map { TextLogReport(lines: $0.lines, clipped: $0.clipped) }
+                    ?? TextLogReport(waiting: read == nil, unreadable: read != nil)
+                page.store?.setTextLogReport(page.id, report)
+                let log = TextLogState(following: page.overlay.logState?.following ?? false, report: report)
+                build(document, text: snapshot?.text ?? "", log: log, generation: mine)
+            }
+        } else if !fresh, let staticText {
+            build(document, text: staticText, log: nil, generation: mine)
+        } else {
+            LinuxTextReads.text(page) { [weak self] result in
+                guard let self, !stopped, mine == generation, let page = self.page, !page.closed else { return }
+                switch result {
+                case .failure(let failure): page.fail(failure.description)
+                case .success(let text):
+                    staticText = text
+                    build(document, text: text, log: nil, generation: mine)
                 }
             }
-            let loaded = result
+        }
+    }
+
+    private func build(_ document: LinuxTextDocument, text: String, log: TextLogState?, generation mine: Int) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let html = TextPage.html(text: text, language: TextPage.language(forFile: document.path), line: document.line,
+                style: MarkdownAssets.shared.textStyle, log: log, anchor: document.anchor, search: document.search,
+                wrap: document.wrap, expand: document.expand, top: document.top)
             runOnMain { MainActor.assumeIsolated {
                 guard let self, !self.stopped, mine == self.generation, let page = self.page, !page.closed else { return }
-                switch loaded {
-                case .failure(let failure): page.fail(failure.description)
-                case .success(let (html, read)):
-                    self.stamp = read?.stamp
-                    if log != nil {
-                        if let shown = read?.snapshot { self.snapshot = shown }
-                        let report = read?.snapshot.map { TextLogReport(lines: $0.lines, clipped: $0.clipped) }
-                            ?? TextLogReport(waiting: read == nil, unreadable: read != nil)
-                        page.store?.setTextLogReport(page.id, report)
-                    }
-                    html.withCString { webkit_web_view_load_html(cast(page.webView), $0, nil) }
-                }
+                html.withCString { webkit_web_view_load_html(cast(page.webView), $0, nil) }
             } }
         }
     }
 
     func apply() {
         guard let page, !stopped else { return }
+        if ready, appliedExpand != page.overlay.textExpand { load(fresh: false); return }
+        if ready, appliedWrap != page.overlay.textWrap {
+            appliedWrap = page.overlay.textWrap
+            call("agtermTextSetWrap", [page.overlay.textWrap])
+        }
         if ready, searchRevision != page.overlay.searchRevision {
             searchRevision = page.overlay.searchRevision
             call("agtermTextSearchSet", [page.overlay.textSearch?.query ?? "", searchRevision,
@@ -109,12 +121,11 @@ final class LinuxTextPage {
 
     private func tick() {
         guard let page, !stopped, !reading, page.onScreen, page.overlay.logState?.following == true,
-              case .text(let path, _) = page.overlay.source, let log = page.overlay.textLog else { return }
+              let location = LinuxTextReads.location(page), page.overlay.textLog != nil else { return }
+        let path = location.path
         reading = true
         let mine = generation, previous = stamp, epoch = pauseEpoch
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let result = TextProbe.loadLog(path: path, tail: log.tail, unchangedFrom: previous)
-            runOnMain { MainActor.assumeIsolated {
+        LinuxTextReads.log(page, stamp: previous) { [weak self] result in
                 guard let self, !self.stopped, mine == self.generation, let page = self.page, !page.closed else { return }
                 self.reading = false
                 guard epoch == self.pauseEpoch, page.onScreen, page.overlay.logState?.following == true else { return self.apply() }
@@ -141,7 +152,6 @@ final class LinuxTextPage {
                     self.call("agtermTextUpdate", [self.snapshot?.text ?? "", false, true, false, NSNull(), [:]])
                 }
                 self.apply()
-            } }
         }
     }
 
@@ -150,7 +160,16 @@ final class LinuxTextPage {
         let data = Data(String(cString: raw).utf8)
         g_free(raw)
         guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-        if body["ready"] as? Bool == true { ready = true; apply(); return }
+        if body["ready"] as? Bool == true {
+            ready = true
+            apply()
+            if let (start, end) = searchSelection { call("agtermTextRestoreSearch", [start, end]) }
+            searchSelection = nil
+            return
+        }
+        if let wrap = body["wrap"] as? Bool { page.store?.setTextWrap(page.id, wrapped: wrap) }
+        if let expand = body["expand"] as? Bool { page.store?.setTextExpand(page.id, expanded: expand) }
+        if let report = body["files"] as? [String: Any] { takeFiles(report) }
         if let query = body["search"] as? String, let revision = page.store?.setTextSearch(page.id, query: query) {
             typedRevisions.insert(revision)
         }
@@ -170,7 +189,29 @@ final class LinuxTextPage {
     func step(forward: Bool, changes: Bool = false) -> [String: Any]? {
         guard ready, let page else { return nil }
         let args: [Any] = changes ? [forward] : [forward, page.overlay.textSearch?.query ?? "", page.overlay.searchRevision]
-        return evaluate(expression(changes ? "agtermTextChangeStep" : "agtermTextSearchStep", args))
+        let result = evaluate(expression(changes ? "agtermTextChangeStep" : "agtermTextSearchStep", args))
+        if let result, let current = result["current"] as? Int {
+            if changes, let count = result["count"] as? Int {
+                page.store?.setTextChangesReport(page.id, changes: TextChanges(count: count, current: current))
+            } else if let count = result["matches"] as? Int {
+                page.store?.setTextSearchReport(page.id, revision: page.overlay.searchRevision,
+                    query: page.overlay.textSearch?.query ?? "", matches: count, current: current)
+            }
+        }
+        return result
+    }
+
+    func goFile(_ target: String) -> [String: Any]? {
+        guard ready else { return nil }
+        let result = evaluate(expression("agtermTextFileGo", [target]))
+        if let result { takeFiles(result) }
+        return result
+    }
+
+    private func takeFiles(_ report: [String: Any]) {
+        guard let count = report["count"] as? Int, let current = report["current"] as? Int, let path = report["path"] as? String else { return }
+        guard let page else { return }
+        page.store?.setTextFilesReport(page.id, files: TextFiles(count: count, current: current, path: path))
     }
 
     private func expression(_ name: String, _ args: [Any]) -> String {
@@ -202,6 +243,16 @@ final class LinuxTextPage {
         if !result.done { g_cancellable_cancel(cancellable) }
         return page.closed ? nil : result.value
     }
+}
+
+private struct LinuxTextDocument: Sendable {
+    let path: String
+    let line: Int?
+    let anchor: Double?
+    let search: TextPage.SearchState
+    let wrap: Bool
+    let expand: Bool
+    let top: Int?
 }
 
 @MainActor

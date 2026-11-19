@@ -62,6 +62,12 @@ final class AppDelegateCaptureTests: XCTestCase {
         XCTAssertEqual(session.splitForegroundCommand, ["worker", "21"])
     }
 
+    func testExitBudgetKeepsAHundredAndFiftyMillisecondsForPaneReadsAfterTheListing() {
+        let listing = Duration.milliseconds(Int64((ZmxClient.captureWallClockLimit * 1000).rounded()))
+
+        XCTAssertEqual(AppDelegate.exitCaptureBudget - listing, .milliseconds(150))
+    }
+
     // #915: a listing slower than 100 ms timed out and left every reattached pane with no command
     func testExitCaptureReadsALiveListingSlowerThanAHundredMilliseconds() throws {
         let paneID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
@@ -71,8 +77,9 @@ final class AppDelegateCaptureTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let executable = root.appendingPathComponent("slow-zmx")
         try """
-        #!/bin/sh
-        /bin/sleep 0.15
+        #!/bin/zsh -f
+        zmodload zsh/zselect || exit 2
+        zselect -t 12
         printf 'name=\(ZmxSupport.daemonName(for: paneID))\\tpid=40\\tclients=1\\tcreated=1\\n'
         """.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
@@ -178,7 +185,7 @@ final class AppDelegateCaptureTests: XCTestCase {
         let library = WindowLibrary(directory: state)
         let windowID = try XCTUnwrap(library.activeWindowID)
         let store = try XCTUnwrap(library.activeStore)
-        let session = try XCTUnwrap(store.activeSession)
+        _ = try XCTUnwrap(store.activeSession)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
             styleMask: [.titled], backing: .buffered, defer: false)

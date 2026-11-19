@@ -92,6 +92,46 @@ final class WindowLibraryClaimsTests {
         #expect(walk.claims.first?.sessionID == live.id)
     }
 
+    @Test func anOpenWindowClaimsALiveScratch() throws {
+        let library = WindowLibrary(directory: directory)
+        let store = try #require(library.store(for: library.windows[0].id))
+        let live = try #require(store.workspaces.first?.sessions.first)
+        let scratch = UUID()
+        store.recordLiveScratch(live.id, identity: scratch)
+
+        let walk = library.paneClaims()
+
+        #expect(walk.complete)
+        #expect(walk.claims.map(\.paneIdentity) == [live.paneIdentity, scratch])
+        #expect(walk.claims.map(\.pane) == [.left, .scratch])
+    }
+
+    @Test func aClosedWindowClaimsItsSavedScratch() throws {
+        let windowID = UUID()
+        let pane = UUID()
+        let scratch = UUID()
+        var saved = session(pane: pane)
+        saved.scratchPaneIdentity = scratch
+        try writeIndex([try writeOpenDecoy(), WindowEntry(id: windowID, name: "work", isOpen: false)])
+        try writeWindowFile(windowID, snapshot(session: saved))
+
+        let walk = WindowLibrary(directory: directory).paneClaims()
+
+        let mine = walk.claims.filter { $0.windowID == windowID }
+        #expect(mine.map(\.paneIdentity) == [pane, scratch])
+        #expect(mine.map(\.pane) == [.left, .scratch])
+    }
+
+    @Test func aRemoteRowsScratchClaimsNoLocalDaemon() throws {
+        let library = WindowLibrary(directory: directory)
+        let store = try #require(library.store(for: library.windows[0].id))
+        let live = try #require(store.workspaces.first?.sessions.first)
+        let remote = try #require(store.addSession(toWorkspace: store.workspaces[0].id, cwd: "/a", remoteHost: "buildbox"))
+        remote.scratchDaemon = Session.ScratchDaemon(identity: UUID(), shown: true)
+
+        #expect(library.paneClaims().claims.map(\.paneIdentity) == [live.paneIdentity])
+    }
+
     @Test func remoteSessionClaimsNoLocalDaemon() throws {
         let library = WindowLibrary(directory: directory)
         let windowID = try #require(library.windows.first?.id)
@@ -276,5 +316,52 @@ final class WindowLibraryClaimsTests {
         _ = library.paneClaims()
         // windows.json too: a future helper calling saveIndex() would pass a windows/*.json-only check
         #expect(try stateFingerprint() == before)
+    }
+
+    @Test func aClosedWindowsPageRowClaimsNoDaemon() throws {
+        let windowID = UUID()
+        let pane = UUID()
+        let page = SessionSnapshot(id: UUID(), customName: nil, cwd: "/tmp",
+                                   page: PageSnapshot(source: .file(path: "/tmp/p.html", grantRoot: nil)))
+        try writeIndex([try writeOpenDecoy(), WindowEntry(id: windowID, name: "work", isOpen: false)])
+        try writeWindowFile(windowID, Snapshot(workspaces: [WorkspaceSnapshot(id: UUID(), name: "workspace 1",
+                                                                              sessions: [session(pane: pane), page])]))
+
+        let walk = WindowLibrary(directory: directory).paneClaims()
+
+        #expect(walk.complete, "a page has no identity to miss")
+        #expect(walk.claims.filter { $0.windowID == windowID }.map(\.paneIdentity) == [pane])
+    }
+
+    @Test func aClosedWindowsUnreadablePageRowClaimsNoDaemon() throws {
+        let windowID = UUID()
+        let pane = UUID()
+        let page = SessionSnapshot(id: UUID(), customName: nil, cwd: "/tmp", page: PageSnapshot(source: .file(path: "PLACEHOLDER", grantRoot: nil)))
+        try writeIndex([try writeOpenDecoy(), WindowEntry(id: windowID, name: "work", isOpen: false)])
+        try writeWindowFile(windowID, Snapshot(workspaces: [WorkspaceSnapshot(id: UUID(), name: "workspace 1",
+                                                                              sessions: [session(pane: pane), page])]))
+        let file = windowsDirectory.appendingPathComponent("\(windowID.uuidString).json")
+        let text = try String(contentsOf: file, encoding: .utf8)
+        #expect(text.contains(#""file" : "PLACEHOLDER""#))
+        try text.replacingOccurrences(of: #""file" : "PLACEHOLDER""#, with: #""url" : "ftp://example.com""#)
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let walk = WindowLibrary(directory: directory).paneClaims()
+
+        #expect(walk.complete)
+        #expect(walk.claims.filter { $0.windowID == windowID }.map(\.paneIdentity) == [pane])
+    }
+
+    @Test func anOpenWindowsPageRowClaimsNoDaemon() throws {
+        let library = WindowLibrary(directory: directory)
+        let store = try #require(library.store(for: library.windows[0].id))
+        let live = try #require(store.workspaces.first?.sessions.first)
+        _ = try addPageRow(to: store, workspace: store.workspaces[0].id,
+                           overlay: HtmlOverlay(source: .file(path: "/tmp/p.html", grantRoot: nil)))
+
+        let walk = library.paneClaims()
+
+        #expect(walk.complete)
+        #expect(walk.claims.map(\.paneIdentity) == [live.paneIdentity])
     }
 }

@@ -87,13 +87,8 @@ extension AppStore {
         withObservationTracking {
             _ = attentionSessions // the observable inputs: workspaces + each agentIndicator
         } onChange: { [weak self] in
-            // The one `DispatchQueue.main.async` left in shared core: a nonisolated->main THREAD hop, which
-            // the `@MainActor` `MainTimer` seam cannot express (you must already be on the main actor to
-            // call it) and core has no hop seam. Unreachable under GTK — this observer is registered only
-            // on the off->on `setAutoFollow(timeout:)` edge, which the Linux port never takes
-            // (`LinuxAutoFollowCoordinator` owns its auto-follow runtime on GLib). See
-            // `agterm-linux/docs/main-loop.md`.
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.scheduleAutoFollowRearm() } }
+            // Observation may report on any thread; the host owns the hop to its UI loop.
+            MainActorHop.enqueue { self?.scheduleAutoFollowRearm() }
         }
     }
 

@@ -45,6 +45,17 @@ struct HtmlBridgeTests {
         }
     }
 
+    @Test func anUntargetedPageSessionFromAPageRowIsPlacedAfterThatRow() throws {
+        let row = HtmlBridgePage(window: "W1", session: session, pane: nil)
+
+        let built = try build(#"{"cmd":"session.page","args":{"url":"https://example.com/"}}"#, from: row).get()
+
+        #expect(built.cmd == .sessionPage)
+        #expect(built.target == session.uuidString)
+        #expect(built.args?.window == nil)
+        #expect(built.args?.pane == nil)
+    }
+
     @Test func explicitTargetsWindowsAndBatchesAreKeptAsGiven() throws {
         let active = try request(#"{"cmd":"session.rename","target":"active","args":{"name":"x"}}"#)
         #expect(active.target == "active")
@@ -75,11 +86,26 @@ struct HtmlBridgeTests {
         #expect(workspace.args?.window == nil)
     }
 
-    @Test(arguments: ["hooks.reload", "hooks.list", "browser.clear", "browser.links", "recent.list", "recent.clear"])
+    @Test(arguments: ["hooks.reload", "hooks.list", "browser.clear", "browser.links", "recent.list", "recent.clear", "update.check"])
     func aCommandRefusingAnyWindowGetsNone(_ cmd: String) throws {
         let built = try request(#"{"cmd":"\#(cmd)"}"#)
         #expect(built.target == nil)
         #expect(built.args?.window == nil)
+    }
+
+    @Test func aRemoteSessionNewLandsInThePagesWindowAndNamesNoSession() throws {
+        let built = try request(#"{"cmd":"session.remote.new","args":{"host":"mac"}}"#)
+
+        #expect(built.target == nil)
+        #expect(built.args?.window == "W1")
+    }
+
+    @Test func aRemoteOpenKeepsTheOriginWindowItWasGiven() throws {
+        let named = try request(#"{"cmd":"window.remote.open","args":{"host":"mac","originWindow":"6f1c"}}"#)
+        let bare = try request(#"{"cmd":"window.remote.open","args":{"host":"mac"}}"#)
+
+        #expect(named.args?.originWindow == "6f1c")
+        #expect(bare.args?.originWindow == nil)
     }
 
     @Test func recentOpenReopensIntoThePagesWindow() throws {
@@ -143,7 +169,8 @@ struct HtmlBridgeTests {
     @Test func thePaneIsFilledOnlyForThePagesOwnOverlayCommands() throws {
         for cmd in ["session.overlay.close", "session.overlay.reload", "session.overlay.navigate", "session.overlay.submit",
                     "session.overlay.hide", "session.overlay.show", "session.overlay.toggle", "session.overlay.resize",
-                    "session.overlay.follow", "session.overlay.search", "session.overlay.changes"] {
+                    "session.overlay.follow", "session.overlay.search", "session.overlay.changes", "session.overlay.wrap",
+                    "session.overlay.expand"] {
             let built = try request(#"{"cmd":"\#(cmd)"}"#)
             #expect(built.target == session.uuidString, "\(cmd)")
             #expect(built.args?.pane == "right", "\(cmd)")
@@ -162,7 +189,7 @@ struct HtmlBridgeTests {
         #expect(try request(#"{"cmd":"session.overlay.reload","args":{"current":false}}"#).args?.current == false)
     }
 
-    @Test(arguments: ["zmx.present", "session.overlay.job.run", "session.overlay.page.serve", "zmx.reset"])
+    @Test(arguments: ["zmx.present", "catalog.subscribe", "session.overlay.job.run", "session.overlay.page.serve", "zmx.reset"])
     func streamAndAfterReplyCommandsAreRefused(_ cmd: String) {
         guard case .failure(let error) = build(#"{"cmd":"\#(cmd)"}"#) else { Issue.record("\(cmd) must be refused"); return }
         #expect(error.message == HtmlBridgeError.unsupported(cmd).message)

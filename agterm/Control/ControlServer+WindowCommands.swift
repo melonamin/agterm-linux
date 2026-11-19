@@ -41,7 +41,8 @@ extension ControlServer {
     /// Project the window library into `window.list`: every window with its open + frontmost (active) flags.
     func buildWindowList() -> [ControlWindowNode] {
         library.controlWindowNodes(geometry: { WindowRegistry.shared.geometry(for: $0) },
-                                   flags: { WindowRegistry.shared.windowFlags(for: $0) })
+                                   flags: { WindowRegistry.shared.windowFlags(for: $0) },
+                                   viewers: { [unowned self] in originViewers($0) })
     }
 
     func windowList() -> ControlResponse {
@@ -216,6 +217,8 @@ extension ControlServer {
         library.frontmostWindowID = id
         library.saveIndex()
         if GhosttyApp.shared.autoHideSidebarInactiveWindows { library.applyInactiveWindowSidebarHiding() }
+        // a replica pick's follow runs outside dispatch, so no dispatch refresh follows it
+        refreshWindowCache()
     }
 
     /// Resolve a window id and rename it (the name lives in the index). Requires a name. Returns the id.

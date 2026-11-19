@@ -173,11 +173,11 @@ public enum ZmxSupport {
     /// creation command and the pane ends with it (`session new --command`).
     public static func attachCommand(_ configuration: Configuration, replaying argv: [String]?,
                                      creationCommand: String? = nil, paneCommand: String? = nil,
-                                     denylist: Set<String>) -> String {
+                                     denylist: Set<String>, detached: Bool = false) -> String {
         let creation = paneCommand.map(Creation.endingPane) ?? creationCommand.map(Creation.returningToShell)
         let payload = creationArguments(configuration, replaying: argv, creation: creation, denylist: denylist)
-        var arguments = configuration.attachArguments + payload
-        if let host = configuration.sessionHostExecutablePath {
+        var arguments = [configuration.executablePath, "attach"] + (detached ? ["--detached"] : []) + [configuration.daemonName] + payload
+        if !detached, let host = configuration.sessionHostExecutablePath {
             let endsPane = argv == nil && paneCommand != nil && !payload.isEmpty
             arguments = [host, "client", configuration.daemonName] + (endsPane ? ["--ends-pane"] : []) + ["--"] + arguments
         }
@@ -198,14 +198,23 @@ public enum ZmxSupport {
     /// flags Live applies anyway. Anything else is nil, since Live starts the shell itself and cannot honor
     /// other programs or arguments.
     public static func commandShell(fromCommand command: String) -> String? {
+        let words = commandWords(command)
+        guard let shell = words.first, (shell as NSString).isAbsolutePath, shellKind(for: shell) != nil,
+              words.dropFirst().allSatisfy(liveShellFlags.contains) else { return nil }
+        return shell
+    }
+
+    /// commandProgram is the program a ghostty `command` value starts, nil for a blank value.
+    public static func commandProgram(fromCommand command: String) -> String? {
+        commandWords(command).first
+    }
+
+    private static func commandWords(_ command: String) -> [String] {
         var value = command
         for prefix in ["direct:", "shell:"] where value.hasPrefix(prefix) {
             value = String(value.dropFirst(prefix.count))
         }
-        let words = value.split(whereSeparator: \.isWhitespace).map(String.init)
-        guard let shell = words.first, (shell as NSString).isAbsolutePath, shellKind(for: shell) != nil,
-              words.dropFirst().allSatisfy(liveShellFlags.contains) else { return nil }
-        return shell
+        return value.split(whereSeparator: \.isWhitespace).map(String.init)
     }
 
     private static let liveShellFlags: Set<String> = ["-l", "--login", "-i", "--interactive", "-il", "-li"]
@@ -292,9 +301,19 @@ public enum ZmxSupport {
     }
 
     public static func socketDirectory(forStateDirectory stateDirectory: String) -> String {
+        "/tmp/agterm-zmx-\(stateHash(stateDirectory))"
+    }
+
+    /// socketDirectory under `runtimeDirectory` is agterm-server's: `XDG_RUNTIME_DIR` is kept for a lingering
+    /// user, while a distribution's tmp cleanup can empty `/tmp` under a live daemon.
+    public static func socketDirectory(forStateDirectory stateDirectory: String, runtimeDirectory: String) -> String {
+        (runtimeDirectory as NSString).appendingPathComponent("agterm-zmx-\(stateHash(stateDirectory))")
+    }
+
+    private static func stateHash(_ stateDirectory: String) -> String {
         let canonical = URL(fileURLWithPath: stateDirectory, isDirectory: true)
             .standardizedFileURL.resolvingSymlinksInPath().path
-        return "/tmp/agterm-zmx-\(stableHash(canonical))"
+        return stableHash(canonical)
     }
 
     public static func daemonName(for paneIdentity: UUID) -> String {
@@ -320,6 +339,23 @@ public enum ZmxSupport {
         return body.count == 32 && body.allSatisfy {
             ($0 >= UInt8(ascii: "0") && $0 <= UInt8(ascii: "9")) ||
                 ($0 >= UInt8(ascii: "a") && $0 <= UInt8(ascii: "f"))
+        }
+    }
+
+    static let scratchNamePrefix = "agterm-scratch-"
+
+    /// scratchDaemonName names agterm-server's daemon behind a session's scratch. It is never `isDaemonName`, so
+    /// nothing that adopts, maps or prunes pane daemons ever claims one.
+    public static func scratchDaemonName(for identity: UUID) -> String {
+        scratchNamePrefix + compactUUID(identity)
+    }
+
+    /// isScratchDaemonName reports whether `name` is exactly the shape `scratchDaemonName(for:)` emits.
+    public static func isScratchDaemonName(_ name: String) -> Bool {
+        guard name.hasPrefix(scratchNamePrefix) else { return false }
+        let body = name.utf8.dropFirst(scratchNamePrefix.utf8.count)
+        return body.count == 32 && body.allSatisfy {
+            ($0 >= UInt8(ascii: "0") && $0 <= UInt8(ascii: "9")) || ($0 >= UInt8(ascii: "a") && $0 <= UInt8(ascii: "f"))
         }
     }
 

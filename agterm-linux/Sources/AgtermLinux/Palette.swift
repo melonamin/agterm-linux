@@ -16,6 +16,8 @@ extension AppController {
         // (LinuxPaletteRow.searchKeys keeps a composite key), so you can find by chord.
         // Omit fixed commands that would be no-ops in the current UI state (shared visibility predicates).
         let activeSession = store.selectedSessionID.flatMap { store.session(withID: $0) }
+        let remoteActions = LinuxRemoteCatalogs.windows[windowID]?.actions
+        let recent = !(remoteActions?.recentItems?.isEmpty ?? true) || !library.recentClosedItems.isEmpty || !library.remoteRecentClosedItems.isEmpty
         let paletteContext = PaletteContext(canRemoveWorkspace: store.canRemoveWorkspace,
                                             hasFlaggedSessions: !store.flaggedSessions.isEmpty,
                                             sidebarShowsWorkspaceTree: store.sidebarMode == .tree,
@@ -29,8 +31,8 @@ extension AppController {
                                             canStepWindows: library.canStepWindows,
                                             activeSessionHasSplit: activeSession?.hasSplit ?? false,
                                             activeSplitAxis: activeSession?.splitAxis,
-                                            hasPendingClose: store.pendingCloseSummary != nil,
-                                            hasRecentClosed: !library.recentClosedItems.isEmpty,
+                                            hasPendingClose: store.pendingCloseSummary != nil || !(remoteActions?.undoIDs.isEmpty ?? true),
+                                            hasRecentClosed: recent,
                                             hasActiveSession: activeSession != nil,
                                             attentionNavigationAcrossWindows: store.attentionNavigationAcrossWindows,
                                             hasSessions: store.workspaces.contains { !$0.sessions.isEmpty },
@@ -45,7 +47,7 @@ extension AppController {
             let row = LinuxPaletteRow.action(cmd, in: paletteContext, chord: cmd.builtinAction.flatMap(resolvedChord(for:)))
             return (row: row, run: run(for: cmd))
         }
-        if !library.recentClosedItems.isEmpty {
+        if recent {
             items.append((row: LinuxPaletteRow(title: "Clear Recent Items"), run: { self.clearRecentHistory() }))
         }
         if activeSession != nil {
@@ -113,6 +115,10 @@ extension AppController {
         case .duplicateCompanion: return { self.newCompanionFromGUI(duplicate: true) }
         case .toggleOverlay: return { _ = self.setSessionOverlayVisibility(nil, window: nil, pane: nil, mode: .toggle) }
         case .attachRemote: return { self.showRemoteAttach() }
+        case .openRemoteWindow: return { self.showRemoteWindow() }
+        case .newRemoteSession: return { self.showNewRemoteSession() }
+        case .detachedSessions: return { self.showDetachedRemoteSessions() }
+        case .convertCompanion: return { self.convertActiveCompanion() }
         case .editFlaggedSessions: return { self.showMembershipEditor(workspaces: false) }
         case .editFocusedWorkspaces: return { self.showMembershipEditor(workspaces: true) }
 
@@ -154,7 +160,7 @@ extension AppController {
         case .decreaseFontSize: return { self.activeSurface()?.performBindingAction(FontBindingAction.decrease) }
         case .resetFontSize: return { self.activeSurface()?.performBindingAction(FontBindingAction.reset) }
         case .selectTheme: return { self.showThemePicker() }
-        case .deleteWorkspace: return { if let id = self.store.currentWorkspaceID { self.store.removeWorkspace(id); self.reconcile() } }
+        case .deleteWorkspace: return { if let id = self.store.currentWorkspaceID { self.removeWorkspaceRespectingHost(id); self.reconcile() } }
         case .toggleFlaggedView: return { self.toggleFlaggedView() }
         case .focusLeftPane: return { self.focusPane(left: true) }
         case .focusRightPane: return { self.focusPane(left: false) }

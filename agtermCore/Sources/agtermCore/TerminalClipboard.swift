@@ -10,8 +10,8 @@ public enum TerminalClipboard {
     public enum Failure: Error, Equatable {
         case emptyText
         case tooLarge(encodedBytes: Int)
-        /// notLivePane means the environment names no agterm zmx daemon. A scratch, quick or overlay
-        /// terminal has none.
+        /// notLivePane means the environment names no agterm zmx daemon. A quick or overlay terminal, and a
+        /// scratch outside Live sessions, has none.
         case notLivePane
         /// zmxNotFound carries where zmx was expected, nil when the CLI's own path is unknown.
         case zmxNotFound(path: String?)
@@ -57,34 +57,20 @@ public enum TerminalClipboard {
         process.arguments = ["print", daemon]
         // empty is unset to zmx; an inherited prefix would resolve a name agterm never created
         process.environment = environment.merging(["ZMX_SESSION": "", "ZMX_SESSION_PREFIX": ""]) { _, new in new }
-        let input = try inputHandles()
-        defer {
-            try? input.read.close()
-            try? input.write.close()
-        }
+        let stdin = Pipe()
         let stderr = Pipe()
-        process.standardInput = input.read
+        process.standardInput = stdin
         process.standardOutput = FileHandle.nullDevice
         process.standardError = stderr
         try process.run()
-        try? input.read.close()
         // a zmx that exits before reading everything must surface as its status, not kill this process
         #if canImport(Darwin)
-        _ = fcntl(input.write.fileDescriptor, F_SETNOSIGPIPE, 1)
-        try? input.write.write(contentsOf: sequence)
+        _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+        try? stdin.fileHandleForWriting.write(contentsOf: sequence)
         #else
-        sequence.withUnsafeBytes { bytes in
-            var offset = 0
-            while offset < bytes.count {
-                let count = Glibc.send(input.write.fileDescriptor, bytes.baseAddress! + offset,
-                                       bytes.count - offset, Int32(MSG_NOSIGNAL))
-                if count < 0 && errno == EINTR { continue }
-                if count <= 0 { break }
-                offset += count
-            }
-        }
+        withBrokenPipeSignalBlocked { try? stdin.fileHandleForWriting.write(contentsOf: sequence) }
         #endif
-        try? input.write.close()
+        try? stdin.fileHandleForWriting.close()
         let diagnostics = stderr.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
@@ -93,19 +79,23 @@ public enum TerminalClipboard {
         }
     }
 
-    private static func inputHandles() throws -> (read: FileHandle, write: FileHandle) {
-        #if canImport(Darwin)
-        let pipe = Pipe()
-        return (pipe.fileHandleForReading, pipe.fileHandleForWriting)
-        #else
-        // A socket pair supports per-write SIGPIPE suppression without changing process signal policy.
-        var descriptors: [Int32] = [-1, -1]
-        let type = Int32(SOCK_STREAM.rawValue) | Int32(SOCK_CLOEXEC.rawValue)
-        guard socketpair(AF_UNIX, type, 0, &descriptors) == 0 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    #if !canImport(Darwin)
+    // linux has no per-descriptor SIGPIPE switch; a broken-pipe SIGPIPE goes to the writing thread, so blocking
+    // and draining it there keeps the write's EPIPE and leaves every other thread alone
+    private static func withBrokenPipeSignalBlocked(_ body: () -> Void) {
+        var pipeSignal = sigset_t()
+        sigemptyset(&pipeSignal)
+        sigaddset(&pipeSignal, SIGPIPE)
+        var previous = sigset_t()
+        pthread_sigmask(SIG_BLOCK, &pipeSignal, &previous)
+        body()
+        var pending = sigset_t()
+        sigpending(&pending)
+        if sigismember(&pending, SIGPIPE) == 1 {
+            var noWait = timespec()
+            _ = sigtimedwait(&pipeSignal, nil, &noWait)
         }
-        return (FileHandle(fileDescriptor: descriptors[0], closeOnDealloc: true),
-                FileHandle(fileDescriptor: descriptors[1], closeOnDealloc: true))
-        #endif
+        pthread_sigmask(SIG_SETMASK, &previous, nil)
     }
+    #endif
 }

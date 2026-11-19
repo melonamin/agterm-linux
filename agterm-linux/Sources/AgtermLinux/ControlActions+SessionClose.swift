@@ -38,6 +38,7 @@ extension AppController {
         return ControlResponse(ok: true, result: ControlResult(
             id: ids.count == 1 ? ids[0].uuidString : nil,
             affected: ids.count > 1 || closing.count > 1 ? closing.count : nil,
-            undoable: undoable ? soft : nil, closed: closing.map(\.uuidString)))
+            undoable: undoable ? soft : nil, closed: closing.map(\.uuidString),
+            undoID: soft ? ids.first.flatMap { store.pendingCloseID(ofSession: $0)?.uuidString } : nil))
     }
 }

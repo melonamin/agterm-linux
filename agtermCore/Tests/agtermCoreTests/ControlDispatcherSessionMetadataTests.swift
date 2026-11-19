@@ -239,6 +239,23 @@ struct ControlDispatcherSessionMetadataTests {
         ])
     }
 
+    @Test func sessionStatusPassesIfIdleThrough() async {
+        let actions = MockControlActions()
+        let dispatcher = ControlDispatcher(actions: actions)
+
+        _ = await dispatcher.dispatch(ControlRequest(cmd: .sessionStatus, target: "session",
+                                                     args: ControlArgs(status: "active", ifIdle: true)))
+        _ = await dispatcher.dispatch(ControlRequest(cmd: .sessionStatus, target: "session",
+                                                     args: ControlArgs(status: "active")))
+
+        #expect(actions.calls == [
+            .sessionStatus(target: "session", window: nil,
+                           ControlSessionStatusUpdate(status: .active, blink: nil, autoReset: nil, sound: nil, ifIdle: true)),
+            .sessionStatus(target: "session", window: nil,
+                           ControlSessionStatusUpdate(status: .active, blink: nil, autoReset: nil, sound: nil)),
+        ])
+    }
+
     @Test func sessionStatusRevertsColorWhenOmitted() async {
         let actions = MockControlActions()
         let dispatcher = ControlDispatcher(actions: actions)
@@ -724,5 +741,20 @@ struct ControlDispatcherSessionMetadataTests {
         #expect(plain == ControlResponse(ok: true))
         #expect(tinted == ControlResponse(ok: false, error: "workspace.new --tint is not supported on this platform"))
         #expect(actions.calls == [.workspaceNew(window: nil, "w", collapsed: false)])
+    }
+
+    @Test(arguments: [
+        (ControlRequest(cmd: .zmxKill, target: "s", args: ControlArgs(pane: "left")), true),
+        (ControlRequest(cmd: .zmxKill, target: "s", args: ControlArgs(force: true, pane: "left")), false),
+        (ControlRequest(cmd: .zmxKillPane, target: "s", args: ControlArgs(force: true, pane: "left")), true),
+        (ControlRequest(cmd: .zmxKillPane, target: "s", args: ControlArgs(force: true, pane: "left", paneID: "p")), false),
+        (ControlRequest(cmd: .sessionRestart, target: "s", args: ControlArgs()), true),
+        (ControlRequest(cmd: .sessionRestart, target: "s", args: ControlArgs(pane: "left")), false),
+        (ControlRequest(cmd: .sessionRestore, target: "s", args: ControlArgs(mode: "set")), true),
+        (ControlRequest(cmd: .sessionRestore, target: "s", args: ControlArgs(mode: "set", command: "")), false),
+        (ControlRequest(cmd: .sessionScratch, target: "s", args: ControlArgs(mode: "bogus")), false),
+    ])
+    func refusesArgumentsAnswersTheChecksTheCommandMakesBeforeItsHost(request: ControlRequest, refused: Bool) {
+        #expect(ControlDispatcher.refusesArguments(request) == refused)
     }
 }

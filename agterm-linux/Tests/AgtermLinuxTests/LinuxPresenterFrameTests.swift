@@ -49,9 +49,9 @@ struct LinuxPresenterFrameTests {
     private var router: LinuxPresenterFrameRouter {
         let store = store
         let host = host
-        return LinuxPresenterFrameRouter(store: store, takeBackAsk: { id in
+        return LinuxPresenterFrameRouter(store: store, takeBackAsk: { id, owner in
             host.takeBacks.append(id)
-            _ = store.takeBackRemoteAsk(forSession: id)
+            _ = store.takeBackRemoteAsk(forSession: id, owner: owner)
         }, reconcile: { host.reconciles += 1 })
     }
 
@@ -79,7 +79,7 @@ struct LinuxPresenterFrameTests {
         let job = try openOverlay()
         let ref = try presentAsk()
 
-        router.receive(.askRejected(ref), forSession: session.id)
+        router.receive(.askRejected(ref), forSession: session.id, from: ref.owner)
 
         #expect(host.takeBacks == [session.id])
         #expect(host.reconciles == 1)
@@ -96,21 +96,22 @@ struct LinuxPresenterFrameTests {
     func staleAskRejectedIsIgnored() throws {
         let ref = try presentAsk()
 
-        router.receive(.askRejected(PresentationAskRef(id: ref.id, owner: ref.owner + 1)), forSession: session.id)
+        router.receive(.askRejected(PresentationAskRef(id: ref.id, owner: ref.owner + 1)), forSession: session.id, from: ref.owner + 1)
 
         #expect(host.takeBacks.isEmpty)
         #expect(host.reconciles == 0)
         #expect(session.askPresentedRemotely)
     }
 
-    @Test("losing the presenter takes back the ask and cancels the unclaimed job")
+    @Test("losing the presenter leaves ask placement to OpenWork and cancels the unclaimed job")
     func presenterLostEndsBoth() throws {
         let job = try openOverlay()
-        _ = try presentAsk()
+        let ref = try presentAsk()
 
-        router.presenterLost(forSession: session.id)
+        router.presenterLost(forSession: session.id, owner: ref.owner)
 
-        #expect(host.takeBacks == [session.id])
+        #expect(host.takeBacks.isEmpty)
+        #expect(session.askPresentedRemotely)
         #expect(host.reconciles == 1)
         #expect(jobs.job(job)?.state == .finished(.canceled))
     }

@@ -49,6 +49,7 @@ extension AppController {
         if let marker = widgets.foldedMarker {
             gtk_widget_set_visible(W(marker), content.foldedAttention == nil ? 0 : 1)
             if let text = content.foldedAttention { gtk_widget_set_tooltip_text(W(marker), text) }
+            if let color = content.foldedColor { gtk_label_set_markup(marker, "<span foreground=\"\(color)\">▤</span>") }
         }
         applySidebarTint(content.tint, icon: widgets.lead, name: widgets.name)
     }

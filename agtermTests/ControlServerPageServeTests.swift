@@ -1,7 +1,7 @@
 import AppKit
 import XCTest
 @testable import agterm
-import agtermCore
+@testable import agtermCore
 
 @MainActor
 final class ControlServerPageServeTests: XCTestCase {
@@ -84,8 +84,10 @@ final class ControlServerPageServeTests: XCTestCase {
 
     private final class Sink: PresentationSink {
         var frames: [PresentationFrame] = []
+        var stallsOnClose = false
 
         func offer(_ frame: PresentationFrame) -> Bool {
+            if stallsOnClose, case .pageClose = frame.body { return false }
             frames.append(frame)
             return true
         }
@@ -139,7 +141,8 @@ final class ControlServerPageServeTests: XCTestCase {
         let presenterID: PresentationHub.SubscriberID
     }
 
-    private func fixture(responseWriter: @escaping ControlServer.ResponseWriter = ControlServer.writeResponse) throws -> Fixture {
+    private func fixture(responseWriter: @escaping ControlServer.ResponseWriter = ControlServer.writeResponse,
+                         kinds: [String] = PresentationHub.supportedKinds) throws -> Fixture {
         let library = WindowLibrary(directory: stateDir)
         let server = ControlServer(
             library: library,
@@ -162,7 +165,7 @@ final class ControlServerPageServeTests: XCTestCase {
         _ = ZmxLeadBook.shared.apply(notice, pane: session.paneIdentity)
         leads.append(session.paneIdentity)
         let presenter = Sink()
-        let hello = PresentationHello(version: 1, kinds: PresentationHub.supportedKinds, mode: .presenter)
+        let hello = PresentationHello(version: 1, kinds: kinds, mode: .presenter)
         let id = try server.presentationHub.subscribe(session: session.id, hello: hello, sink: presenter) {
             PresentationSnapshot(status: nil, hud: nil)
         }
@@ -180,9 +183,9 @@ final class ControlServerPageServeTests: XCTestCase {
         return try XCTUnwrap(response.result?.pageID.flatMap(UUID.init(uuidString:)))
     }
 
-    private func openContent(_ fix: Fixture, _ page: HtmlSource) throws -> UUID {
+    private func openContent(_ fix: Fixture, _ page: HtmlSource, links: MarkdownLinkGrant? = nil) throws -> UUID {
         let options = ControlSessionOverlayOpenOptions(command: "", cwd: nil, wait: false, sizePercent: nil,
-                                                       backgroundColor: nil, page: page)
+                                                       backgroundColor: nil, page: page, navigation: links != nil, markdownLinks: links)
         let response = fix.server.openSessionOverlay(fix.session.id.uuidString, window: nil, options: options)
         XCTAssertTrue(response.ok, response.error ?? "")
         return try XCTUnwrap(response.result?.pageID.flatMap(UUID.init(uuidString:)))
@@ -245,8 +248,17 @@ final class ControlServerPageServeTests: XCTestCase {
         XCTAssertNotNil(fix.presenter.token)
     }
 
-    func testALoopbackUrlForThePresenterIsRefused() throws {
+    func testALoopbackUrlGoesToAPresenterThatForwardsIt() throws {
         let fix = try fixture()
+
+        _ = try openContent(fix, .url(try XCTUnwrap(URL(string: "http://localhost:8080/app?x=1"))))
+
+        let request = try XCTUnwrap(fix.presenter.bodies.compactMap { if case .pageRequest(let r) = $0 { r } else { nil } }.last)
+        XCTAssertEqual(request.source, .forwarded("http://localhost:8080/app?x=1"))
+    }
+
+    func testALoopbackUrlForAPresenterThatCannotForwardIsRefused() throws {
+        let fix = try fixture(kinds: PresentationHub.supportedKinds.filter { $0 != PresentationHub.pageForwardKind })
         let options = ControlSessionOverlayOpenOptions(command: "", cwd: nil, wait: false, sizePercent: nil, backgroundColor: nil,
                                                        page: .url(try XCTUnwrap(URL(string: "http://localhost:8080/"))))
         let response = fix.server.openSessionOverlay(fix.session.id.uuidString, window: nil, options: options)
@@ -355,7 +367,8 @@ final class ControlServerPageServeTests: XCTestCase {
         clients.append(peer)
         let owner = ControlStreamOwner(descriptor: pair[0], limits: ControlServer.pageServeLimits)
         let stream = PageServeStream(page: UUID(), source: .file(path: docs.appendingPathComponent("index.html").path,
-                                                                 grantRoot: docs.path), owner: owner, server: fix.server)
+                                                                 grantRoot: docs.path), owner: owner, host: fix.server,
+                                     mimeType: { ControlServer.pageMimeType($0) }, attachment: nil)
         owner.start(onLine: { _ in }, onClose: {})
         defer { stream.shutdown() }
         XCTAssertTrue(stream.bridgeSlots.tryAcquire())
@@ -363,6 +376,28 @@ final class ControlServerPageServeTests: XCTestCase {
         stream.receive(.bridge(id: 3, request: #"{"cmd":"tree"}"#))
 
         XCTAssertEqual(offMain { peer.frame() } ?? nil, .failure(id: 3, error: "page closed"))
+    }
+
+    func testABridgeRequestOnAChannelThePageMovedOffDoesNotRun() throws {
+        let fix = try fixture()
+        let page = try openFile(fix)
+        _ = try claim(try XCTUnwrap(fix.presenter.token))
+        waitUntil("the channel is adopted") { fix.server.pageServeStreams[page] != nil }
+        var pair: [Int32] = [0, 0]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        let peer = HelperClient(fd: pair[1])
+        clients.append(peer)
+        let owner = ControlStreamOwner(descriptor: pair[0], limits: ControlServer.pageServeLimits)
+        let retired = PageServeStream(page: page, source: .file(path: docs.appendingPathComponent("index.html").path, grantRoot: docs.path),
+                                      owner: owner, host: fix.server, mimeType: { ControlServer.pageMimeType($0) }, attachment: nil)
+        owner.start(onLine: { _ in }, onClose: {})
+        defer { retired.shutdown() }
+        XCTAssertTrue(retired.bridgeSlots.tryAcquire())
+
+        retired.receive(.bridge(id: 5, request: #"{"cmd":"session.rename","args":{"name":"renamed"}}"#))
+
+        XCTAssertEqual(offMain { peer.frame() } ?? nil, .failure(id: 5, error: "page closed"))
+        XCTAssertNil(fix.session.customName)
     }
 
     func testABridgeRequestAdmittedBeforeItsPageClosedDoesNotRun() throws {
@@ -615,6 +650,72 @@ final class ControlServerPageServeTests: XCTestCase {
         XCTAssertEqual(answers["fake.png"]?.2, "not a png, jpg, gif or webp image")
     }
 
+    func testALinkPageServesLinkedMarkdownAsTextAndEverythingElseOnlyAsAPicture() throws {
+        let fix = try fixture()
+        let fm = FileManager.default
+        try fm.createDirectory(at: docs.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        for (name, text) in [("a.md", "# a\n"), ("sub/b.md", "# b\n"), ("large.md", "# large\n"), (".env", "SECRET=1\n")] {
+            try Data(text.utf8).write(to: docs.appendingPathComponent(name))
+        }
+        try png(width: 4, height: 4).write(to: docs.appendingPathComponent("sub/plot.png"))
+        try fm.createSymbolicLink(at: docs.appendingPathComponent("picture.png"), withDestinationURL: docs.appendingPathComponent("large.md"))
+        try fm.createSymbolicLink(at: docs.appendingPathComponent("alias.png"), withDestinationURL: docs.appendingPathComponent("a.md"))
+        try fm.createSymbolicLink(at: docs.appendingPathComponent("guide.md"), withDestinationURL: docs.appendingPathComponent(".env"))
+        let grant = try XCTUnwrap(MarkdownPage.linkGrant(for: docs.appendingPathComponent("a.md").path))
+        _ = try openContent(fix, .markdown(path: docs.appendingPathComponent("a.md").path), links: grant)
+        let request = fix.presenter.bodies.compactMap { if case .pageRequest(let r) = $0 { r } else { nil } }.last
+        XCTAssertEqual(request?.markdownLinks, grant)
+        XCTAssertEqual(request?.navigation, true)
+        let (client, _) = try claim(try XCTUnwrap(fix.presenter.token))
+
+        let names = ["a.md", "sub/b.md", "sub/plot.png", "picture.png", "alias.png", "guide.md", "../outside.md"]
+        let served = offMain { () -> [String: (String?, Data, String?)] in
+            var answers: [String: (String?, Data, String?)] = [:]
+            for (id, name) in names.enumerated() {
+                client.send(.resource(id: id + 1, path: grant.root + "/" + name))
+                answers[name] = client.body(id + 1)
+            }
+            return answers
+        }
+
+        let answers = try XCTUnwrap(served)
+        XCTAssertEqual(answers["a.md"]?.1, Data("# a\n".utf8))
+        XCTAssertEqual(answers["sub/b.md"]?.1, Data("# b\n".utf8))
+        XCTAssertEqual(answers["sub/plot.png"]?.0, "image/png")
+        for refused in ["picture.png", "alias.png", "guide.md", "../outside.md"] {
+            XCTAssertNotNil(answers[refused]?.2, refused)
+            XCTAssertEqual(answers[refused]?.1, Data(), refused)
+        }
+    }
+
+    func testAPresenterThatCannotFollowLinksIsServedThePageAsBeforeLinks() throws {
+        let fix = try fixture(kinds: PresentationHub.supportedKinds.filter { $0 != PresentationHub.pageLinksKind })
+        try FileManager.default.createDirectory(at: docs.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        try Data("# real\n".utf8).write(to: docs.appendingPathComponent("sub/real.md"))
+        try Data("# picture text\n".utf8).write(to: docs.appendingPathComponent("sub/pic.md"))
+        let readme = docs.appendingPathComponent("README.md")
+        try FileManager.default.createSymbolicLink(at: readme, withDestinationURL: docs.appendingPathComponent("sub/real.md"))
+        let grant = try XCTUnwrap(MarkdownPage.linkGrant(for: readme.path))
+        _ = try openContent(fix, .markdown(path: readme.path), links: grant)
+        let request = fix.presenter.bodies.compactMap { if case .pageRequest(let r) = $0 { r } else { nil } }.last
+        XCTAssertNil(request?.markdownLinks)
+        XCTAssertEqual(request?.navigation, false)
+        let (client, _) = try claim(try XCTUnwrap(fix.presenter.token))
+        let picture = docs.appendingPathComponent("sub/pic.md").path
+
+        let served = offMain { () -> [(String?, Data, String?)] in
+            client.send(.resource(id: 1, path: readme.path))
+            let original = client.body(1)
+            client.send(.resource(id: 2, path: picture))
+            return [original, client.body(2)]
+        }
+
+        let answers = try XCTUnwrap(served)
+        XCTAssertEqual(answers[0].1, Data("# real\n".utf8))
+        XCTAssertNotNil(answers[1].2)
+        XCTAssertEqual(answers[1].1, Data())
+    }
+
     func testAContentFileGrownPastItsCapOrReplacedByAFifoIsRefused() throws {
         let fix = try fixture()
         let notes = docs.appendingPathComponent("notes.go"), log = docs.appendingPathComponent("app.log")
@@ -640,6 +741,31 @@ final class ControlServerPageServeTests: XCTestCase {
             return second.body(1).error
         } ?? nil
         XCTAssertEqual(fifo, "file cannot be read")
+    }
+
+    func testAMacLogPageServesItsTailOverItsChannel() throws {
+        let fix = try fixture()
+        let log = docs.appendingPathComponent("app.log")
+        try Data("one\ntwo\n".utf8).write(to: log)
+        let page = HtmlSource.text(path: log.path, line: nil), tail = TextLog(tail: 50, follow: true)
+        let options = ControlSessionOverlayOpenOptions(command: "", cwd: nil, wait: false, sizePercent: nil, backgroundColor: nil,
+                                                       page: page, textLog: tail)
+        XCTAssertEqual(fix.store.openRemotePage(fix.session.id, overlay: HtmlOverlay(source: page, textLog: tail), options: options),
+                       .opened)
+        let (client, _) = try claim(try XCTUnwrap(fix.presenter.token))
+
+        let frames = offMain { () -> [PageServeFrame] in
+            client.send(.logTail(id: 1, stamp: nil))
+            var frames: [PageServeFrame] = []
+            while let frame = client.frame() {
+                frames.append(frame)
+                if case .end(1) = frame { break }
+            }
+            return frames
+        }
+
+        let local = try XCTUnwrap(try BoundedFile.readTail(path: log.path, maxBytes: TextPage.maxTailBytes).get())
+        XCTAssertEqual(frames, [.logHead(id: 1, stamp: local.stamp, offset: 0), .chunk(id: 1, data: local.data), .end(id: 1)])
     }
 
     func testAContentPageHasNoBridge() throws {
@@ -686,7 +812,7 @@ final class ControlServerPageServeTests: XCTestCase {
         XCTAssertTrue(fix.server.presentationHub.hasPresenter(session: fix.session.id))
     }
 
-    func testLosingThePresenterEndsThePageAndClosesItsChannel() throws {
+    func testLosingThePresenterBringsThePageHereAndClosesItsChannel() throws {
         let fix = try fixture()
         let page = try openFile(fix)
         let (client, _) = try claim(try XCTUnwrap(fix.presenter.token))
@@ -694,8 +820,164 @@ final class ControlServerPageServeTests: XCTestCase {
 
         fix.server.presentationHub.unsubscribe(fix.presenterID)
 
+        waitUntil("the page comes here") { fix.session.htmlOverlay?.id == page }
         XCTAssertTrue(fix.session.remoteOverlays.slots.isEmpty)
-        XCTAssertEqual(HtmlPageOutcomes.shared.outcome(for: page)?.outcome, .dismissed)
+        XCTAssertEqual(HtmlPageOutcomes.shared.outcome(for: page)?.outcome, .pending)
         XCTAssertNil(offMain { client.readLine() } ?? nil)
+    }
+
+    private func viewer(_ fix: Fixture, session: Session? = nil) throws -> (gen: Int, sink: Sink) {
+        let sink = Sink()
+        let target = session ?? fix.session
+        if ZmxLeadBook.shared.role(pane: target.paneIdentity) == nil {
+            let attachment = ZmxLeadAttachment(claim: false)
+            ZmxLeadBook.shared.begin(attachment, pane: target.paneIdentity)
+            _ = ZmxLeadBook.shared.apply(try XCTUnwrap(ZmxLeadNotice(title: "zmx-role;\(attachment.nonce):follower:1")), pane: target.paneIdentity)
+            leads.append(target.paneIdentity)
+        }
+        let hello = PresentationHello(version: 1, kinds: PresentationHub.supportedKinds, mode: .presenter)
+        let id = try fix.server.presentationHub.subscribe(session: target.id, hello: hello, sink: sink) {
+            PresentationSnapshot(status: nil, hud: nil)
+        }
+        fix.server.presentationHub.receive(PresentationFrame(gen: sink.frames[0].gen, rev: 0, body: .leadReport(
+            PresentationLeadReport(leaders: [target.paneIdentity]))), from: id)
+        return (sink.frames[0].gen, sink)
+    }
+
+    private func served(_ client: HelperClient) -> Data? {
+        let index = docs.appendingPathComponent("index.html").path
+        return offMain { () -> Data in
+            client.send(.resource(id: 1, path: index))
+            return client.body(1).data
+        }
+    }
+
+    private func leadHere(_ pane: UUID) throws {
+        let attachment = ZmxLeadAttachment(claim: false)
+        ZmxLeadBook.shared.begin(attachment, pane: pane)
+        _ = ZmxLeadBook.shared.apply(try XCTUnwrap(ZmxLeadNotice(title: "zmx-role;\(attachment.nonce):leader:1")), pane: pane)
+        leads.append(pane)
+    }
+
+    private func drainMainQueue() {
+        let drained = expectation(description: "main queue drained")
+        DispatchQueue.main.async { DispatchQueue.main.async { drained.fulfill() } }
+        wait(for: [drained], timeout: 5)
+    }
+
+    func testAPageTheOriginLeadsComesHomeOnceItsSlotHereFrees() throws {
+        let fix = try fixture()
+        let page = try openFile(fix)
+        fix.session.overlayActive = true
+        try leadHere(fix.session.paneIdentity)
+        drainMainQueue()
+        XCTAssertEqual(fix.session.remoteOverlays.slot(nil)?.owner, fix.presenter.frames[0].gen)
+
+        fix.session.overlayActive = false
+
+        waitUntil("the page comes home") { fix.session.htmlOverlay?.id == page }
+        XCTAssertEqual(HtmlPageOutcomes.shared.outcome(for: page)?.outcome, .pending)
+        XCTAssertEqual(ZmxLeadBook.shared.role(pane: fix.session.paneIdentity), .leader)
+    }
+
+    func testAPaneThePageIsForComesHomeOnceThatPaneIsShownAgain() throws {
+        let fix = try fixture()
+        fix.store.toggleSplit(fix.session.id)
+        let right = try XCTUnwrap(fix.session.splitPaneIdentity)
+        let attachment = ZmxLeadAttachment(claim: false)
+        ZmxLeadBook.shared.begin(attachment, pane: right)
+        _ = ZmxLeadBook.shared.apply(try XCTUnwrap(ZmxLeadNotice(title: "zmx-role;\(attachment.nonce):follower:1")), pane: right)
+        leads.append(right)
+        let options = ControlSessionOverlayOpenOptions(command: "", cwd: nil, wait: false, sizePercent: nil, backgroundColor: nil,
+                                                       pane: .right, page: .file(path: docs.appendingPathComponent("index.html").path,
+                                                                                 grantRoot: docs.path))
+        let response = fix.server.openSessionOverlay(fix.session.id.uuidString, window: nil, options: options)
+        let page = try XCTUnwrap(response.result?.pageID.flatMap(UUID.init(uuidString:)), response.error ?? "")
+        fix.session.splitFocused = false
+        fix.store.toggleSplit(fix.session.id)
+        XCTAssertFalse(fix.session.rendersPane(.right))
+        try leadHere(right)
+        drainMainQueue()
+        XCTAssertEqual(fix.session.remoteOverlays.slot(.right)?.page?.overlay.id, page)
+
+        fix.store.toggleSplit(fix.session.id)
+
+        waitUntil("the page comes home") { fix.session.paneOverlay(.right)?.html?.id == page }
+        XCTAssertNil(fix.session.remoteOverlays.slot(.right))
+    }
+
+    func testAnOfferAdoptedOnItsChannelTakesThePageAndOutlivesTheRetiredChannel() throws {
+        let fix = try fixture()
+        let page = try openFile(fix)
+        let (first, _) = try claim(try XCTUnwrap(fix.presenter.token))
+        waitUntil("the first channel is adopted") { fix.server.pageServeStreams[page] != nil }
+        let retired = fix.server.pageServeStreams[page]
+        let next = try viewer(fix)
+        XCTAssertTrue(fix.store.offerPageCandidate(page, forSession: fix.session.id, to: next.gen))
+
+        let (client, reply) = try claim(try XCTUnwrap(next.sink.token))
+
+        XCTAssertTrue(try XCTUnwrap(reply).contains(#""ok":true"#))
+        waitUntil("the offer's channel replaces the first") {
+            fix.server.pageServeStreams[page] != nil && fix.server.pageServeStreams[page] !== retired
+        }
+        XCTAssertEqual(fix.session.remoteOverlays.slot(nil)?.owner, next.gen)
+        XCTAssertTrue(fix.presenter.bodies.contains(.pageClose(PresentationPageChange(page: page.uuidString,
+                                                                                      reason: PresentationPageChange.channelLost))))
+        XCTAssertNil(offMain { first.readLine() } ?? nil)
+        XCTAssertEqual(served(client), Data("<p>index</p>".utf8))
+        XCTAssertEqual(HtmlPageOutcomes.shared.outcome(for: page)?.outcome, .pending)
+    }
+
+    func testAHolderThatStallsOnItsCloseLeavesTheMovedPageWithItsNewViewer() throws {
+        let fix = try fixture()
+        let page = try openFile(fix)
+        let next = try viewer(fix)
+        XCTAssertTrue(fix.store.offerPageCandidate(page, forSession: fix.session.id, to: next.gen))
+        fix.presenter.stallsOnClose = true
+
+        let (client, _) = try claim(try XCTUnwrap(next.sink.token))
+
+        waitUntil("the offer's channel is adopted") { fix.server.pageServeStreams[page] != nil }
+        XCTAssertFalse(fix.server.presentationHub.isConnected(owner: fix.presenter.frames[0].gen))
+        XCTAssertEqual(fix.session.remoteOverlays.slot(nil)?.owner, next.gen)
+        XCTAssertEqual(HtmlPageOutcomes.shared.outcome(for: page)?.outcome, .pending)
+        XCTAssertEqual(served(client), Data("<p>index</p>".utf8))
+    }
+
+    func testAPageShownHereIsClaimedByTheViewerItIsOfferedToAndServedFromHere() throws {
+        let fix = try fixture()
+        let other = try XCTUnwrap(fix.store.addSession(toWorkspace: try XCTUnwrap(fix.store.currentWorkspaceID), cwd: "/tmp"))
+        let page = HtmlOverlay(source: .file(path: docs.appendingPathComponent("index.html").path, grantRoot: docs.path))
+        XCTAssertNil(fix.store.openHtmlOverlay(other.id, pane: nil, overlay: page, sizePercent: nil))
+        let next = try viewer(fix, session: other)
+        XCTAssertTrue(fix.store.offerPageCandidate(page.id, forSession: other.id, to: next.gen))
+        XCTAssertEqual(other.htmlOverlay?.id, page.id)
+
+        let (client, reply) = try claim(try XCTUnwrap(next.sink.token))
+
+        XCTAssertTrue(try XCTUnwrap(reply).contains(#""ok":true"#))
+        waitUntil("the offer's channel is adopted") { fix.server.pageServeStreams[page.id] != nil }
+        XCTAssertNil(other.htmlOverlay)
+        XCTAssertEqual(other.remoteOverlays.slot(nil)?.owner, next.gen)
+        XCTAssertEqual(served(client), Data("<p>index</p>".utf8))
+        XCTAssertEqual(HtmlPageOutcomes.shared.outcome(for: page.id)?.outcome, .pending)
+    }
+
+    func testAnOfferWhoseClaimReplyFailsLeavesThePageWithItsHolder() throws {
+        let fix = try fixture(responseWriter: { _, response in !response.ok })
+        let page = try openFile(fix)
+        let next = try viewer(fix)
+        XCTAssertTrue(fix.store.offerPageCandidate(page, forSession: fix.session.id, to: next.gen))
+
+        let (_, reply) = try claim(try XCTUnwrap(next.sink.token))
+
+        XCTAssertNil(reply)
+        waitUntil("the offer is taken down") {
+            next.sink.bodies.contains(.pageClose(PresentationPageChange(page: page.uuidString, reason: PresentationPageChange.channelLost)))
+        }
+        XCTAssertEqual(fix.session.remoteOverlays.slot(nil)?.owner, fix.presenter.frames[0].gen)
+        XCTAssertNil(fix.server.pageServeStreams[page])
+        XCTAssertEqual(HtmlPageOutcomes.shared.outcome(for: page)?.outcome, .pending)
     }
 }

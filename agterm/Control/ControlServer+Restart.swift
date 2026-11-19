@@ -50,6 +50,8 @@ extension ControlServer {
             return Self.restartFailure("the process table cannot be read, so the old program could not be tracked; "
                 + "nothing was changed")
         }
+        markOriginRestart(resolved.identity, running: true)
+        defer { markOriginRestart(resolved.identity, running: false) }
         switch client.killConfirmed(name: resolved.daemon) {
         case .killed: break
         case .staleSocket: return Self.restartFailure("\(resolved.daemon) did not confirm the kill; nothing was started")
@@ -102,6 +104,7 @@ extension ControlServer {
                                        within: Self.restartWait) else {
             return Self.restartFailure("the old shell ended (pid \(oldPid)) and no new one was observed")
         }
+        publishRespawn(session: session.id, daemon: resolved.daemon)
         let receipt = ControlRestartReceipt(paneID: resolved.identity.uuidString, oldPid: oldPid, newPid: newPid,
                                             replayedArgv: replay?.argv)
         let replayed = replay.map { "; replay requested: \(CommandRestore.shellQuotedLine($0.argv))" } ?? ""

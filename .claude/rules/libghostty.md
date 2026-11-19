@@ -145,8 +145,8 @@ paths:
   foreground, and the theme foreground for both when neither is set.
   Tint borderless New Session through `.tint`; its label ignores foreground style.
 - Pass `theme = light:X,dark:Y` raw. The pinned libghostty supports conditional themes, but
-  `set_color_scheme` only changes conditional state and emits an unhandled soft reload. agterm must set
-  app and surface schemes, then call `update_config`.
+  `set_color_scheme` does not re-resolve the theme: it changes conditional state and emits an
+  unhandled soft reload. agterm must set app and surface schemes, then call `update_config`.
 - A dark launch must re-side the app config through `update_config` BEFORE the first surface exists;
   `GhosttyApp.syncLaunchColorScheme`, called from `applicationDidFinishLaunching`, owns that.
   `Surface.init` rebuilds a surface config whose conditional state differs from the app's, keeps only
@@ -168,6 +168,8 @@ paths:
 - AppKit draws disclosure triangles from `NSAppearance`, not explicit tint. Pin outline appearance to
   aqua/darkAqua from perceived luminance of the sidebar-tinted theme background, using the 0.5 midpoint.
   Apply at creation and `.agtermAppearanceChanged`. Verify by eye.
+  A selected row's triangle sits on the pill instead, so `SidebarRowView` gives its button the side matching
+  the selected row text, and nil again on deselect.
 - Disable AppKit outline selection immediately after `.plain`, which otherwise restores it. Also clear
   outline/scroll backgrounds; `.plain` avoids source-list's roughly 10px top inset but installs opaque
   control background.
@@ -185,7 +187,8 @@ paths:
   `Contents/Resources/terminfo`. Never set `TERMINFO`; libghostty derives and overwrites it at spawn.
 - Sessions own surfaces. The eager detail deck mounts every session once in a ZStack and toggles only
   opacity, hit testing, and active state. Rehosting through identity changes invalidates Metal drawables.
-- `dismantleNSView` is a no-op. Free only through `destroySurface`. After reading overlay exit status,
+- `dismantleNSView` is a no-op. Free only through `destroySurface`, or `retireSurface` for a pane swapped out
+  while the app may be hidden (scripts/ghostty-patches 0003). After reading overlay exit status,
   nil every store-capturing callback to break the store/session/surface/closure cycle.
 - Create surfaces only with nonzero backing size; otherwise Metal stays blank. Defer through
   `pendingSurfaceCreation` until `setFrameSize`.

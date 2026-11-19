@@ -34,6 +34,7 @@ final class GhosttySurface: PaneRoleMutableSurface {
     var spawnKey: UUID?
     var awaitingSpawnPermit = false
     var launchSeed: LinuxPaneLaunchProvider?
+    var detachedLaunchCommand: String?
 
     /// The owning session's id (so the host can route close/title back to the model).
     let sessionID: UUID
@@ -651,9 +652,6 @@ final class GhosttySurface: PaneRoleMutableSurface {
         let isInterrupt = keyval == 0xFF1B || (control && !hasOtherModifiers && baseScalar?.value == 0x63)
         let keystroke: StatusKeystroke = isInterrupt ? .interrupt
             : (keyval == 0xFF0D || keyval == 0xFF8D ? .submit : .other)
-        if let pane = role.statusPane {
-            controller?.clearAttentionStatus(sessionID, pane: pane, keystroke: keystroke)
-        }
 
         // App-level shortcuts run first via the shared keymap (rebindable built-ins + custom commands +
         // the fixed arrow/page/font fallback). All the dispatch logic lives in AppController.handleKey so
@@ -667,6 +665,9 @@ final class GhosttySurface: PaneRoleMutableSurface {
            ModifierKeyMods.modifierBit(forKeyval: keyval) == nil,
            controller?.retryRemotePane(self, keycode: keycode) == true { return true }
         if controller?.paneLeadConsumesPress(self, keyval: keyval, keycode: keycode, state: state) == true { return true }
+        if ModifierKeyMods.modifierBit(forKeyval: keyval) == nil, let pane = role.statusPane {
+            controller?.clearAttentionStatus(sessionID, pane: pane, keystroke: keystroke)
+        }
 
         // Route through the IM context: a dead-key/compose/CJK sequence is CONSUMED here (its result
         // arrives via the `commit` signal → imCommit). Plain keys pass through (filter returns false) and
@@ -770,6 +771,7 @@ final class GhosttySurface: PaneRoleMutableSurface {
     }
 
     func applyPwd(_ pwd: String) {
+        if role == .scratch { controller?.scratchReportedPwd(sessionID, pwd); return }
         guard reportsPaneState else { return }
         controller?.sessionDidReportPwd(sessionID, pwd, isSplit: isSplitPane)
     }

@@ -3,21 +3,22 @@ import Observation
 
 /// The retry schedule every remote link shares. A laptop asleep for the night should not be retried every
 /// thirty seconds, and should never be given up on either.
-enum RemoteRetryBackoff {
+public enum RemoteRetryBackoff {
     static let firstCap: TimeInterval = 30
     static let lateCap: TimeInterval = 300
     /// Failures in a row before the cap grows.
     static let failuresBeforeLateCap = 8
 
     /// The wait after the `failures`th failure in a row, counted from one.
-    static func delay(afterFailures failures: Int) -> TimeInterval {
+    public static func delay(afterFailures failures: Int) -> TimeInterval {
         let cap = failures > failuresBeforeLateCap ? lateCap : firstCap
         return min(pow(2, Double(min(failures - 1, 30))), cap)
     }
 }
 
 /// The attach wrapper's word that ssh lost the connection, a title under a reserved prefix like
-/// `ZmxLeadNotice`. It carries the pane's lead nonce, so only the pane's current attachment is believed.
+/// `ZmxLeadNotice`. It carries the attach's nonce, its lead nonce or a scratch's link nonce, so only the current
+/// attachment is believed.
 public struct RemoteLinkNotice: Equatable, Sendable {
     static let prefix = "agterm-remote;"
     static let suffix = ":lost"
@@ -131,4 +132,48 @@ public final class RemoteReconnectBook {
         entries[pane] = nil
         resumed[pane] = nil
     }
+}
+
+/// RemoteEndBook holds remote panes whose attach ended while their origin may still hold the session.
+/// A settling entry waits for the origin's answer and paints nothing, so a session the origin closed on purpose
+/// closes without a notice; a shown one draws "ended" over the pane until it closes or attaches again.
+@Observable
+@MainActor
+public final class RemoteEndBook {
+    public static let shared = RemoteEndBook()
+
+    public struct Entry: Equatable, Sendable {
+        public let session: UUID
+        public let host: String
+        public let name: String
+        public fileprivate(set) var shown: Bool
+    }
+
+    private(set) var entries: [UUID: Entry] = [:]
+
+    init() {}
+
+    /// settle holds a pane's notice back until `resolved` or `clear`.
+    public func settle(pane: UUID, session: UUID, host: String, name: String) {
+        entries[pane] = Entry(session: session, host: host, name: name, shown: false)
+    }
+
+    public func show(pane: UUID, session: UUID, host: String, name: String) {
+        entries[pane] = Entry(session: session, host: host, name: name, shown: true)
+    }
+
+    /// resolved shows every notice of `session` still settling: its origin answered without ending it, or the
+    /// link failed before it said.
+    public func resolved(session: UUID) {
+        for (pane, entry) in entries where entry.session == session { entries[pane]?.shown = true }
+    }
+
+    func settling(session: UUID) -> Bool { entries.values.contains { $0.session == session && !$0.shown } }
+
+    /// notice is the entry a pane draws, nil while it settles or has none.
+    public func notice(pane: UUID?) -> Entry? { pane.flatMap { entries[$0] }.flatMap { $0.shown ? $0 : nil } }
+
+    public func clear(pane: UUID) { entries[pane] = nil }
+
+    public func clear(session: UUID) { entries = entries.filter { $0.value.session != session } }
 }

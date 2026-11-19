@@ -33,6 +33,17 @@ public struct ControlRestoreStatus: Codable, Sendable, Equatable {
     }
 }
 
+/// ControlUpdateStatus is the app's update schedule; `lastCheck` is epoch seconds, omitted before any check.
+public struct ControlUpdateStatus: Codable, Sendable, Equatable {
+    public let automaticChecks: Bool
+    public let lastCheck: Double?
+
+    public init(automaticChecks: Bool, lastCheck: Double?) {
+        self.automaticChecks = automaticChecks
+        self.lastCheck = lastCheck
+    }
+}
+
 /// The refusal a `ControlActions` conformer gives for a command this platform does not implement, so the
 /// default implementations and any host wording it the same way cannot drift.
 public enum ControlActionsUnsupported {
@@ -136,18 +147,21 @@ public struct ControlRemoteSession: Codable, Sendable, Equatable {
     public let statusShape: String?
     /// parent is the far side's parent session of a companion, omitted for a top-level session.
     public let parent: String?
-    /// content is `page` for a page companion, which has no panes and attaches only under its parent's row.
+    /// content is `page` for a page, which has no panes; a page companion attaches only under its parent's row.
     public let content: String?
     /// companions lists every companion of a top-level session in sidebar order, attachable or not, so a
     /// group attach can keep that order and name a member it could not bring. `[]` means none; nil means
     /// unknown, which is what a companion row and an older origin carry.
     public let companions: [ControlRemoteMember]?
+    /// scratch is the session's Live scratch daemon, pane `scratch`; omitted when none runs or the origin predates it.
+    public let scratch: ControlRemotePane?
 
     public init(id: String, name: String, windowID: String, windowName: String, workspaceID: String,
                 workspaceName: String, context: String? = nil, cwd: String, splitAxis: String?,
                 panes: [ControlRemotePane], status: String? = nil, statusColor: String? = nil,
                 statusShape: String? = nil, parent: String? = nil, content: String? = nil,
-                companions: [ControlRemoteMember]? = nil) {
+                companions: [ControlRemoteMember]? = nil, scratch: ControlRemotePane? = nil) {
+        self.scratch = scratch
         self.parent = parent
         self.content = content
         self.companions = companions
@@ -214,19 +228,23 @@ public struct ControlRemoteTree: Codable, Sendable, Equatable {
     /// The presentation protocol version this app speaks. Absent from an app that predates the presentation
     /// stream, which is how an attaching Mac learns not to open one.
     public let presentation: Int?
+    /// headless is true from agterm-server, which has no screen of its own to show what its presenter refuses;
+    /// absent from a Mac.
+    public let headless: Bool?
 
     public init(host: String?, endpoint: ControlZmxEndpoint, sessions: [ControlRemoteSession],
-                presentation: Int? = nil) {
+                presentation: Int? = nil, headless: Bool? = nil) {
         self.host = host
         self.endpoint = endpoint
         self.sessions = sessions
         self.presentation = presentation
+        self.headless = headless
     }
 
     /// This answer with the ssh destination the requesting app was given. A field added to this type has to
     /// be copied here too, or the requesting app loses it.
     public func stamped(host: String) -> ControlRemoteTree {
-        ControlRemoteTree(host: host, endpoint: endpoint, sessions: sessions, presentation: presentation)
+        ControlRemoteTree(host: host, endpoint: endpoint, sessions: sessions, presentation: presentation, headless: headless)
     }
 }
 
@@ -262,12 +280,16 @@ public struct ControlLiveResetStatus: Codable, Sendable, Equatable {
     public let pending: Bool
     /// outdated is how many of `sessions` predate the recorded zmx build change; omitted when none.
     public let outdated: Int?
+    /// staleHost is how many of `sessions` run under a session host of an earlier helper build or login;
+    /// omitted when none.
+    public let staleHost: Int?
 
-    public init(sessions: Int, panes: Int, pending: Bool, outdated: Int? = nil) {
+    public init(sessions: Int, panes: Int, pending: Bool, outdated: Int? = nil, staleHost: Int? = nil) {
         self.sessions = sessions
         self.panes = panes
         self.pending = pending
         self.outdated = outdated
+        self.staleHost = staleHost
     }
 }
 

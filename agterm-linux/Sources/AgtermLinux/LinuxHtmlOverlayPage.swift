@@ -169,7 +169,7 @@ final class LinuxHtmlOverlayPage {
         theme = newer
         webkit_user_content_manager_remove_all_style_sheets(manager)
         let themed: Bool = switch overlay.source.kind {
-        case .url, .image, .document: false
+        case .url, .image, .document, .unreadable: false
         case .file, .markdown, .text: true
         }
         let look = themed ? "color-scheme: \(newer.dark ? "dark" : "light"); color: \(newer.foreground); " : ""
@@ -189,7 +189,9 @@ final class LinuxHtmlOverlayPage {
             var color = GdkRGBA(red: Float((rgb >> 16) & 255) / 255, green: Float((rgb >> 8) & 255) / 255,
                                 blue: Float(rgb & 255) / 255, alpha: 1)
             webkit_web_view_set_background_color(cast(webView), &color)
-            if webkit_web_view_get_uri(cast(webView)) != nil { webkit_web_view_reload(cast(webView)) }
+            if webkit_web_view_get_uri(cast(webView)) != nil {
+                if let textPage { textPage.load(fresh: false) } else { webkit_web_view_reload(cast(webView)) }
+            }
         }
     }
 
@@ -241,6 +243,8 @@ final class LinuxHtmlOverlayPage {
     }
 
     private var pageURL: URL {
+        if overlay.markdownLinks != nil, let current = webkit_web_view_get_uri(cast(webView)),
+           let url = URL(string: String(cString: current)), url.scheme == HtmlSource.replicaScheme { return URL(fileURLWithPath: url.path) }
         if let path = overlay.source.imagePath ?? overlay.source.markdownPath ?? overlay.source.textPath ?? overlay.source.linuxDocumentPath { return URL(fileURLWithPath: path) }
         if let raw = webkit_web_view_get_uri(cast(webView)), let url = URL(string: String(cString: raw)),
            url.scheme == HtmlSource.replicaScheme { return URL(fileURLWithPath: url.path) }
@@ -266,12 +270,23 @@ final class LinuxHtmlOverlayPage {
         sourceLoadRevision += 1
         loadFailed = false
         store?.setHtmlLoadState(id, state: .loading, error: nil)
+        if let links = overlay.markdownLinks {
+            var uri = URLComponents()
+            uri.scheme = HtmlSource.replicaScheme
+            uri.host = id.uuidString.lowercased()
+            uri.path = links.path
+            guard let address = uri.url?.absoluteString else { return fail("invalid markdown path") }
+            webkit_web_view_load_uri(cast(webView), address)
+            return
+        }
         switch overlay.source {
+        case .unreadable(let reason): fail(reason)
         case .text:
             textPage?.load()
         case .image, .markdown, .document:
             loadGeneratedPage(overlay.source, revision: sourceLoadRevision)
         case .replica(let path, let content):
+            if case .text = content { return textPage?.load() ?? () }
             if content != .html { return loadReplicaContent(path: path, content: content) }
             var uri = URLComponents()
             uri.scheme = HtmlSource.replicaScheme

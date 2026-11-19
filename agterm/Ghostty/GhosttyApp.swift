@@ -95,9 +95,10 @@ final class GhosttyApp {
     /// Which keystroke clears a blocked or completed glyph; read at keystroke time by the surface factories'
     /// status-clear closure. Settings-mirrored like `toolbarMode`.
     private(set) var statusReset: StatusReset = .firstKey
-    /// Whether a click anywhere on a sidebar workspace row toggles its expansion; on by default. The sidebar
-    /// Coordinator reads it in `handleSingleClick`, and the disclosure triangle ignores it because AppKit
-    /// toggles that natively. Settings-mirrored like `toolbarMode`.
+    /// badgeReset mirrors the setting for `wirePane`'s input closure, read at keystroke time.
+    private(set) var badgeReset: StatusReset = .firstKey
+    /// workspaceRowClickExpands mirrors the setting for `handleSingleClick`; on by default. The disclosure
+    /// triangle, which AppKit toggles natively, and the row icon ignore it.
     private(set) var workspaceRowClickExpands: Bool = true
     /// The persisted choice and effective mode frozen before the first surface. An ineligible live request
     /// falls back to fresh shells without releasing its daemon claims. Settings changes never mutate either
@@ -109,6 +110,8 @@ final class GhosttyApp {
     /// The Live pane shell ghostty `command` names, latched with the restore decision it feeds. A running
     /// daemon keeps the shell it started with, so a reload switching it would mislabel those panes.
     let liveCommandShell: String?
+    /// commandProgram is the program ghostty `command` starts, shell or not, nil when the setting is absent.
+    let commandProgram: String?
     var restoreRunningCommand: Bool { launchRestoreMode == .rerun }
     static func capturesForegroundOnExit(mode: RestoreMode) -> Bool { mode == .rerun || mode == .live }
     /// Whether the window title bar shows the attention bell icon; off by default. The title bar reads it via
@@ -171,11 +174,13 @@ final class GhosttyApp {
         let resolvedResources = Self.resolveResources()
         let initialSettings = Self.settingsStore().load()
         let configInputs = Self.resolveConfigInputs(settings: initialSettings)
-        let commandShell = Self.resolveLiveCommandShell(configInputs)
+        let command = Self.resolveCommand(configInputs)
+        let commandShell = command.flatMap(ZmxSupport.commandShell(fromCommand:))
         let restoreDecision = initialSettings.effectiveRestoreMode.launchDecision(
             liveUnavailableReason: ZmxLaunch.liveUnavailableReason(commandShell: commandShell))
         restoreLaunchDecision = restoreDecision
         liveCommandShell = commandShell
+        commandProgram = command.flatMap(ZmxSupport.commandProgram(fromCommand:))
         resourcesDir = resolvedResources
         let booted = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS
         // libghostty adopts the user's numeric locale; CoreSVG mis-sizes symbols with decimal commas.
@@ -249,6 +254,13 @@ final class GhosttyApp {
         if let derived = callbacks.takeDerivedAppConfig() { ghostty_config_free(derived) }
     }
 
+    /// setColorScheme records the system appearance in libghostty, which answers `CSI ?996n` and
+    /// mode 2031 from it.
+    func setColorScheme(isDark: Bool) {
+        guard let app else { return }
+        ghostty_app_set_color_scheme(app, isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT)
+    }
+
     /// Set the window translucency the chrome applies. `SettingsModel` calls this and every setter below at
     /// launch and on each change; the window re-syncs on `.agtermAppearanceChanged`.
     func setWindowTranslucency(opacity: Double, blurRadius: Int, ignoreReduceTransparency: Bool) {
@@ -281,6 +293,10 @@ final class GhosttyApp {
 
     func setStatusReset(_ mode: StatusReset) {
         statusReset = mode
+    }
+
+    func setBadgeReset(_ mode: StatusReset) {
+        badgeReset = mode
     }
 
     func setHiddenInterfaceElements(_ elements: Set<InterfaceElement>) {
@@ -354,14 +370,26 @@ final class GhosttyApp {
     /// plain circle — lives in host-free `AgentStatus.symbolName(override:configured:)`; this supplies only the
     /// mirrored Settings value. Shared by the sidebar `StatusIconView` and SwiftUI `StatusGlyph` against drift.
     func statusSymbolName(for status: AgentStatus, override shape: StatusShape?) -> String {
-        let configured: StatusShape?
+        status.symbolName(override: shape, configured: configuredStatusShape(for: status))
+    }
+
+    /// The symbol weight for a status glyph, resolved with the same precedence as `statusSymbolName`.
+    func statusSymbolWeight(for status: AgentStatus, override shape: StatusShape?) -> NSFont.Weight {
+        Self.symbolWeight(status.shape(override: shape, configured: configuredStatusShape(for: status)))
+    }
+
+    /// The weight one shape draws at: heavy for a stroke glyph, so its ink matches the filled silhouettes.
+    static func symbolWeight(_ shape: StatusShape) -> NSFont.Weight {
+        shape.isStroke ? .heavy : .regular
+    }
+
+    private func configuredStatusShape(for status: AgentStatus) -> StatusShape? {
         switch status {
-        case .active: configured = activeStatusShape
-        case .blocked: configured = blockedStatusShape
-        case .completed: configured = completedStatusShape
-        case .idle: configured = nil
+        case .active: activeStatusShape
+        case .blocked: blockedStatusShape
+        case .completed: completedStatusShape
+        case .idle: nil
         }
-        return status.symbolName(override: shape, configured: configured)
     }
 
     /// The configured tint for a status glyph. `idle` never renders a glyph (filtered out before any glyph is
@@ -539,9 +567,9 @@ final class GhosttyApp {
         return sources
     }
 
-    /// resolveLiveCommandShell reads ghostty `command` from every config source and include, then
-    /// classifies the final raw value: an earlier supported one must not outlive a later unsupported one.
-    private static func resolveLiveCommandShell(_ inputs: ConfigInputs) -> String? {
+    /// resolveCommand reads ghostty `command` from every config source and include and returns the final raw
+    /// value, so callers classify it: an earlier supported one must not outlive a later unsupported one.
+    private static func resolveCommand(_ inputs: ConfigInputs) -> String? {
         let sources = configSources(ghosttyConfigPath: inputs.scopedURL.path,
                                     inheritGlobalConfig: inputs.inheritGlobalConfig)
         let pairs = GhosttyConfigText.keyValues(loading: sources, home: NSHomeDirectory()) {
@@ -550,7 +578,7 @@ final class GhosttyApp {
         guard case .value(let command) = GhosttyConfigText.lastSetting(of: "command", in: pairs, parse: { $0 }) else {
             return nil
         }
-        return ZmxSupport.commandShell(fromCommand: command)
+        return command
     }
 
     /// keyValues reads a config file's pairs; a missing or unreadable file yields none.
@@ -807,6 +835,10 @@ extension Notification.Name {
     /// skipping `.agtermWindowFrontmostChanged`, and a new window has no saved frame, so no `didMove`/
     /// `didResize` fires either.
     static let agtermWindowAttachmentChanged = Notification.Name("agterm.windowAttachmentChanged")
+
+    /// Posted after a GUI action finishes changing a `window.list` field that no other observed
+    /// notification reflects.
+    static let agtermWindowCatalogChanged = Notification.Name("agterm.windowCatalogChanged")
 
     /// Posted after `keymap.conf` is (re)loaded and reparsed, so the custom-command runner rebuilds its matcher
     /// and the action palette re-reads the custom commands. The data-driven menu shortcuts re-render on their

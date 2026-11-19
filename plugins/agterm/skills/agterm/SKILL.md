@@ -1,23 +1,24 @@
 ---
 name: agterm
 description: >
-  Drive agterm on macOS or GTK Linux, via agtermctl. Use in an agterm session:
-  manage sessions, companions and workspaces; split panes; toggle the scratch; run, hide or show overlays;
-  read exit status; show HTML pages, interactive too, URLs or dev servers in an overlay with saved logins;
-  post a HUD/caption/notification/sidebar activity line; message panes; show a picker, question or input dialog; show images/markdown/code; type
-  into or restart a pane by id, copy its selection, set the clipboard, search its scrollback; manage windows, font size and
+  Drive agterm, a macOS terminal, via agtermctl. Use in an agterm session:
+  manage and move sessions, companions and workspaces; split panes; toggle scratch; run/hide/show overlays;
+  read exit status; show HTML pages, URLs or dev servers in an overlay with saved logins or as a
+  page row;
+  post a HUD/caption/notification/sidebar activity line; message panes; show a picker, question or input dialog; show images/markdown/code/JSONL; type
+  into or restart a pane by id, copy its selection, set the clipboard, search scrollback; manage windows, font size and
   theme; reload or edit the keymap, event hooks and agterm-scoped ghostty config; run a custom command; read
   a closed window's session screen; subscribe to status, notify, lifecycle, selection,
   pane, tree and launch events; wait on agent status.
-  Covers window/workspace/session addressing, AGTERM_* variables,
-  attaching sessions and companions from another Mac, cookbook recipes, running/installed version, upgrades, diagnosing
+  Covers window/workspace/session addressing, session links, AGTERM_* variables,
+  another Mac's sessions or windows, agterm-server hosts, cookbook recipes, version and upgrades, diagnosing
   problems, filing a bug or feature request.
 when_to_use: >
   Trigger on: agterm, agtermctl, AGTERM_SESSION_ID, and, from inside a session, plain requests such as
-  split the pane, close the overlay, hide the overlay for a moment, show a message over the session, show a question dialog, agtermctl ask,
+  split the pane, print a link that jumps to a session, close the overlay, hide the overlay for a moment, show a message over the session, show a question dialog, agtermctl ask,
   ask the user to type a value or a message, let the user pick one or several items from a list,
-  show an image inline, show this markdown file rendered, show this source file or log at a line, show me the diff of a file or the changes as links, tail or follow this log file, search the log or text page in the overlay, show this HTML page or artifact, make an HTML page or explainer for this and show
-  it, make a page that switches sessions or returns a choice, preview the report you generated, show this URL or the running dev server, keep me logged in to a page shown in an overlay, search the scrollback, flag every session in a workspace, tint a session or workspace row a color, show status or activity under a session in the sidebar, make a companion session, keep a related program next to a session, duplicate this session with its programs as a companion, open a sub-session under this one, fold a session's companions, show a page as a companion of this session, run my custom command, send a message to the other pane or another agent, read my messages, wait for a message, tell me when the selected session changes, wait until that worker session finishes, bring back the session I just closed, attach a session from another Mac, attach a remote session with all its companions, copy this to the clipboard, was agterm upgraded under the running app, upgrade agterm without losing sessions, what recipes are there,
+  show an image inline, show this markdown file rendered, show this source file or log at a line, show me the diff of a file or the changes as links, tail or follow this log file, search the log or text page in the overlay, wrap long lines in the text or log page, show a JSONL file or expand its records, show this HTML page or artifact, make an HTML page or explainer for this and show
+  it, make a page that switches sessions or returns a choice, preview the report you generated, show this URL or the running dev server, keep me logged in to a page shown in an overlay, search the scrollback, flag every session in a workspace, tint a session or workspace row a color, show status or activity under a session in the sidebar, make a companion session, keep a related program next to a session, duplicate this session with its programs as a companion, make this session a companion, move a companion under another session, open a sub-session under this one, fold a session's companions, show a page as a companion of this session, open a page as its own session row in the sidebar, run my custom command, send a message to the other pane or another agent, read my messages, wait for a message, tell me when the selected session changes, wait until that worker session finishes, bring back the session I just closed, attach a session from another Mac, attach a remote session with all its companions, start a new session on another Mac or server, open a remote window for my Linux server, run sessions on a Linux host with agterm-server, watch events or wait for a session on the agterm-server host, install agterm-server on a Linux host, detach or reattach a remote session, copy this to the clipboard, was agterm upgraded under the running app, check for an agterm update, upgrade agterm without losing sessions, what recipes are there,
   the keymap editor will not open.
 allowed-tools: Bash(agtermctl *)
 ---
@@ -107,11 +108,12 @@ its slot until it closes, so opening another there is refused. Separately, the a
 or whatever share Settings sets instead; not part of the tree and not owned by a window).
 
 Inspect the live tree any time with `agtermctl tree --json` (workspaces → sessions, each with
-`id`, `name`, `cwd`, `splitCwd`, `title`, `active`, `split`, `overlay`, `hud`, `ask`, `scratch`, `status`, `background`, `surfaces`). `title` is the raw OSC
+`id`, `name`, `cwd`, `splitCwd`, `scratchCwd`, `title`, `active`, `split`, `overlay`, `hud`, `ask`, `scratch`, `status`, `background`, `surfaces`). `title` is the raw OSC
 terminal title (e.g. a remote host over SSH), omitted when none was reported — read it when a
 session's local `cwd` is stale because it's connected to a remote. `splitCwd` is the split pane's last
 reported directory, falling back to its restored directory, then the primary cwd. It is present for a
-shown or hidden split and omitted without one or on older servers. `surfaces[].id` is the
+shown or hidden split and omitted without one or on older servers. `scratchCwd` is the scratch shell's own
+directory, present while a scratch exists, shown or hidden. `surfaces[].id` is the
 control address for `surface zoom` and `surface cursor` (`left`, `right`, `scratch`, `overlay`,
 `overlay-left`, or `overlay-right`), including hidden-but-alive split/scratch surfaces. The tree object also carries
 read-only top-level fields — `idleMs` (ms since the last user input in the window), `autoFollowMs`
@@ -169,10 +171,13 @@ you open overlays / type into whatever the user has selected, not your own sessi
 - **Live sessions** runs every primary and split pane through zmx and reattaches to the same process. It requires
   zsh or fish as the password-database login shell on macOS and Linux, or as the absolute path in the ghostty `command` agterm loads
   (ghostty.conf, an inherited global config, or their includes), which then replaces the login shell in
-  Live panes. Scratch, overlay, and quick terminals stay temporary.
+  Live panes. The scratch runs in a daemon of its own and comes back hidden; overlay and quick terminals stay temporary.
 
-Upgrading: with Live sessions already active, install the new version, quit agterm and open it again. Local
-primary and split panes reattach to the same processes and no reset is needed. `agtermctl version` adds an
+Upgrading: a release build updates itself (agterm ▸ Check for Updates…, the title-bar arrow, or
+`agtermctl update check`) and offers a restart; with Live sessions already active, local primary and split
+panes reattach to the same processes after it, as after installing by hand, quitting and reopening. An app
+started with a custom `AGTERM_STATE_DIR` comes back without it; reopen it with the same `AGTERM_STATE_DIR` to
+reconnect. `agtermctl version` adds an
 `installed:` line when the installed version or recorded commit differs from the running app. When switching
 from Fresh shells or Re-run commands to Live sessions, the current shells end at the first clean quit. The
 first Live launch starts captured foreground commands again where possible; shell state is lost.
@@ -278,12 +283,15 @@ Poll this after an unattended create),
 entries in `surfaces` report their own Boolean, while scratch and overlays omit it),
 `liveAttribution` and `splitLiveAttribution` (local Live pane attribution, including hidden splits;
 [values and omission rules](reference.md#tree)),
+`liveHostStale` and `splitLiveHostStale` (true for a pane whose session host is from an earlier agterm
+build or login, which `zmx reset` moves to the current one; omitted otherwise),
 `remoteHost` (the machine an attached session came from, the read side of `zmx attach`; omitted for a local
-session, and never present after a relaunch because a remote session is not persisted),
+session; an attached row is saved and attached again at relaunch, while a remote window rebuilds its rows),
+`remoteSessionID` (the origin's id for the session an attached row shows, the id `zmx attach` takes; on a remote window's row it equals the row's `id`; omitted for a local session),
 `presentation` (attached session only: the mirroring stream's `state` - `connecting`, `connected`,
 `unsupported`, or `failed` with `error` - not the ssh connection's - plus `mode`, `presenter` while its stream holds that role, else `mirror`),
-`presenters` (origin session: `mirrors`, the streams mirroring it without presenting, and `presenter: true`
-when one presents it) and `remoteOverlays` (origin session: overlay slots a presenting Mac holds, a page's
+`presenters` (origin session: `viewers`, the attached streams showing it, `mirrors`, those without the
+presenter role, and `presenter: true` when one holds it) and `remoteOverlays` (origin session: overlay slots a presenting Mac holds, a page's
 `pageID` included; HTML pages follow the same placement, see reference.md Remote sessions),
 `hasSplit` (whether a second pane exists at all, shown or hidden; omitted when there is none — read this
 rather than `split`, which is false for a split hidden with ⌘D even though its pane is still alive),
@@ -352,7 +360,8 @@ omitted when expanded).
   create (and focus) a session. Target the workspace by id/prefix (`--workspace`) OR by name
   (`--workspace-name`, mutually exclusive); add `--create-workspace` to reuse-or-create the named
   workspace when absent. `--command` runs that program as the session process instead of a login shell
-  (argv-only, and with the app's GUI `PATH` — a Homebrew/non-default binary needs an absolute path or a
+  (outside Live sessions bash runs it as `exec <line>`, so wrap a `;` or `&&` list in `sh -c`, and it gets the
+  app's GUI `PATH` — a Homebrew/non-default binary needs an absolute path or a
   `zsh -lc '…'` wrapper, else exit 127; same caveat for `session scratch --command` and `session overlay
   open` below);
   `--wait` (with `--command`, else an error) HOLDS the session open after the command exits, showing the
@@ -374,7 +383,7 @@ omitted when expanded).
   off its primary pane, where `tree.cwd` reports the primary, or a remote session, where it can read as
   home).
 - `session new --parent SID [--cwd DIR] [--command CMD [--wait]] [--name NAME] [--no-select]` - create a
-  companion session: an ordinary session pinned for life to SID, listed right after it in its workspace and
+  companion session: an ordinary session pinned to SID, listed right after it in its workspace and
   indented under it in the sidebar tree (a companion SID means its parent). Use it to keep a related program
   next to a session: `agtermctl session new --parent active --command 'tail -f build.log' --name logs`
   (`--wait` keeps its output after it exits). `--cwd` defaults to the parent's focused directory; it refuses
@@ -384,14 +393,23 @@ omitted when expanded).
   `session duplicate --companion` copies a session's split layout into a new companion and starts another copy of
   each pane's program (Duplicate as Companion); nothing is created when a pane's program cannot be copied.
   Session/pane IDs and zmx daemon names in the copied arguments are rebound to the new session and panes.
+  `session convert --companion` turns a running top-level session into a companion of a fresh shell opened in its
+  place, keeping its program, id and companions (Convert to Companion).
+  `session move --parent SID [--index N]` moves a companion under another top-level session, any workspace,
+  still running (Move to in the row menu, or a sidebar drag).
   `session overlay open --html FILE --companion` (or `--url URL --companion`) adds a page companion: a row
-  under the target session that shows the page and runs no shell. It closes when the page does and is never
-  saved, so an `on app.launched` hook recreates it after a relaunch. Read back as the node's `content: "page"`.
-- `session close [--target T ...] [--undoable]` — close one session, or repeat `--target` to close a batch with one
+  under the target session that shows the page and runs no shell. `--page` instead of `--companion` opens a
+  top-level page session after the target's group, which holds companions of its own. Every local page row is
+  saved and comes back after a relaunch. Read back as the node's `content: "page"`; details in reference.md.
+- `session close [--target T ...] [--undoable] [--terminate]` — close one session, or repeat `--target` to close a batch with one
   grace-period undo. `--undoable` gives a single target that grace too, as ⌘W does, so undo (⌘Z) or, for a local
   session, `recent open` inside it brings the running shell back; `result.undoable` says whether it applied (false when Settings turns undo off).
+  An undoable close answers `result.undoID`; `session undo --target UNDO_ID` brings it back while the grace lasts.
+  A single close answers `result.recentID`, the Recent Closed entry `recent open` takes. Closing a session attached
+  from another host only detaches it; `--terminate` ends it on that host too. Restart, `zmx kill`, Convert, Duplicate,
+  split, scratch and `session restore` on such a session run on its host and the result attaches here.
 - `session select` · `session rename <name>` · `session reveal` (select the focused pane's cwd in Finder).
-- `session go --to next|prev|first|last|next-attention|prev-attention` — move the selection between sessions.
+- `session go --to next|prev|first|last|next-attention|prev-attention|N` — move the selection between sessions; `N` is the 1-based place in sidebar order.
 - `session move <workspace>` (relocate) or `session move --to up|down|top|bottom` (reorder within the
   workspace) or `session move --after SID | --before SID` (place after/before an anchor session; the anchor carries its own
   workspace, so this relocates + positions in one shot, even cross-workspace). For workspace and
@@ -431,7 +449,7 @@ omitted when expanded).
   legacy left/right behavior. The GUI actions are ⌘D for vertical and ⌘⇧D for horizontal; either
   transposes a shown split of the other orientation. Hide keeps it alive; `close` destroys the pane and
   whatever runs in it.
-- `session lead [--pane left|right]`: for a session shared with another Mac, take the lead of a pane here
+- `session lead [--pane left|right|scratch]`: for a session shared with another Mac, take the lead of a pane here
   (what a key press on its "in use" cover does). `tree`'s `surfaces[].lead` reads `leader`/`follower`/
   `unowned`. On the Mac the session runs on, a covered pane still takes `session type`/`text`.
 - `session restart --pane-id ID [--command LINE]`: end one pane's shell and its foreground program, and start a
@@ -454,10 +472,10 @@ omitted when expanded).
 - `session resize --split-ratio R | --grow-left D | --grow-right D | --grow-primary D | --grow-split D | --grow-top D | --grow-bottom D` - move the split divider (the GUI only drags
   it, or double-clicks it for an even split; bind any other fraction via a
   `command "agtermctl session resize …"` custom action). `--split-ratio` sets
-  the absolute primary-role pane fraction (0..1, clamped to 0.05..0.95). On macOS, the area excludes
-  the titlebar. Primary/split grow selectors follow model roles; left/right/top/bottom follow physical
-  sides. Prints the applied primary fraction.
-- `session status <idle|active|completed|blocked> [--blink] [--auto-reset] [--sound NAME] [--color #rrggbb] [--shape SHAPE] [--pane left|right|scratch] [--pane-id TOKEN]` — set the sidebar agent glyph (`--sound default` or a system sound name plays a one-shot sound; `--color` tints the glyph for this call only, reverting on the next status set without it; `--shape` (one of the names `reference.md` lists) picks its silhouette for this call only and reverts the same way, read back as the tree `statusShape` field; `--pane` records which pane set it — `left`=main, `right`=split, `scratch` — so foreground typing in another pane won't clear it, and while the session is `blocked` a status from another pane that is not itself `blocked` is refused with `blocked status owned by pane <pane>` so one pane's agent cannot erase the other's request for input, `idle` included since the bundled hooks emit it unprompted; any user-initiated GUI selection (auto-follow, attention-nav ⌃⌥↑/↓, plain session nav, the command palettes, a Dock-menu session, a sidebar row click) reveals that pane when the status needs attention (`blocked`/`completed`); `active` preserves the existing pane selection; the pane reads back as the tree `statusPane` field; the socket `session go next-attention` only steps the selection, it does not itself reveal the pane; `--pane-id` is the hook-forwarded stable surface token (`$AGTERM_PANE_ID`) that resolves the pane's live slot and overrides a stale `--pane` after a promote + re-split — scripts set `--pane` directly and leave `--pane-id` to the hook).
+  the absolute primary-pane fraction of the area below the titlebar (left or top; 0..1, clamped to
+  0.05..0.95). The grow options are
+  aliases for growing the primary or split pane. Prints the applied fraction.
+- `session status <idle|active|completed|blocked> [--blink] [--auto-reset] [--if-idle] [--sound NAME] [--color #rrggbb] [--shape SHAPE] [--pane left|right|scratch] [--pane-id TOKEN]` — set the sidebar agent glyph (`--if-idle` applies it only to an idle row and is otherwise an ok no-op; `--sound default` or a system sound name plays a one-shot sound; `--color` tints the glyph for this call only, reverting on the next status set without it; `--shape` (one of the names `reference.md` lists) picks its silhouette for this call only and reverts the same way, read back as the tree `statusShape` field; `--pane` records which pane set it — `left`=main, `right`=split, `scratch` — so foreground typing in another pane won't clear it, and while the session is `blocked` a status from another pane that is not itself `blocked` leaves the block shown (still ok) so one pane's agent cannot erase the other's request for input, `idle` included since the bundled hooks emit it unprompted, and one pane finishing leaves the row on the other's work, the working panes reading back as the tree `activePanes` list; any user-initiated GUI selection (auto-follow, attention-nav ⌃⌥↑/↓, plain session nav, the command palettes, a Dock-menu session, a sidebar row click) reveals that pane when the status needs attention (`blocked`/`completed`); `active` preserves the existing pane selection; the pane reads back as the tree `statusPane` field; the socket `session go next-attention` only steps the selection, it does not itself reveal the pane; `--pane-id` is the hook-forwarded stable surface token (`$AGTERM_PANE_ID`) that resolves the pane's live slot and overrides a stale `--pane` after a promote + re-split — scripts set `--pane` directly and leave `--pane-id` to the hook).
 - `session wait --until STATUS [--until STATUS ...] [--timeout SECONDS]` — block until the session's agent
   status is one of the values, returning at once when it already is. Exit 0 and print the status on a match,
   2 when the session closes, 124 on timeout, 1 on failure. Use it to wait for a worker started with
@@ -509,7 +527,7 @@ omitted when expanded).
   and `clear --pane` returns the pane to the default. `--opacity` 0.0–1.0. (An image/text watermark
   renders the pane opaque, overriding window translucency, so it shows; a `color` takes no opacity and
   honors the Settings window translucency instead.)
-- `session overlay open (<command> [--cwd DIR] [--wait] [--block] | --html FILE [--cwd DIR] [--navigation | --chromeless] [--js] [--block] | --url URL [--navigation | --chromeless] [--js] | --image FILE | --markdown FILE | --text FILE [--line N]) [--size-percent N [--width PT] [--height PT]] [--background-color #rrggbb] [--follow] [--pane left|right]` ·
+- `session overlay open (<command> [--cwd DIR] [--wait] [--block] | --html FILE [--cwd DIR] [--navigation | --chromeless] [--js] [--block] | --url URL [--navigation | --chromeless] [--js] | --image FILE | --markdown FILE [--navigation] | --text FILE [--line N]) [--size-percent N [--width PT] [--height PT]] [--background-color #rrggbb] [--follow] [--pane left|right]` ·
   `session overlay resize (--size-percent N [--width PT] [--height PT] | --width PT [--height PT] | --height PT | --full)` ·
   `session overlay close [--pane left|right]` ·
   `session overlay hide|show|toggle [--pane left|right]` ·
@@ -742,7 +760,10 @@ at the moment it is created.
 title and the session ids it restores; the last 20 only · `recent open [ID] [--window W]` - reopen an
 entry by id or prefix, the newest with no id; the session keeps its id, goes to the window that already
 holds its session or workspace when one does, and the window is not raised; `complete` false means the
-entry stayed in the list · `recent clear` - empty the list. `list` and `clear` refuse a target or `--window`.
+entry stayed in the list · `recent clear` - empty the list. `list` and `clear` refuse a target. A row attached
+from another host and closed here is a `remote` entry naming its `host`; opening it attaches the session again or
+has the host reopen it first. `--window` naming a server window runs `list`, `open` and `clear` on that server; naming a window of another
+Mac, they act on that window's entries only.
 
 **zmx** - `zmx list` - every daemon behind a live session joined against the pane that claims it, under the
 restore status as a header; a CLOSED window's panes are claimed with zero clients, which is a resting
@@ -750,12 +771,13 @@ state rather than a leak · `zmx screen NAME [--all|--lines N]` - a daemon's scr
 `zmx list` prints, reaching a pane in a closed window, which `session text` cannot since it resolves only
 open-window sessions; attaches nothing · `zmx prune` - kill the daemons no pane claims and nothing is attached to,
 refusing outright on an incomplete or conflicted inventory, and reporting each daemon separately since a
-stale-socket cleanup is not a kill · `zmx kill --target ID --pane left|right --force` - destroy one pane's
-daemon and the process in it; all three are required because this kills a backend process that reaches a
+stale-socket cleanup is not a kill · `zmx kill --target ID --pane left|right --force [--pane-id TOKEN]` - destroy
+one pane's daemon and the process in it (`--pane-id` refuses when the role now names another pane); all three are required because this kills a backend process that reaches a
 pane no window is showing and every client attached to it, and none of its outcomes gets the undo grace ·
-`zmx reset --force` (macOS only) - Agterm ▸ Reset Live Sessions… without the dialog: ends every live session this app
-does not supervise, or that predates the last Live sessions update, at the next launch and recreates it under
-the session host, quitting and reopening
+`zmx reset --force` - Agterm ▸ Reset Live Sessions… without the dialog: ends every live session this app
+does not supervise, that predates the last Live sessions update, or that runs under the session host of an
+earlier agterm build or login, at the next launch and recreates it under the current session host, quitting
+and reopening
 agterm right after the reply; refused outside Live mode, on an incomplete inventory, and with nothing to
 reset ·
 `zmx tree [HOST]` - attachable sessions across EVERY open window, on another SSH host with a HOST or this app
@@ -763,26 +785,31 @@ without one (the bare form is exactly what the remote call runs on the far side)
 `zmx attach` takes plus `windowID`/`windowName`, `workspaceID`/`workspaceName` (show the names, group by
 the ids: neither is unique), `context` when set, `status`/`statusColor`/`statusShape` when not idle, and
 per-pane `foreground`; only a session whose every pane
-still has a live daemon is listed, and an empty list does NOT mean the far side is not in live mode -
+still has a live daemon is listed (a top-level page session, which has none, is listed too), and an empty list does NOT mean the far side is not in live mode -
 `zmx list` reports that · `zmx attach
 HOST SESSION [--window W]` - open one of them here, marked remote and carrying its split, in the
 chosen open local window's current workspace (default: frontmost after discovery). A background target
 keeps the frontmost window unchanged; an invalid or closed target fails. Takes the ID from that
 listing, not the name, and resolves the remote again first, so a session that has gone fails instead of
-handing back a fresh shell wearing its name. Closing it here ends only this side's connection and it is
-never restored after a relaunch. Add `--companions` to attach the group; see
-[details](reference.md#restore). The attached row mirrors the origin session's status, context, `notify`
+handing back a fresh shell wearing its name. Closing it here ends only this side's connection. An open row is
+saved and attached again at the next launch; one whose session is gone from the origin closes. Add `--companions` to attach the group; see
+[details](reference.md#restore). An attached page row shows the origin's page over its page channel and mirrors
+nothing; an attached terminal row mirrors the origin session's status, context, `notify`
 notifications, HUD and the layout of attached panes over a stream that reconnects by itself
 ([details](reference.md#restore)); read
-`presentation.state` in `tree`, and expect mirrored status, context and HUD to clear while it is down. One
-attached row per session holds the presenter role: an `ask open` or `session overlay open` newly aimed at
-the session on the origin is handed to it only when the target pane reports `follower` there, or every
-existing pane does for session-wide placement. Mixed, unknown or unowned roles stay local; one already
-open stays where it is when the lead changes. The overlay's program still runs once on the origin, and a remote
+`presentation.state` in `tree`, and expect mirrored status, context and HUD to clear while it is down. An
+`ask open` or `session overlay open` newly aimed at the session on the origin goes to the attached Mac leading
+the target pane (session-wide work: the primary pane), else to the row holding the presenter role, and on a
+Mac origin only when that pane reports `follower` there; otherwise it stays local. An open ask, pick or page
+follows the lead to the Mac now leading, the origin included, and a program overlay stays where it started; a
+pane's `remote` in `tree` says where its next one goes. The overlay's program still runs once on the origin, and a remote
 `overlay close` replies when the cancel is requested
 ([details](reference.md#restore)). Both run ssh non-interactively, so key-based auth must already work, and
 the far side needs `agtermctl` installed by the cask or the Help action: a machine merely running agterm
 has no CLI an ssh command can find. Every zmx command needs a running agterm.
+`session new --remote HOST` creates a new session on another Mac in Live sessions mode or an agterm-server
+host and attaches it into the window's current workspace (File ▸ New Remote Session…); see reference.md under
+`session new --remote`.
 
 **clipboard** — `clipboard set [TEXT]` — copy text to the clipboard of every terminal showing the pane
 the command runs in; the text is the argument, or stdin when omitted (`git diff | agtermctl clipboard set`).
@@ -805,10 +832,17 @@ through; other connection settings belong in `~/.ssh/config` under a host alias,
 settings (no pty, stdin kept, plain session, no fork, no `RemoteCommand`) are the installer's and win
 over the config. The remote needs `tic` (ncurses) and says so when it is missing.
 
+**update** — `agtermctl update check` — asks the app serving the socket's feed for a newer version with no alert,
+waits, and answers `agterm X is available on HOST; opening the update window`, `no update offered on HOST`, or
+`update window opened on HOST` for one already waiting; an unreadable feed is an error.
+Refused by a build without an update feed, while a check runs, and by agterm-server: a pane of a Linux server's
+remote window gets that refusal, while a pane of another Mac's window checks that Mac, which the reply names.
+
 **version** — `agtermctl version` — which agterm is serving this socket, as `result.app` (`version`, plus
 `commit` when the build recorded one), and the bundle on disk as `result.installed`, which differs from
 `app` once the app was replaced under the running one (a background `brew upgrade`) and is omitted when
-unknown. App-global: no target, no `--window`, no window need be open, so it
+unknown. A release build adds `result.updates` (`automaticChecks`, `lastCheck` epoch seconds).
+App-global: no target, no `--window`, no window need be open, so it
 works as a preflight from a keymap-launched script, which has no `$TERM_PROGRAM_VERSION`. Address the
 socket explicitly (`--socket "$AGTERM_SOCKET"`, or `"$AGT_SOCKET"` in a keymap child): a bare call
 resolves the DEFAULT socket, which may be another app. The same identity is on the tree top level as
@@ -826,7 +860,9 @@ agtermctl session overlay open --markdown /path/to/plan.md --size-percent 95 --t
 ```
 
 Pictures kept in the file's own folder show; other pictures show their alt text, raw HTML stays text, and a web
-link opens in the browser after the user confirms. The user gets the same view by ⌘-clicking the file's path in a
+link opens in the browser after the user confirms. Add `--navigation` to let a relative link to another `.md`
+file in its folder or below open in the same page with back and forward; a ⌘-clicked file asks for it. A file
+directly in `/` or the home folder opens without it, and so does a page shown on an older agterm on another Mac. The user gets the same view by ⌘-clicking the file's path in a
 local pane, so printing the absolute path of a plan or report you wrote is often enough there; for a user watching
 from another Mac, open it with `--markdown`. Read back `markdown` in `htmlOverlays`.
 
@@ -844,8 +880,9 @@ agtermctl session overlay open --text /path/to/main.go --line 42 --size-percent 
 It is highlighted when its name maps to a known language, up to 256 KB, and plain above; a file over 4 MB is
 refused. FILE is taken literally,
 never as `path:line`. The page runs nothing, loads nothing and has no links. Markdown, HTML and SVG are not text
-pages. The user gets the same view by ⌘-clicking a path or a `path:line` location in a local pane, and reveals any
-file in Finder with ⌘⌥-click; for a user watching from another Mac, open it with `--text`. Read back `text`
+pages. The user gets the same view by ⌘-clicking a path or a `path:line` location, and reveals a file on their own Mac
+in Finder with ⌘⌥-click. A click in a session attached from another Mac opens the page from the Mac the session runs
+on when both run an agterm that forwards clicks; `--text` shows it there with older ones. Read back `text`
 (`{file, language?, line?}`) in `htmlOverlays`.
 
 To watch a log, open its end and follow it as it grows:
@@ -859,7 +896,10 @@ agtermctl session overlay follow off --target "$AGTERM_SESSION_ID"   # pause; on
 (1 to 100,000) and alone shows them once without following. It is not `--follow`, which selects the session. A
 ⌘-click on a `.log` or `.out` path opens the same following page; `app.log:120` still opens the plain page at that
 line. The user pauses by scrolling up and resumes at the bottom or with Resume. Read back `text.tail`, `following`,
-`lines`, `clipped`, `waiting` (file missing) and `unreadable`. A log page is refused on a session another Mac presents.
+`lines`, `clipped`, `waiting` (file missing) and `unreadable`. On a session another Mac presents, the log page and
+`follow`, `search`, `wrap`, `changes` and `files` work on that Mac when its agterm shows live text pages, `files` only when
+it also navigates files (`page.files`); an older one refuses them. `expand` works there on a static JSON Lines page
+when that Mac also lists `page.expand`.
 
 Search a text or log page, not the terminal under it:
 
@@ -873,6 +913,25 @@ query does not. Read back `text.search` (`{query, matches, current}`). The user 
 bar: `/` or ⌘F focuses it, `n`/`N` step, Esc clears; on a log page `F` toggles follow, `G`/End goes to the bottom and
 follows, `g`/Home to the top. A step before the page loads is refused `page not loaded`.
 
+Long lines of a text, log or diff page run off its right edge until wrapped:
+
+```bash
+agtermctl session overlay wrap on --target "$AGTERM_SESSION_ID"   # off unwraps, toggle flips; prints the state
+```
+
+The user wraps with the bar's Wrap button or `w`. A page opens unwrapped and keeps its choice until it closes. Read
+back `text.wrap`, true while wrapped and omitted otherwise.
+
+A `.jsonl` or `.ndjson` file opens as written, one record per line, colored as JSON. To lay every record out over
+indented rows, numbered by its line in the file:
+
+```bash
+agtermctl session overlay expand on --target "$AGTERM_SESSION_ID"   # off shows it as written, toggle flips
+```
+
+The user toggles it with the bar's Expand button or `e`. Read back `text.expand`, true while expanded and omitted
+otherwise. A log page (`--tail`, `--follow-file`) stays as written and is refused.
+
 To show the user changes, write each changed file's diff to its own `.diff` file and list them as links; a ⌘-click
 opens it as a read-only text page:
 
@@ -880,10 +939,30 @@ opens it as a read-only text page:
 git diff --no-color HEAD~3 HEAD -- src/app.go > /tmp/src_app.go.diff
 ```
 
-Then print `[src/app.go diff](/tmp/src_app.go.diff)`, one link per file, since a multi-file patch shows as one stream
-with no file list. Use absolute, space-free output paths so the printed paths are clickable without OSC 8.
+Then print `[src/app.go diff](/tmp/src_app.go.diff)`, one link per file. A whole multi-file patch also works as one
+link: its bar lists the files (`f` opens the list), and `agtermctl session overlay files --go N|PATH` jumps to one by
+number or by the path the list shows, printing `N of M: path`; read back `text.files` (`{count, current, path}`).
+Use absolute, space-free output paths so the printed paths are clickable without OSC 8.
 The page steps between changes with `]`/`[` or `agtermctl session overlay changes --next|--prev`, which prints
 `N of M`; read back `text.changes` (`{count, current}`).
+
+## Linking to a session
+
+Print an OSC 8 link to this session, or use `[label](agterm://session/<id>)` in Claude Code markdown,
+which Claude Code emits as OSC 8. When Claude Code captures the mouse, use ⌘⇧-click:
+
+```bash
+printf '\e]8;;agterm://session/%s\e\\%s\e]8;;\e\\\n' "$AGTERM_SESSION_ID" "back to this session"
+```
+
+The bare URL `agterm://session/<id>` in plain text is a link too. Codex renders an `agterm://` Markdown
+link as plain `label (url)` text, so from Codex write the full URL in the answer.
+
+A ⌘-click in a pane, split or scratch selects the session and raises its window without confirmation or
+revealing an attention pane; in a session attached from another Mac, the id is that Mac's and selects the
+one row here showing it, never attaching anything or acting there.
+Unknown or closed sessions, a destination window with zoom, dashboard or a pending picker, other `agterm://`
+forms, ⌘⌥-clicks and links in a HUD, quick terminal or program overlay do nothing.
 
 ## Displaying an image inline
 
@@ -894,10 +973,10 @@ Show a png, jpg, gif or webp picture with `--image`; the panel takes the picture
 agtermctl session overlay open --image /tmp/shot.png --target "$AGTERM_SESSION_ID"
 ```
 
-The user can open the same view by ⌘-clicking a picture's path in a local pane, so printing the absolute
-path of an image you produced is often enough there. When the user watches your session from another Mac,
-a click on a printed path does nothing; open it with `--image`, which shows it on that Mac, as `--markdown`
-and `--text` pages do. When `--image` is rejected, by an older CLI as an unknown option, by an older app, or
+The user can open the same view by ⌘-clicking a picture's path, so printing the absolute path of an image you
+produced is often enough. When the user watches your session from another Mac, that click works only when both
+Macs run an agterm that forwards clicks; `--image` shows it on that Mac either way, as `--markdown` and `--text`
+pages do. When `--image` is rejected, by an older CLI as an unknown option, by an older app, or
 by a presenting Mac too old for these pages (`a viewer presents this session`), fall back to the script below.
 
 This skill also bundles `scripts/show-image.sh`. It opens an overlay (a real terminal) and renders the
@@ -965,8 +1044,9 @@ To show a docs page or a web app you are running, open it by URL instead; a scri
 agtermctl session overlay open --url http://localhost:5173/ --js --target "$AGTERM_SESSION_ID" --follow
 ```
 
-- The server must already be running and reachable from the Mac running agterm; `localhost` means that
-  Mac, not a remote shell's. Plain http works for local addresses; use https for public hosts.
+- The server must already be running and reachable from the agterm the command reaches; `localhost` means this
+  Mac from a local session, and the host from a session agterm-server or another Mac runs, whose page the Mac
+  showing it reaches through an ssh forward. Plain http works for local addresses; use https for public hosts.
 - Pass `--js` for web apps that require client-side JavaScript; without it the page renders only its static
   markup. `tree` reports `javascript` for each page.
 - Links to the same origin load in place. A clicked link to another origin, or one whose redirect leaves
@@ -1044,6 +1124,20 @@ choice=$(agtermctl session overlay open --html /tmp/branches.html --block --targ
 - Escape any outside text you put in such a page (an issue body, a log line): the page can run commands.
 - `--url` pages get none of this. reference.md has the rules under `session overlay submit`.
 
+## Remote windows and agterm-server
+
+agterm-server runs sessions on a Linux host; `agtermctl window remote open HOST` opens a Mac window
+mirroring them over ssh, and every shell keeps running on the host across disconnects. Inside such a
+session, `agtermctl` on the host talks to agterm-server, which serves the session, workspace, overlay,
+HUD, ask and pick commands and refuses the ones that change a Mac window (`window list` still answers).
+`agtermctl events` and `session wait` work there too, on the server's own event history. reference.md "remote server" lists the commands,
+the read-back and what the server refuses. `session overlay open --page|--companion` there makes a page row
+from a file on the host or a URL, which a Mac's remote window shows as a page row.
+`agtermctl server install HOST`, run on the Mac, installs or upgrades the server release matching that app's own
+bundle (reference.md "server").
+The same `window remote open` also opens one window of another Mac in Live sessions mode (`--origin-window W`
+picks it when that Mac has several); reference.md "remote server" says what differs from agterm-server.
+
 ## Troubleshooting and reporting
 
 When the user hits a problem (a keymap editor that will not open, a custom action that does nothing,
@@ -1064,9 +1158,10 @@ Full detail, templates, and the exact `gh` commands are in **troubleshooting.md*
 ## Linux integration management
 
 Linux builds expose local installation inspection separately from runtime control commands.
-Linux v0.40.0 supports the shared companion, tint, Recent, overlay visibility, point sizing, ask-form,
+Linux v0.43.0 supports the shared companion, tint, Recent, overlay visibility, point sizing, ask-form,
 remote-page, group-attach, message-bus, and session-info commands described above.
-Scratch panes receive a surface-lifetime pane ID and can send, receive, and acknowledge messages.
+Live scratch panes keep their daemon identity across relaunch; temporary scratches use a surface-lifetime ID.
+Both can send, receive, and acknowledge messages.
 Local image and Markdown pages use `--image` and `--markdown` with the same bounds and source-option
 validation as upstream.
 Markdown uses bundled rendering assets and contained local images; image and Markdown pages have no control bridge.
@@ -1108,4 +1203,9 @@ Read those files when you need exact flags, return shapes, or worked examples.
 
 On Linux, Ctrl-click opens a file page; Ctrl+Shift-click reveals it in the file manager.
 Ctrl+F searches the visible text or log page.
-Remote text pages support their local find bar, but control search and file following are unavailable, as upstream.
+Remote text pages support GUI and control search, log following, wrapping, diff file navigation, and JSONL expansion.
+The origin owns the file and grants; viewers read bounded bytes over the page channel.
+Linux also supports `window remote open`, `session new --remote`, remote structural operations and receipt readback,
+companion conversion/reparenting, and automatic attached-row restoration.
+`agtermctl server install HOST` checks the exact matching upstream archive against the SHA-256 pin bundled with the Linux package.
+Closing an attached row detaches it; `session terminate` ends it on its origin.

@@ -34,6 +34,7 @@ extension WorkspaceSidebar.Coordinator {
         if draggedWorkspaceID(from: info) != nil {
             cancelSpringLoadedExpansion()
             guard let move = resolveWorkspaceMove(from: info, in: outlineView) else { return [] }
+            if store.remoteActions != nil, remoteWorkspaceStep(move) == nil { return [] }
             // workspace reorder lives at the top level: highlight a between-rows slot under the root.
             outlineView.setDropItem(nil, dropChildIndex: move.dropChildIndex)
             return .move
@@ -42,8 +43,14 @@ extension WorkspaceSidebar.Coordinator {
             cancelSpringLoadedExpansion()
             return resolveFlaggedReorder(from: info, item: item, childIndex: index) == nil ? [] : .move
         }
+        if let reparent = resolveCompanionReparent(from: info, item: item, childIndex: index) {
+            cancelSpringLoadedExpansion()
+            outlineView.setDropItem(reparent.dropItem, dropChildIndex: reparent.dropChildIndex)
+            return .move
+        }
         if !draggedSessionIDs(from: info).isEmpty {
-            guard let move = resolveSessionMove(from: info, item: item, childIndex: index) else {
+            guard store.remoteActions == nil || draggedSessionIDs(from: info).count == 1,
+                  let move = resolveSessionMove(from: info, item: item, childIndex: index) else {
                 cancelSpringLoadedExpansion()
                 return []
             }
@@ -57,7 +64,7 @@ extension WorkspaceSidebar.Coordinator {
             scheduleSpringLoadedExpansion(of: move.workspace, in: outlineView)
             return .move
         }
-        guard let drop = resolveDirectoryDrop(from: info, item: item) else {
+        guard store.remoteActions == nil, let drop = resolveDirectoryDrop(from: info, item: item) else {
             cancelSpringLoadedExpansion()
             return []
         }
@@ -77,7 +84,12 @@ extension WorkspaceSidebar.Coordinator {
         defer { finishDraggingSequence(collapseSpringLoaded: !dropSucceeded) }
         if draggedWorkspaceID(from: info) != nil {
             guard let move = resolveWorkspaceMove(from: info, in: outlineView) else { return false }
-            store.moveWorkspace(move.workspaceID, at: move.destination)
+            if store.remoteActions != nil {
+                guard let step = remoteWorkspaceStep(move) else { return false }
+                actions.performRemote(.moveWorkspace(move.workspaceID, to: step), in: store)
+            } else {
+                store.moveWorkspace(move.workspaceID, at: move.destination)
+            }
             dropSucceeded = true
             return true
         }
@@ -86,13 +98,26 @@ extension WorkspaceSidebar.Coordinator {
             dropSucceeded = store.moveFlagged(move.ids, to: move.placement, of: move.anchor)
             return dropSucceeded
         }
-        if !draggedSessionIDs(from: info).isEmpty {
-            guard let move = resolveSessionMove(from: info, item: item, childIndex: index) else { return false }
-            store.moveSessions(move.sessionIDs, toWorkspace: move.workspace, at: move.destination)
+        if let reparent = resolveCompanionReparent(from: info, item: item, childIndex: index) {
+            actions.moveCompanion(reparent.companion, under: reparent.parent, at: reparent.slot, in: store)
             dropSucceeded = true
             return true
         }
-        guard let drop = resolveDirectoryDrop(from: info, item: item) else { return false }
+        if !draggedSessionIDs(from: info).isEmpty {
+            guard let move = resolveSessionMove(from: info, item: item, childIndex: index) else { return false }
+            if store.remoteActions != nil {
+                guard move.sessionIDs.count == 1, let id = move.sessionIDs.first else { return false }
+                let sessions = store.workspaces.first { $0.id == move.workspace }?.sessions.map(\.id) ?? []
+                let placement = RemoteOperation.dropPlacement(of: id, workspace: move.workspace, sessions: sessions,
+                                                              destination: move.destination)
+                actions.performRemote(.moveSession(id, to: placement), in: store)
+            } else {
+                store.moveSessions(move.sessionIDs, toWorkspace: move.workspace, at: move.destination)
+            }
+            dropSucceeded = true
+            return true
+        }
+        guard store.remoteActions == nil, let drop = resolveDirectoryDrop(from: info, item: item) else { return false }
         guard !drop.exceedsLimit else {
             presentDirectoryDropLimitAlert(in: outlineView)
             return false
@@ -201,6 +226,35 @@ extension WorkspaceSidebar.Coordinator {
                            dropChildIndex: highlight ?? move.dropChildIndex, destination: move.destination,
                            onFlaggedTreeRow: flaggedTree && node.kind == .session ? node : nil,
                            dropParent: dropParent)
+    }
+
+    // dropItem/dropChildIndex is what validateDrop sets and acceptDrop reads back, so both resolve the same move
+    private struct CompanionReparentDrop {
+        let companion: UUID
+        let parent: UUID
+        let slot: Int
+        let dropItem: SidebarNode
+        let dropChildIndex: Int
+    }
+
+    private func resolveCompanionReparent(from info: NSDraggingInfo, item: Any?, childIndex index: Int) -> CompanionReparentDrop? {
+        let ids = draggedSessionIDs(from: info)
+        guard nestsCompanions, ids.count == 1, let id = ids.first, let rowNode = item as? SidebarNode, rowNode.kind == .session,
+              let current = store.session(withID: id)?.parentID, let target = store.session(withID: rowNode.id) else { return nil }
+        let row: SidebarDrop.CompanionDropRow
+        if let parent = target.parentID {
+            guard index == SidebarDrop.onItemIndex,
+                  let position = store.companions(of: parent).map(\.id).firstIndex(of: rowNode.id) else { return nil }
+            row = .companion(parent: parent, position: position)
+        } else {
+            row = .parent(rowNode.id)
+        }
+        guard let move = SidebarDrop.companionReparent(from: current, onto: row, childIndex: index),
+              case .success = store.canMoveCompanion(id, under: move.parent) else { return nil }
+        let onParentRow = target.parentID == nil && index == SidebarDrop.onItemIndex
+        return CompanionReparentDrop(companion: id, parent: move.parent, slot: move.slot,
+                                     dropItem: onParentRow ? rowNode : node(for: move.parent, kind: .session),
+                                     dropChildIndex: onParentRow ? SidebarDrop.onItemIndex : move.slot)
     }
 
     private func outlineSlot(forFlatIndex flat: Int, in workspaceID: UUID, moving ids: [UUID]) -> (SidebarNode?, Int) {
@@ -362,6 +416,12 @@ extension WorkspaceSidebar.Coordinator {
         } else {
             alert.runModal()
         }
+    }
+
+    /// remoteWorkspaceStep is a remote window's workspace drop as the one server move step that lands it, nil when none.
+    private func remoteWorkspaceStep(_ move: (workspaceID: UUID, dropChildIndex: Int, destination: Int)) -> String? {
+        guard let source = store.workspaces.firstIndex(where: { $0.id == move.workspaceID }) else { return nil }
+        return RemoteOperation.workspaceStep(from: source, to: move.destination, count: store.workspaces.count)
     }
 
     /// Resolves a workspace drop into the TOP-LEVEL reorder it would perform, nil when it is a no-op, so

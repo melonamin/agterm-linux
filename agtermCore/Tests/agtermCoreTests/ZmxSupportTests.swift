@@ -185,8 +185,7 @@ struct ZmxSupportTests {
         defer { try? FileManager.default.removeItem(at: resources) }
         let root = resources.path + "/shell-integration"
         let recorder = resources.appending(path: "record-xdg")
-        try "#!/bin/sh\nprintf '%s' \"$XDG_DATA_DIRS\" > \"$RESULT_FILE\"\n".write(to: recorder, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: recorder.path)
+        try "#!/bin/sh\nprintf '%s' \"$XDG_DATA_DIRS\" > \"$RESULT_FILE\"\n".writeExecutable(to: recorder, mode: 0o700)
         let cases: [(inherited: String?, pane: String?, expected: String)] = [
             ("/custom/share", nil, root + ":/custom/share"),
             (nil, nil, root + ":/usr/local/share:/usr/share"),
@@ -314,6 +313,15 @@ struct ZmxSupportTests {
                 ZmxSupport.socketDirectory(forStateDirectory: link.path))
     }
 
+    @Test func aRuntimeDirectoryHoldsTheServersSocketsUnderTheSameName() {
+        let server = ZmxSupport.socketDirectory(forStateDirectory: "/srv/state", runtimeDirectory: "/run/user/1000")
+        let mac = ZmxSupport.socketDirectory(forStateDirectory: "/srv/state")
+
+        #expect(server.hasPrefix("/run/user/1000/agterm-zmx-"))
+        #expect((server as NSString).lastPathComponent == (mac as NSString).lastPathComponent)
+        #expect(mac.hasPrefix("/tmp/agterm-zmx-"))
+    }
+
     @Test func launchDispositionKeepsLiveFallbackStateUnconsumed() {
         let configuration = ZmxSupport.Configuration(
             executablePath: "zmx", environment: [:], daemonName: "session",
@@ -425,6 +433,18 @@ struct ZmxSupportTests {
     ] as [(String, String?)])
     func commandShellAcceptsOnlyAnAbsoluteZshOrFishWithLiveFlags(command: String, expected: String?) {
         #expect(ZmxSupport.commandShell(fromCommand: command) == expected)
+    }
+
+    @Test(arguments: [
+        ("/bin/tcsh -l", "/bin/tcsh"),
+        ("direct:/bin/zsh -l", "/bin/zsh"),
+        ("shell:  /usr/local/bin/fish", "/usr/local/bin/fish"),
+        ("tmux new", "tmux"),
+        ("", nil),
+        ("   ", nil),
+    ] as [(String, String?)])
+    func commandProgramIsTheFirstWordOfAnyCommand(command: String, expected: String?) {
+        #expect(ZmxSupport.commandProgram(fromCommand: command) == expected)
     }
 
     @Test func commandShellReplacesAnUnsupportedPasswordDatabaseShell() throws {

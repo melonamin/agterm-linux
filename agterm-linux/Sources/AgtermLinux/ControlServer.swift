@@ -20,7 +20,17 @@ final class ControlServer: @unchecked Sendable {
     static let unavailableSuffix = ".unavailable"
 
     private let logger = LinuxStructuredLogger(category: "ControlServer")
+    @MainActor var openWorkTracking = 0
+    @MainActor var originCatalogs: [UUID: OriginCatalog] = [:]
+    @MainActor var originEvidence = CatalogPaneEvidence()
+    @MainActor var catalogStreams: [CatalogStream] = []
+    @MainActor var catalogHeartbeat: Task<Void, Never>?
+    @MainActor var nativeCatalogHeartbeat: (@MainActor () -> Void)?
     @MainActor lazy var presentationHub = PresentationHub(staleTimeout: 30)
+    @MainActor lazy var mailRelay = PresentationMailRelay { [unowned self] in
+        for id in presentationHub.subscribedSessions { gLibrary.store(forSession: id)?.publishPresentationMail(forSession: id) }
+        for catalog in originCatalogs.values { catalog.publisher.markDirty() }
+    }
     @MainActor var presentationStreams: [LinuxPresentationStream] = []
     @MainActor var presentationHeartbeatCancel: (@MainActor () -> Void)?
     @MainActor lazy var overlayJobs = OverlayJobs()
@@ -29,7 +39,7 @@ final class ControlServer: @unchecked Sendable {
     @MainActor let originEpoch = UUID().uuidString
     @MainActor var respawnGenerations: [UUID: [String: Int]] = [:]
     @MainActor var pageServeStreams: [UUID: LinuxPageServeStream] = [:]
-    @MainActor var pendingPageClaims: [UUID: HtmlSource] = [:]
+    @MainActor var pendingPageClaims: [String: PendingPageClaim] = [:]
     @MainActor var companionPageTokens: [String: CompanionPageToken] = [:]
     @MainActor var pendingCompanionClaims: [UUID: CompanionPageServing] = [:]
     @MainActor var companionPageStreams: [UUID: LinuxPageServeStream] = [:]
@@ -165,6 +175,7 @@ final class ControlServer: @unchecked Sendable {
         guard let line = readLine(conn) else { return false }
         let response: ControlResponse
         if let req = try? JSONDecoder().decode(ControlRequest.self, from: line) {
+            if req.cmd == .catalogSubscribe { return handleCatalogSubscribe(conn) }
             if req.cmd == .zmxPresent {
                 let reply = openPresentationOnMain(req.target)
                 guard writeResponse(conn, reply), reply.ok,
@@ -174,7 +185,7 @@ final class ControlServer: @unchecked Sendable {
             }
             if req.cmd == .sessionOverlayPageServe { return handlePageServe(conn, request: req) }
             if req.cmd == .sessionOverlayJobRun {
-                let reply = claimOverlayJobOnMain(req.target)
+                let reply = claimOverlayJobOnMain(req.target, token: req.args?.token)
                 let written = writeResponse(conn, reply)
                 guard reply.ok, let job = reply.result?.id else { return false }
                 guard written else {
@@ -194,6 +205,11 @@ final class ControlServer: @unchecked Sendable {
 
     /// Shared one-request entry point for socket and file-page workers.
     func performRequest(_ request: ControlRequest) -> ControlResponse {
+        if let response = performOriginRequest(request) { return response }
+        if let response = performRemoteTextRequest(request) { return response }
+        if let response = performCatalogRequest(request) { return response }
+        if let response = performAttachedRecent(request) { return response }
+        if let response = performAttachedRequest(request) { return response }
         if [.sessionCompanionNew, .sessionCompanionPage, .sessionCompanionDuplicate].contains(request.cmd) {
             return performCompanionRequest(request)
         }
@@ -393,7 +409,7 @@ final class ControlServer: @unchecked Sendable {
         return box.value
     }
 
-    private enum ControllerRoute {
+    enum ControllerRoute {
         case controller(AppController?)
         case failure(String)
 
@@ -407,7 +423,7 @@ final class ControlServer: @unchecked Sendable {
         }
     }
 
-    @MainActor private static func route(for req: ControlRequest) -> ControllerRoute {
+    @MainActor static func route(for req: ControlRequest) -> ControllerRoute {
         if let window = req.args?.window, !window.isEmpty {
             guard let library = gLibrary else {
                 return .failure("window not open")
@@ -428,6 +444,7 @@ final class ControlServer: @unchecked Sendable {
         }
         switch req.cmd {
         case .sessionCompanionNew, .sessionCompanionPage, .sessionCompanionDuplicate, .sessionCompanionPageAttach,
+             .sessionPage, .sessionCompanionConvert, .sessionCompanionMove, .sessionTerminate, .sessionUndo, .sessionRemoteNew,
              .sessionCollapse, .sessionExpand, .sessionTint,
              .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle,
              .sessionRestart, .sessionOverlaySubmit, .keymapRun, .sessionClose, .sessionDuplicate, .sessionSelect, .sessionGo, .sessionRename, .sessionReveal,
@@ -438,12 +455,13 @@ final class ControlServer: @unchecked Sendable {
              .sessionOverlayOpen, .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayResult,
              .sessionOverlayReload, .sessionOverlayNavigate,
              .sessionOverlayCopy, .sessionOverlayText, .sessionOverlaySearch, .sessionOverlayChanges, .sessionOverlayFollow,
+             .sessionOverlayWrap, .sessionOverlayExpand, .sessionOverlayFiles, .zmxKillPane, .sessionDetach, .sessionReattach,
              .sessionHudOpen, .sessionHudUpdate, .sessionHudClose,
              .askOpen,
              .sessionBackground, .sessionResize, .sessionText, .notify,
              .fontInc, .fontDec, .fontReset:
             return routeOwningSession(req.target) ?? .controller(gController)
-        case .workspaceTint, .workspaceFlag, .workspaceRename, .workspaceDelete, .workspaceSelect, .workspaceMove, .workspaceFocus,
+        case .workspaceDetach, .workspaceReattach, .workspaceTint, .workspaceFlag, .workspaceRename, .workspaceDelete, .workspaceSelect, .workspaceMove, .workspaceFocus,
              .workspaceCollapse, .workspaceExpand:
             return routeOwningWorkspace(req.target) ?? .controller(gController)
         case .sessionNew:
@@ -456,7 +474,7 @@ final class ControlServer: @unchecked Sendable {
             return routeOwningSession(req.target) ?? .controller(gController)
         case .surfaceZoom, .surfaceCursor:
             return routeOwningSurface(req.target) ?? .controller(gController)
-        case .tree, .eventsRead, .workspaceNew, .workspaceGo, .quick, .quickType, .quickText, .dashboard,
+        case .catalogSubscribe, .catalogOp, .windowRemoteOpen, .windowRemoteDismiss, .updateCheck, .tree, .eventsRead, .workspaceNew, .workspaceGo, .quick, .quickType, .quickText, .dashboard,
              .sidebar, .sidebarMode, .sidebarDensity, .sidebarFlaggedLayout, .sidebarExpand, .sidebarCollapse, .workspaceFilter,
              .windowNew, .windowList, .windowSelect, .windowGo, .windowClose, .windowRename, .windowDelete,
              .windowResize, .windowMove, .windowZoom, .windowFullscreen, .windowMinimize,

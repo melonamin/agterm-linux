@@ -12,29 +12,81 @@ extension ControlServer {
     func startRemotePresentation(for session: Session) {
         let id = session.id
         guard remoteClients[id] == nil, let host = session.remoteHost,
-              let binding = session.remotePresentation?.binding else { return }
+              let binding = session.remotePresentation?.binding, session.remotePresentation?.originEnded != true else { return }
+        let pool = catalogPool(forSession: id)
+        let path = pool?.lease("present:\(id)")
         let argv: [String]
         do {
-            argv = try RemoteSession.presentCommand(host: host, session: binding.remoteSessionID)
+            argv = try RemoteSession.presentCommand(host: host, session: binding.remoteSessionID, controlPath: path)
         } catch {
             remoteLogger.error("no presentation stream for \(id, privacy: .public): the origin's session id cannot be sent")
             return
         }
+        let transport = pool.flatMap { pool in path.map { PooledTransport(pool: pool, path: $0, inner: remoteTransport) } }
         let client = RemotePresentationClient(argv: argv, presentationVersion: binding.presentationVersion,
-                                              transport: remoteTransport, effects: remoteEffects(for: id),
+                                              transport: transport ?? remoteTransport, effects: remoteEffects(for: id),
                                               now: hudClock)
         remoteClients[id] = client
+        library.store(forSession: id)?.onOriginFrame = { [weak self] session, body in
+            MainActor.assumeIsolated { self?.sendToOrigin(body, forSession: session) ?? false }
+        }
+        ZmxLeadBook.shared.onChange = { [weak self] in
+            guard let self else { return }
+            for client in remoteClients.values { client.refreshLeads() }
+        }
         client.start()
         startRemoteTick()
     }
 
+    /// sendToOrigin hands a `status.clear` or `status.seen` to an origin that agreed the kind, from the presenter or
+    /// from a Mac the origin knows leads one of its panes.
+    func sendToOrigin(_ body: PresentationFrame.Body, forSession id: UUID) -> Bool {
+        guard let client = remoteClients[id], client.originSupports(PresentationHub.statusClearKind),
+              library.store(forSession: id)?.session(withID: id)?.remotePresentation?.mode == .presenter || client.claimsLead
+        else { return false }
+        client.answer(body)
+        return true
+    }
+
+    /// noteRemotePaneEnded shows the ended notice over a remote pane whose attach ended. A stream up to an origin
+    /// that sends `ended` is pinged first: an `ended` the origin queued ahead of its answer closes the row unseen.
+    func noteRemotePaneEnded(_ pane: UUID, in session: Session) {
+        guard heldSession(session.id) === session, let host = session.remoteHost, !session.ended,
+              let state = session.remotePresentation, !state.originEnded, state.binding.daemonsByPane[pane] != nil
+        else { return }
+        let book = RemoteEndBook.shared
+        // a restored row's origin may no longer have the session; its relaunch check decides, not this exit
+        if session.awaitsOriginCheck {
+            book.settle(pane: pane, session: session.id, host: host, name: session.displayName)
+            return
+        }
+        if !state.binding.catalogOwned, let client = remoteClients[session.id],
+           client.originSupports(PresentationHub.endedKind), client.ping() {
+            book.settle(pane: pane, session: session.id, host: host, name: session.displayName)
+        } else {
+            book.show(pane: pane, session: session.id, host: host, name: session.displayName)
+        }
+    }
+
+    /// resolveRemoteEnd shows the notices `id` holds back, unless its relaunch origin check, which closes a row the
+    /// origin no longer has, is still to answer.
+    func resolveRemoteEnd(_ id: UUID) {
+        guard library.store(forSession: id)?.session(withID: id)?.awaitsOriginCheck != true else { return }
+        RemoteEndBook.shared.resolved(session: id)
+    }
+
     func stopRemotePresentation(_ id: UUID) {
+        // nothing will answer a pending ping now, so its notice shows
+        resolveRemoteEnd(id)
         remoteClients.removeValue(forKey: id)?.stop()
+        linkForwards.release(row: id)
+        catalogPool(forSession: id)?.release("present:\(id)")
     }
 
     func stopRemotePresentations() {
         for client in remoteClients.values { client.stop() }
         remoteClients.removeAll()
+        linkForwards.stopAll()
         remoteTick?.cancel()
         remoteTick = nil
     }
@@ -59,12 +111,14 @@ extension ControlServer {
             },
             hud: { [weak self] hud in self?.showRemoteHud(hud, forSession: id) },
             notify: { [weak self] notify in
-                guard let session = self?.library.store(forSession: id)?.session(withID: id) else { return }
+                guard let store = self?.library.store(forSession: id), let session = store.session(withID: id) else { return }
+                store.armRemoteSeen(forSession: id)
                 // `.mirrored`, so this Mac's own hub never relays it onward
                 NotificationManager.shared.send(toSession: session, title: notify.title, body: notify.body,
                                                 origin: .mirrored)
             },
             connection: { [weak self] connection in
+                if case .failed = connection { self?.resolveRemoteEnd(id) }
                 self?.library.store(forSession: id)?.setRemoteConnection(connection, forSession: id)
             },
             context: { [weak self] context in
@@ -74,6 +128,8 @@ extension ControlServer {
             mode: { [weak self] mode in self?.library.store(forSession: id)?.setRemoteMode(mode, forSession: id) },
             askRequest: { [weak self] ask in self?.showReplicaAsk(ask, forSession: id) ?? false },
             askDismiss: { [weak self] ref in self?.library.store(forSession: id)?.dismissReplicaAsk(ref, forSession: id) },
+            pickRequest: { [weak self] pick in self?.showReplicaPick(pick, forSession: id) ?? false },
+            pickDismiss: { ref in SessionPickBook.shared.dismissReplica(ref, session: id) },
             overlayRequest: { [weak self] overlay in self?.showReplicaOverlay(overlay, forSession: id) ?? false },
             overlayClose: { [weak self] change in
                 self?.library.store(forSession: id)?.closeReplicaOverlay(change.job, forSession: id)
@@ -84,40 +140,72 @@ extension ControlServer {
             sound: { [weak self] sound in self?.playRemoteSound(sound, forSession: id) },
             layout: { [weak self] layout in
                 guard let self, let store = library.store(forSession: id) else { return }
-                agtermApp.applyRemoteLayout(layout, store: store, sessionID: id, library: library)
+                agtermApp.applyRemoteLayout(layout, store: store, sessionID: id, library: library, attach: self)
             },
             pageRequest: { [weak self] page in
                 guard let self else { return "no such session" }
                 return showReplicaPage(page, forSession: id)
             },
-            pageClose: { [weak self] change in self?.library.store(forSession: id)?.closeReplicaPage(change.page, forSession: id) },
+            pageClose: { [weak self] change in self?.closeOriginPage(change, forSession: id) },
             pageCommand: { [weak self] command in self?.applyReplicaPageCommand(command, forSession: id) },
             respawns: { [weak self] respawns, seed in self?.applyRemoteRespawns(respawns, seed: seed, forSession: id) },
+            linkRefused: { [weak self] reason in self?.refuseRemoteLinkClick(reason, session: id) },
+            message: { [weak self] message in self?.library.store(forSession: id)?.emitRemoteMessage(message, forSession: id) },
+            mail: { [weak self] mail in self?.library.store(forSession: id)?.applyRemoteMail(mail, forSession: id) },
+            leads: { [weak self] in
+                guard let store = self?.library.store(forSession: id), let session = store.session(withID: id) else { return [] }
+                return store.originLeads(of: session)
+            },
+            ended: { [weak self] in
+                guard let self else { return }
+                stopRemotePresentation(id)
+                RemoteEndBook.shared.clear(session: id)
+                guard let store = library.store(forSession: id) else { return }
+                agtermApp.closeEndedRemoteRow(store: store, sessionID: id, library: library)
+            },
+            acked: { [weak self] in self?.resolveRemoteEnd(id) },
             warn: { reason in
                 remoteLogger.warning("presentation stream for \(id, privacy: .public): \(reason, privacy: .public)")
             })
     }
 
-    /// Shows an ask `id`'s origin handed over. A GUI one keeps the local rule of refusing a target that is not
-    /// on screen; a terminal one, like a local terminal ask, waits hidden until its session is shown.
+    /// showReplicaAsk shows an ask `id`'s origin handed over in the row's own ask slot. A terminal one waits hidden
+    /// until its row is shown. A GUI one is refused for a target not on screen unless `originHoldsWork`, and then
+    /// waits like a terminal one, as does an ask for a hidden pane of an `offer.id` origin.
     private func showReplicaAsk(_ ask: PresentationAsk, forSession id: UUID) -> Bool {
         guard let store = library.store(forSession: id) else { return false }
-        if ask.style == .gui {
+        if ask.style == .gui, !originHoldsWork(forSession: id, in: store) {
             guard let windowID = library.windowID(for: store), guiTargetShown(id, in: store, windowID: windowID) else {
                 return false
             }
         }
-        return store.presentReplicaAsk(ask, forSession: id) { [weak self] body in self?.remoteClients[id]?.answer(body) }
+        let holds = remoteClients[id]?.originSupports(PresentationHub.offerIdentityKind) == true
+        return store.presentReplicaAsk(ask, forSession: id, holds: holds) { [weak self] body in self?.remoteClients[id]?.answer(body) }
+    }
+
+    /// originHoldsWork is whether session `id`'s origin wants work this Mac cannot show yet held here, not refused.
+    func originHoldsWork(forSession id: UUID, in store: AppStore) -> Bool {
+        store.session(withID: id)?.remotePresentation?.binding.originHeadless == true
+            || remoteClients[id]?.originSupports(PresentationHub.offerIdentityKind) == true
     }
 
     /// Shows an overlay `id`'s origin handed over, running the job's helper on the origin over ssh.
     private func showReplicaOverlay(_ overlay: PresentationOverlay, forSession id: UUID) -> Bool {
+        let pool = catalogPool(forSession: id)
+        let path = pool?.lease("job:\(overlay.job)")
         guard let store = library.store(forSession: id), let host = store.session(withID: id)?.remoteHost,
-              let argv = try? RemoteSession.runJobCommand(host: host, job: overlay.job) else { return false }
-        let command = CommandRestore.shellQuotedLine(argv)
-        return store.presentReplicaOverlay(overlay, command: command, forSession: id) { [weak self] job in
+              let argv = try? RemoteSession.runJobCommand(host: host, job: overlay.job, token: overlay.token, controlPath: path) else {
+            pool?.release("job:\(overlay.job)")
+            return false
+        }
+        let line = CommandRestore.shellQuotedLine(argv)
+        let command = path.map { RemoteSession.waitingForConnection(line, host: host, controlPath: $0) } ?? line
+        let shown = store.presentReplicaOverlay(overlay, command: command, forSession: id) { [weak self] job in
+            pool?.release("job:\(job)")
             self?.remoteClients[id]?.answer(.overlayClosed(PresentationOverlayChange(job: job)))
         }
+        if !shown { pool?.release("job:\(overlay.job)") }
+        return shown
     }
 
     private func playRemoteSound(_ sound: PresentationSound, forSession id: UUID) {
@@ -174,8 +262,9 @@ extension ControlServer {
         let placement = ControlHudPlacement(pane: pane)
         let target = id.uuidString
         let bridged = session.hudActive && session.remotePresentation?.hudBridged == true
-        // `hud.open` replaces a live HUD, so a panel this Mac's own program put up has to be left alone here
-        guard bridged || !session.hudActive else { return }
+        // `hud.open` replaces a live HUD, so a panel this Mac's own program put up has to be left alone here; a
+        // refusal panel gives way, since nothing would show this HUD again once it hides
+        guard bridged || !session.hudActive || showsRemoteLinkRefusal(id) else { return }
         let response = bridged
             ? updateHud(target, window: nil, spec: spec, placement: placement)
             : openRemoteHud(target, spec: spec, placement: placement)

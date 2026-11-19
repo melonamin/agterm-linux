@@ -30,9 +30,11 @@ final class OverlayJobRunner: @unchecked Sendable {
     }
 
     /// Sends the claim and returns the launch context. Throws the app's refusal, having launched nothing.
-    func claim(_ job: String) throws -> OverlayLaunchContext {
+    func claim(_ job: String, token: String? = nil) throws -> OverlayLaunchContext {
+        var args = ControlArgs()
+        args.token = token
         try StreamBridge(socket: socket, input: -1, output: -1)
-            .open(ControlRequest(cmd: .sessionOverlayJobRun, target: job))
+            .open(ControlRequest(cmd: .sessionOverlayJobRun, target: job, args: token == nil ? nil : args))
         guard let line = readLine(), case .context(let context)? = try? JSONDecoder().decode(OverlayJobFrame.self, from: line) else {
             throw SocketClientError("the app sent no launch context")
         }
@@ -111,11 +113,7 @@ final class OverlayJobRunner: @unchecked Sendable {
             // exit must not pass for an ordinary one while its group lives on
             if let tty, lock.withLock({ killAt == nil }), Self.hungUp(tty) { cancel() }
             let deadline = lock.withLock { killAt }
-            if status != nil, deadline == nil || kill(-pid, 0) != 0 { break }
-            // An orphaned descendant can remain a zombie when PID 1 does not reap it (for example,
-            // inside a container). kill(group, 0) still finds that dead process, so stop waiting after
-            // SIGKILL has had time to reach every remaining group member.
-            if let deadline, killed, status != nil, Date() >= deadline.addingTimeInterval(0.5) { break }
+            if status != nil, deadline == nil || !Self.groupRuns(pid) { break }
             if let deadline, !killed, Date() >= deadline {
                 kill(-pid, SIGKILL)
                 killed = true
@@ -135,7 +133,7 @@ final class OverlayJobRunner: @unchecked Sendable {
 
     private func report(_ frame: OverlayJobFrame) {
         guard let line = try? frame.line() else { return }
-        _ = StreamBridge.writeAll(socket, line)
+        _ = StreamBridge.sendAll(socket, line)
     }
 
     /// One byte at a time, so nothing behind a line is consumed before its reader asks for it.
@@ -164,20 +162,17 @@ final class OverlayJobRunner: @unchecked Sendable {
     /// terminal's foreground, so it gets the keys and SIGWINCH directly. Under a terminal it starts
     /// suspended until that handoff is done. Its signal dispositions are reset to the defaults the helper
     /// changes. `eval` keeps the command's own exit status as the shell's.
-    private static func spawn(environment: [String: String], cwd: String, suspended: Bool) throws -> pid_t {
-        #if canImport(Glibc)
-        var actions = posix_spawn_file_actions_t()
-        #else
+    static func spawn(environment: [String: String], cwd: String, suspended: Bool) throws -> pid_t {
+        #if canImport(Darwin)
         var actions: posix_spawn_file_actions_t?
+        var attributes: posix_spawnattr_t?
+        #else
+        var actions = posix_spawn_file_actions_t()
+        var attributes = posix_spawnattr_t()
         #endif
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
         posix_spawn_file_actions_addchdir_np(&actions, cwd)
-        #if canImport(Glibc)
-        var attributes = posix_spawnattr_t()
-        #else
-        var attributes: posix_spawnattr_t?
-        #endif
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
         var defaults = sigset_t()
@@ -191,16 +186,19 @@ final class OverlayJobRunner: @unchecked Sendable {
         var flags = POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETPGROUP
         #if canImport(Darwin)
         if suspended { flags |= POSIX_SPAWN_START_SUSPENDED }
+        // a descriptor another thread has not yet marked close-on-exec stays out of the program; only open streams
+        // are kept, and only when not close-on-exec, since inheriting clears the flag and a closed stream fails the spawn
+        flags |= POSIX_SPAWN_CLOEXEC_DEFAULT
+        for stream in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] where fcntl(stream, F_GETFD) == 0 {
+            posix_spawn_file_actions_addinherit_np(&actions, stream)
+        }
+        let script = #"eval "$AGTERM_OVL_CMD""#
+        #else
+        // glibc has no START_SUSPENDED, so the shell stops itself before the command and spawn waits for the stop
+        let script = suspended ? #"kill -STOP $$; eval "$AGTERM_OVL_CMD""# : #"eval "$AGTERM_OVL_CMD""#
         #endif
         posix_spawnattr_setflags(&attributes, Int16(flags))
-        #if canImport(Glibc)
-        // Linux has no POSIX_SPAWN_START_SUSPENDED. Stop the shell before it evaluates the job,
-        // then wait for that stop so the parent can hand over the foreground terminal safely.
-        let script = suspended ? #"kill -STOP $$; eval "$AGTERM_OVL_CMD""# : #"eval "$AGTERM_OVL_CMD""#
         let argv = ["/bin/sh", "-c", script]
-        #else
-        let argv = ["/bin/sh", "-c", #"eval "$AGTERM_OVL_CMD""#]
-        #endif
         let env = environment.map { "\($0.key)=\($0.value)" }
         var pid: pid_t = 0
         let result = withCStrings(argv) { argvPointers in
@@ -209,19 +207,66 @@ final class OverlayJobRunner: @unchecked Sendable {
             }
         }
         guard result == 0 else { throw SocketClientError("could not start the program: \(String(cString: strerror(result)))") }
-        #if canImport(Glibc)
+        #if !canImport(Darwin)
         if suspended {
             var status: Int32 = 0
             while waitpid(pid, &status, WUNTRACED) < 0 {
-                if errno == EINTR { continue }
-                throw SocketClientError("could not wait for the suspended program: \(String(cString: strerror(errno)))")
+                guard errno == EINTR else {
+                    throw SocketClientError("could not wait for the program to stop: \(String(cString: strerror(errno)))")
+                }
             }
-            guard status & 0xff == 0x7f else {
-                throw SocketClientError("the program exited before terminal handoff")
-            }
+            guard status & 0xff == 0x7f else { throw SocketClientError("the program ended before it got the terminal") }
         }
         #endif
         return pid
+    }
+
+    // kill(-group, 0) counts zombies, and an orphan's zombie stays for good under a PID 1 that never reaps,
+    // as a container's `tail -f /dev/null`
+    private static func groupRuns(_ group: pid_t) -> Bool {
+        guard kill(-group, 0) == 0 else { return false }
+        #if os(Linux)
+        return !onlyZombies(in: group)
+        #else
+        return true
+        #endif
+    }
+
+    #if os(Linux)
+    // a member that cannot be read is no proof that the group has only zombies left
+    private static func onlyZombies(in group: pid_t) -> Bool {
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: "/proc") else { return false }
+        var members = 0
+        for entry in entries where pid_t(entry) != nil {
+            let fd = open("/proc/\(entry)/stat", O_RDONLY)
+            guard fd >= 0 else {
+                if errno == ENOENT || errno == ESRCH { continue }
+                return false
+            }
+            defer { close(fd) }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            let count = read(fd, &buffer, buffer.count)
+            guard count > 0 else {
+                if count == 0 || errno == ESRCH { continue }
+                return false
+            }
+            guard let fields = statusFields(String(decoding: buffer[..<count], as: UTF8.self)) else { return false }
+            guard fields.group == group else { continue }
+            guard fields.state == "Z" else { return false }
+            members += 1
+        }
+        return members > 0
+    }
+    #endif
+
+    // the command name in parentheses may hold `)` and spaces itself, so the fields start after its last `)`
+    static func statusFields(_ stat: String) -> (state: Character, group: pid_t)? {
+        guard let end = stat.lastIndex(of: ")") else { return nil }
+        let fields = stat[stat.index(after: end)...].split(separator: " ")
+        guard fields.count >= 3, fields[0].count == 1, let state = fields[0].first, let group = pid_t(fields[2]) else {
+            return nil
+        }
+        return (state, group)
     }
 
     /// The program's status once it ended: its exit code, or 128 plus the signal that ended it. Nil when a
@@ -262,6 +307,9 @@ extension Session.Overlay {
         @Argument(help: "The job id the other Mac was handed.")
         var job: String
 
+        @Option(name: .long, help: "The offer token the other Mac was handed with the job.")
+        var token: String?
+
         @OptionGroup var options: BasicOptions
 
         func run() throws {
@@ -270,7 +318,7 @@ extension Session.Overlay {
             let runner = OverlayJobRunner(socket: socket)
             let context: OverlayLaunchContext
             do {
-                context = try runner.claim(job)
+                context = try runner.claim(job, token: token)
             } catch {
                 FileHandle.standardError.write(Data("error: \(error)\n".utf8))
                 throw ExitCode.failure

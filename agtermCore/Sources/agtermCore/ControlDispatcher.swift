@@ -20,22 +20,28 @@ public struct ControlDispatcher {
         case .sessionInfo: return dispatchSessionInfo(request)
         case .sidebarDensity: return dispatchAppCommand(request)
         case .sessionTint, .workspaceTint: return dispatchTint(request)
+        case .pickOpen, .pickResult, .pickCancel: return dispatchPickCommand(request)
+        case .askOpen, .askResult, .askCancel: return dispatchAskCommand(request)
         case .sessionOverlayOpen, .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayResult,
              .sessionOverlayReload, .sessionOverlayNavigate, .sessionOverlaySubmit, .sessionOverlayCopy,
              .sessionOverlayText, .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle,
-             .sessionOverlayFollow, .sessionOverlayJobRun, .sessionOverlayPageServe:
+             .sessionOverlayJobRun, .sessionOverlayPageServe:
             return dispatchSessionOverlayCommand(request)
         default: return nil
         }
     }
 
     public func dispatch(_ request: ControlRequest) async -> ControlResponse? {
+        // a receipt the host never keeps would read as a durable answer
+        if request.args?.opID != nil, !actions.takesOperationReceipts {
+            return ControlResponse(ok: false, error: "operation receipts are not taken by this agterm")
+        }
         switch request.cmd {
         case .tree:
             return actions.controlTree(window: request.args?.window)
         case .eventsRead:
             return dispatchEventsRead(request)
-        case .sessionNew, .sessionDuplicate, .sessionSelect, .sessionGo, .sessionClose, .sessionRename,
+        case .sessionNew, .sessionDuplicate, .sessionSelect, .sessionGo, .sessionClose, .sessionTerminate, .sessionRename,
                 .sessionReveal, .sessionMove, .sessionFlag, .sessionContext, .sessionInfo, .sessionSeen, .sessionStatus,
                 .sessionRestore:
             return await dispatchSessionCommand(request)
@@ -49,12 +55,20 @@ public struct ControlDispatcher {
                 .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayReload, .sessionOverlayNavigate,
                 .sessionOverlayResult, .sessionOverlaySubmit, .sessionOverlayCopy, .sessionOverlayText,
                 .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle, .sessionOverlayFollow,
-                .sessionOverlaySearch, .sessionOverlayChanges, .sessionBackground, .sessionText:
+                .sessionOverlaySearch, .sessionOverlayChanges, .sessionOverlayFiles, .sessionOverlayWrap, .sessionOverlayExpand,
+                .sessionBackground,
+                .sessionText:
             return await dispatchSessionSurfaceCommand(request)
         case .sessionOverlayJobRun, .sessionOverlayPageServe:
             return dispatchSessionOverlayCommand(request)
-        case .sessionCompanionNew, .sessionCompanionPage, .sessionCompanionDuplicate, .sessionCompanionPageAttach, .sessionCollapse, .sessionExpand:
+        case .sessionCompanionNew, .sessionCompanionPage, .sessionPage, .sessionCompanionDuplicate, .sessionCompanionConvert,
+                .sessionCompanionMove, .sessionCompanionPageAttach, .sessionCollapse, .sessionExpand:
             return await dispatchCompanionCommand(request)
+        case .sessionRemoteNew:
+            switch RemoteSessionCreate.parse(request) {
+            case .failure(let rejection): return ControlResponse(ok: false, error: rejection.message)
+            case .success(let create): return await actions.newRemoteSession(create)
+            }
         case .workspaceNew, .workspaceSelect, .workspaceGo, .workspaceRename, .workspaceDelete,
                 .workspaceMove, .workspaceFocus, .workspaceFilter, .workspaceCollapse, .workspaceExpand,
                 .workspaceFlag:
@@ -63,18 +77,36 @@ public struct ControlDispatcher {
                 .configReload, .notify, .themeSet, .themeList, .sidebar, .sidebarMode, .sidebarFlaggedLayout,
                 .sidebarDensity, .sidebarExpand, .sidebarCollapse, .sidebarWidth, .restoreClear, .restoreCapture, .version:
             return dispatchAppCommand(request)
-        case .restoreMode, .zmxList, .zmxPrune, .zmxKill, .zmxReset, .zmxTree, .zmxAttach, .zmxAttachGroup, .zmxPresent, .zmxScreen:
+        case .restoreMode, .zmxList, .zmxPrune, .zmxKill, .zmxKillPane, .zmxReset, .zmxTree, .zmxAttach, .zmxAttachGroup, .zmxPresent, .zmxScreen:
             return await dispatchZmxCommand(request)
+        case .sessionDetach, .sessionReattach, .workspaceDetach, .workspaceReattach, .windowRemoteDismiss:
+            return dispatchDetachCommand(request)
+        case .catalogSubscribe:
+            return await actions.catalogSubscribe()
+        case .catalogOp:
+            guard let opID = request.target?.trimmedOrNil, CatalogReceipt.isValidOpID(opID) else {
+                return ControlResponse(ok: false, error: "catalog.op requires an operation id")
+            }
+            let epoch = request.args?.epoch?.trimmedOrNil
+            let rev = request.args?.rev
+            guard (epoch == nil) == (rev == nil) else {
+                return ControlResponse(ok: false, error: "catalog.op takes epoch and rev together")
+            }
+            return actions.catalogOperation(opID, sent: epoch.flatMap { epoch in rev.map { CatalogPosition(epoch: epoch, rev: $0) } },
+                                            window: request.args?.window)
         case .hooksReload, .hooksList:
             return dispatchHooksCommand(request)
-        case .recentList, .recentOpen, .recentClear:
+        case .recentList, .recentOpen, .recentClear, .sessionUndo:
             return dispatchRecentCommand(request)
         case .browserClear, .browserLinks:
             return await dispatchBrowserCommand(request)
+        case .updateCheck:
+            return await dispatchUpdateCheck(request)
         case .quickType, .quickText:
             return await dispatchQuickCommand(request)
         case .windowNew, .windowList, .windowSelect, .windowGo, .windowClose, .windowRename,
-                .windowDelete, .windowResize, .windowMove, .windowZoom, .windowFullscreen, .windowMinimize:
+                .windowDelete, .windowResize, .windowMove, .windowZoom, .windowFullscreen, .windowMinimize,
+                .windowRemoteOpen:
             return await dispatchWindowCommand(request)
         case .dashboard:
             return dispatchDashboard(request)
@@ -176,7 +208,7 @@ public struct ControlDispatcher {
             return actions.selectSession(request.target, window: request.args?.window)
         case .sessionGo:
             guard let dir = (request.args?.to).flatMap(SessionNavigation.init(wire:)) else {
-                return ControlResponse(ok: false, error: "session.go requires --to next|prev|first|last|next-attention|prev-attention")
+                return ControlResponse(ok: false, error: "session.go requires --to next|prev|first|last|next-attention|prev-attention|N")
             }
             return actions.goSession(window: request.args?.window, direction: dir)
         case .sessionClose:
@@ -191,6 +223,12 @@ public struct ControlDispatcher {
             }
             return undoable ? actions.closeSession(request.target, window: window, undoable: true)
                 : actions.closeSession(request.target, window: window)
+        case .sessionTerminate:
+            if request.args?.targets?.isEmpty == true {
+                return ControlResponse(ok: false, error: "session.terminate requires at least one --target")
+            }
+            let targets = request.args?.targets ?? [request.target ?? "active"]
+            return actions.terminateSessions(targets, window: request.args?.window, undoable: request.args?.undoable == true)
         case .sessionRename:
             guard let name = request.args?.name else {
                 return ControlResponse(ok: false, error: "session.rename requires a name")
@@ -269,7 +307,8 @@ public struct ControlDispatcher {
                                                     autoReset: request.args?.autoReset,
                                                     sound: request.args?.sound, color: request.args?.color,
                                                     shape: shape,
-                                                    pane: pane, paneID: request.args?.paneID)
+                                                    pane: pane, paneID: request.args?.paneID,
+                                                    ifIdle: request.args?.ifIdle ?? false)
             return await actions.setSessionStatus(request.target, window: request.args?.window, update: update)
         case .sessionRestore:
             return dispatchSessionRestore(request)
@@ -431,9 +470,17 @@ public struct ControlDispatcher {
             return await dispatchSessionOverlaySearch(request)
         case .sessionOverlayChanges:
             return await dispatchSessionOverlayChanges(request)
+        case .sessionOverlayFiles:
+            return await dispatchSessionOverlayFiles(request)
+        case .sessionOverlayFollow:
+            return await dispatchSessionOverlayFollow(request)
+        case .sessionOverlayWrap:
+            return await dispatchSessionOverlayWrap(request)
+        case .sessionOverlayExpand:
+            return await dispatchSessionOverlayExpand(request)
         case .sessionOverlayOpen, .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayReload,
              .sessionOverlayNavigate, .sessionOverlayResult, .sessionOverlaySubmit, .sessionOverlayCopy,
-             .sessionOverlayText, .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle, .sessionOverlayFollow:
+             .sessionOverlayText, .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle:
             return dispatchSessionOverlayCommand(request)
         case .sessionBackground:
             return dispatchSessionBackground(request)
@@ -694,6 +741,14 @@ public struct ControlDispatcher {
                 return ControlResponse(ok: false, error: "invalid window minimize mode: \(request.args?.mode ?? "toggle")")
             }
             return await actions.windowMinimize(request.target, mode: mode)
+        case .windowRemoteOpen:
+            guard let host = request.args?.host?.trimmedOrNil else {
+                return ControlResponse(ok: false, error: "window.remote.open requires a host")
+            }
+            guard RemoteSession.isHost(host) else {
+                return ControlResponse(ok: false, error: "window.remote.open: not a host ssh can be given")
+            }
+            return await actions.windowRemoteOpen(host: host, originWindow: request.args?.originWindow?.trimmedOrNil)
         default:
             preconditionFailure("unexpected window command: \(request.cmd.rawValue)")
         }

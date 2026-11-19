@@ -22,7 +22,7 @@ final class ControlCompanionsUITests: ControlAPITestCase {
         let created = try sendCommand(#"{"cmd":"workspace.new","args":{"name":"other"}}"#)
         let other = try XCTUnwrap((created["result"] as? [String: Any])?["id"] as? String)
         let refused = try sendCommand(#"{"cmd":"session.move","target":"\#(companion)","args":{"workspace":"\#(other)"}}"#)
-        XCTAssertEqual(refused["error"] as? String, "a companion moves only among its siblings")
+        XCTAssertEqual(refused["error"] as? String, "a companion moves only among its siblings; use --parent to move it under another session")
         let moved = try sendCommand(#"{"cmd":"session.move","target":"\#(parent)","args":{"workspace":"\#(other)"}}"#)
         XCTAssertEqual(moved["ok"] as? Bool, true, "\(moved)")
         XCTAssertTrue(pollSessionOrder(inWorkspace: 1, equals: [parent, sibling, companion].compactMap(UUID.init(uuidString:)), timeout: 5))
@@ -34,6 +34,23 @@ final class ControlCompanionsUITests: ControlAPITestCase {
         XCTAssertEqual(result["affected"] as? Int, 3)
         XCTAssertEqual(Set(result["closed"] as? [String] ?? []), [parent, companion, sibling])
         XCTAssertNil(try sessionNodeIfPresent(id: companion))
+    }
+
+    func testACompanionMovedUnderAnotherParentReadsBackItsNewParentAndSlot() throws {
+        let first = try activeSessionID()
+        let companion = try cliOutput(["session", "new", "--parent", first, "--no-select"])
+        let created = try sendCommand(#"{"cmd":"workspace.new","args":{"name":"other"}}"#)
+        let other = try XCTUnwrap((created["result"] as? [String: Any])?["id"] as? String)
+        let second = try cliOutput(["session", "new", "--workspace", other, "--no-select"])
+        let resident = try cliOutput(["session", "new", "--parent", second, "--no-select"])
+
+        XCTAssertEqual(try cliOutput(["session", "move", "--target", companion, "--parent", second, "--index", "0"]), "ok")
+
+        XCTAssertEqual(try sessionNode(id: companion)["parent"] as? String, second)
+        XCTAssertTrue(pollSessionOrder(inWorkspace: 1, equals: [second, companion, resident].compactMap(UUID.init(uuidString:)), timeout: 5))
+        let refused = try sendCommand(#"{"cmd":"session.companion.move","target":"\#(companion)","args":{"parent":"\#(resident)"}}"#)
+        XCTAssertEqual(refused["error"] as? String, "the new parent must be a top-level session")
+        XCTAssertEqual(try sessionNode(id: companion)["parent"] as? String, second)
     }
 
     func testOrdinarySessionCommandsActOnACompanion() throws {
@@ -73,6 +90,19 @@ final class ControlCompanionsUITests: ControlAPITestCase {
 
         XCTAssertNotNil(try sessionNodeIfPresent(id: parent), "a parent with companions survives its shell's exit")
         XCTAssertEqual(try typeUntilMarker("echo alive > '\(marker.path)'\n", target: parent, file: marker, select: false), "alive")
+    }
+
+    func testConvertNestsTheRunningSessionUnderAFreshParentWithItsShellIntact() throws {
+        let task = try activeSessionID()
+        let set = stateDir.appendingPathComponent("convert-set.marker")
+        let kept = stateDir.appendingPathComponent("convert-kept.marker")
+        XCTAssertEqual(try typeUntilMarker("CONVERT_TOKEN=kept-7f3; echo set > '\(set.path)'\n", target: task, file: set, select: false), "set")
+
+        let fresh = try cliOutput(["session", "convert", "--companion", "--target", task])
+
+        XCTAssertEqual(try sessionNode(id: task)["parent"] as? String, fresh)
+        XCTAssertNil(try sessionNode(id: fresh)["parent"])
+        XCTAssertEqual(try typeUntilMarker("echo $CONVERT_TOKEN > '\(kept.path)'\n", target: task, file: kept, select: false), "kept-7f3")
     }
 
     func testACommandParentRespawnsAsAPlainShellInTheDirectoryItMovedTo() throws {
@@ -139,11 +169,34 @@ final class ControlCompanionsUITests: ControlAPITestCase {
         XCTAssertEqual(node["realized"] as? Bool, false, "no terminal is ever created under a page companion")
         XCTAssertNotEqual(try sessionNode(id: parent)["overlay"] as? Bool, true, "the parent's overlay slot stays free")
         let typed = try sendCommand(typeRequest(text: "ls\n", target: page, select: false))
-        XCTAssertEqual(typed["error"] as? String, "session.type: not available on a page companion")
+        XCTAssertEqual(typed["error"] as? String, "session.type: not available on a page session")
 
         XCTAssertEqual(try sendCommand(#"{"cmd":"session.overlay.close","target":"\#(page)"}"#)["ok"] as? Bool, true)
         XCTAssertTrue(poll(until: (try? self.sessionNodeIfPresent(id: page)) == nil, timeout: 10),
                       "closing the page ends its row")
+    }
+
+    func testAPageSessionIsATopLevelRowThatHoldsACompanion() throws {
+        let anchor = try activeSessionID()
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("agterm-page-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("board.html")
+        try "<p>page session</p>".write(to: file, atomically: true, encoding: .utf8)
+
+        let page = try cliOutput(["session", "overlay", "open", "--html", file.path, "--page", "--target", anchor, "--follow"])
+        let companion = try cliOutput(["session", "new", "--parent", page, "--no-select"])
+
+        XCTAssertTrue(poll(until: ((try? self.sessionNode(id: page))?["htmlOverlays"] as? [[String: Any]])?
+            .contains { $0["state"] as? String == "loaded" } == true, timeout: 10), "the page should load")
+        let node = try sessionNode(id: page)
+        XCTAssertEqual(node["content"] as? String, "page")
+        XCTAssertNil(node["parent"])
+        XCTAssertEqual(try sessionNode(id: companion)["parent"] as? String, page)
+        XCTAssertNil(try sessionNode(id: companion)["content"])
+        XCTAssertTrue(pollSessionOrder([anchor, page, companion].compactMap(UUID.init(uuidString:)), timeout: 5))
+        let typed = try sendCommand(typeRequest(text: "ls\n", target: page, select: false))
+        XCTAssertEqual(typed["error"] as? String, "session.type: not available on a page session")
     }
 
     private func cliOutput(_ arguments: [String]) throws -> String {

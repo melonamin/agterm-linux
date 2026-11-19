@@ -22,6 +22,16 @@ struct SessionTests {
         #expect(session.overlayCommand == "review")
     }
 
+    @Test func aPageSessionTakesAGuiAskButNotATerminalOne() {
+        let page = Session(initialCwd: "/tmp", content: .page)
+        let terminal = PendingAsk(id: "t", title: "Continue?", buttons: [ControlAskButton(id: "yes", label: "Yes")])
+        let gui = PendingAsk(id: "g", title: "Continue?", buttons: [ControlAskButton(id: "yes", label: "Yes")], style: .gui)
+
+        #expect(!page.openAsk(terminal))
+        #expect(page.openAsk(gui))
+        #expect(page.askPending == gui)
+    }
+
     @Test func askCoversBothPanesWhenSessionWideAndOnlyItsOwnWhenAnchored() {
         let session = Session(initialCwd: "/tmp")
         let split = UUID()
@@ -430,6 +440,27 @@ struct SessionTests {
 
         session.initialSplitCwd = nil
         #expect(session.cwd(for: .right) == "/repo/primary")
+
+        session.scratchCwd = "/repo/docs"
+        #expect(session.cwd(for: .scratch) == "/repo/docs")
+        #expect(session.cwd(for: .left) == "/repo/primary")
+        #expect(session.focusedCwd == "/repo/primary")
+    }
+
+    @Test func remoteHostForPaneLeavesALocalScratchWithoutTheAttachHost() throws {
+        let store = makeStore()
+        let workspace = store.addWorkspace(name: "work")
+        let local = try #require(store.addSession(toWorkspace: workspace.id, cwd: "/repo"))
+        let attached = try #require(store.addSession(toWorkspace: workspace.id, cwd: "/srv", remoteHost: "box"))
+        #expect(local.remoteHost(for: .scratch) == nil)
+        #expect(attached.remoteHost(for: .left) == "box")
+        #expect(attached.remoteHost(for: .right) == "box")
+        #expect(attached.remoteHost(for: .scratch) == nil)
+
+        store.bindRemote(RemoteBinding(remoteSessionID: "r", daemonsByLocalPane: [:], presentationVersion: 1, catalogOwned: true),
+                         forSession: attached.id)
+        attached.scratchDaemon = Session.ScratchDaemon(identity: UUID(), shown: true)
+        #expect(attached.remoteHost(for: .scratch) == "box")
     }
 
     @Test func localWorkingDirectoryKeepsAnyPathForALocalSession() {
@@ -708,6 +739,37 @@ struct SessionTests {
 
         session.splitSurface = nil
         #expect(session.paneToken(for: .right) == "")
+    }
+
+    @Test func aSurfacelessDaemonBackedPaneAnswersToItsIdentity() {
+        let session = Session(initialCwd: "/repo")
+        let split = UUID()
+        session.splitPaneIdentity = split
+        session.daemonBackedPanes = [session.paneIdentity, split]
+
+        #expect(session.paneRole(forToken: session.paneIdentity.uuidString) == .left)
+        #expect(session.paneRole(forToken: split.uuidString) == .right)
+        #expect(session.paneToken(for: .left) == session.paneIdentity.uuidString)
+        #expect(session.paneToken(for: .right) == split.uuidString)
+        #expect(session.paneToken(for: .scratch) == "")
+    }
+
+    @Test func aSurfacelessPaneOutsideTheDaemonSetHasNoToken() {
+        let session = Session(initialCwd: "/repo")
+        session.splitPaneIdentity = UUID()
+        session.daemonBackedPanes = [session.paneIdentity]
+
+        #expect(session.paneRole(forToken: session.splitPaneIdentity!.uuidString) == nil)
+        #expect(session.paneToken(for: .right) == "")
+    }
+
+    @Test func aLiveSurfaceTokenWinsOverTheDaemonIdentity() {
+        let session = Session(initialCwd: "/repo")
+        session.daemonBackedPanes = [session.paneIdentity]
+        session.surface = FakeSurface(paneToken: "main-tok")
+
+        #expect(session.paneRole(forToken: session.paneIdentity.uuidString) == nil)
+        #expect(session.paneToken(for: .left) == "main-tok")
     }
 
     @Test func paneRoleFollowsAPromotedSurvivorAndReSplit() {

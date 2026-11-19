@@ -74,10 +74,9 @@ paths:
   (`GLibMainTimer.swift`), at the top of `activateApplication`.
   Keep that default Dispatch-based — the GLib code belongs in the Linux target.
 - **Main-thread HOPS use `runOnMain` (`g_idle_add`), which exists only in the Linux target.**
-  Host-free `agtermCore` has no hop seam: from main-actor core code use `MainTimer.schedule(after: 0)`; add a
-  hop seam next to `MainTimer` only if a real need appears.
-  The one deliberate exception in core is `AppStore+AutoFollow`'s observation callback, a nonisolated→main
-  hop the `@MainActor` timer seam cannot express — and unreachable under GTK.
+  Host-free `agtermCore` uses `MainActorHop.enqueue` for nonisolated observation and transport callbacks.
+  The Linux host installs its GLib implementation alongside `MainTimer` before creating any store.
+  From main-actor core code, use `MainTimer.schedule(after: 0)` for a next-turn hop.
 - **A child-exit action runs its surface hooks a hop later, held exits included.**
   The `GHOSTTY_ACTION_SHOW_CHILD_EXITED` held arm keeps only `handleHeldProcessExit` (the lead reset)
   synchronous and queues `onExitHeld` through `runOnMain` with a `RetainedGhosttySurface`, like the closing

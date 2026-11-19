@@ -1,170 +1,59 @@
 import Foundation
-import os
 import agtermCore
 
-private let presentationLogger = Logger(subsystem: "com.umputun.agterm", category: "ControlPresentation")
-
-/// One viewer's presentation stream: the hub's sink on one side, a `ControlStreamOwner` on the other.
-///
-/// The viewer speaks first. Its hello subscribes it, and everything after goes to the hub as that
-/// subscriber's frames. Main-actor only; the owner's thread callbacks hop here before touching it.
-@MainActor
-final class PresentationStream: PresentationSink {
-    let session: UUID
-    private let owner: ControlStreamOwner
-    private weak var server: ControlServer?
-    private var subscriber: PresentationHub.SubscriberID?
-
-    init(session: UUID, owner: ControlStreamOwner, server: ControlServer) {
-        self.session = session
-        self.owner = owner
-        self.server = server
-    }
-
-    /// False for a frame that cannot be encoded, too: reporting it taken would advance the revision over
-    /// an event the viewer never got, on a stream that still looks healthy.
-    func offer(_ frame: PresentationFrame) -> Bool {
-        do {
-            return owner.send(try PresentationCodec.encode(frame))
-        } catch {
-            presentationLogger.error("closing a presentation stream on an unsendable frame: \(String(describing: error), privacy: .public)")
-            return false
-        }
-    }
-
-    var subscribed: Bool { subscriber != nil }
-
-    func close(_ reason: PresentationHub.CloseReason) {
-        presentationLogger.notice("closing a presentation stream: \(String(describing: reason), privacy: .public)")
-        owner.shutdown()
-    }
-
-    func shutdown() { owner.shutdown() }
-
-    func receive(_ line: Data) {
-        guard let server else { return }
-        let frame: PresentationFrame
-        do {
-            frame = try PresentationCodec.decode(line)
-        } catch {
-            presentationLogger.error("closing a presentation stream on a bad frame: \(String(describing: error), privacy: .public)")
-            owner.shutdown()
-            return
-        }
-        if let subscriber {
-            server.presentationHub.receive(frame, from: subscriber)
-            return
-        }
-        guard case .hello(let hello) = frame.body else {
-            presentationLogger.error("closing a presentation stream that did not open with hello")
-            owner.shutdown()
-            return
-        }
-        guard server.presentationSourceExists(session) else {
-            presentationLogger.notice("closing a presentation stream whose session is gone")
-            owner.shutdown()
-            return
-        }
-        do {
-            subscriber = try server.subscribePresentation(self, hello: hello)
-        } catch {
-            presentationLogger.error("refusing a presentation stream: \(String(describing: error), privacy: .public)")
-            owner.shutdown()
-        }
-    }
-
-    func closed() {
-        if let subscriber { server?.presentationHub.unsubscribe(subscriber) }
-        subscriber = nil
-        server?.presentationStreams.removeAll { $0 === self }
-    }
-}
-
-extension ControlServer {
-    static let presentationLimits = ControlStreamOwner.Limits(maxLineBytes: PresentationCodec.maxFrameBytes,
-                                                              maxPendingLines: PresentationCodec.maxPendingFrames,
-                                                              writeTimeoutSeconds: 5)
-    static let presentationHeartbeatSeconds: UInt64 = 10
-    /// Lines a viewer may have waiting for the main actor. The reader thread stops reading past this, so a
-    /// fast or faulty peer backs up into its own socket instead of into this app's memory.
-    static let presentationInboundLimit = 64
-
+/// The streams themselves are agtermCore's `PresentationStreamHost`, shared with agterm-server; this Mac adds the
+/// store wiring and its respawn generations.
+extension ControlServer: PresentationStreamHost {
     /// Answers `zmx.present`. The stream itself starts only after this reply is on the wire.
     func openPresentation(session target: String) -> ControlResponse {
-        resolver.resolveSession(target, window: nil) { store, id in
+        // a session in its undo grace keeps its stream, and one removed for good is answered `ended` on it
+        if let id = UUID(uuidString: target), library.store(forSession: id) == nil,
+           library.store(holdingSession: id) != nil || PresentationEnds.shared.contains(id) {
+            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
+        }
+        return resolver.resolveSession(target, window: nil) { store, id in
             guard let session = store.session(withID: id) else {
                 return ControlResponse(ok: false, error: "no such session")
             }
-            guard session.allPanesBackedByZmx else {
+            // a page row has no pane; a remote window's viewer presents it for its asks and picks
+            guard session.allPanesBackedByZmx || (session.content == .page && session.remoteHost == nil) else {
                 return ControlResponse(ok: false, error: "session is not live-backed, so nothing can be attached to it")
             }
             return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
         }
     }
 
-    /// Takes over a connection whose `zmx.present` was just answered ok. Returns at once; the owner's
-    /// threads do the I/O from here.
-    func adoptPresentationStream(descriptor: Int32, session: UUID) {
-        let owner = ControlStreamOwner(descriptor: descriptor, limits: Self.presentationLimits)
-        let stream = PresentationStream(session: session, owner: owner, server: self)
-        presentationStreams.append(stream)
-        attachPresentationHub()
-        startPresentationHeartbeat()
-        // reads carry no idle timeout, and the hub's heartbeat only knows subscribers, so a peer that takes
-        // the reply and then says nothing would otherwise hold two threads and a descriptor for good
-        let deadline = presentationHelloDeadline
-        Task { @MainActor [weak stream] in
-            try? await Task.sleep(nanoseconds: UInt64(deadline * 1_000_000_000))
-            guard let stream, !stream.subscribed else { return }
-            presentationLogger.notice("closing a presentation stream that sent no hello")
-            stream.shutdown()
-        }
-        let inbound = DispatchSemaphore(value: Self.presentationInboundLimit)
-        owner.start(
-            onLine: { [weak stream] line in
-                let copy = Data(line)
-                inbound.wait()
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { stream?.receive(copy) }
-                    inbound.signal()
-                }
-            },
-            onClose: { [weak stream] in
-                DispatchQueue.main.async { MainActor.assumeIsolated { stream?.closed() } }
-            }
-        )
+    func presentationSnapshot(forSession id: UUID) -> PresentationSnapshot {
+        var snapshot = library.store(holdingSession: id)?.presentationSnapshot(forSession: id, now: hudClock())
+            ?? PresentationSnapshot(status: nil, hud: nil)
+        snapshot.respawns = PresentationRespawns(epoch: originEpoch, generations: respawnGenerations[id] ?? [:])
+        return snapshot
     }
 
-    func subscribePresentation(_ stream: PresentationStream, hello: PresentationHello) throws
-        -> PresentationHub.SubscriberID {
-        let id = stream.session
-        let library = library
-        let clock = hudClock
-        let respawns = PresentationRespawns(epoch: originEpoch, generations: respawnGenerations[id] ?? [:])
-        return try presentationHub.subscribe(session: id, hello: hello, sink: stream) {
-            var snapshot = library.store(forSession: id)?.presentationSnapshot(forSession: id, now: clock())
-                ?? PresentationSnapshot(status: nil, hud: nil)
-            snapshot.respawns = respawns
-            return snapshot
-        }
-    }
+    func prepareForPresentationStream() { attachPresentationHub() }
 
     /// Points every open store at the hub. Stores are created by the window library, which this file cannot
     /// reach into, so the server assigns wherever it already walks the open windows.
     func attachPresentationHub() {
-        presentationHub.onPresenterLost = { [weak self] session in
-            self?.takeBackRemoteAsk(forSession: session)
-            self?.library.store(forSession: session)?.remoteOverlayPresenterLost(forSession: session)
+        // what the lost viewer held is placed by the pass the hub schedules after this
+        presentationHub.onOwnerLost = { [weak self] session, owner in
+            self?.library.store(forSession: session)?.remoteOverlayOwnerLost(forSession: session, owner: owner)
         }
-        presentationHub.onPresenterFrame = { [weak self] session, body in
-            self?.receivePresenterFrame(body, forSession: session)
+        presentationHub.onOpenWork = { [weak self] session in self?.reconcileOpenWork(forSession: session) }
+        presentationHub.onPresenterFrame = { [weak self] session, sender, body in
+            self?.receivePresenterFrame(body, forSession: session, from: sender)
         }
         RemotePageEnds.shared.onEnd = { [weak self] page in self?.pageServeStreams[page]?.shutdown() }
+        RemotePageEnds.shared.onWithdrawn = { [weak self] page in
+            self?.pendingPageClaims = self?.pendingPageClaims.filter { $0.value.page != page } ?? [:]
+            self?.pageServeStreams.removeValue(forKey: page)?.shutdown()
+        }
         HtmlOverlayReleases.shared.onReplicaRelease = { [weak self] local, origin in self?.replicaPageReleased(local, origin: origin) }
         overlayJobs.onFinished = { [weak self] job in
             self?.pendingJobCancels.remove(job.id)
             self?.library.store(forSession: job.session)?.finishRemoteOverlay(job)
         }
+        library.presentationHub = presentationHub
         for entry in library.windows {
             guard let store = library.store(for: entry.id) else { continue }
             store.presentationHub = presentationHub
@@ -175,40 +64,61 @@ extension ControlServer {
             store.onReplicaPageChanged = { [weak self] page in MainActor.assumeIsolated { self?.replicaPageChanged(page) } }
         }
         dropOrphanedPresentationStreams()
+        resumeRestoredAttachedRows()
+        mailRelay.start()
+        trackOpenWorkPlaces()
+    }
+
+    /// publishPresentationMail sends each viewed session's mail counts through the store hosting it.
+    func publishPresentationMail() {
+        for id in presentationHub.subscribedSessions {
+            library.store(forSession: id)?.publishPresentationMail(forSession: id)
+        }
+    }
+
+    /// reconcileOpenWork places `id`'s open ask, pick and pages where its pane's lead now is, this Mac included.
+    func reconcileOpenWork(forSession id: UUID) {
+        defer { trackOpenWorkPlaces() }
+        guard let store = library.store(forSession: id), let windowID = library.windowID(for: store) else { return }
+        let local = OpenWorkLocal(modal: { _ in PickRegistry.shared.controller(for: windowID).map { ($0, windowID) } },
+                                  showsGuiAsk: { [weak self] session in self?.guiAskFits(session, in: store, windowID: windowID) == true })
+        guard store.reconcileOpenWork(forSession: id, now: hudClock(), local: local).offered else { return }
+        scheduleOverlayJobExpiry(after: OverlayJobs.launchWindow)
+        schedulePageClaimExpiry(after: AppStore.pageClaimWindow)
+    }
+
+    /// trackOpenWorkPlaces runs a pass for every viewed session once anything a pass reads here changes: this Mac's
+    /// lead of a pane, the window modal, whether a GUI ask could be seen, and the local slots a page would take.
+    /// Obsolete trackers still deliver changes; only the newest re-arms.
+    func trackOpenWorkPlaces() {
+        openWorkTracking &+= 1
+        let generation = openWorkTracking
+        withObservationTracking {
+            for id in presentationHub.subscribedSessions { readOpenWorkPlaces(of: id) }
+        } onChange: { [weak self] in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    for id in self.presentationHub.subscribedSessions { self.presentationHub.scheduleOpenWork(id) }
+                    guard generation == self.openWorkTracking else { return }
+                    self.trackOpenWorkPlaces()
+                }
+            }
+        }
+    }
+
+    private func readOpenWorkPlaces(of id: UUID) {
+        guard let store = library.store(forSession: id), let session = store.session(withID: id),
+              let windowID = library.windowID(for: store) else { return }
+        for pane in [session.paneIdentity, session.splitPaneIdentity].compactMap({ $0 }) { _ = ZmxLeadBook.shared.role(pane: pane) }
+        _ = PickRegistry.shared.controller(for: windowID)?.modalPending
+        _ = guiAskFits(session, in: store, windowID: windowID)
+        _ = session.askPending
+        _ = (session.overlayActive, session.hudActive)
+        for pane in OverlayPane.allCases { _ = (session.paneOverlay(pane) != nil, session.rendersPane(pane)) }
     }
 
     func presentationSourceExists(_ session: UUID) -> Bool {
-        library.store(forSession: session)?.session(withID: session) != nil
-    }
-
-    /// Ends the streams of sessions that are no longer in any open window. A viewer would otherwise keep
-    /// the last mirrored state for good, on a stream that still answers pings.
-    func dropOrphanedPresentationStreams() {
-        for stream in presentationStreams where !presentationSourceExists(stream.session) {
-            presentationLogger.notice("closing a presentation stream whose session is gone")
-            stream.shutdown()
-        }
-    }
-
-    func shutdownPresentationStreams() {
-        for stream in presentationStreams { stream.shutdown() }
-        presentationHeartbeat?.cancel()
-        presentationHeartbeat = nil
-    }
-
-    private func startPresentationHeartbeat() {
-        guard presentationHeartbeat == nil else { return }
-        presentationHeartbeat = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: Self.presentationHeartbeatSeconds * 1_000_000_000)
-                guard let self, !Task.isCancelled else { return }
-                guard !self.presentationStreams.isEmpty else {
-                    self.presentationHeartbeat = nil
-                    return
-                }
-                self.dropOrphanedPresentationStreams()
-                self.presentationHub.heartbeat()
-            }
-        }
+        library.store(holdingSession: session) != nil
     }
 }

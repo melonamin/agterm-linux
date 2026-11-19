@@ -7,28 +7,41 @@
   const language = source.dataset.language;
   const target = Number(source.dataset.line);
   const log = source.dataset.log !== undefined;
+  const jsonl = source.dataset.jsonl !== undefined;
+  // a laid-out JSON Lines page: each file line's first shown line, then the shown line count
+  const records = source.dataset.records ? source.dataset.records.split(',').map(Number) : null;
   source.remove();
-
 
   const pre = document.createElement('pre');
   const code = document.createElement('code');
   const escape = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-  const render = (value, lang) => {
-    code.textContent = value;
+  // text with escape sequences shows its SGR colors instead of the language's, since they are the writer's
+  const render = (parsed, lang) => {
+    if (parsed.runs) {
+      paintRuns(parsed.runs);
+      return;
+    }
+    code.textContent = parsed.plain;
     // highlight.js escapes the text it returns; it and renderDiff's escaped rows are the page's only markup sinks
     if (lang && typeof hljs !== 'undefined' && hljs.getLanguage(lang)) {
-      try { code.innerHTML = hljs.highlight(value, { language: lang, ignoreIllegals: true }).value; } catch (_) { code.textContent = value; }
+      try { code.innerHTML = hljs.highlight(parsed.plain, { language: lang, ignoreIllegals: true }).value; } catch (_) { code.textContent = parsed.plain; }
     }
   };
+  const parsed = ansi(text);
+  text = parsed.plain;
   const rows = !log && source.dataset.diff !== undefined ? diffRows(text.split('\n')) : null;
-  // a patch with no unified hunk (context, normal or combined format) keeps the diff grammar
-  if (rows && rows.some((row) => row.kind !== '')) renderDiff(text.split('\n'), rows); else render(text, language);
+  // a patch with no unified hunk (context, normal or combined format) keeps the diff grammar; a colored patch
+  // shows the diff renderer's bands and syntax, which say what git's colors do
+  if (rows && rows.some((row) => row.kind !== '')) renderDiff(text.split('\n'), rows); else render(parsed, language);
   pre.appendChild(code);
 
   const scroller = document.scrollingElement || document.documentElement;
   const send = (body) => {
     try { window.webkit.messageHandlers.agtermTextPage.postMessage(body); } catch (_) {}
   };
+  // counts reported while the page sets up wait for its ready, so a count the app holds means the page takes a step
+  let setup = [];
+  const publish = (body) => (setup ? setup.push(body) : send(body));
   // the vertical position last seen, kept across programmatic moves, so a horizontal scroll or a jump the page
   // made itself never reads as the user scrolling
   let lastTop = scroller.scrollTop;
@@ -42,32 +55,284 @@
   document.body.prepend(bar);
   const finder = startSearch();
 
+  let wrapped = source.dataset.wrap !== undefined;
+  document.body.classList.toggle('agterm-wrapped', wrapped);
+  // the row each line starts on, then the row count; measured on first use while wrapped, dropped by every reflow
+  let lineRows = null;
+  const rowStart = (line) => {
+    if (!wrapped) return line;
+    if (!lineRows) lineRows = measureRows(lineCount());
+    return lineRows[line];
+  };
+  // the gutter and the target band number file lines; wrapping keeps to shown lines
+  const slotCount = () => (records ? records.length - 1 : lineCount());
+  const slotStart = (slot) => rowStart(records ? records[slot] : slot);
+  // in document coordinates, which scrollTop measures
+  const rowTop = (row) => {
+    const style = getComputedStyle(pre);
+    return page.offsetTop + pre.offsetTop + parseFloat(style.paddingTop) + row * parseFloat(style.lineHeight);
+  };
+  const topSlot = () => {
+    const view = scroller.scrollTop + bar.offsetHeight;
+    let low = 0, high = slotCount() - 1;
+    while (low < high) {
+      const mid = (low + high + 1) >> 1;
+      if (rowTop(slotStart(mid)) <= view) low = mid; else high = mid - 1;
+    }
+    return low;
+  };
+  const placers = [];
+
   let following = false;
   const logControls = log ? startLog() : null;
   if (!log) {
-    const lines = text.split('\n');
-    if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+    const count = slotCount();
     const gutter = document.createElement('div');
     gutter.className = 'agterm-gutter';
-    gutter.textContent = lines.map((_, i) => i + 1).join('\n');
+    gutter.textContent = Array.from({ length: count }, (_, i) => i + 1).join('\n');
     page.append(gutter, pre);
+    // a wrapped line's number heads its first row, and blank rows fill the rest
+    const drawGutter = () => {
+      gutter.textContent = Array.from({ length: count }, (_, i) => `${i + 1}${'\n'.repeat(slotStart(i + 1) - slotStart(i) - 1)}`)
+        .join('\n');
+    };
+    if (wrapped || records) drawGutter();
+    placers.push(drawGutter);
     if (rows) paintRows(rows);
-    if (Number.isInteger(target) && target >= 1 && target <= lines.length) {
+    if (Number.isInteger(target) && target >= 1 && target <= count) {
       const style = getComputedStyle(pre);
       const band = document.createElement('div');
       band.className = 'agterm-band';
-      band.style.top = `${parseFloat(style.paddingTop) + (target - 1) * parseFloat(style.lineHeight)}px`;
+      const placeBand = () => {
+        const height = parseFloat(style.lineHeight);
+        band.style.top = `${parseFloat(style.paddingTop) + slotStart(target - 1) * height}px`;
+        band.style.height = `${(slotStart(target) - slotStart(target - 1)) * height}px`;
+      };
+      placeBand();
+      placers.push(placeBand);
       page.prepend(band);
       band.scrollIntoView({ block: 'center' });
       lastTop = scroller.scrollTop;
     }
     const anchor = Number(source.dataset.anchor);
     if (Number.isFinite(anchor)) scrollTo(anchor);
+    const top = Number(source.dataset.top);
+    if (Number.isInteger(top) && top >= 0 && top < count) scrollTo(top ? rowTop(slotStart(top)) - bar.offsetHeight : 0);
   }
   const changes = rows ? startChanges(rows) : null;
+  const files = rows ? startFiles() : null;
+  const wrapper = startWrap();
+  const expander = !log && jsonl ? startExpand() : null;
   finder.start();
   window.addEventListener('keydown', keys);
+  window.addEventListener('resize', () => {
+    if (!wrapped) return;
+    lineRows = null;
+    placers.forEach((place) => place());
+    if (log && following) scrollTo(scroller.scrollHeight);
+  });
   send({ ready: true });
+  const held = setup;
+  setup = null;
+  held.forEach(send);
+
+  // lines as the gutter numbers them: a final line break opens no line of its own
+  function lineCount() {
+    let count = 1;
+    for (let at = text.indexOf('\n'); at >= 0; at = text.indexOf('\n', at + 1)) count += 1;
+    return count > 1 && text.endsWith('\n') ? count - 1 : count;
+  }
+
+  // escapes are dropped by the grammar of TerminalText.strippingEscapes, so the Swift side reads a diff's headers
+  // the same way; an unfinished sequence at the end of a growing file is dropped and reparsed with the next read
+  function ansi(value) {
+    if (!value.includes('\x1b')) return { plain: value, runs: null };
+    const runs = [];
+    let style = {};
+    let start = 0;
+    const take = (end) => {
+      if (end > start) runs.push({ text: value.slice(start, end), style });
+    };
+    for (let at = value.indexOf('\x1b'); at >= 0; at = value.indexOf('\x1b', start)) {
+      take(at);
+      const kind = value.charCodeAt(at + 1);
+      let end = at + 2;
+      if (kind === 0x5b) {
+        while (end < value.length && !(value.charCodeAt(end) >= 0x40 && value.charCodeAt(end) <= 0x7e)) end += 1;
+        // a private marker (`ESC[>4;1m`, modifyOtherKeys) makes it something other than SGR
+        if (value[end] === 'm' && !/^[<=>?]/.test(value.slice(at + 2, end))) style = sgr(style, value.slice(at + 2, end));
+        end += 1;
+      } else if (kind === 0x5d) {
+        while (end < value.length && value.charCodeAt(end) !== 0x07 && value.charCodeAt(end) !== 0x1b) end += 1;
+        end += value.charCodeAt(end) === 0x1b ? 2 : 1;
+      } else if (kind === 0x50 || kind === 0x58 || kind === 0x5e || kind === 0x5f) {
+        // DCS, SOS, PM and APC end only at ESC \; a tmux passthrough doubles every ESC inside it
+        while (end < value.length && !(value[end] === '\x1b' && value[end + 1] === '\\')) {
+          end += value[end] === '\x1b' && value[end + 1] === '\x1b' ? 2 : 1;
+        }
+        end += 2;
+      } else if (kind >= 0x20 && kind <= 0x2f) {
+        while (end < value.length && value.charCodeAt(end) >= 0x20 && value.charCodeAt(end) <= 0x2f) end += 1;
+        end += 1;
+      }
+      start = Math.min(end, value.length);
+    }
+    take(value.length);
+    return { plain: runs.map((run) => run.text).join(''), runs };
+  }
+
+  // a style is { fg, bg, bold }, colors as CSS values built here from numbers only
+  function sgr(style, params) {
+    const next = { ...style };
+    const codes = params.split(';');
+    // [5, n] or [2, r, g, b]; the colon form may put a color space id before r, g, b
+    const extended = (args) => (args[0] === 5 ? indexed(args[1]) : args[0] === 2 ? rgb(...args.slice(-3)) : undefined);
+    const setColor = (n, color) => { if (color) next[n === 38 ? 'fg' : 'bg'] = color; };
+    for (let at = 0; at < codes.length; at += 1) {
+      // colon subparameters belong to one attribute, so their zeros are never resets
+      const [first, ...sub] = codes[at].split(':').map(Number);
+      const n = first || 0;
+      if (sub.length) {
+        if (n === 38 || n === 48) setColor(n, extended(sub));
+        continue;
+      }
+      if (n === 0) { delete next.fg; delete next.bg; delete next.bold; }
+      else if (n === 1) next.bold = true;
+      else if (n === 22) delete next.bold;
+      else if (n >= 30 && n <= 37) next.fg = indexed(n - 30);
+      else if (n >= 90 && n <= 97) next.fg = indexed(n - 82);
+      else if (n === 39) delete next.fg;
+      else if (n >= 40 && n <= 47) next.bg = indexed(n - 40);
+      else if (n >= 100 && n <= 107) next.bg = indexed(n - 92);
+      else if (n === 49) delete next.bg;
+      else if (n === 38 || n === 48) {
+        const selector = Number(codes[at + 1]);
+        const used = selector === 5 ? 2 : selector === 2 ? 4 : codes.length;
+        setColor(n, extended(codes.slice(at + 1, at + 1 + used).map(Number)));
+        at += used;
+      }
+    }
+    return next;
+  }
+
+  // the theme's 16 colors when it supplies them, xterm's otherwise; 16 to 255 are xterm's cube and gray ramp
+  function indexed(n) {
+    const xterm = ['#000000', '#cd0000', '#00cd00', '#cdcd00', '#0000ee', '#cd00cd', '#00cdcd', '#e5e5e5',
+      '#7f7f7f', '#ff0000', '#00ff00', '#ffff00', '#5c5cff', '#ff00ff', '#00ffff', '#ffffff'];
+    if (!Number.isInteger(n) || n < 0 || n > 255) return undefined;
+    if (n < 16) return `var(--agterm-color-${n}, ${xterm[n]})`;
+    if (n >= 232) return rgb(8 + (n - 232) * 10, 8 + (n - 232) * 10, 8 + (n - 232) * 10);
+    const level = (v) => (v ? 55 + v * 40 : 0);
+    return rgb(level(Math.floor((n - 16) / 36)), level(Math.floor((n - 16) / 6) % 6), level((n - 16) % 6));
+  }
+
+  function rgb(r, g, b) {
+    const ok = [r, g, b].every((v) => Number.isInteger(v) && v >= 0 && v <= 255);
+    return ok ? `rgb(${r}, ${g}, ${b})` : undefined;
+  }
+
+  function paintRuns(runs) {
+    const fragment = document.createDocumentFragment();
+    for (const { text: part, style } of runs) {
+      if (!style.fg && !style.bg && !style.bold) {
+        fragment.append(part);
+        continue;
+      }
+      const span = document.createElement('span');
+      if (style.fg) span.style.color = style.fg;
+      if (style.bg) span.style.backgroundColor = style.bg;
+      if (style.bold) span.style.fontWeight = 'bold';
+      span.textContent = part;
+      fragment.append(span);
+    }
+    code.replaceChildren(fragment);
+  }
+
+  // every row is one line box of the same height, so a line starts one row below the newline that ends the line
+  // before it, and the text ends on the row of the code element's last fragment. A line's first character is never
+  // measured: on a diff row it is the zero-size marker, whose rect is empty.
+  function measureRows(count) {
+    const style = getComputedStyle(pre);
+    const height = parseFloat(style.lineHeight);
+    const origin = pre.getBoundingClientRect().top + parseFloat(style.paddingTop);
+    const rowOf = (rect) => Math.floor((rect.top + rect.height / 2 - origin) / height);
+    const starts = new Int32Array(count + 1);
+    const range = document.createRange();
+    const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+    let line = 1;
+    for (let node = walker.nextNode(); node && line < count; node = walker.nextNode()) {
+      for (let at = node.data.indexOf('\n'); at >= 0 && line < count; at = node.data.indexOf('\n', at + 1)) {
+        range.setStart(node, at);
+        range.setEnd(node, at + 1);
+        starts[line] = rowOf(range.getBoundingClientRect()) + 1;
+        line += 1;
+      }
+    }
+    const fragments = code.getClientRects();
+    starts[count] = fragments.length ? rowOf(fragments[fragments.length - 1]) + 1 : count;
+    return starts;
+  }
+
+  // a toggle keeps the line under the bar there, or a following log at its end, and moves through scrollTo, so the
+  // reflow never reads as the user scrolling
+  function startWrap() {
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'agterm-wrap';
+    toggle.title = 'Wrap long lines (w)';
+    // first, since the controls after it change width as their labels change
+    bar.prepend(toggle);
+    const draw = () => {
+      toggle.textContent = wrapped ? 'Wrap: on' : 'Wrap: off';
+      toggle.setAttribute('aria-pressed', String(wrapped));
+    };
+    const lineTop = (line) => rowTop(rowStart(line));
+    const topLine = () => {
+      const view = scroller.scrollTop + bar.offsetHeight;
+      let low = 0, high = lineCount() - 1;
+      while (low < high) {
+        const mid = (low + high + 1) >> 1;
+        if (lineTop(mid) <= view) low = mid; else high = mid - 1;
+      }
+      return low;
+    };
+    const set = (value, own) => {
+      if (value === wrapped) return;
+      const line = topLine();
+      // above the first line, as at the page's top, the gap is kept; inside a line its top goes under the bar
+      const gap = Math.min(0, scroller.scrollTop + bar.offsetHeight - lineTop(line));
+      wrapped = value;
+      lineRows = null;
+      document.body.classList.toggle('agterm-wrapped', wrapped);
+      placers.forEach((place) => place());
+      scrollTo(log && following ? scroller.scrollHeight : lineTop(line) - bar.offsetHeight + gap);
+      draw();
+      if (own) send({ wrap: wrapped });
+      // the app reopens a paused log at the offset it was last told
+      if (log) logControls.post();
+    };
+    toggle.addEventListener('click', () => set(!wrapped, true));
+    draw();
+    return {
+      toggle: () => set(!wrapped, true),
+      set: (value) => set(value, false),
+    };
+  }
+
+  // the app lays the records out and rebuilds the page, so the toggle only asks for it
+  function startExpand() {
+    const expanded = source.dataset.expand !== undefined;
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'agterm-expand';
+    toggle.title = 'Lay records out (e)';
+    toggle.textContent = expanded ? 'Expand: on' : 'Expand: off';
+    toggle.setAttribute('aria-pressed', String(expanded));
+    bar.querySelector('.agterm-wrap').after(toggle);
+    const ask = () => send({ expand: !expanded });
+    toggle.addEventListener('click', ask);
+    return { toggle: ask };
+  }
 
   function glyph(path) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -96,6 +361,8 @@
     field.placeholder = 'Find';
     field.spellcheck = false;
     field.autocomplete = 'off';
+    // counted in UTF-16 units so typed input fits TextSearch.maxQuery
+    field.maxLength = 16384;
     const counter = document.createElement('span');
     counter.className = 'agterm-count';
     const previous = control('M3.5 10.5 8 6l4.5 4.5', 'Previous match');
@@ -203,7 +470,7 @@
       previous.disabled = next.disabled = offsets.length === 0;
       close.disabled = query === '';
     };
-    const report = () => send({ report: { revision, query, matches: offsets.length, current: offsets.length ? current + 1 : 0 } });
+    const report = () => publish({ report: { revision, query, matches: offsets.length, current: offsets.length ? current + 1 : 0 } });
 
     // the match is brought into view only when it is not already shown below the bar
     const reveal = () => {
@@ -218,7 +485,7 @@
     const pick = () => {
       if (!offsets.length) { current = -1; return; }
       if (log && following) { current = offsets.length - 1; return; }
-      // lines never wrap, so a match's top grows with its offset and the first one in view is a binary search
+      // a match's top grows with its offset, wrapped or not, so the first one in view is a binary search
       const top = bar.offsetHeight;
       let low = 0, high = offsets.length;
       while (low < high) {
@@ -439,13 +706,11 @@
     return out;
   }
 
-  // rows never wrap, so a run of added or removed rows is one band at its first row's offset
   function paintRows(rows) {
     page.classList.add('agterm-diff');
     const style = getComputedStyle(pre);
-    const height = parseFloat(style.lineHeight);
-    const inset = parseFloat(style.paddingTop);
     const bands = document.createDocumentFragment();
+    const runs = [];
     for (let first = 0; first < rows.length; first++) {
       const kind = rows[first].kind;
       if (kind !== '-' && kind !== '+') continue;
@@ -453,11 +718,20 @@
       while (last + 1 < rows.length && rows[last + 1].kind === kind) last++;
       const band = document.createElement('div');
       band.className = kind === '+' ? 'agterm-added' : 'agterm-removed';
-      band.style.top = `${pre.offsetTop + inset + first * height}px`;
-      band.style.height = `${(last - first + 1) * height}px`;
+      runs.push({ band, first, last });
       bands.append(band);
       first = last;
     }
+    const place = () => {
+      const height = parseFloat(style.lineHeight);
+      const inset = pre.offsetTop + parseFloat(style.paddingTop);
+      for (const { band, first, last } of runs) {
+        band.style.top = `${inset + rowStart(first) * height}px`;
+        band.style.height = `${(rowStart(last + 1) - rowStart(first)) * height}px`;
+      }
+    };
+    place();
+    placers.push(place);
     page.prepend(bands);
   }
 
@@ -484,7 +758,7 @@
     let current = -1;
     const saved = Number(source.dataset.change);
     if (Number.isInteger(saved) && saved >= 1 && saved <= blocks.length) current = saved - 1;
-    const report = () => send({ changes: { count: blocks.length, current: current + 1 } });
+    const report = () => publish({ changes: { count: blocks.length, current: current + 1 } });
     if (!blocks.length) {
       report();
       return null;
@@ -495,6 +769,8 @@
     const previous = control('M3.5 10.5 8 6l4.5 4.5', 'Previous change ([)');
     const next = control('M3.5 5.5 8 10l4.5-4.5', 'Next change (])');
     const label = document.createElement('span');
+    // as wide as its longest text, so stepping never moves the controls after it
+    label.style.minWidth = `${`change ${blocks.length} of ${blocks.length}`.length}ch`;
     group.append(previous, next, label);
     bar.prepend(group);
     const band = document.createElement('div');
@@ -502,14 +778,13 @@
     band.hidden = true;
     page.prepend(band);
 
-    // rows never wrap, so a row's place is its index times the line height
     const style = getComputedStyle(pre);
     const height = parseFloat(style.lineHeight);
     const inset = parseFloat(style.paddingTop);
     // in document coordinates, which scrollTop measures; the band sits in the page, whose own top is the bar's room
     const origin = () => page.offsetTop + pre.offsetTop + inset;
-    const topOf = (block) => origin() + block[0] * height;
-    const bottomOf = (block) => origin() + (block[1] + 1) * height;
+    const topOf = (block) => origin() + rowStart(block[0]) * height;
+    const bottomOf = (block) => origin() + rowStart(block[1] + 1) * height;
     const view = () => ({ top: scroller.scrollTop + bar.offsetHeight, bottom: scroller.scrollTop + scroller.clientHeight });
     const visible = (block) => {
       const { top, bottom } = view();
@@ -521,9 +796,10 @@
       label.textContent = current < 0 ? `${count} ${count === 1 ? 'change' : 'changes'}` : `change ${current + 1} of ${count}`;
       band.hidden = current < 0;
       if (current < 0) return;
-      band.style.top = `${pre.offsetTop + inset + blocks[current][0] * height}px`;
-      band.style.height = `${(blocks[current][1] - blocks[current][0] + 1) * height}px`;
+      band.style.top = `${pre.offsetTop + inset + rowStart(blocks[current][0]) * height}px`;
+      band.style.height = `${(rowStart(blocks[current][1] + 1) - rowStart(blocks[current][0])) * height}px`;
     };
+    placers.push(draw);
     // the change is brought into view only when its first row is not shown below the bar
     const reveal = () => {
       const { top, bottom } = view();
@@ -532,9 +808,13 @@
     };
     // a step goes on from the current change while it is on screen, and from the view's top once the user scrolled
     // it away, so Next never jumps back to a change above what is shown
+    // the view a file pick left, where its change stays the step's origin even when the header jump left it below
+    let entered = source.hasAttribute('data-entered') && current >= 0 ? scroller.scrollTop : null;
     const step = (forward) => {
       const count = blocks.length;
-      if (current >= 0 && visible(blocks[current])) {
+      const origin = current >= 0 && (visible(blocks[current]) || entered === scroller.scrollTop);
+      entered = null;
+      if (origin) {
         current = (current + (forward ? 1 : count - 1)) % count;
       } else {
         const { top } = view();
@@ -549,13 +829,206 @@
       draw();
       reveal();
       report();
+      if (api.follow) api.follow(blocks[current][0]);
       return { count, current: current + 1 };
     };
     previous.addEventListener('click', () => step(false));
     next.addEventListener('click', () => step(true));
     draw();
     report();
-    return { step };
+    const api = {
+      step,
+      follow: null,
+      enter(first, end) {
+        current = blocks.findIndex((block) => block[0] >= first && block[0] < end);
+        entered = scroller.scrollTop;
+        draw();
+        report();
+      },
+      picked: () => entered === scroller.scrollTop,
+    };
+    return api;
+  }
+
+  function startFiles() {
+    let sections = [];
+    try { sections = JSON.parse(source.dataset.sections || '[]'); } catch (_) {}
+    if (!Array.isArray(sections) || !sections.length) return null;
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'agterm-files';
+    button.title = 'Files (f)';
+    button.setAttribute('aria-haspopup', 'listbox');
+    const name = document.createElement('span');
+    name.className = 'agterm-file-path';
+    const place = document.createElement('span');
+    place.className = 'agterm-file-place';
+    button.append(name, place, glyph('M3.5 5.5 8 10l4.5-4.5'));
+    bar.insertBefore(button, bar.querySelector('.agterm-search'));
+
+    // outside the bar, whose overflow would clip it
+    const menu = document.createElement('div');
+    menu.className = 'agterm-files-menu';
+    menu.hidden = true;
+    const field = document.createElement('input');
+    field.type = 'text';
+    field.placeholder = 'Filter files';
+    field.spellcheck = false;
+    field.autocomplete = 'off';
+    const list = document.createElement('div');
+    list.className = 'agterm-files-list';
+    list.setAttribute('role', 'listbox');
+    menu.append(field, list);
+    document.body.append(menu);
+
+    const style = getComputedStyle(pre);
+    const topOf = (section) => page.offsetTop + pre.offsetTop + parseFloat(style.paddingTop)
+      + rowStart(section.line) * parseFloat(style.lineHeight);
+    // a picked file stays current while the view stays where the pick left it, since a short last file cannot
+    // scroll its header up to the bar
+    let pin = null;
+    let current = 0;
+    const draw = () => {
+      // the marks keep a leading or trailing slash or dot on its side in the right-to-left box that cuts the left end
+      name.textContent = `‎${sections[current].path}‎`;
+      place.textContent = `${current + 1}/${sections.length}`;
+      button.setAttribute('aria-label', `File ${current + 1} of ${sections.length}: ${sections[current].path}`);
+      publish({ files: report() });
+    };
+    const report = () => ({ count: sections.length, current: current + 1, path: sections[current].path });
+    const track = () => {
+      if (pin && pin.top === scroller.scrollTop) return;
+      pin = null;
+      const view = scroller.scrollTop + bar.offsetHeight + 1;
+      let low = 0, high = sections.length - 1;
+      while (low < high) {
+        const mid = (low + high + 1) >> 1;
+        if (topOf(sections[mid]) <= view) low = mid; else high = mid - 1;
+      }
+      if (low === current) return;
+      current = low;
+      draw();
+    };
+    // never deferred to an animation frame, which a page off screen does not get
+    window.addEventListener('scroll', track, { passive: true });
+    placers.push(track);
+
+    const show = (index) => {
+      pin = { top: scroller.scrollTop };
+      if (index === current) return;
+      current = index;
+      draw();
+    };
+    const go = (index) => {
+      scrollTo(topOf(sections[index]) - bar.offsetHeight);
+      scroller.scrollLeft = 0;
+      show(index);
+      if (changes) changes.enter(sections[index].line, index + 1 < sections.length ? sections[index + 1].line : Infinity);
+    };
+    // a step shows the file holding the change it reached, whether or not it scrolled
+    if (changes) {
+      changes.follow = (row) => {
+        let at = 0;
+        while (at + 1 < sections.length && sections[at + 1].line <= row) at += 1;
+        show(at);
+      };
+    }
+
+    let shown = [];
+    let selected = 0;
+    const select = (index) => {
+      selected = index;
+      list.querySelectorAll('[aria-selected]').forEach((row, i) => row.setAttribute('aria-selected', String(i === index)));
+      list.children[index]?.scrollIntoView({ block: 'nearest' });
+    };
+    const fill = () => {
+      const query = field.value.toLowerCase();
+      shown = sections.map((section, index) => index).filter((index) => sections[index].path.toLowerCase().includes(query));
+      list.replaceChildren(...shown.map((index) => {
+        const row = document.createElement('div');
+        row.className = 'agterm-files-row';
+        row.setAttribute('role', 'option');
+        row.setAttribute('aria-selected', 'false');
+        const number = document.createElement('span');
+        number.className = 'agterm-files-number';
+        number.textContent = String(index + 1);
+        row.append(number, sections[index].path);
+        row.addEventListener('mousedown', (event) => event.preventDefault());
+        row.addEventListener('click', () => pick(index));
+        return row;
+      }));
+      if (!shown.length) {
+        const empty = document.createElement('div');
+        empty.className = 'agterm-files-empty';
+        empty.textContent = 'no matching files';
+        list.append(empty);
+        return;
+      }
+      const at = shown.indexOf(current);
+      select(query || at < 0 ? 0 : at);
+    };
+    const close = () => {
+      if (menu.hidden) return;
+      menu.hidden = true;
+      button.setAttribute('aria-expanded', 'false');
+      field.blur();
+    };
+    const pick = (index) => {
+      close();
+      go(index);
+    };
+    const open = () => {
+      if (!menu.hidden) return;
+      const rect = button.getBoundingClientRect();
+      menu.style.left = `${Math.max(6, Math.min(rect.left, window.innerWidth - 6 - Math.min(560, window.innerWidth - 12)))}px`;
+      menu.hidden = false;
+      button.setAttribute('aria-expanded', 'true');
+      field.value = '';
+      fill();
+      field.focus();
+    };
+
+    field.addEventListener('input', fill);
+    field.addEventListener('keydown', (event) => {
+      event.stopPropagation();
+      const down = event.key === 'ArrowDown' || (event.ctrlKey && event.key === 'n');
+      const up = event.key === 'ArrowUp' || (event.ctrlKey && event.key === 'p');
+      if (down || up) {
+        event.preventDefault();
+        if (shown.length) select((selected + (down ? 1 : shown.length - 1)) % shown.length);
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        if (shown.length) pick(shown[selected]);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+      }
+    });
+    field.addEventListener('blur', close);
+    button.addEventListener('mousedown', (event) => { if (!menu.hidden) event.preventDefault(); });
+    button.addEventListener('click', () => (menu.hidden ? open() : close()));
+    window.addEventListener('resize', close);
+
+    const kept = Number(source.dataset.file);
+    if (Number.isInteger(kept) && kept >= 1 && kept <= sections.length) {
+      current = kept - 1;
+      pin = { top: scroller.scrollTop };
+    }
+    draw();
+    track();
+    return {
+      open,
+      pinned: () => (pin && pin.top === scroller.scrollTop ? current + 1 : 0),
+      // a whole number is a file's place from 1, anything else a path as the list shows it
+      goTo(target) {
+        const index = /^[0-9]+$/.test(target) ? Number(target) - 1 : sections.findIndex((section) => section.path === target);
+        if (index < 0 || index >= sections.length) return null;
+        close();
+        go(index);
+        return report();
+      },
+    };
   }
 
   function startLog() {
@@ -573,7 +1046,15 @@
     page.append(pre);
 
     const drawBar = () => {
-      toggle.textContent = following ? 'Follow: on' : 'Follow: paused - Resume';
+      if (following) {
+        toggle.textContent = 'Follow: on';
+      } else {
+        const prefix = document.createElement('span');
+        prefix.className = 'agterm-prefix';
+        prefix.textContent = 'Follow: paused - ';
+        toggle.replaceChildren(prefix, 'Resume');
+      }
+      toggle.setAttribute('aria-label', toggle.textContent);
       toggle.classList.toggle('agterm-paused', !following);
       const notes = [];
       if (state.clipped) notes.push('first line clipped');
@@ -619,10 +1100,11 @@
 
     window.agtermTextUpdate = (raw, clipped, waiting, unreadable, lang, shift) => {
       // line breaks as the parser left them in the first document, which LogFollower.shift counts the same way
-      const value = raw.replace(/\r\n?/g, '\n');
-      render(value, lang);
+      const update = ansi(raw.replace(/\r\n?/g, '\n'));
+      render(update, lang);
+      lineRows = null;
       state = { clipped, waiting, unreadable };
-      finder.update(value, shift || { dropped: 0, cut: false, replaced: false });
+      finder.update(update.plain, shift || { dropped: 0, cut: false, replaced: false });
       drawBar();
       if (following) toBottom();
     };
@@ -669,6 +1151,9 @@
       if (event.key === 'N' && finder.hasQuery()) { finder.jump(false); return true; }
       if (event.key === ']' && changes) { changes.step(true); return true; }
       if (event.key === '[' && changes) { changes.step(false); return true; }
+      if (event.key === 'f' && files) { files.open(); return true; }
+      if (event.key === 'w') { wrapper.toggle(); return true; }
+      if (event.key === 'e' && expander) { expander.toggle(); return true; }
       if (!logControls) return false;
       if (event.key === 'F') { logControls.toggle(); return true; }
       if (event.key === 'G' || event.key === 'End') { logControls.bottom(); return true; }
@@ -680,9 +1165,19 @@
 
   window.agtermTextSearchSet = (query, revision, typed) => finder.set(query, revision, typed === true);
   window.agtermTextSearchStep = (forward, query, revision) => finder.step(forward, query, revision);
+  window.agtermTextSetWrap = (value) => wrapper.set(value === true);
   window.agtermTextChangeStep = (forward) => (changes ? changes.step(forward) : { count: 0, current: 0 });
+  window.agtermTextFileGo = (target) => (files && files.goTo(String(target))) || { count: 0, current: 0 };
+  window.agtermTextNavigation = () => ({ top: scroller.scrollTop, entered: changes ? changes.picked() : false,
+                                         file: files ? files.pinned() : 0, line: log ? 0 : topSlot(),
+                                         focused: document.activeElement === finder.field,
+                                         start: finder.field.selectionStart, end: finder.field.selectionEnd });
   window.agtermTextFocusSearch = () => {
     finder.field.focus();
     finder.field.select();
+  };
+  window.agtermTextRestoreSearch = (start, end) => {
+    finder.field.focus();
+    finder.field.setSelectionRange(start, end);
   };
 })();

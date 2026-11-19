@@ -17,11 +17,16 @@ extension AppController {
         }
         if follow { gtk_window_present(WIN(windowPointer)) }
         closePalette()
-        showControlPick(pick)
-        return ControlResponse(ok: true, result: ControlResult(id: pick.id))
+        return timedInteraction(ControlResponse(ok: true, result: ControlResult(id: pick.id)), deadline: pick.deadline) { [weak self] in
+            _ = self?.cancelPick(pick.id, window: nil)
+        }
     }
 
     func pickResult(_ target: String, window: String?) -> ControlResponse {
+        if let result = SessionPickBook.shared.result(for: target) {
+            guard window == nil || SessionPickBook.shared.window(of: target) == windowID else { return err("unknown pick: \(target)") }
+            return ControlResponse(ok: true, result: ControlResult(pick: result))
+        }
         if window == nil {
             if let live = PickRegistry.shared.livePick(for: target),
                let result = live.controller.result(for: target) {
@@ -45,6 +50,11 @@ extension AppController {
     }
 
     func cancelPick(_ target: String, window: String?) -> ControlResponse {
+        if SessionPickBook.shared.result(for: target) != nil {
+            guard window == nil || SessionPickBook.shared.window(of: target) == windowID else { return err("unknown pick: \(target)") }
+            SessionPickBook.shared.cancel(target)
+            return ControlResponse(ok: true)
+        }
         if window == nil {
             if let live = PickRegistry.shared.livePick(for: target) {
                 if live.controller.pending?.id == target {
@@ -69,7 +79,7 @@ extension AppController {
         return ControlResponse(ok: true)
     }
 
-    private func showControlPick(_ pick: PendingPick) {
+    func showControlPick(_ pick: PendingPick) {
         guard let win = op(gtk_window_new()) else {
             pickController.cancel()
             return
@@ -284,7 +294,7 @@ extension AppController {
     /// The deferred one-shot re-checks controller identity because it can fire after `windowWillClose`
     /// finalized the window, and tests the search entry at FIRE time, not at dismissal time.
     private func finishControlPickDismissal(refocus: Bool) {
-        if let completion = controlPickCompletion, let result = pickController.recentResults.last?.result {
+        if pickController.pending == nil, let completion = controlPickCompletion, let result = pickController.recentResults.last?.result {
             controlPickCompletion = nil
             MainTimer.schedule(after: 0) { [weak self] in
                 guard let self, gWindows[self.windowID] === self else { return }

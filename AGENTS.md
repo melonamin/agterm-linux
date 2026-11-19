@@ -87,8 +87,9 @@ file otherwise looks host-free.
 - Schedule deferred main-actor work through `agtermCore`'s `MainTimer` seam (`MainTimer.schedule(after:_:)`,
   or `Debouncer` on top of it), never a dispatch or `Task.sleep` timer.
 - Hop to the main thread with `runOnMain` (`g_idle_add`), never `DispatchQueue.main.async`.
-  `runOnMain` lives in the Linux target, so host-free `agtermCore` has no hop seam: from main-actor core code
-  use `MainTimer.schedule(after: 0)`, and add a hop seam alongside `MainTimer` only if a real need appears.
+  `runOnMain` lives in the Linux target.
+  Host-free `agtermCore` uses `MainActorHop.enqueue` for nonisolated observation and transport callbacks.
+  From main-actor core code, use `MainTimer.schedule(after: 0)` for a next-turn hop.
 - Keep `MainTimer`'s default Dispatch-based so upstream macOS semantics are unchanged; the Linux app swaps in
   the GLib implementation once, in `installGLibMainTimer()` at the top of `activateApplication`.
 - `DispatchQueue.global` is fine: global queues own their own threads.

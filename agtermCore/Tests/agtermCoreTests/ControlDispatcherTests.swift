@@ -372,18 +372,28 @@ struct ControlDispatcherTests {
             cmd: .sessionGo,
             args: ControlArgs(to: "sideways")
         ))
+        let zeroPosition = await dispatcher.dispatch(ControlRequest(
+            cmd: .sessionGo,
+            args: ControlArgs(to: "0")
+        ))
         let missingName = await dispatcher.dispatch(ControlRequest(cmd: .sessionRename, target: "session"))
 
-        #expect(missingDirection == ControlResponse(
-            ok: false,
-            error: "session.go requires --to next|prev|first|last|next-attention|prev-attention"
-        ))
-        #expect(badDirection == ControlResponse(
-            ok: false,
-            error: "session.go requires --to next|prev|first|last|next-attention|prev-attention"
-        ))
+        let usage = ControlResponse(ok: false, error: "session.go requires --to next|prev|first|last|next-attention|prev-attention|N")
+        #expect(missingDirection == usage)
+        #expect(badDirection == usage)
+        #expect(zeroPosition == usage)
         #expect(missingName == ControlResponse(ok: false, error: "session.rename requires a name"))
         #expect(actions.calls.isEmpty)
+    }
+
+    @Test func sessionGoRoutesAPosition() async {
+        let actions = MockControlActions()
+        let dispatcher = ControlDispatcher(actions: actions)
+
+        let response = await dispatcher.dispatch(ControlRequest(cmd: .sessionGo, args: ControlArgs(window: "win", to: "3")))
+
+        #expect(response == ControlResponse(ok: true))
+        #expect(actions.calls == [.sessionGo(window: "win", .position(3))])
     }
 
     @Test func workspaceCommandsRouteThroughActions() async {
@@ -1835,6 +1845,37 @@ struct ControlDispatcherTests {
             .windowMinimize(target: "9f3c", mode: .on),
             .windowMinimize(target: "9f3c", mode: .toggle)
         ])
+    }
+
+    @Test func windowRemoteOpenPassesATrimmedHostAndRefusesOneSshCannotTake() async {
+        let actions = MockControlActions()
+        let dispatcher = ControlDispatcher(actions: actions)
+        actions.nextWindowRemoteOpenResponse = ControlResponse(ok: true, result: ControlResult(id: "win"))
+
+        let opened = await dispatcher.dispatch(ControlRequest(cmd: .windowRemoteOpen, args: ControlArgs(host: " buildbox ")))
+        let missing = await dispatcher.dispatch(ControlRequest(cmd: .windowRemoteOpen))
+        let option = await dispatcher.dispatch(ControlRequest(cmd: .windowRemoteOpen, args: ControlArgs(host: "-oProxyCommand=x")))
+        let spaced = await dispatcher.dispatch(ControlRequest(cmd: .windowRemoteOpen, args: ControlArgs(host: "a b")))
+
+        #expect(opened == ControlResponse(ok: true, result: ControlResult(id: "win")))
+        #expect(missing?.error == "window.remote.open requires a host")
+        #expect(option?.error == "window.remote.open: not a host ssh can be given")
+        #expect(spaced?.error == "window.remote.open: not a host ssh can be given")
+        #expect(actions.calls == [.windowRemoteOpen(host: "buildbox", originWindow: nil)])
+    }
+
+    @Test func windowRemoteOpenPassesTheOriginWindowAndDropsABlankOne() async {
+        let actions = MockControlActions()
+        let dispatcher = ControlDispatcher(actions: actions)
+        var named = ControlArgs(host: "mac")
+        named.originWindow = " 6f1c "
+        var blank = ControlArgs(host: "mac")
+        blank.originWindow = " "
+
+        _ = await dispatcher.dispatch(ControlRequest(cmd: .windowRemoteOpen, args: named))
+        _ = await dispatcher.dispatch(ControlRequest(cmd: .windowRemoteOpen, args: blank))
+
+        #expect(actions.calls == [.windowRemoteOpen(host: "mac", originWindow: "6f1c"), .windowRemoteOpen(host: "mac", originWindow: nil)])
     }
 
     @Test func windowCommandsRejectInvalidInputsBeforeCallingActions() async {

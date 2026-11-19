@@ -193,7 +193,7 @@ extension AppController {
     }
 
     func attachRemoteSession(host: String, session remoteID: String,
-                             tree: ControlRemoteTree, parent: UUID? = nil, select: Bool = true, tint: SidebarTint? = nil) -> ControlResponse {
+                             tree: ControlRemoteTree, parent: UUID? = nil, select: Bool = true, tint: SidebarTint? = nil, placementWorkspace: UUID? = nil) -> ControlResponse {
         guard let remote = tree.sessions.first(where: { $0.id == remoteID }) else {
             return ControlResponse(ok: false, error: "no attachable session \(remoteID) on \(host)")
         }
@@ -203,7 +203,7 @@ extension AppController {
                 && row.remotePresentation?.binding.origin?.endpoint == tree.endpoint
         }
         let parent = parent ?? (matchingParents.count == 1 ? matchingParents.first?.id : nil)
-        guard let workspace = parent.flatMap({ store.workspace(forSession: $0)?.id }) ?? store.currentWorkspaceID else {
+        guard let workspace = parent.flatMap({ store.workspace(forSession: $0)?.id }) ?? placementWorkspace ?? store.currentWorkspaceID else {
             return ControlResponse(ok: false, error: "no window to attach into")
         }
         let byRole = Dictionary(remote.panes.map { (ZmxPaneRole(controlName: $0.pane), $0.daemon) },
@@ -250,7 +250,7 @@ extension AppController {
         }
         let origin = RemoteBinding.Origin(host: host, endpoint: tree.endpoint, sessionName: remote.name)
         store.bindRemote(RemoteBinding(remoteSessionID: remote.id, daemonsByLocalPane: daemons,
-                                       presentationVersion: tree.presentation, origin: origin),
+                                       presentationVersion: tree.presentation, origin: origin, originHeadless: tree.headless == true),
                          forSession: created.id)
         reconcile(focusActive: select)
         if select { sessionFocusTarget(for: created.id, wantSplit: created.splitFocused)?.grabFocus() }

@@ -41,7 +41,7 @@ Code layout:
 
 ### Linux feature parity and platform differences
 
-The `linux-port` branch carries the exact upstream v0.40.0 terminal model and control protocol, including
+The `linux-port` branch carries the exact upstream v0.43.0 terminal model and control protocol, including
 split/scratch/overlay terminals, Quick terminal input and read-back, terminal zoom, fullscreen,
 recently closed sessions with grouped undo, light/dark themes, configurable toolbar and sidebar text,
 recent-session and attention popovers, agent status in the multi-session dashboard, stable pane status
@@ -79,8 +79,18 @@ The per-pane message bus supports send, read, acknowledgement, and waiting, with
 Runtime session info supports one-line Markdown, timed expiry, and Always, Flagged, or Off sidebar display.
 Preferences also controls workspace and session icon visibility, workspace chevrons, and compact sidebar density.
 Source/text pages, path:line links, bounded log following, page search, diff highlighting and change navigation,
-and inert HTML documents follow upstream v0.41.1.
-Generated content pages also work on a session's remote viewer; remote text stays static.
+and inert HTML documents follow upstream v0.43.0.
+Generated content pages also work on a session's remote viewer, including text search, wrapping, JSONL expansion,
+log following, and diff file navigation through the origin.
+Remote windows mirror a headless `agterm-server` or a Live-mode desktop origin through catalog snapshots,
+updates, and operation receipts.
+The palette offers New Remote Session, Open Remote Window, and Detached Sessions.
+Structural edits run on the origin; closing an ordinary attached row detaches it, while Terminate on Origin ends it there.
+Attached terminals and top-level page rows reconnect after relaunch.
+Companions can be converted and moved under another parent through GTK and the control API.
+Session-bound asks and pickers follow the presenting pane and retain their deadlines.
+Markdown links navigate within the granted folder, and remote loopback HTTP links use SSH port forwarding.
+`agtermctl server install` installs the exact matching upstream server archive after checking its bundled SHA-256 pin.
 See [Linux file pages](agterm-linux/docs/file-pages.md) for controls, limits, and the renderer boundary.
 Session and workspace tints, plain or grouped flagged lists, membership editors, and flagged ordering are
 available through GTK actions and the control socket.
@@ -98,13 +108,13 @@ The Linux command palette offers **Clear Recent Items** whenever recently closed
 The same app-wide cleanup is available as `agtermctl recent clear`.
 Preferences exposes Quick Terminal sizing, cursor shape and blink, and Fresh shells, Re-run commands, or
 experimental Live sessions restore.
-Live mode uses the bundled pinned zmx runtime for primary and split panes; scratch, overlay, and Quick
-terminals remain temporary.
+Live mode uses the bundled pinned zmx runtime for primary, split, and scratch panes.
+Scratch processes survive hiding and application relaunch; overlay and Quick terminals remain temporary.
 It requires zsh or fish as the password-database login shell or as the absolute shell path in Ghostty’s `command` setting,
 with the matching bundled Ghostty integration.
 The mode is latched at process startup, and a missing daemon after reboot falls back to recreating the pane
 from its last cleanly captured command.
-The libghostty pin matches upstream v0.41.1 (Ghostty v1.4.0).
+The libghostty pin remains Ghostty v1.4.0 with the compatible upstream v0.43.0 patches.
 Kitty clipboard (OSC 5522) text reads and multi-representation writes are supported.
 Kitty image reads are not: reads serve text only.
 Kitty writes to PRIMARY are unsupported; copy-on-select to PRIMARY still works.
@@ -258,7 +268,7 @@ Prereleases retain DEB, RPM, and tar formats.
 Download a new package and repeat `pacman -U` to upgrade; GitHub Releases is not a pacman repository.
 
 The tarball bundles the Swift runtime, libghostty, Ghostty resources, and zmx but expects GTK4,
-libadwaita, and WebKitGTK 6.0 from the host:
+libadwaita, WebKitGTK 6.0, and libcurl from the host:
 
 ```sh
 tar xzf agterm-linux-vX.Y.Z-x86_64.tar.gz
@@ -480,7 +490,7 @@ agterm arranges terminals into a small hierarchy. These are the only terms you n
 
 **Panes.** A session can split into two shells side by side. Both panes are part of the same session and share one sidebar row; a split is one session with two terminals, not two sessions. One pane is focused at a time, and the divider position is remembered.
 
-**Scratch terminal.** Every session has an extra shell, the scratch terminal, that you toggle on over the session and hide again without killing it. It opens in the session's directory and is for a quick aside next to your main work. It belongs to that one session and is not restored across launches.
+**Scratch terminal.** Every session has an extra shell, the scratch terminal, that you toggle on over the session and hide again without killing it. It opens in the session's directory and is for a quick aside next to your main work. It belongs to that one session; Live sessions mode restores its running process across launches.
 
 **Quick terminal.** The quick terminal is a single throwaway shell per window, not tied to any session. It drops over whatever session is active, for a command unrelated to what you are working on, and hiding it keeps the shell alive. It is not restored across launches.
 
@@ -532,7 +542,7 @@ Dropping more than 20 folders at once is rejected.
 **Reveal in Finder** on macOS or **Reveal in Files** on Linux opens the focused pane's current directory (and is disabled if that directory no longer exists).
 Folder-picking panels also start in the focused pane's directory when it is available.
 
-**Notifications.** A program in any session can raise a desktop notification (via OSC 9 / 777, or the control API). It shows as a banner and a count badge on the session's row unless that exact terminal surface is already focused in the active window; an explicit `agtermctl notify` request always delivers. Clicking the banner jumps to the exact pane that raised it and reopens its encoded window if it was closed in the meantime. Upstream macOS can optionally bounce its Dock icon while the app is in the background; Linux omits that setting because desktop shells provide no portable equivalent. The badge clears when you visit the session, or headlessly with `agtermctl session seen` — so an orchestrator driving a session over the socket can acknowledge its notifications without pulling focus to it (`agtermctl tree --json` reports each session's `unseen` count). For a coding agent that just needs to say it is waiting on you, [Agent status](#agent-status) is usually the better fit.
+**Notifications.** A program in any session can raise a desktop notification (via OSC 9 / 777, or the control API). It shows as a banner and a count badge on the session's row unless that exact terminal surface is already focused in the active window; an explicit `agtermctl notify` request always delivers. Clicking the banner jumps to the exact pane that raised it and reopens its encoded window if it was closed in the meantime. Upstream macOS can optionally bounce its Dock icon while the app is in the background; Linux omits that setting because desktop shells provide no portable equivalent. The badge clears on selection or physical input according to the Badge Reset preference, or headlessly with `agtermctl session seen` — so an orchestrator driving a session over the socket can acknowledge its notifications without pulling focus to it (`agtermctl tree --json` reports each session's `unseen` count). For a coding agent that just needs to say it is waiting on you, [Agent status](#agent-status) is usually the better fit.
 
 **Agent status.** A coding agent in a session can report its state (active, blocked, completed) onto that session's row, so a screen of concurrent agents shows which one needs you. See [Agent status](#agent-status) for wiring it up.
 
@@ -621,12 +631,16 @@ Claude Code and Codex share the same skill format, so it installs to detected `~
 
 The same skill is also published as a plugin from this repository, which is the better route if you keep your agent's config somewhere other than `~/.claude` or `~/.codex` — the agent does the installing, so the skill lands wherever that agent actually looks, and updates through the agent's own plugin commands:
 
+### Claude Code
+
 ```sh
-# Claude Code
 claude plugin marketplace add umputun/agterm
 claude plugin install agterm@agterm
+```
 
-# Codex
+### Codex
+
+```sh
 codex plugin marketplace add umputun/agterm
 codex plugin add agterm@agterm
 ```

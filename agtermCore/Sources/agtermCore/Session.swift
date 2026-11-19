@@ -15,6 +15,10 @@ public final class Session: Identifiable {
     public var paneIdentity: UUID
     /// Stable process identity for an existing split pane, including a hidden split.
     public var splitPaneIdentity: UUID?
+    /// daemonBackedPanes holds the pane identities a headless origin runs as detached zmx daemons with no
+    /// surface. Backing and pane-token resolution fall back to it only for a slot without a surface; the Mac
+    /// leaves it empty. Not persisted: the server rebuilds it from the daemons it observes.
+    public var daemonBackedPanes: Set<UUID> = []
     public var customName: String?
     /// Live cwd from the latest OSC 7 / PWD report; the sidebar row refreshes. Persisted by `snapshot()` on
     /// quit + structural mutations only (OSC 7 fires constantly), so a crash loses cwd since the last save.
@@ -35,12 +39,12 @@ public final class Session: Identifiable {
     public var unseenCount: Int = 0
 
     /// Per-session agent status, driven over the control channel (`session.status`); the sidebar row's
-    /// status glyph reacts. Ephemeral.
+    /// status glyph reacts. Ephemeral, as is `paneActivity`: each working pane's last `active`, shown when another ends.
     public var agentIndicator = AgentIndicator()
+    @ObservationIgnored var paneActivity: [StatusPane: AgentIndicator] = [:]
 
     /// Last time the status was set, idle and repeated values included; nil before any set, never persisted.
-    /// Must stay a wall-clock `Date`: `controlTree` ships it as epoch seconds compared against `ControlEvent.ts`,
-    /// so a monotonic instant would make a client's computed age meaningless.
+    /// Wall-clock: `controlTree` ships it as epoch seconds against `ControlEvent.ts`, where a monotonic instant means nothing.
     @ObservationIgnored public var statusChangedAt: Date?
     /// When the session last became or stopped being its window's selection, on the same clock; persisted.
     @ObservationIgnored public var lastSelectedAt: Date?
@@ -58,30 +62,73 @@ public final class Session: Identifiable {
     /// Immutable and set at construction, because the first save happens inside `addSession`: a marker
     /// written afterwards would let one snapshot go to disk carrying the ssh command.
     public let remoteHost: String?
+    /// remoteSessionID is the origin's id for the session this row shows, set at construction because
+    /// `addSession` emits `remote.opened` before `bindRemote` runs.
+    public let remoteSessionID: String?
 
     /// What the session shows, fixed at construction for the same first-save reason as `remoteHost`.
     public let content: SessionContent
 
-    /// Whether this session may be written to disk at all. Every persistence producer gates on it: the
-    /// launch snapshot, the Recent Closed session record, and a closed workspace's record. A page lives
-    /// only as long as the app that shows it.
-    public var isPersistable: Bool { remoteHost == nil && content == .terminal }
+    /// isPersistable admits local terminals and page rows with a restorable source.
+    public var isPersistable: Bool { remoteHost == nil && (content == .terminal || pageSnapshot != nil) }
 
     /// The pane identities this instance's zmx owns — none for a remote session, whose panes run ssh.
     /// Every reader of local daemon ownership goes through this, or a remote pane reports as a claimed
     /// local daemon that does not exist. Structural `paneIdentity` stays valid either way.
     public var locallyManagedPaneIdentities: [UUID] {
         guard remoteHost == nil, content == .terminal else { return [] }
-        return [paneIdentity] + [splitPaneIdentity].compactMap { $0 }
+        return [paneIdentity] + [splitPaneIdentity, localScratchIdentity].compactMap { $0 }
     }
+
+    /// localScratchIdentity is the daemon behind this instance's own scratch: a Live scratch on the Mac, the
+    /// server's scratch on agterm-server. Nil for a remote row, whose scratch belongs to its host.
+    public var localScratchIdentity: UUID? {
+        remoteHost == nil && content == .terminal ? scratchDaemon?.identity : nil
+    }
+
+    /// ScratchDaemon is a scratch behind a zmx daemon: a Live scratch here, or agterm-server's.
+    public struct ScratchDaemon: Equatable, Sendable {
+        public var identity: UUID
+        public var shown: Bool
+
+        public init(identity: UUID, shown: Bool) {
+            self.identity = identity
+            self.shown = shown
+        }
+    }
+
+    /// scratchDaemon is the daemon-backed scratch: a Live scratch on a Mac, saved hidden; on agterm-server its own
+    /// state; in a remote window the catalog's. `shown` is read only for a server's scratch.
+    public var scratchDaemon: ScratchDaemon?
+
+    /// catalogPanes are a remote window row's panes and scratch as its server's catalog last listed them.
+    @ObservationIgnored var catalogPanes: [UUID: CatalogPane] = [:]
+
+    /// scratchStoppedGeneration is the `scratchGeneration` whose server scratch attach ended, waiting to reconnect.
+    @ObservationIgnored var scratchStoppedGeneration: Int?
+
+    /// originScratchClient keys this row's own attach of its origin's scratch, a daemon other rows may attach too.
+    @ObservationIgnored var originScratchClient: UUID?
+
+    /// catalogScratch is the server scratch a remote window's row attaches, nil for every other row.
+    public var catalogScratch: UUID? {
+        remotePresentation?.binding.catalogOwned == true ? scratchDaemon?.identity : nil
+    }
+
+    /// presentsCatalog is whether a remote window's row keeps its presentation stream: live, or ended with its
+    /// scratch still running.
+    var presentsCatalog: Bool { !ended || scratchDaemon != nil }
 
     /// User-set flagged working-set membership: surfaces the session in the sidebar's cross-workspace
     /// flagged view, and fills its row icon in the ordinary tree. Persisted, surviving a relaunch and a
     /// workspace move.
     public var flagged: Bool = false
+    /// ended marks a session its origin no longer has: a headless origin's session left with no live pane, kept until
+    /// `session.close` removes it, or a row attached here whose origin session is gone.
+    public var ended = false
     /// The sidebar row's tint (`session.tint`); persisted, never copied by duplicate, local to this Mac.
     public var tint: SidebarTint?
-    /// parentID names the session this one is a companion of; set once at creation, never changed.
+    /// parentID names this session's top-level parent; conversion and reopen may update it.
     public internal(set) var parentID: UUID?
     /// isExpanded is whether a parent row shows its companions.
     public var isExpanded = true
@@ -154,8 +201,9 @@ public final class Session: Identifiable {
     /// A pane hidden since launch has no surface yet, so its realized sibling answers for the shared launch disposition.
     public func zmxBacking(for surface: TerminalZoomSurface) -> Bool? {
         switch surface {
-        case .primary: (self.surface ?? splitSurface)?.backedByZmx ?? false
-        case .split: (splitSurface ?? self.surface)?.backedByZmx ?? false
+        case .primary: (self.surface ?? splitSurface)?.backedByZmx ?? daemonBackedPanes.contains(paneIdentity)
+        case .split: (splitSurface ?? self.surface)?.backedByZmx ?? splitPaneIdentity.map(daemonBackedPanes.contains) ?? false
+        case .scratch: scratchSurface?.backedByZmx == true ? true : nil
         default: nil
         }
     }
@@ -326,9 +374,9 @@ public final class Session: Identifiable {
     public internal(set) var askDraft: AskDraft?
     /// Stable identity of the covered pane; nil covers the whole session.
     public private(set) var askPaneIdentity: UUID?
-    /// The presenter generation the pending ask was handed to, nil while this Mac draws it. A remotely
+    /// askRemoteOwner is the token of the viewer the pending ask was handed to, nil while this Mac draws it. A remotely
     /// presented ask keeps the slot and its result here but is neither drawn nor answered on this Mac.
-    public private(set) var askRemoteOwner: Int?
+    public internal(set) var askRemoteOwner: Int?
     /// Tells the presenter a handed-over ask ended here. Set with the handover, run once when it resolves.
     @ObservationIgnored var onRemoteAskEnded: (@MainActor (String) -> Void)?
 
@@ -344,11 +392,14 @@ public final class Session: Identifiable {
     public private(set) var askReplica = false
     /// Sends a replica's outcome to its origin. Run once when it resolves; a dismissal skips it.
     @ObservationIgnored var onReplicaResolved: (@MainActor (ControlAskResult) -> Void)?
+    @ObservationIgnored private var askRegistry: AskRegistry = .shared
 
-    /// Reserves the session ask slot and its placement, refusing replacement of a pending ask.
+    /// openAsk reserves the session ask slot and its placement, refusing a second ask; `registry` keeps its result.
+    /// A page session takes only a GUI ask: a terminal one draws in a terminal it does not have.
     @discardableResult
-    public func openAsk(_ ask: PendingAsk, paneIdentity: UUID? = nil, remoteOwner: Int? = nil) -> Bool {
-        guard askPending == nil, content == .terminal else { return false }
+    public func openAsk(_ ask: PendingAsk, paneIdentity: UUID? = nil, remoteOwner: Int? = nil, registry: AskRegistry = .shared) -> Bool {
+        guard askPending == nil, content == .terminal || ask.style == .gui else { return false }
+        askRegistry = registry
         askPaneIdentity = paneIdentity
         askRemoteOwner = remoteOwner
         askPending = ask
@@ -384,9 +435,10 @@ public final class Session: Identifiable {
     /// Retains a registered ask's terminal outcome before clearing its slot; stale ids are ignored.
     @discardableResult
     public func resolveAsk(id: String, _ result: ControlAskResult) -> Bool {
-        guard askPending?.id == id, result.result != .pending else { return false }
-        if case let .session(sessionID, windowID) = AskRegistry.shared.owner(for: id), sessionID == self.id {
-            AskRegistry.shared.retain(id: id, result: result, window: windowID)
+        guard let ask = askPending, ask.id == id, result.result != .pending else { return false }
+        let result = ask.expired(at: Date()) ? ControlAskResult(result: .cancelled) : result
+        if case let .session(sessionID, windowID) = askRegistry.owner(for: id), sessionID == self.id {
+            askRegistry.retain(id: id, result: result, window: windowID)
         }
         let ended = onRemoteAskEnded
         let replicaResolved = onReplicaResolved
@@ -450,6 +502,8 @@ public final class Session: Identifiable {
 
     /// What this Mac keeps about a session attached from another one; nil for a local session.
     @ObservationIgnored public internal(set) var remotePresentation: RemotePresentationState?
+    /// awaitsOriginCheck marks a row restored from the snapshot whose origin this Mac has not asked about yet.
+    @ObservationIgnored public var awaitsOriginCheck = false
     /// remoteConnectionRevision changes with the connection, so an observer of `remoteConnection` is told.
     var remoteConnectionRevision = 0
 
@@ -519,6 +573,10 @@ public final class Session: Identifiable {
     /// close, the shell's own `exit`, or session/workspace/window teardown), after which a show spawns fresh.
     @ObservationIgnored public var scratchSurface: (any TerminalSurface)?
 
+    /// The scratch shell's own cwd: where a local scratch started, then each PWD it reports. Separate from
+    /// `currentCwd` so a `cd` in the scratch never renames the row. Nil with no scratch; a departing scratch clears it.
+    @ObservationIgnored public var scratchCwd: String?
+
     /// Bumped on every `closeScratch` so the deck keys the scratch view's identity on it. A `--command`
     /// respawn closes and re-shows inside one store call, so `scratchActive` never dips where SwiftUI can
     /// see it and the torn-down view would otherwise stay mounted. Observed, never persisted.
@@ -549,7 +607,7 @@ public final class Session: Identifiable {
 
     public init(id: UUID = UUID(), initialCwd: String, customName: String? = nil,
                 paneIdentity: UUID = UUID(), splitPaneIdentity: UUID? = nil,
-                remoteHost: String? = nil, content: SessionContent = .terminal) {
+                remoteHost: String? = nil, remoteSessionID: String? = nil, content: SessionContent = .terminal) {
         self.content = content
         self.id = id
         self.paneIdentity = paneIdentity
@@ -557,6 +615,7 @@ public final class Session: Identifiable {
         self.initialCwd = initialCwd
         self.customName = customName
         self.remoteHost = remoteHost
+        self.remoteSessionID = remoteSessionID
     }
 
     /// The sidebar label: a non-blank `customName` (a manual rename) wins; else the focused pane's non-blank
@@ -609,40 +668,20 @@ public final class Session: Identifiable {
 
     /// The live `currentCwd` once a PWD report arrived, else `initialCwd`. Always the PRIMARY pane's, never
     /// focus-aware (cf. `focusedCwd`): it seeds new split, overlay, scratch and quick terminals. A custom
-    /// command's `AGT_SESSION_PWD` resolves through `cwd(for:)`, so the right pane's value can differ.
+    /// command's `AGT_SESSION_PWD` resolves through `cwd(for:)`, so the split's and scratch's values can differ.
     public var effectiveCwd: String { currentCwd ?? initialCwd }
-
-    /// The working directory for a given pane role: the split pane's while targeting `.right`, else the primary's.
-    public func cwd(for pane: CommandContext.Pane) -> String {
-        switch pane {
-        case .right:
-            return splitCwd ?? initialSplitCwd ?? effectiveCwd
-        case .left, .scratch:
-            return effectiveCwd
-        }
-    }
 
     /// The stable token of the surface currently in `pane`'s slot (`TerminalSurface.paneToken`), the inverse
     /// of `paneRole(forToken:)`; empty while the slot holds no surface.
     public func paneToken(for pane: CommandContext.Pane) -> String {
         switch pane {
         case .left:
-            return surface?.paneToken ?? ""
+            return surface?.paneToken ?? daemonToken(paneIdentity)
         case .right:
-            return splitSurface?.paneToken ?? ""
+            return splitSurface?.paneToken ?? splitPaneIdentity.map(daemonToken) ?? ""
         case .scratch:
-            return scratchSurface?.paneToken ?? ""
+            return scratchSurface?.paneToken ?? (scratchClientIdentity ?? scratchDaemon?.identity)?.uuidString ?? ""
         }
-    }
-
-    /// Where a LOCAL process for this session starts, given the pane path it would inherit: that path on a
-    /// local session; on a remote one, only when it exists here as a directory, else `homeDirectory`. The
-    /// reported path itself stays what `cwd(for:)` and `AGT_SESSION_PWD` carry.
-    public func localWorkingDirectory(reported path: String, homeDirectory: String) -> String {
-        guard remoteHost != nil else { return path }
-        var isDirectory: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
-        return exists && isDirectory.boolValue ? path : homeDirectory
     }
 
     /// The focused pane's surface: the split (right) while it has focus and exists, else the primary. With the
@@ -807,7 +846,15 @@ public final class Session: Identifiable {
         if surface?.paneToken == token { return .left }
         if splitSurface?.paneToken == token { return .right }
         if scratchSurface?.paneToken == token { return .scratch }
+        if surface == nil, daemonToken(paneIdentity) == token { return .left }
+        if splitSurface == nil, let split = splitPaneIdentity, daemonToken(split) == token { return .right }
+        if scratchSurface == nil, (scratchClientIdentity ?? scratchDaemon?.identity)?.uuidString == token { return .scratch }
         return nil
+    }
+
+    /// daemonToken is the `AGTERM_PANE_ID` of a surfaceless daemon-backed pane, empty otherwise.
+    private func daemonToken(_ identity: UUID) -> String {
+        daemonBackedPanes.contains(identity) ? identity.uuidString : ""
     }
 
     /// PaneAddress is the outcome of resolving a command's `--pane-id` and `--pane` pair.
@@ -894,7 +941,7 @@ public final class Session: Identifiable {
     /// scratch, else the focused pane's own overlay, else the active pane. The overlay renders above the
     /// scratch, and a full overlay or the scratch covers the panes (INCLUDING their pane overlays), so
     /// session-focus helpers route through this to keep first responder off a covered surface — except
-    /// `TerminalView.focusIfNeeded`, which targets its own deck slot, already gated by `isActive`. nil while a
+    /// `TerminalSurfaceHost.focusIfNeeded`, which targets its own deck slot, already gated by `isActive`. nil while a
     /// pane overlay's slot is open but its surface has not realized yet; the bounded focus retries re-resolve
     /// a beat later.
     ///

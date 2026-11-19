@@ -5,6 +5,20 @@ extension LinuxControlDispatcher {
     func dispatchCompanionCommand(_ request: ControlRequest,
                                   create: ((LinuxRemoteCompanionRequest, Bool) -> ControlResponse)? = nil) -> ControlResponse {
         switch request.cmd {
+        case .sessionCompanionConvert:
+            return actions.convertToCompanion(request.target, window: request.args?.window)
+        case .sessionCompanionMove:
+            guard let parent = request.args?.parent?.trimmingCharacters(in: .whitespaces), !parent.isEmpty else {
+                return actions.err("session.companion.move needs a parent")
+            }
+            if request.args?.workspace != nil || request.args?.to != nil || request.args?.after != nil || request.args?.before != nil {
+                return actions.err("session.companion.move takes no workspace, --to, --after or --before")
+            }
+            if request.args?.targets != nil { return actions.err("session.companion.move moves one companion, named by target") }
+            if let index = request.args?.index, index < 0 { return actions.err("index must be 0 or more") }
+            return actions.moveLinuxCompanion(request.target, parent: parent, index: request.args?.index)
+        case .sessionPage:
+            return dispatchCompanionPage(request, create: nil)
         case .sessionCompanionNew:
             return dispatchCompanionNew(request, create: create)
         case .sessionCompanionPage:
@@ -31,7 +45,7 @@ extension LinuxControlDispatcher {
         let page: HtmlSource
         switch Self.overlayContent(command: args?.command ?? "", args: args) {
         case .rejected(let response): return response
-        case .program, .page(.image), .page(.markdown):
+        case .program, .page(.image), .page(.markdown), .page(.text):
             return ControlResponse(ok: false, error: OverlayHtmlError.companionNeedsPage)
         case .page(let source): page = source
         }
@@ -47,6 +61,7 @@ extension LinuxControlDispatcher {
             javascript: args?.javascript ?? false, chromeless: args?.chromeless ?? false,
             persistent: args?.persistent ?? false, browse: args?.browse ?? false)
         if let create { return create(.page(options), options.follow) }
+        if request.cmd == .sessionPage { return actions.createLinuxPageSession(request.target, options: options) }
         return actions.createLinuxPageCompanion(request.target, window: args?.window, options: options)
     }
 

@@ -39,6 +39,15 @@ static inline void agterm_uri_scheme_finish_file(WebKitURISchemeRequest *request
     g_object_unref(stream);
 }
 
+static inline void agterm_uri_scheme_finish_html(WebKitURISchemeRequest *request, const char *html, size_t length)
+{
+    GBytes *bytes = g_bytes_new(html, length);
+    GInputStream *stream = g_memory_input_stream_new_from_bytes(bytes);
+    g_bytes_unref(bytes);
+    webkit_uri_scheme_request_finish(request, stream, length, "text/html; charset=utf-8");
+    g_object_unref(stream);
+}
+
 static inline void agterm_uri_scheme_deny(WebKitURISchemeRequest *request)
 {
     GError *error = g_error_new_literal(G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,

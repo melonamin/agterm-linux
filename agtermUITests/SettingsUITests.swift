@@ -194,6 +194,39 @@ final class SettingsUITests: XCTestCase {
                       "selecting None (the default) should remove the dockBounce key from settings.json")
     }
 
+    func testBadgeResetPickerPersistsAndTheNotificationsTabFits() throws {
+        let picker = settingsControl(tab: "Notifications", control: "settings-badge-reset")
+        let window = app.windows.containing(.any, identifier: "settings-badge-reset").firstMatch
+        let last = app.descendants(matching: .any).matching(identifier: "settings-attention-button").firstMatch
+        XCTAssertTrue(last.waitForExistence(timeout: 5), "the Notifications tab's last control should exist")
+        XCTAssertLessThanOrEqual(last.frame.maxY, window.frame.maxY, "the last control should be on screen")
+        let before = last.frame.minY
+        last.scroll(byDeltaX: 0, deltaY: -80)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertEqual(last.frame.minY, before, accuracy: 0.5, "the Notifications tab should not scroll")
+
+        picker.click()
+        let onEnter = app.menuItems["On Enter"]
+        XCTAssertTrue(onEnter.waitForExistence(timeout: 5), "the badge-reset picker should offer 'On Enter'")
+        onEnter.click()
+        XCTAssertTrue(poll { self.settingsValue("badgeReset") == "enter" },
+                      "selecting 'On Enter' should persist badgeReset=enter to settings.json")
+
+        picker.click()
+        let disabled = app.menuItems["Disabled"]
+        XCTAssertTrue(disabled.waitForExistence(timeout: 5), "the badge-reset picker should offer 'Disabled'")
+        disabled.click()
+        XCTAssertTrue(poll { self.settingsValue("badgeReset") == "never" },
+                      "selecting 'Disabled' should persist badgeReset=never to settings.json")
+
+        picker.click()
+        let firstKey = app.menuItems["On first key"]
+        XCTAssertTrue(firstKey.waitForExistence(timeout: 5), "the badge-reset picker should offer 'On first key'")
+        firstKey.click()
+        XCTAssertTrue(poll { self.settingsObject()?["badgeReset"] == nil },
+                      "the default 'On first key' should remove badgeReset from settings.json")
+    }
+
     func testNotificationSoundPickerPersists() throws {
         let picker = settingsControl(tab: "Notifications", control: "settings-notification-sound")
 
@@ -241,7 +274,7 @@ final class SettingsUITests: XCTestCase {
         let triangle = app.menuItems["Triangle"]
         XCTAssertTrue(triangle.waitForExistence(timeout: 5), "the shape picker should offer 'Triangle'")
         let shapes = ["Circle", "Square", "Triangle", "Down Triangle", "Play", "Diamond", "Capsule", "Seal", "Star",
-                      "Bolt", "Bell"]
+                      "Bolt", "Bell", "Checkmark"]
         for shape in shapes {
             XCTAssertTrue(app.menuItems[shape].exists, "the shape picker should offer '\(shape)'")
         }
@@ -404,6 +437,9 @@ final class SettingsUITests: XCTestCase {
         XCTAssertTrue(multiWindow.exists && multiWindow.isHittable, "the multi-window toggle still renders inside the Sidebar section")
         let chevrons = app.descendants(matching: .any).matching(identifier: "settings-interface-workspaceChevrons").firstMatch
         XCTAssertTrue(chevrons.exists && chevrons.isHittable, "the workspace chevrons toggle renders in the Sidebar grid")
+        let updates = app.descendants(matching: .any).matching(identifier: "settings-interface-updates").firstMatch
+        XCTAssertTrue(updates.exists && updates.isHittable, "the update icon toggle renders in the Title bar grid")
+        XCTAssertEqual(updates.value as? Int, 1, "the update icon is on by default")
         let before = size.frame.minY
         size.scroll(byDeltaX: 0, deltaY: -80)
         RunLoop.current.run(until: Date().addingTimeInterval(0.5))

@@ -1,0 +1,114 @@
+# Linux v0.43.0 catch-up and release
+
+Target exact upstream `v0.43.0` (`be92bc63eca595a2955a0dc5c9a2b1e593e31a66`).
+Base Linux release: `linux-v0.41.1` (`7f95d856d10df58d1d3964e1416d668aae721708`).
+The upstream range is `v0.41.1..v0.43.0` (142 commits).
+The 23 later commits on upstream/master are excluded at the user's request.
+Preserve all other branches and worktrees.
+
+## Integration rules
+
+- Prefer upstream's portable implementations and remove superseded downstream copies.
+- Preserve the GLib main-loop scheduling/hop seams and GTK HUD rendering.
+- Keep host effects in Linux adapters and preserve upstream wire shapes.
+- Keep `ConfigPathsTests.swift` identical to the selected upstream tag.
+- Treat GUI, palette, keymap, control, readback, CLI and bundled skill as one feature surface.
+- Do not change shared release notes outside the upstream merge.
+- Obtain explicit approval before branch pushes, release tag creation/push, or product divergence.
+
+## Parity inventory
+
+- [x] Merge exact stable tag and reconcile portable downstream fixes.
+- [x] Shared model/protocol/CLI changes, state/socket lock inheritance, command quoting, new-session directory and navigation by position.
+- [x] Headless agterm-server build, process lifecycle, mailbox, page rows, control and packaging.
+- [x] Remote catalog windows, server and GUI origins, catalog receipts, detach/reattach and saved view state.
+- [x] Remote session creation, structural actions, restart/terminate/undo/recent, attached-session persistence and page/link forwarding.
+- [x] Presenter election, per-pane recipients, migrating asks/pickers/pages, picker session targets and ask/pick deadlines.
+- [x] Live scratch persistence and scratch working-directory readback.
+- [x] Companion conversion, reparenting, GUI drag/menu actions and control readback.
+- [x] Top-level HTML/URL page sessions, restore/recent and remote attach.
+- [x] Markdown contained local-link navigation and remote link pages.
+- [x] Text/log terminal colors, wrap, diff file navigation and JSONL expansion, GUI/control/readback.
+- [x] Session links, local HTTP address routing and link previews.
+- [x] Notification badge reset preference and physical-input semantics.
+- [x] Checkmark status shape, per-pane active status and folded companion urgency.
+- [x] Codex home resolution, hook payload parsing, executable/config permissions and Claude background work status.
+- [x] Native rendering/resize/input/teardown against the unchanged Ghostty 1.4 pin and updated zmx patches.
+- [x] Linux docs, bundled skill, CI boundary pins, CLI drift and final downstream-boundary audit.
+
+## Platform assessments
+
+- Sparkle, Apple signing/notarization, Homebrew and macOS update chrome belong to the macOS host.
+  Linux distribution packages retain their package-manager update mechanism.
+- AppKit layout locking, macOS 27 session-host responsibility and launchd jobs have no GTK/systemd equivalent to copy.
+  Linux continues to use its native zmx lifecycle.
+- Preserve GTK's established window-placement, global-shortcut and hidden-pane GPU limitations.
+- Preserve the maintained tar/DEB/RPM/Arch release formats.
+  AppImage remains disabled under the existing WebKit helper constraint.
+
+## Validation
+
+- [x] Shared Swift tests with Swift 6.3.2.
+- [x] Linux CLI, GTK Debug and Release builds, Linux package tests.
+- [x] Strict SwiftLint 0.65.0 and whitespace checks.
+- [x] Architecture, core boundary, CLI drift, resources and vendor-cache gates.
+- [x] Real isolated GTK/WebKit/control coverage of new and changed features.
+- [x] Real SSH/headless-server and multi-instance workflows.
+- [ ] Full GTK suite and Linux packages, metadata/runtime closure and clean-container installation.
+- [x] Review complete downstream diff and protected test equality.
+- [ ] Commit candidate, present branch push gate, then inspect exact-commit branch CI.
+- [ ] Prepare and inspect full release notes, artifact set and immutable release-tag gate.
+- [ ] Verify published artifacts, checksums and attestations after approval.
+
+## Validation commands
+
+```sh
+cd agtermCore && swift test --no-parallel
+cd ../agterm-linux && swift test && swift build && swift build -c release
+cd ..
+mise x swiftlint@0.65.0 -- swiftlint lint --strict --quiet
+scripts/check-linux-core-boundary.sh v0.43.0
+scripts/check-linux-cli-drift.sh
+scripts/test-linux-ui.sh
+make packages-linux VERSION=0.43.0
+scripts/verify-published-linux-release.sh linux-v0.43.0 --require-arch
+git diff --check
+```
+
+## Environment
+
+The Omarchy host lacks WebKitGTK 6.0.
+Mise's Swift 6.3.2 UBI9 fallback cannot load the host's libraries.
+Use the CI-pinned `swift:6.3.2-noble` container with the workflow's native dependency list for local validation.
+Keep build logs, caches and temporary data on persistent disk under `/mnt/bulk/agterm-catch-up-20261119`.
+
+## Candidate evidence
+
+- Shared package: 6,895 tests in 323 suites pass with Swift 6.3.2.
+  Real zmx/fish lifecycle requirements were enabled.
+  The subsequent detached-launch option preserves the default path and passes all 33 ZmxSupport tests.
+- Linux package: 635 tests in 92 suites pass.
+  Debug and Release/WMO builds pass.
+  Strict SwiftLint 0.65.0, whitespace, core boundary, CLI drift, vendor caches and deterministic resources pass.
+- Real GTK coverage includes contained Markdown navigation/history, JSONL controls, session asks/pickers and deadlines,
+  companion conversion/reparenting, per-pane activity, and scratch directory readback.
+  A Live scratch's PID and screen survive hiding and relaunch, and session close ends it.
+- Real SSH covers 20 headless-origin catalog rows under stock sshd channel limits, operation receipts,
+  detach/reattach, terminal/page attachment restoration, attached split/scratch/terminate,
+  streamed text search/log append/pause, file-page assets/bridge/state, and loopback HTTP forwarding to a distinct local port.
+- A GTK Live origin serves catalog snapshots and create/rename/close receipts over both real SSH and the local transport fixture.
+  A background command starts without changing the origin selection, retains its PID when the origin widget realizes,
+  and ends with its session.
+- Tar/DEB/RPM metadata, checksum and runtime-closure validation pass on the initial candidate.
+  An Arch package builds, installs and passes the installed GTK/WebKit scenario.
+  A clean Ubuntu install exposed the new libcurl dependency; final packages must include the corrected metadata.
+  RPM execution works on Fedora 43 with libcurl installed.
+- The full GTK run and rebuilt package/install checks are pending final closeout.
+  Earlier failures in old status/Recent expectations and page/job offer tokens have focused passing coverage.
+- The protected ConfigPaths test equals v0.43.0, and macOS application sources equal the selected tag.
+  The unrelated site screenshot and all other worktrees are unchanged.
+- The headless server systemd installation was not run on the host.
+  Installer tests verify the pinned v0.43.0 archive and refuse tampered bytes before unpacking.
+
+Local validation artifacts live under `/mnt/bulk/agterm-catch-up-20261119`.
+The plan remains open through branch CI and the separate release-tag/publication gate.

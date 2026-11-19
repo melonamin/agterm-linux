@@ -64,6 +64,12 @@ cp -R "$ROOT/packaging/linux/licenses" "$DEST/share/agterm/licenses"
 cp -R "$ROOT/plugins/agterm/skills/agterm" "$DEST/share/agterm/agent-skill"
 install -m644 "$APP/vendor/zmx/LICENSE" "$DEST/share/agterm/ZMX-LICENSE"
 printf '%s\n' "${AGTERM_PACKAGE_VERSION:-dev}" > "$DEST/share/agterm/VERSION"
+UPSTREAM_VERSION="${AGTERM_PACKAGE_VERSION:-dev}"
+UPSTREAM_VERSION="${UPSTREAM_VERSION%%+linux.*}"
+if [[ -r "$ROOT/packaging/linux/server/v$UPSTREAM_VERSION.sha256" ]]; then
+  install -m644 "$ROOT/packaging/linux/server/v$UPSTREAM_VERSION.sha256" "$DEST/share/agterm/agterm-server.sha256"
+  printf '%s\n' "$UPSTREAM_VERSION" > "$DEST/share/agterm/UPSTREAM_VERSION"
+fi
 printf '%s\n' "${AGTERM_PACKAGE_COMMIT:-$(git -C "$ROOT" rev-parse HEAD)}" > "$DEST/share/agterm/COMMIT"
 
 DESKTOP="$ROOT/packaging/linux/io.github.melonamin.agterm.desktop"

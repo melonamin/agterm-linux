@@ -1621,8 +1621,9 @@ def verify_upstream_control_parity(env):
             "cmd": "session.status", "target": initial_session,
             "args": {"status": "active", "pane": "left", "window": window_id},
         })
-        assert not competing["ok"] and competing.get("error") == "blocked status owned by pane right", competing
+        assert competing["ok"], competing
         assert parity_session().get("status") == "blocked"
+        assert "left" in parity_session().get("activePanes", []), parity_session()
         assert raw_control_json(env, {
             "cmd": "session.status", "target": initial_session,
             "args": {"status": "idle", "pane": "right", "window": window_id},
@@ -7450,8 +7451,8 @@ def main():
     if scenario is None:
         failures = []
         for child_scenario in (
-            "normal", "upstream-controls", "upstream-v0391", "upstream-v0400", "upstream-v0411", "sidebar-v0400", "links-v0400", "remote-v0391", "html-overlay", "overlay-visual", "live-restart", "live-fish-restart", "live-command-restart",
-            "live-wait-output", "startup-environment",
+            "normal", "upstream-controls", "upstream-v0391", "upstream-v0400", "upstream-v0411", "upstream-v0430", "sidebar-v0400", "links-v0400", "remote-v0391", "html-overlay", "overlay-visual", "live-restart", "live-fish-restart", "live-command-restart",
+            "live-wait-output", "live-scratch", "startup-environment",
             "dashboard-modal", "context-menu",
             "window-key-dispatch",
             "split-exit", "split-primary-exit", "split-ratio-restore", "window-ownership", "preferences-pages",
@@ -7549,6 +7550,12 @@ def main():
         elif scenario == "upstream-v0411":
             from atspi_v0411 import verify_v0411
             verify_v0411(env, state)
+        elif scenario == "upstream-v0430":
+            from atspi_v0430 import verify_v0430
+            verify_v0430(env, state)
+        elif scenario == "remote-v0430":
+            from atspi_v0430_remote import verify_v0430_remote
+            verify_v0430_remote(env, state)
         elif scenario == "sidebar-v0400":
             from atspi_v0400_sidebar import verify_sidebar_v0400
             verify_sidebar_v0400(env, state)
@@ -7564,9 +7571,9 @@ def main():
         elif scenario == "companion-identity":
             from atspi_companion_identity import verify_companion_identity
             verify_companion_identity(env)
-        elif scenario == "remote-v0391":
+        elif scenario in ("remote-v0391", "remote-gui-catalog"):
             from atspi_v0391_remote import verify_remote_v0391
-            verify_remote_v0391(env, state)
+            verify_remote_v0391(env, state, catalog_only=scenario == "remote-gui-catalog")
         elif scenario == "html-overlay":
             from atspi_html_overlay import verify_html_overlay
             verify_html_overlay(env, state)
@@ -7585,6 +7592,9 @@ def main():
         elif scenario == "live-wait-output":
             from atspi_live_wait_output import verify_live_wait_output
             verify_live_wait_output(env, state)
+        elif scenario == "live-scratch":
+            from atspi_v0430 import verify_live_scratch
+            verify_live_scratch(env, state)
         elif scenario == "startup-environment":
             from atspi_startup_environment import verify_startup_environment
             verify_startup_environment(env, state)

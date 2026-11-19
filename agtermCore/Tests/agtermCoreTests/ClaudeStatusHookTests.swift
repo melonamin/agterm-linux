@@ -14,6 +14,13 @@ struct ClaudeStatusHookTests {
             .path
     }
 
+    enum HookInput {
+        case pipe(String)
+        #if canImport(Darwin)
+        case terminal(String)
+        #endif
+    }
+
     // spawns `chain` as nested processes — outermost first, one process per entry, each carrying that entry
     // as its argv[0] — and runs the adapter under the innermost one with `args`. `host:agent` builds a
     // runtime-hosted process instead: argv[0] is the host, argv[1] a script named after the agent.
@@ -23,7 +30,7 @@ struct ClaudeStatusHookTests {
     // session — the very thing this adapter exists for — would put a real `claude` above the fixture and turn
     // the owner cases silent. The boundary makes each case depend only on the processes it builds.
     private func run(chain: [String], args: [String], sessionID: String? = "sid",
-                     extraEnv: [String: String] = [:]) throws -> (calls: [String], exit: Int32) {
+                     extraEnv: [String: String] = [:], input: HookInput = .pipe("")) throws -> (calls: [String], exit: Int32) {
         let fm = FileManager.default
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("agterm-claude-hook-\(UUID().uuidString)")
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -32,7 +39,7 @@ struct ClaudeStatusHookTests {
         let calls = dir.appendingPathComponent("calls")
         let wrapper = dir.appendingPathComponent("status-wrapper")
         let spawner = dir.appendingPathComponent("spawn-chain.sh")
-        try "#!/bin/bash\nprintf '%s\\n' \"$*\" >> '\(calls.path)'\n".write(to: wrapper, atomically: true, encoding: .utf8)
+        try "#!/bin/bash\nprintf '%s\\n' \"$*\" >> '\(calls.path)'\n".writeExecutable(to: wrapper)
         // each level re-enters this script with one fewer name. The subshell is what makes the level a
         // separate process: `exec -a` replaces its own process, so without the fork the whole chain would
         // collapse onto one pid, and the trailing `exit` keeps bash from optimizing that fork away.
@@ -54,9 +61,7 @@ struct ClaudeStatusHookTests {
           *)   ( exec -a "$first" /bin/bash "$0" ${rest[@]+"${rest[@]}"} -- "$@" ) ;;
         esac
         exit $?
-        """.write(to: spawner, atomically: true, encoding: .utf8)
-        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapper.path)
-        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: spawner.path)
+        """.writeExecutable(to: spawner)
         // a hosted level needs the spawner under the agent's own name, so the walk reads it as argv[1]
         for level in chain where level.contains(":") {
             try fm.copyItem(at: spawner, to: dir.appendingPathComponent(String(level.split(separator: ":")[1])))
@@ -75,6 +80,29 @@ struct ClaudeStatusHookTests {
         proc.environment = environment
         proc.standardOutput = Pipe()
         proc.standardError = Pipe()
+        #if canImport(Darwin)
+        var ptyFD: Int32 = -1
+        defer { if ptyFD >= 0 { close(ptyFD) } }
+        #endif
+        switch input {
+        case .pipe(let text):
+            let pipe = Pipe()
+            try pipe.fileHandleForWriting.write(contentsOf: Data(text.utf8))
+            try pipe.fileHandleForWriting.close()
+            proc.standardInput = pipe
+        #if canImport(Darwin)
+        case .terminal(let text):
+            ptyFD = posix_openpt(O_RDWR | O_NOCTTY)
+            guard ptyFD >= 0, grantpt(ptyFD) == 0, unlockpt(ptyFD) == 0, let name = ptsname(ptyFD) else {
+                throw POSIXError(.EIO)
+            }
+            let ttyFD = open(name, O_RDWR | O_NOCTTY)
+            guard ttyFD >= 0 else { throw POSIXError(.EIO) }
+            let typed = Array((text + "\n\u{04}").utf8)
+            guard write(ptyFD, typed, typed.count) == typed.count else { throw POSIXError(.EIO) }
+            proc.standardInput = FileHandle(fileDescriptor: ttyFD, closeOnDealloc: true)
+        #endif
+        }
         try proc.run()
         proc.waitUntilExit()
 
@@ -202,6 +230,117 @@ struct ClaudeStatusHookTests {
         for name in alternation.components(separatedBy: "|") {
             #expect(literals.contains(name), "is_agent must count \(name) from integration.sh's default regex")
         }
+    }
+
+    private static func payload(_ event: String, agentID: String? = nil, tasks: String? = nil) -> String {
+        var fields = [#""session_id":"s1""#, #""hook_event_name":"\#(event)""#]
+        if let agentID { fields.append(#""agent_id":"\#(agentID)""#) }
+        if let tasks { fields.append(#""background_tasks":\#(tasks)"#) }
+        return "{" + fields.joined(separator: ",") + "}"
+    }
+
+    private static let runningSubagent = #"[{"id":"a1","type":"subagent","status":"running","description":"d"}]"#
+    private static let runningWorkflow = #"[{"id":"w1","type":"workflow","status":"running","name":"n"}]"#
+    private static let runningShell = #"[{"id":"b1","type":"shell","status":"running","description":"d","command":"c"}]"#
+
+    @Test func subagentActiveGainsIfIdle() throws {
+        let result = try run(chain: ["login", "claude"], args: ["active", "--blink"],
+                             input: .pipe(Self.payload("PostToolUse", agentID: "a1")))
+        #expect(result.calls == ["active --blink --if-idle"])
+    }
+
+    @Test func mainActivePostsArgv() throws {
+        let result = try run(chain: ["login", "claude"], args: ["active", "--blink"], input: .pipe(Self.payload("PostToolUse")))
+        #expect(result.calls == ["active --blink"])
+    }
+
+    @Test func subagentActiveKeepsItsFlags() throws {
+        let result = try run(chain: ["login", "claude"], args: ["active", "--color", "#4A9EFF"],
+                             input: .pipe(Self.payload("PreToolUse", agentID: "a1")))
+        #expect(result.calls == ["active --color #4A9EFF --if-idle"])
+    }
+
+    @Test func subagentBlockedPostsArgv() throws {
+        let result = try run(chain: ["login", "claude"], args: ["blocked"],
+                             input: .pipe(Self.payload("PermissionRequest", agentID: "a1")))
+        #expect(result.calls == ["blocked"])
+    }
+
+    @Test func subagentStopCompletedPostsArgv() throws {
+        let result = try run(chain: ["login", "claude"], args: ["completed"],
+                             input: .pipe(Self.payload("SubagentStop", agentID: "a1", tasks: Self.runningSubagent)))
+        #expect(result.calls == ["completed"])
+    }
+
+    @Test(arguments: [runningSubagent, runningWorkflow, runningShell])
+    func stopWithARunningAgentStaysActive(_ tasks: String) throws {
+        let result = try run(chain: ["login", "claude"], args: ["completed", "--auto-reset"],
+                             input: .pipe(Self.payload("Stop", tasks: tasks)))
+        #expect(result.calls == ["active --blink"])
+    }
+
+    @Test(arguments: [runningSubagent, runningShell])
+    func stopRewriteDropsTheCompletionFlags(_ tasks: String) throws {
+        let result = try run(chain: ["login", "claude"],
+                             args: ["completed", "--auto-reset", "--sound", "Glass", "--color", "#4A9EFF"],
+                             input: .pipe(Self.payload("Stop", tasks: tasks)))
+        #expect(result.calls == ["active --blink"])
+    }
+
+    @Test(arguments: [
+        "[]",
+        #"[{"id":"a1","type":"subagent","status":"completed","description":"d"}]"#,
+        #"[{"id":"b1","type":"shell","status":"completed","description":"d","command":"c"}]"#,
+        #"[{"id":"m1","type":"monitor","status":"running","description":"d"}]"#,
+    ])
+    func stopWithNoRunningAgentCompletes(_ tasks: String) throws {
+        let result = try run(chain: ["login", "claude"], args: ["completed", "--auto-reset"],
+                             input: .pipe(Self.payload("Stop", tasks: tasks)))
+        #expect(result.calls == ["completed --auto-reset"])
+    }
+
+    @Test func stopWithoutBackgroundTasksPostsArgv() throws {
+        let result = try run(chain: ["login", "claude"], args: ["completed", "--auto-reset"], input: .pipe(Self.payload("Stop")))
+        #expect(result.calls == ["completed --auto-reset"])
+    }
+
+    @Test func stopWithAnotherStatePostsArgv() throws {
+        let result = try run(chain: ["login", "claude"], args: ["active", "--color", "#4A9EFF", "--shape", "square"],
+                             input: .pipe(Self.payload("Stop", tasks: Self.runningSubagent)))
+        #expect(result.calls == ["active --color #4A9EFF --shape square"])
+    }
+
+    @Test(arguments: ["", "not json", #"{"agent_id":"#])
+    func emptyOrUnreadableInputPostsArgv(_ text: String) throws {
+        let result = try run(chain: ["login", "claude"], args: ["active", "--blink"], input: .pipe(text))
+        #expect(result.calls == ["active --blink"])
+        #expect(result.exit == 0)
+    }
+
+    #if canImport(Darwin)
+    @Test func terminalInputIsNotRead() throws {
+        let result = try run(chain: ["login", "claude"], args: ["active"],
+                             input: .terminal(Self.payload("PostToolUse", agentID: "a1")))
+        #expect(result.calls == ["active"])
+        #expect(result.exit == 0)
+    }
+    #endif
+
+    @Test(.enabled(if: !FileManager.default.fileExists(atPath: "/usr/bin/plutil")))
+    func noParserPostsArgv() throws {
+        let fm = FileManager.default
+        let bin = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("agterm-nojq-\(UUID().uuidString)")
+        try fm.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: bin) }
+        for tool in ["ps", "dirname"] {
+            try fm.createSymbolicLink(at: bin.appendingPathComponent(tool), withDestinationURL: URL(fileURLWithPath: "/usr/bin/\(tool)"))
+        }
+        try fm.createSymbolicLink(at: bin.appendingPathComponent("bash"), withDestinationURL: URL(fileURLWithPath: "/bin/bash"))
+
+        let result = try run(chain: ["login", "claude"], args: ["active"], extraEnv: ["PATH": bin.path],
+                             input: .pipe(Self.payload("PostToolUse", agentID: "a1")))
+
+        #expect(result.calls == ["active"])
     }
 
     @Test func outsideAgtermExitsSilently() throws {

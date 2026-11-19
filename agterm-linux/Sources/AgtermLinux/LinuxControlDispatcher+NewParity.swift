@@ -5,7 +5,14 @@ import agtermCore
 extension LinuxControlDispatcher {
     func dispatchNewParityCommand(_ request: ControlRequest) -> ControlResponse? {
         switch request.cmd {
-        case .sessionOverlaySearch, .sessionOverlayChanges: return dispatchTextPage(request)
+        case .sessionUndo:
+            guard let target = request.target, let id = UUID(uuidString: target) else {
+                return actions.err("session.undo requires --target with the undo id a close answered")
+            }
+            guard actions.store.undoPendingClose(id) else { return actions.err(AppStore.closeNoLongerUndoable) }
+            actions.reconcile()
+            return actions.ok(id)
+        case .sessionOverlayFollow, .sessionOverlaySearch, .sessionOverlayChanges, .sessionOverlayFiles, .sessionOverlayWrap, .sessionOverlayExpand: return dispatchTextPage(request)
         case .sessionOverlayOpen, .sessionOverlayClose, .sessionOverlayResize, .sessionOverlayResult,
              .sessionOverlayReload, .sessionOverlayNavigate, .sessionOverlaySubmit, .sessionOverlayCopy,
              .sessionOverlayText, .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle:
@@ -13,6 +20,7 @@ extension LinuxControlDispatcher {
         case .sessionTint, .workspaceTint:
             return dispatchTint(request)
         case .sessionCompanionNew, .sessionCompanionPage, .sessionCompanionDuplicate, .sessionCompanionPageAttach,
+             .sessionPage, .sessionCompanionConvert, .sessionCompanionMove,
              .sessionCollapse, .sessionExpand:
             return dispatchCompanionCommand(request)
         case .recentList, .recentOpen, .recentClear:

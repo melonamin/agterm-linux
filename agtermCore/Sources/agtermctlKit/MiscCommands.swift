@@ -1,11 +1,6 @@
 import ArgumentParser
 import Foundation
 import agtermCore
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
 
 // MARK: - keymap
 
@@ -484,16 +479,23 @@ struct Pick: ParsableCommand {
         @Option(name: .long, help: "Item id to open highlighted; a --query that hides it falls back to the first row.")
         var select: String?
         @Flag(name: .long, help: "Raise the target window when the picker opens.") var follow = false
+        @Option(name: .long, help: "Cancel the picker unanswered after this many seconds (at most 86400).") var timeout: Double?
         @Flag(name: .long, help: "Print the picker id and return without waiting for a result.") var noBlock = false
+        @Option(name: .long, help: "Bind the picker to a session: it shows wherever that session is presented.")
+        var session: String?
         @OptionGroup var options: ClientOptions
+
+        func validate() throws {
+            if let timeout, !ControlInteraction.isValidTimeout(timeout) { throw ValidationError(ControlInteraction.timeoutError) }
+        }
 
         func makeRequest() throws -> ControlRequest {
             try makeRequest(input: FileHandle.standardInput.readDataToEndOfFile())
         }
 
         /// Build the open request from injected stdin bytes, so tests never block on the process's real stdin.
-        func makeRequest(input: Data) throws -> ControlRequest {
-            let args = ControlArgs(
+        func makeRequest(input: Data, session bound: String? = nil) throws -> ControlRequest {
+            var args = ControlArgs(
                 follow: follow ? true : nil,
                 items: try Self.parseItems(input),
                 prompt: prompt,
@@ -501,7 +503,16 @@ struct Pick: ParsableCommand {
                 allowCustom: allowCustom ? true : nil,
                 selection: select
             )
-            return ControlRequest(cmd: .pickOpen, args: options.withWindow(args))
+            args.timeout = timeout
+            return ControlRequest(cmd: .pickOpen, target: bound ?? session, args: options.withWindow(args))
+        }
+
+        /// boundSession is the session the pick is bound to: `--session`, else the pane's own session when the
+        /// server is agterm-server, which has no window of its own to show a pick in. A Mac keeps the window pick.
+        func boundSession(environment: [String: String], send: (ControlRequest) throws -> SocketReply) throws -> String? {
+            if let session { return session }
+            guard let own = environment["AGTERM_SESSION_ID"], !own.isEmpty else { return nil }
+            return try send(ControlRequest(cmd: .version)).response.result?.headless == true ? own : nil
         }
 
         /// Sniff stdin's first non-whitespace byte. JSON arrays preserve caller-supplied ids/subtitles;
@@ -527,7 +538,8 @@ struct Pick: ParsableCommand {
                 send: client.send,
                 sleep: Thread.sleep(forTimeInterval:),
                 output: { print($0) },
-                errorOutput: ModalCommandRunner.writeStandardError
+                errorOutput: ModalCommandRunner.writeStandardError,
+                environment: ProcessInfo.processInfo.environment
             )
         }
 
@@ -538,11 +550,13 @@ struct Pick: ParsableCommand {
             send: @escaping (ControlRequest) throws -> SocketReply,
             sleep: @escaping (TimeInterval) -> Void,
             output: @escaping (String) -> Void,
-            errorOutput: @escaping (String) -> Void = ModalCommandRunner.writeStandardError
+            errorOutput: @escaping (String) -> Void = ModalCommandRunner.writeStandardError,
+            environment: [String: String] = [:]
         ) throws {
             let runner = ModalCommandRunner(family: .pick, json: options.json, send: send, sleep: sleep,
                                             output: output, errorOutput: errorOutput)
-            try runner.open(makeRequest(input: input), noBlock: noBlock)
+            let bound = try boundSession(environment: environment, send: send)
+            try runner.open(makeRequest(input: input, session: bound), noBlock: noBlock)
         }
     }
 
@@ -864,6 +878,28 @@ struct Font: ParsableCommand {
     }
 }
 
+// MARK: - update
+
+struct Update: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "In-app updates of the app serving the socket.",
+        subcommands: [Check.self]
+    )
+
+    /// `agtermctl update check`: app-wide, so no `--window`.
+    struct Check: RequestCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Check for an update now, or bring up the one already found.",
+            discussion: "Asks the feed with no alert and opens the update window only for a newer version; "
+                + "the reply names the Mac that checks and what it found. "
+                + "Refused by a build without an update feed, while a check is running, and by agterm-server."
+        )
+        @OptionGroup var options: BasicOptions
+
+        func makeRequest() throws -> ControlRequest { ControlRequest(cmd: .updateCheck) }
+    }
+}
+
 // MARK: - version
 
 /// Which agterm is serving the socket this client reached. The app answers from its own bundle, so a
@@ -883,10 +919,15 @@ struct Version: RequestCommand {
         }
     }
 
-    /// The running executable's real path rather than `argv[0]`, which is whatever the caller chose to exec
-    /// with. Resolve symlinks because the installed CLI may be a launcher pointing into an app bundle.
+    /// The running executable's real path. `_NSGetExecutablePath` (`/proc/self/exe` on Linux) rather than
+    /// `argv[0]`, which is whatever the caller chose to exec with, and `realpath` because the installed CLI
+    /// is a symlink into the bundle.
     static func clientPath() -> String? {
-        #if canImport(Darwin)
+        #if !canImport(Darwin)
+        guard let resolved = realpath("/proc/self/exe", nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
+        #else
         var size = UInt32(0)
         _ = _NSGetExecutablePath(nil, &size)
         var buffer = [CChar](repeating: 0, count: Int(size))
@@ -894,11 +935,6 @@ struct Version: RequestCommand {
         guard let resolved = realpath(buffer, nil) else { return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self) }
         defer { free(resolved) }
         return String(cString: resolved)
-        #elseif canImport(Glibc)
-        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
-        let count = readlink("/proc/self/exe", &buffer, buffer.count - 1)
-        guard count >= 0 else { return nil }
-        return String(decoding: buffer.prefix(Int(count)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
         #endif
     }
 }

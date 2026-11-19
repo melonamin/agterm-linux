@@ -486,8 +486,8 @@ final class CustomCommandRunner {
     /// caller (`left`|`right`|`scratch`) with the token of the surface in that slot, the socket from the
     /// control server. The token is read from the slot, not from `selectionSurface`: for an overlay chord
     /// that view is the overlay itself, which has no token, while `pane` names the terminal underneath.
-    private func context(for session: Session, in store: AppStore, selectionSurface: GhosttySurfaceView?,
-                         pane: CommandContext.Pane) -> CommandContext {
+    func context(for session: Session, in store: AppStore, selectionSurface: GhosttySurfaceView?,
+                 pane: CommandContext.Pane) -> CommandContext {
         let workspace = store.workspace(forSession: session.id)
         let windowID = library.windowID(for: store)
         let windowName = library.windowName(for: windowID)
@@ -495,7 +495,7 @@ final class CustomCommandRunner {
             sessionID: session.id.uuidString,
             sessionName: session.displayName,
             sessionPWD: session.cwd(for: pane),
-            sessionHost: TerminalText.sanitized(session.remoteHost ?? ""),
+            sessionHost: TerminalText.sanitized(session.remoteHost(for: pane) ?? ""),
             workspaceID: workspace?.id.uuidString ?? "",
             workspaceName: workspace?.name ?? "",
             windowID: windowID?.uuidString ?? "",

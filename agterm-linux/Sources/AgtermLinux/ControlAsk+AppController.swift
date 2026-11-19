@@ -6,6 +6,17 @@ import agtermCore
 extension AppController {
     func openAsk(_ ask: PendingAsk, target: String?, window: String?,
                  placement: ControlAskPlacement, follow: Bool) -> ControlResponse {
+        timedInteraction(openAskNow(ask, target: target, window: window, placement: placement, follow: follow),
+                         deadline: ask.deadline) { [weak self] in _ = self?.cancelAsk(ask.id, window: nil) }
+    }
+
+    func timedInteraction(_ response: ControlResponse, deadline: Date?, cancel: @escaping @MainActor () -> Void) -> ControlResponse {
+        if response.ok, let deadline { MainTimer.schedule(after: max(0, deadline.timeIntervalSinceNow), cancel) }
+        return response
+    }
+
+    private func openAskNow(_ ask: PendingAsk, target: String?, window: String?,
+                            placement: ControlAskPlacement, follow: Bool) -> ControlResponse {
         if ask.style == .terminal {
             return openTerminalAsk(ask, target: target, placement: placement, follow: follow)
         }
@@ -28,10 +39,11 @@ extension AppController {
         } else {
             anchor = nil
         }
-        let pending = PendingAsk(id: ask.id, title: ask.title, message: ask.message,
+        var pending = PendingAsk(id: ask.id, title: ask.title, message: ask.message,
                                  buttons: ask.buttons, defaultID: ask.defaultID,
                                  destructiveID: ask.destructiveID, style: ask.style,
                                  align: ask.align, width: ask.width, anchor: anchor, form: ask.form, cancelID: ask.cancelID)
+        pending.deadline = ask.deadline
         guard guiAskWindow == nil else { return err("ask already pending") }
         guard pickController.openAsk(pending) else {
             return err(pickController.pendingAsk == nil ? "pick already pending" : "ask already pending")

@@ -45,6 +45,8 @@ extension AppController {
                 self?.store.dismissReplicaAsk(ref, forSession: id)
                 self?.reconcile(focusActive: false)
             },
+            pickRequest: { [weak self] in self?.showReplicaPick($0, forSession: id) ?? false },
+            pickDismiss: { ref in SessionPickBook.shared.dismissReplica(ref, session: id) },
             overlayRequest: { [weak self] overlay in
                 self?.showReplicaOverlay(overlay, forSession: id) ?? false
             },
@@ -72,6 +74,17 @@ extension AppController {
             },
             pageCommand: { [weak self] command in self?.applyReplicaPageCommand(command, forSession: id) },
             respawns: { [weak self] counts, seed in self?.applyRemoteRespawns(counts, seed: seed, forSession: id) },
+            message: { [weak self] in self?.store.emitRemoteMessage($0, forSession: id) },
+            mail: { [weak self] in self?.store.applyRemoteMail($0, forSession: id) },
+            leads: { [weak self] in
+                guard let self, let session = store.session(withID: id) else { return [] }
+                return store.originLeads(of: session)
+            },
+            ended: { [weak self] in
+                guard let self else { return }
+                for local in store.remoteSessionEnded(forSession: id) { closeRemovedRemotePane(local, forSession: id) }
+                reconcile(focusActive: false)
+            },
             warn: { reason in
                 LinuxStructuredLogger(category: "RemotePresentation")
                     .notice("presentation stream for \(id): \(reason)")
@@ -122,7 +135,7 @@ extension AppController {
 
     func applyRemoteLayout(_ layout: PresentationLayout, forSession id: UUID) {
         let before = store.session(withID: id)?.paneIdentity
-        let removed = store.applyRemoteLayout(layout, forSession: id)
+        let removed = store.applyRemoteLayout(layout, forSession: id, attach: LinuxRemoteAttachLines())
         if let session = store.session(withID: id), before != session.paneIdentity,
            let primary = session.surface as? GhosttySurface,
            let split = session.splitSurface as? GhosttySurface {
@@ -135,11 +148,17 @@ extension AppController {
     func closeRemovedRemotePane(_ local: UUID, forSession id: UUID) {
         guard store.canCloseRemovedRemotePane(local, forSession: id),
               let session = store.session(withID: id) else { return }
+        defer { store.attachOriginAdditions(forSession: id, attach: LinuxRemoteAttachLines()) }
         let split = session.splitPaneIdentity == local
         let surface = (split ? session.splitSurface : session.surface) as? GhosttySurface
         if split, surface == nil { store.closeSplit(id); return }
+        let ended = session.remotePresentation?.originEnded == true
+        if ended, surface == nil { _ = store.closePrimaryPane(id); return }
         let survivor = split ? session.surface : session.splitSurface
-        guard survivor?.isRealized == true || store.remotePaneIsHeld(local, forSession: id),
+        // GTK creates adapters for background panes before they spawn. There is no child-exit
+        // callback to await from an unspawned adapter, so a confirmed removal can release it now.
+        let unspawned = surface?.isRealized != true && (split || ended)
+        guard survivor?.isRealized == true || store.remotePaneIsHeld(local, forSession: id) || unspawned,
               surface?.claimProcessExit() == true else { return }
         if split {
             closeSplitPane(id, alreadyFinalized: local)

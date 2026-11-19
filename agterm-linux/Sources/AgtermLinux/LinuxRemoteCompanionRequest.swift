@@ -41,6 +41,7 @@ enum LinuxRemoteCompanionRequest: Sendable {
     private static func pageArguments(_ options: ControlSessionOverlayOpenOptions, originSession: String) -> [String] {
         var arguments = ["session", "overlay", "open", "--companion", "--target", originSession]
         switch options.page {
+        case .unreadable: break
         case .file(let path, let grantRoot):
             arguments += ["--html", path]
             if let grantRoot { arguments += ["--cwd", grantRoot] }

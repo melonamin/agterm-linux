@@ -21,6 +21,10 @@ extension AppController {
                 preferencesSwitch(
                     "Sidebar notification badges", active: settings.notificationBadgeEnabled ?? true,
                     handler: unsafeBitCast(onSettingsNotificationBadges, to: GCallback.self))))
+        adw_preferences_group_add(cast(group), W(preferencesCombo(
+            "Badge reset", values: ["On first key", "On Enter", "Disabled"],
+            selected: StatusReset.allCases.firstIndex(of: settings.effectiveBadgeReset) ?? 0,
+            handler: unsafeBitCast(onSettingsBadgeReset, to: GCallback.self))))
         adw_preferences_group_add(
             cast(group),
             W(
@@ -46,5 +50,10 @@ private let onSettingsNotificationBadges: @MainActor @convention(c) (OpaquePoint
 private let onSettingsAttentionIndicator: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { row, _, _ in
     MainActor.assumeIsolated {
         controllerForWidget(row)?.setAttentionButtonEnabled(adw_switch_row_get_active(row) != 0)
+    }
+}
+private let onSettingsBadgeReset: @MainActor @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { row, _, _ in
+    MainActor.assumeIsolated {
+        controllerForWidget(row)?.setBadgeResetAtIndex(Int(adw_combo_row_get_selected(cast(row))))
     }
 }

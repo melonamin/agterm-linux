@@ -87,11 +87,7 @@ extension Session {
             let watchdog = timeout.map { seconds in
                 SessionWaitWatchdog(seconds: seconds) {
                     Self.reportTimeout()
-                    #if canImport(Darwin)
-                    Darwin.exit(Self.timeoutExitCode)
-                    #else
-                    Glibc.exit(Self.timeoutExitCode)
-                    #endif
+                    Foundation.exit(Self.timeoutExitCode)
                 }
             }
             defer { watchdog?.cancel() }

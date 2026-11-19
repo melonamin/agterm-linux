@@ -1,7 +1,7 @@
-/// Pure, host-free helpers for installing the bundled agent skill (`agterm`) into the skills
-/// directories of Claude Code (`~/.claude/skills`) and Codex (`~/.codex/skills`) — both use the same
-/// SKILL.md Agent-Skill format. The app side (`SkillInstaller`) does the filesystem copy and the
-/// base-dir existence checks; this type owns the testable path + target-selection + ownership logic.
+import Foundation
+
+/// SkillInstall installs the agent skill (`agterm`) into Claude Code's and Codex's skills directories, which share
+/// the SKILL.md format; the Mac app and agterm-server share it.
 public enum SkillInstall {
     /// The skill's directory name under each agent's `skills/`, also its command name.
     public static let skillName = "agterm"
@@ -31,12 +31,17 @@ public enum SkillInstall {
     /// and/or Codex), falling back to creating Claude Code's (the primary) when NEITHER is, so the install
     /// is never a no-op. The caller supplies the existence flags (a filesystem check), keeping this pure.
     public static func installTargets(home: String, claudeExists: Bool, codexExists: Bool) -> [Target] {
+        installTargets(home: home, claudeExists: claudeExists, codexExists: codexExists, codexHome: home + "/.codex")
+    }
+
+    /// Uses the resolved Codex root; `codexExists` describes that root, not the default directory.
+    public static func installTargets(home: String, claudeExists: Bool, codexExists: Bool, codexHome: String) -> [Target] {
         var targets: [Target] = []
         if claudeExists {
             targets.append(Target(agent: "Claude Code", skillDirectory: skillDirectory(home: home, base: ".claude")))
         }
         if codexExists {
-            targets.append(Target(agent: "Codex", skillDirectory: skillDirectory(home: home, base: ".codex")))
+            targets.append(Target(agent: "Codex", skillDirectory: codexHome + "/skills/" + skillName))
         }
         if targets.isEmpty {
             targets.append(Target(agent: "Claude Code", skillDirectory: skillDirectory(home: home, base: ".claude")))
@@ -52,5 +57,64 @@ public enum SkillInstall {
         guard directoryExists else { return true }
         guard let contents else { return false }
         return contents.contains(marker)
+    }
+
+    /// Report is what one install did per target.
+    public struct Report: Equatable, Sendable {
+        public struct Skip: Equatable, Sendable {
+            public let agent: String
+            public let reason: String
+        }
+
+        public internal(set) var installed: [Target] = []
+        public internal(set) var skipped: [Skip] = []
+        /// freshSkillsDir is true when a skills directory was created, which a running agent notices only on restart.
+        public internal(set) var freshSkillsDir = false
+    }
+
+    /// MissingSource is thrown when the skill directory to copy does not exist.
+    public struct MissingSource: Error, Equatable {}
+
+    /// install copies `source` into every target `installTargets` picks for `home`, leaving a user-authored skill alone.
+    public static func install(source: URL, home: URL) throws -> Report {
+        try install(source: source, home: home, codexHome: nil)
+    }
+
+    /// `codexHome` selects an existing custom root; a missing root is reported and never falls back.
+    public static func install(source: URL, home: URL, codexHome: URL?) throws -> Report {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: source.path) else { throw MissingSource() }
+        let codexDirectory = codexHome ?? home.appendingPathComponent(".codex")
+        let codexExists = fm.fileExists(atPath: codexDirectory.path)
+        let targets = installTargets(home: home.path,
+                                     claudeExists: fm.fileExists(atPath: home.path + "/.claude"),
+                                     codexExists: codexExists, codexHome: codexDirectory.path)
+        var report = Report()
+        if codexHome != nil, !codexExists {
+            report.skipped.append(Report.Skip(agent: "Codex", reason: "no \(codexDirectory.path) found"))
+        }
+        for target in targets {
+            let destination = URL(fileURLWithPath: target.skillDirectory)
+            let prefix = target.agent == "Codex" && codexHome != nil ? target.skillDirectory + ": " : ""
+            // lstat semantics: a dangling symlink counts as present, where `fileExists` would read it as absent
+            // and let the wipe below delete the user's link
+            let directoryExists = (try? fm.attributesOfItem(atPath: destination.path)) != nil
+            let existingSKILL = try? String(contentsOf: destination.appendingPathComponent("SKILL.md"), encoding: .utf8)
+            guard mayOverwrite(directoryExists: directoryExists, existingSKILL: existingSKILL) else {
+                report.skipped.append(Report.Skip(agent: target.agent, reason: prefix + "a different '\(skillName)' skill is already there — left untouched"))
+                continue
+            }
+            do {
+                let skillsDir = destination.deletingLastPathComponent()
+                if !fm.fileExists(atPath: skillsDir.path) { report.freshSkillsDir = true }
+                try fm.createDirectory(at: skillsDir, withIntermediateDirectories: true)
+                try? fm.removeItem(at: destination)
+                try DirectoryCopy.copy(source, to: destination)
+                report.installed.append(target)
+            } catch {
+                report.skipped.append(Report.Skip(agent: target.agent, reason: prefix + error.localizedDescription))
+            }
+        }
+        return report
     }
 }

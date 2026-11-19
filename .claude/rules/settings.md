@@ -112,7 +112,7 @@ paths:
   Session info picker (`sessionInfoDisplay`, owned by [[sidebar]]) and the Multiple Windows toggle sharing the
   Sidebar section's last row, since the grid's eight toggles leave no half-cell, plus the quick terminal's panel size,
   which sits there rather than under Appearance's Window because the panel belongs to no window.
-  Notifications holds banner/badge/attention/bounce/sound. Agent Status holds colors/shapes, sound,
+  Notifications holds banner/badge/badge reset/attention/bounce/sound. Agent Status holds colors/shapes, sound,
   status reset, Navigation (attention-includes-active, attention-across-windows, auto-follow), and Reset,
   and must not scroll:
   `testAttentionIncludesActiveTogglePersists` requires Reset not to move when scrolled. Key Mapping holds the keyboard layout lock,
@@ -126,6 +126,9 @@ paths:
 - `statusReset` stores a raw `StatusReset` (`firstKey`|`enter`|`never`), nil for the default `firstKey`,
   resolved by `effectiveStatusReset` and mirrored to `GhosttyApp.statusReset`, which the surface factories'
   keystroke-clear closure reads at keystroke time. Reset to defaults clears it with the glyph settings.
+- `badgeReset` stores a raw `StatusReset` the same way, resolved by `effectiveBadgeReset` and mirrored to
+  `GhosttyApp.badgeReset` for `wirePane`'s input closure ([[notifications]]). Its picker sits in the
+  Notifications tab, so Agent Status's Reset leaves it alone.
 - Keep titlebar construction in `WindowContentView+Titlebar.swift` so `WindowContentView.swift` remains
   below the 1000-line limit. The Appearance tab lives in `AppearanceSettingsView.swift` for the same reason.
 - Keep Agent Status shape pickers in a trailing-aligned 80-point column wider than the 64.5...68-point
@@ -236,8 +239,10 @@ paths:
   `restore-denylist.conf`, seeded with `tmux`, `screen`, and `zellij`. A control character anywhere in the
   argv also refuses, matching what `session.restore set` rejects a pin for: the line is typed, so the line
   editor reads the byte before the shell parser and quoting cannot protect it. U+FFFD refuses with it,
-  since `parseProcArgs` decodes lossily and replaying it would run a different argument. Both refuse at
-  RENDER, keeping `hadForeground` true so a stale `initialCommand` stays preempted. A pin loaded from a
+  since `parseProcArgs` decodes lossily and replaying it would run a different argument. A `!` refuses when
+  the line is typed into csh or tcsh (`LaunchSeedPolicy.receivingShell`: ghostty `command`'s program, else
+  the account's login shell), which expand history even inside single quotes; Live's zsh and fish wrappers
+  keep it literal, and a deliberate pin is not checked. All refuse at RENDER, keeping `hadForeground` true so a stale `initialCommand` stays preempted. A pin loaded from a
   snapshot never passed the dispatcher's check, so `restoreInput` applies it again at the sink; both share
   `CommandRestore.hasControlCharacter`. Feed captured argv once through
   shell-quoted `config.initial_input` in rerun mode, then nil it. A wrapped live pane consumes the pending
@@ -250,9 +255,10 @@ paths:
   `restore.capture`, `restore.clear` and tree foreground fields are the control surface; the tree fields
   report the live process, not the captured slot, which [[control-api]] keeps read-back-free by design.
 - `newSessionDirectory` is raw `home|currentSession|custom`, with fixed custom path. Unknown/blank/missing
-  values fall back home. Resolve once from active session's `focusedCwd` for every GUI creation path,
-  including a right-clicked workspace; setters save only. Control `session.new --cwd` remains explicit
-  and ignores this setting.
+  values fall back home. Every GUI creation path resolves once from the `focusedCwd` of
+  `newSessionDirectorySource`: the selection only when it is in the destination workspace, else that
+  workspace's most recent session (its first when none is recent); only an empty workspace takes the
+  selection. Setters save only. Control `session.new --cwd` remains explicit and ignores this setting.
 - `cursorStyle` is a raw string that `effectiveCursorStyle` recognizes only as `block|bar|underline`, and
   `cursorBlink` is ghostty's own `?bool`. Unlike the two keys above, neither is emitted unconditionally:
   only a RECOGNIZED style emits `cursor-style`, and `cursorBlink` emits whenever it is non-nil.
@@ -276,7 +282,7 @@ paths:
 - `hiddenInterfaceElements` stores raw names and preserves unknown values while toggling known ones; empty
   maps nil. Titlebar cases are `sidebarToggle`, `workspaceName`, `sessionName`, `windowName`, `remoteHost`,
   `sessionContext`, `recentSessions`, `scratch`, `split`, `dashboard`, `quickTerminal`, `customCommands`,
-  `overlayToggle`;
+  `overlayToggle`, `updates`;
   sidebar cases are `newWorkspace`, `newSession`, `flaggedView`, `focusFilter`, and row-level
   `workspaceAddSession`, `workspaceIcons`, `sessionIcons` and `workspaceChevrons` ([[sidebar]] owns its layout).
   The two icon toggles show the glyph their rows
@@ -284,6 +290,9 @@ paths:
   A `hiddenByDefault` case (`workspaceName`, `customCommands` and `overlayToggle`) is governed by
   `shownInterfaceElements` instead, the same shape with the opposite sense, and its name in the hidden list is ignored. Attention
   has its separate default-off setting.
+  `updates` is the one state-shown control (CLAUDE.md): its button sits at the far right outside the group counts and
+  shows only while `UpdateFlow.showsIcon` holds, a scheduled find Sparkle left to it; hiding the element hides the
+  button and leaves Sparkle silent until Check for Updates, `update check` or a later launch's check.
   `workspaceName` leads the identity as `workspace — session — window`, looked up from the ACTIVE SESSION
   (`workspace(forSession:)`, never `currentWorkspaceID`, which an empty workspace can hold while the old
   session stays selected). `TitlebarComposition` caps it at `workspaceNameLimit` characters with an
@@ -320,13 +329,16 @@ paths:
   size in Appearance, which `testSidebarDensityPickerPersistsAndTheAppearanceTabFits` keeps from scrolling.
   The control catalog carries it as `sidebar.density`.
 - `terminalInputSource` is a macOS input source id, nil = off. `InputSourceLock` in `agtermCore` decides and
-  `TerminalInputSource` is the only caller of Text Input Source selection: it selects the id while the key
-  window's first responder is a live `GhosttySurfaceView` or sits inside an `HtmlOverlayWebView`, page form
-  fields included, reselects on every source-change notification, and
-  restores the earlier source when that stops being true and in `applicationWillTerminate`.
-  It keys on key-window and responder changes, never app activation, because the quick terminal takes key
-  while agterm stays inactive. The source-change notification is delivered to an inactive app (measured
-  with the quick panel key), so the observer needs no suspension override.
+  `TerminalInputSource` is the only caller of Text Input Source selection: it selects the id while agterm
+  is active and any of its windows is key, whatever holds first responder there (terminals, pages, palettes,
+  ask dialogs, rename fields, Settings, alerts), reselects on every source-change notification, and
+  restores the earlier source otherwise and in `applicationWillTerminate`.
+  One app-wide rule, because a responder-scoped lock released in some text fields and not others.
+  Key window alone is not enough: a long-running instance was measured enforcing over other apps with
+  agterm in the background, the window still reporting key unidentified. `isActive` is true while the
+  quick panel is key over another app (measured), so the gate keeps it, and activation edges are observed
+  alongside key-window ones. The source-change notification reaches agterm while it is inactive and another
+  app is frontmost (measured), so the observer needs no suspension override.
   Selection is system-wide and macOS restores nothing itself (measured with the per-document input source
   option off), so a crash leaves the id selected; never persist the baseline to restore at the next
   launch, which would overwrite a later choice made elsewhere.

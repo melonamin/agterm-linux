@@ -58,20 +58,11 @@ extension ControlServer {
 
     /// adoptCompanionPageStream takes over a claimed attachment's connection; a page that closed meanwhile gets none.
     func adoptCompanionPageStream(descriptor: Int32, serving: CompanionPageServing) {
-        let owner = LinuxControlStreamOwner(descriptor: descriptor, maxPending: 8)
-        guard let overlay = servedPage(session: serving.session, page: serving.page) else {
-            owner.start(onLine: { _ in }, onClose: {})
-            owner.shutdown()
-            return
-        }
-        let stream = LinuxPageServeStream(page: serving.page, source: overlay.source, owner: owner, server: self, companion: serving)
+        let overlay = servedPage(session: serving.session, page: serving.page)
+        let stream = PageServeStream.adopt(descriptor: descriptor, page: serving.page, source: overlay?.source,
+            links: overlay?.markdownLinks, log: overlay?.textLog,
+            attachment: .init(claim: serving.claim, session: serving.session), host: self)
         companionPageStreams[serving.claim] = stream
-        owner.start(
-            onLine: { [weak stream] line in stream?.take(Data(line)) },
-            onClose: { [weak stream] in
-                runOnMain { MainActor.assumeIsolated { stream?.closed() } }
-            }
-        )
     }
 
     /// companionPagePlace is where a served page companion sits now, nil once it is gone. A soft-closed page still

@@ -1,6 +1,60 @@
 import Foundation
 
+/// RecentClosedWindowRefusal is why a window could not reopen one of its own Recent Closed entries.
+public enum RecentClosedWindowRefusal: Error, Equatable, Sendable {
+    case notFound, lacksParent, elsewhere, failed
+
+    public var message: String {
+        switch self {
+        case .notFound: "no such entry in this window's Recent Closed"
+        case .lacksParent: "parent session is not open or in Recent Closed"
+        case .elsewhere: "the entry's workspace or parent session is in another window; reopen it from that window"
+        case .failed: "could not reopen the entry"
+        }
+    }
+}
+
 extension WindowLibrary {
+    /// noteOriginRecentID records that `host` keeps its session `sessionID`, closed here, as its entry `recentID`.
+    public func noteOriginRecentID(_ recentID: String, host: String, sessionID: String) {
+        recentClosedStore.setOriginRecentID(recentID, host: host, sessionID: sessionID)
+        refreshRecentClosedItems()
+    }
+
+    /// noteAttachedUndo keeps `undo` for ⌘Z in window `window` until its host's grace ends, when it leaves by itself.
+    /// Replies can arrive out of order, so the list is kept ordered by when each terminate was asked for.
+    public func noteAttachedUndo(_ undo: AttachedUndo, window: UUID, grace: TimeInterval = AppStore.pendingCloseGraceInterval) {
+        var undos = attachedUndos[window] ?? []
+        undos.insert(undo, at: undos.lastIndex { $0.initiated <= undo.initiated }.map { $0 + 1 } ?? 0)
+        attachedUndos[window] = undos
+        MainTimer.schedule(after: grace) { [weak self] in
+            self?.dropAttachedUndo(undo, window: window)
+        }
+    }
+
+    /// takeAttachedUndo removes and answers window `window`'s most recently asked-for attached undo.
+    public func takeAttachedUndo(window: UUID) -> AttachedUndo? {
+        guard let undo = attachedUndos[window]?.last else { return nil }
+        dropAttachedUndo(undo, window: window)
+        return undo
+    }
+
+    private func dropAttachedUndo(_ undo: AttachedUndo, window: UUID) {
+        attachedUndos[window]?.removeAll { $0 == undo }
+        if attachedUndos[window]?.isEmpty == true { attachedUndos[window] = nil }
+    }
+
+    /// removeRemoteRecentClosed drops an attached row's entry once its session is shown here again.
+    public func removeRemoteRecentClosed(_ id: UUID) {
+        recentClosedStore.remove(id)
+        refreshRecentClosedItems()
+    }
+
+    /// undoPendingClose undoes the pending close `id` in the open store holding it; false when none does.
+    public func undoPendingClose(_ id: UUID) -> Bool {
+        openStores().contains { $0.undoPendingClose(id) }
+    }
+
     @discardableResult
     public func reopenRecentClosed(_ itemID: UUID, into targetStore: AppStore? = nil) -> Bool {
         reopenRecentClosedReportingWindow(itemID, into: targetStore) != nil
@@ -30,7 +84,7 @@ extension WindowLibrary {
         // a lone companion reopens only under its parent: a live one, or the entry holding the parent reopened
         // first, the parent's own or its removed workspace's
         if let parentID = item.session?.snapshot.parentID, openStores().allSatisfy({ $0.session(withID: parentID) == nil }) {
-            guard let parentItem = recentClosedItems.first(where: { $0.holdsTopLevelSession(parentID) }),
+            guard let parentItem = recentClosedItems.first(where: { $0.restoresSession(parentID) }),
                   reopenRecentClosedOutcome(parentItem.id, into: targetStore) != nil else { return nil }
             refreshRecentClosedItems()
         }
@@ -50,7 +104,7 @@ extension WindowLibrary {
     public func recentClosedItemLacksParent(_ itemID: UUID) -> Bool {
         guard let parentID = recentClosedItems.first(where: { $0.id == itemID })?.session?.snapshot.parentID,
               openStores().allSatisfy({ $0.session(withID: parentID) == nil }) else { return false }
-        return !recentClosedItems.contains { $0.holdsTopLevelSession(parentID) }
+        return !recentClosedItems.contains { $0.restoresSession(parentID) }
     }
 
     /// `reopenRecentClosedReportingWindow` over the newest entry.
@@ -67,6 +121,38 @@ extension WindowLibrary {
         return cleared
     }
 
+    /// recentClosedItems(inWindow:) is the window's own list, the one a remote window on another Mac mirrors:
+    /// entries closed in it, never a remote row's entry or one saved before windows were recorded.
+    public func recentClosedItems(inWindow window: UUID) -> [RecentClosedItem] {
+        recentClosedItems.filter { $0.window == window }
+    }
+
+    public func clearRecentClosedItems(inWindow window: UUID) {
+        recentClosedStore.clear(window: window)
+        refreshRecentClosedItems()
+    }
+
+    /// reopenRecentClosed(_:inWindow:) reopens one of the window's own entries into it, and refuses one the
+    /// restore-destination rule would send to another window, where the person at this Mac would not see it.
+    public func reopenRecentClosed(_ itemID: UUID, inWindow window: UUID) -> Result<RecentClosedReopen, RecentClosedWindowRefusal> {
+        refreshRecentClosedItems()
+        guard let store = store(for: window),
+              let item = recentClosedItems(inWindow: window).first(where: { $0.id == itemID }) else { return .failure(.notFound) }
+        guard !recentClosedItemLacksParent(itemID) else { return .failure(.lacksParent) }
+        guard !reopensElsewhere(item, than: store) else { return .failure(.elsewhere) }
+        guard let outcome = reopenRecentClosedOutcome(itemID, into: store) else { return .failure(.failed) }
+        return .success(outcome)
+    }
+
+    // a lone companion whose parent is closed follows the parent's entry, which reopens first
+    private func reopensElsewhere(_ item: RecentClosedItem, than store: AppStore) -> Bool {
+        if let parentID = item.session?.snapshot.parentID, openStores().allSatisfy({ $0.session(withID: parentID) == nil }),
+           let parentItem = recentClosedItems.first(where: { $0.id != item.id && $0.restoresSession(parentID) }) {
+            return reopensElsewhere(parentItem, than: store)
+        }
+        return restoreDestination(for: item, requested: store) !== store
+    }
+
     /// Which store restores `item`, in priority order: the window holding the session itself, then the one
     /// holding its workspace, then the requested store. Session before workspace because an old snapshot
     /// can leave one session in two windows, where the stale workspace rebuilds the copy just closed.
@@ -78,7 +164,14 @@ extension WindowLibrary {
             return openStores().first { $0.session(withID: parentID) != nil }
         }
         if let owner = storeHoldingWorkspace(of: item) { return owner }
-        return requested ?? activeStore
+        // a closed item is always this Mac's own, and a remote window holds only its server's rows
+        let fallback = requested ?? activeStore
+        guard let fallback, isRemoteStore(fallback) else { return fallback }
+        return openStores().first { !isRemoteStore($0) }
+    }
+
+    func isRemoteStore(_ store: AppStore) -> Bool {
+        windowID(for: store).flatMap { id in windows.first { $0.id == id } }?.isRemote == true
     }
 
     /// The open store holding `item`'s workspace: the workspace id itself for a workspace entry, the parent
@@ -119,11 +212,13 @@ extension WindowLibrary {
     }
 }
 
-private extension RecentClosedItem {
-    func holdsTopLevelSession(_ id: UUID) -> Bool {
+extension RecentClosedItem {
+    /// restoresSession says the entry rebuilds session `id`: a recorded parent may sit inside an entry as a companion,
+    /// since Convert to Companion nests it after the record.
+    public func restoresSession(_ id: UUID) -> Bool {
         switch kind {
-        case .session: session?.snapshot.id == id
-        case .workspace: workspace?.snapshot.sessions.contains { $0.id == id && $0.parentID == nil } == true
+        case .session: session?.snapshot.id == id || session?.companions?.contains { $0.id == id } == true
+        case .workspace: workspace?.snapshot.sessions.contains { $0.id == id } == true
         }
     }
 }

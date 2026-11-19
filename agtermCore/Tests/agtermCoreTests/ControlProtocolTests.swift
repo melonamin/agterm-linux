@@ -30,13 +30,46 @@ struct ControlProtocolTests {
         let search = ControlRequest(cmd: .sessionOverlaySearch, args: ControlArgs(text: "main()", pane: "right"))
         #expect(try roundTrip(search) == search)
         #expect(Command.sessionOverlaySearch.rawValue == "session.overlay.search")
+        let wrap = ControlRequest(cmd: .sessionOverlayWrap, args: ControlArgs(mode: "on", pane: "right"))
+        #expect(try roundTrip(wrap) == wrap)
+        #expect(Command.sessionOverlayWrap.rawValue == "session.overlay.wrap")
+        let expand = ControlRequest(cmd: .sessionOverlayExpand, args: ControlArgs(mode: "off", pane: "left"))
+        #expect(try roundTrip(expand) == expand)
+        #expect(Command.sessionOverlayExpand.rawValue == "session.overlay.expand")
         let changes = ControlRequest(cmd: .sessionOverlayChanges, args: ControlArgs(pane: "right", to: "prev"))
         #expect(try roundTrip(changes) == changes)
         #expect(Command.sessionOverlayChanges.rawValue == "session.overlay.changes")
+        let files = ControlRequest(cmd: .sessionOverlayFiles, args: ControlArgs(pane: "right", to: "src/b.go"))
+        #expect(try roundTrip(files) == files)
+        #expect(Command.sessionOverlayFiles.rawValue == "session.overlay.files")
 
         let plain = String(data: try JSONEncoder().encode(ControlArgs(textFile: "/tmp/a.txt")), encoding: .utf8) ?? ""
         #expect(!plain.contains("tail"))
         #expect(!plain.contains("followFile"))
+    }
+
+    @Test func terminateAndThePinnedKillKeepTheirWireNames() {
+        #expect(Command.sessionTerminate.rawValue == "session.terminate")
+        #expect(Command.zmxKillPane.rawValue == "zmx.kill.pane")
+    }
+
+    @Test func closeRecentIDRoundTripsAndIsOmittedWhenNil() throws {
+        let response = ControlResponse(ok: true, result: ControlResult(id: "s1", closed: ["s1"], recentID: "r1"))
+        #expect(try roundTrip(response) == response)
+        #expect(!String(decoding: try JSONEncoder().encode(ControlResult(id: "s1", closed: ["s1"])), as: UTF8.self).contains("recentID"))
+    }
+
+    @Test func catalogViewersRoundTripOnTheTreeAndWindowNodeAndAreOmittedAtNone() throws {
+        var tree = ControlTree(workspaces: [])
+        var node = ControlWindowNode(id: "w1", name: "w", open: true, active: true)
+        let bare = (String(decoding: try JSONEncoder().encode(tree), as: UTF8.self),
+                    String(decoding: try JSONEncoder().encode(node), as: UTF8.self))
+        tree.catalogViewers = 2
+        node.catalogViewers = 2
+
+        #expect(!bare.0.contains("catalogViewers") && !bare.1.contains("catalogViewers"))
+        #expect(try JSONDecoder().decode(ControlTree.self, from: JSONEncoder().encode(tree)).catalogViewers == 2)
+        #expect(try JSONDecoder().decode(ControlWindowNode.self, from: JSONEncoder().encode(node)).catalogViewers == 2)
     }
 
     @Test func treeRequestRoundTrips() throws {
@@ -612,6 +645,15 @@ struct ControlProtocolTests {
         #expect(decoded.cmd == .sessionStatus)
         #expect(decoded.args?.status == "completed")
         #expect(decoded.args?.autoReset == true)
+    }
+
+    @Test func sessionStatusIfIdleRoundTrips() throws {
+        let json = #"{"cmd":"session.status","args":{"status":"active","ifIdle":true}}"#
+        let decoded = try JSONDecoder().decode(ControlRequest.self, from: Data(json.utf8))
+        #expect(decoded.args?.ifIdle == true)
+
+        let encoded = try JSONEncoder().encode(ControlRequest(cmd: .sessionStatus, args: ControlArgs(status: "active")))
+        #expect(try JSONDecoder().decode(ControlRequest.self, from: encoded).args?.ifIdle == nil)
     }
 
     @Test func sessionStatusUnknownStateDecodesForServerToReject() throws {
@@ -1298,15 +1340,18 @@ struct ControlProtocolTests {
 
     @Test func treeSessionNodeReportsAndOmitsTheRemoteHost() throws {
         let remote = ControlSessionNode(id: "s1", name: "build", cwd: "/tmp", active: true, split: false,
-                                        backedByZmx: nil, remoteHost: "buildbox")
+                                        backedByZmx: nil, remoteHost: "buildbox", remoteSessionID: "r1")
         let encoded = try JSONEncoder().encode(remote)
-        #expect(try JSONDecoder().decode(ControlSessionNode.self, from: encoded).remoteHost == "buildbox")
+        let decoded = try JSONDecoder().decode(ControlSessionNode.self, from: encoded)
+        #expect(decoded.remoteHost == "buildbox")
+        #expect(decoded.remoteSessionID == "r1")
 
         let local = ControlSessionNode(id: "s2", name: "shell", cwd: "/tmp", active: false, split: false,
                                        backedByZmx: nil)
         let localJSON = try #require(try JSONSerialization
             .jsonObject(with: try JSONEncoder().encode(local)) as? [String: Any])
         #expect(localJSON["remoteHost"] == nil, "a local session omits the key, never nulls it")
+        #expect(localJSON["remoteSessionID"] == nil)
     }
 
     @Test func treeSessionNodeToleratesMissingSurfaces() throws {

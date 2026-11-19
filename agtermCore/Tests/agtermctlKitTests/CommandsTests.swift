@@ -37,10 +37,6 @@ struct CommandsTests {
         #expect(try request(["tree"]) == ControlRequest(cmd: .tree))
     }
 
-    @Test func recentClear() throws {
-        #expect(try request(["recent", "clear"]) == ControlRequest(cmd: .recentClear))
-    }
-
     @Test func workspaceNewWithName() throws {
         #expect(try request(["workspace", "new", "Work"]) == ControlRequest(cmd: .workspaceNew, args: ControlArgs(name: "Work")))
     }
@@ -279,7 +275,7 @@ struct CommandsTests {
     }
 
     @Test func sessionMoveRequiresWorkspaceOrTo() {
-        #expect(validationMessage(["session", "move"]) == "provide a destination workspace, --to, or --after/--before")
+        #expect(validationMessage(["session", "move"]) == "provide a destination workspace, --to, --after/--before, or --parent")
     }
 
     @Test func sessionMoveRejectsWorkspaceAndTo() {
@@ -431,6 +427,22 @@ struct CommandsTests {
         #expect(try request(["session", "scratch", "off"]) == expected)
     }
 
+    @Test func sessionScratchCarriesTheExpectedScratchWithAnOperation() throws {
+        let identity = UUID().uuidString
+        let args = try request(["session", "scratch", "on", "--command", "htop", "--op-id", "op-1", "--epoch", "e1",
+                                "--expect-scratch", identity]).args
+
+        #expect(args?.scratch == identity)
+        #expect(args?.opID == "op-1")
+        #expect(args?.epoch == "e1")
+        #expect(try request(["session", "scratch", "on", "--op-id", "op-1", "--epoch", "e1", "--expect-scratch", "none"]).args?.scratch == "none")
+    }
+
+    @Test(arguments: [["--expect-scratch", "none"], ["--expect-scratch", "nope", "--op-id", "op-1", "--epoch", "e1"]])
+    func sessionScratchRefusesAnExpectedScratchItCannotSend(_ flags: [String]) {
+        #expect(throws: (any Error).self) { try request(["session", "scratch", "on"] + flags) }
+    }
+
     @Test func sessionFocusDefaultsOther() throws {
         let expected = ControlRequest(cmd: .sessionFocus, target: "active", args: ControlArgs(pane: "other"))
         #expect(try request(["session", "focus"]) == expected)
@@ -452,33 +464,21 @@ struct CommandsTests {
         #expect(try request(["session", "resize", "--split-ratio", "0.7"]) == expected)
     }
 
-    @Test func sessionResizeGrowLeftPreservesPhysicalIntent() throws {
-        let expected = ControlRequest(
-            cmd: .sessionResize,
-            target: "active",
-            args: ControlArgs(pane: "left", ratioDelta: 0.05)
-        )
+    @Test func sessionResizeGrowLeftCarriesPhysicalPosition() throws {
+        let expected = ControlRequest(cmd: .sessionResize, target: "active", args: ControlArgs(pane: "left", ratioDelta: 0.05))
         #expect(try request(["session", "resize", "--grow-left", "0.05"]) == expected)
     }
 
-    @Test func sessionResizeGrowRightPreservesPhysicalIntent() throws {
-        let expected = ControlRequest(
-            cmd: .sessionResize,
-            target: "active",
-            args: ControlArgs(pane: "right", ratioDelta: 0.05)
-        )
+    @Test func sessionResizeGrowRightCarriesPhysicalPosition() throws {
+        let expected = ControlRequest(cmd: .sessionResize, target: "active", args: ControlArgs(pane: "right", ratioDelta: 0.05))
         #expect(try request(["session", "resize", "--grow-right", "0.05"]) == expected)
     }
 
-    @Test func sessionResizePreservesEveryRoleAndPositionSelector() throws {
-        let cases = [
-            ("--grow-primary", "primary"), ("--grow-split", "split"),
-            ("--grow-top", "top"), ("--grow-bottom", "bottom"),
-        ]
-        for (option, pane) in cases {
-            let args = try request(["session", "resize", option, "0.05"]).args
-            #expect(args?.pane == pane)
+    @Test func sessionResizeRoleAndAxisAliasesCarryTheirIntent() throws {
+        for pane in ["primary", "top", "split", "bottom"] {
+            let args = try request(["session", "resize", "--grow-" + pane, "0.05"]).args
             #expect(args?.ratioDelta == 0.05)
+            #expect(args?.pane == pane)
         }
     }
 
@@ -508,6 +508,11 @@ struct CommandsTests {
     @Test func sessionGoWithWindow() throws {
         let expected = ControlRequest(cmd: .sessionGo, args: ControlArgs(window: "w1", to: "last"))
         #expect(try request(["session", "go", "--to", "last", "--window", "w1"]) == expected)
+    }
+
+    @Test func sessionGoPosition() throws {
+        let expected = ControlRequest(cmd: .sessionGo, args: ControlArgs(to: "3"))
+        #expect(try request(["session", "go", "--to", "3"]) == expected)
     }
 
     @Test func sessionGoRequiresToFails() {
@@ -640,6 +645,12 @@ struct CommandsTests {
                                       args: ControlArgs(status: "completed", autoReset: true)))
     }
 
+    @Test func sessionStatusWithIfIdle() throws {
+        let req = try request(["session", "status", "active", "--blink", "--if-idle"])
+        #expect(req == ControlRequest(cmd: .sessionStatus, target: "active",
+                                      args: ControlArgs(status: "active", blink: true, ifIdle: true)))
+    }
+
     @Test func sessionStatusWithSound() throws {
         let req = try request(["session", "status", "blocked", "--sound", "Glass"])
         #expect(req.cmd == .sessionStatus)
@@ -695,7 +706,7 @@ struct CommandsTests {
     @Test func sessionStatusRejectsUnknownShape() {
         // pin the exact allCases-derived message so an unrelated parse failure can't pass for it.
         #expect(validationMessage(["session", "status", "blocked", "--shape", "hexagon"])
-            == "shape must be one of: circle, square, triangle, triangle-down, play, diamond, capsule, seal, star, bolt, bell")
+            == "shape must be one of: circle, square, triangle, triangle-down, play, diamond, capsule, seal, star, bolt, bell, checkmark")
     }
 
     @Test func sessionStatusShapeHelpListsEveryShape() {
@@ -1518,10 +1529,9 @@ struct CommandsTests {
             ControlRequest(cmd: .pickCancel, target: "pick-1", args: ControlArgs(window: "w1")))
     }
 
-    @Test func pickOpenHasNoTimeoutOption() {
-        #expect(throws: (any Error).self) {
-            try Agtermctl.parseAsRoot(["pick", "--timeout", "60"])
-        }
+    @Test func pickOpenTakesATimeoutFromTheRoot() throws {
+        let command = try #require(try Agtermctl.parseAsRoot(["pick", "--timeout", "60"]) as? Pick.Open)
+        #expect(try command.makeRequest(input: Data("a\n".utf8)).args?.timeout == 60)
     }
 
     // MARK: - dashboard
@@ -1821,36 +1831,141 @@ struct CommandsTests {
     @Test func socketPathExplicitFlagWins() throws {
         let command = try Tree.parse(["--socket", "/tmp/explicit.sock"])
         let env = ["AGTERM_STATE_DIR": "/tmp/state", "HOME": "/Users/x"]
-        #expect(command.options.basic.socketPath(
-            env: env, applicationSupportDirectory: "/ignored") == "/tmp/explicit.sock")
+        #expect(command.options.socketPath(env: env) == "/tmp/explicit.sock")
     }
 
     @Test func socketPathStateDirOverHome() throws {
         let command = try Tree.parse([])
         let env = ["AGTERM_STATE_DIR": "/tmp/state", "HOME": "/Users/x"]
-        #expect(command.options.basic.socketPath(
-            env: env, applicationSupportDirectory: "/ignored") == "/tmp/state/agterm.sock")
+        #expect(command.options.socketPath(env: env) == "/tmp/state/agterm.sock")
     }
 
-    @Test func socketPathPreservesMacOSApplicationSupportLocation() throws {
+    #if os(Linux)
+    @Test func socketPathFallsBackToHome() throws {
+        let command = try Tree.parse([])
+        let env = ["HOME": "/home/x"]
+        #expect(command.options.socketPath(env: env) == "/home/x/.local/state/agterm/agterm.sock")
+    }
+
+    @Test func socketPathUsesAbsoluteXdgStateHome() throws {
+        let command = try Tree.parse([])
+        let env = ["HOME": "/home/x", "XDG_STATE_HOME": "/var/state"]
+        #expect(command.options.socketPath(env: env) == "/var/state/agterm/agterm.sock")
+    }
+
+    @Test func socketPathIgnoresRelativeXdgStateHome() throws {
+        let command = try Tree.parse([])
+        let env = ["HOME": "/home/x", "XDG_STATE_HOME": "state"]
+        #expect(command.options.socketPath(env: env) == "/home/x/.local/state/agterm/agterm.sock")
+    }
+
+    @Test func socketPathStateDirOverXdgStateHome() throws {
+        let command = try Tree.parse([])
+        let env = ["AGTERM_STATE_DIR": "/tmp/state", "XDG_STATE_HOME": "/var/state"]
+        #expect(command.options.socketPath(env: env) == "/tmp/state/agterm.sock")
+    }
+    #else
+    @Test func socketPathFallsBackToHome() throws {
         let command = try Tree.parse([])
         let env = ["HOME": "/Users/x"]
-        #expect(command.options.basic.socketPath(
-            env: env, applicationSupportDirectory: "/Users/x/Library/Application Support/agterm")
-            == "/Users/x/Library/Application Support/agterm/agterm.sock")
+        #expect(command.options.socketPath(env: env) == "/Users/x/Library/Application Support/agterm/agterm.sock")
     }
 
-    @Test func socketPathUsesLinuxFoundationApplicationSupportLocation() throws {
+    @Test func socketPathIgnoresXdgStateHomeOnMac() throws {
         let command = try Tree.parse([])
-        #expect(command.options.basic.socketPath(
-            env: ["HOME": "/home/x", "XDG_DATA_HOME": "/xdg/data"],
-            applicationSupportDirectory: "/xdg/data/agterm") == "/xdg/data/agterm/agterm.sock")
+        let env = ["HOME": "/Users/x", "XDG_STATE_HOME": "/var/state"]
+        #expect(command.options.socketPath(env: env) == "/Users/x/Library/Application Support/agterm/agterm.sock")
+    }
+    #endif
+
+    @Test func socketPathFallsBackToTmpWithoutHome() throws {
+        let command = try Tree.parse([])
+        #expect(command.options.socketPath(env: [:]) == "/tmp/agterm/agterm.sock")
     }
 
-    @Test func socketPathFallsBackToTmpWithoutFoundationLocation() throws {
-        let command = try Tree.parse([])
-        #expect(command.options.basic.socketPath(
-            env: [:], applicationSupportDirectory: nil) == "/tmp/agterm/agterm.sock")
+    // MARK: - session background
+
+    @Test func sessionBackgroundImage() throws {
+        let expected = ControlRequest(cmd: .sessionBackground, target: "active",
+                                      args: ControlArgs(mode: "image", path: "/tmp/bg.png"))
+        #expect(try request(["session", "background", "image", "/tmp/bg.png"]) == expected)
+    }
+
+    @Test func sessionBackgroundImageWithOptions() throws {
+        let expected = ControlRequest(cmd: .sessionBackground, target: "s1",
+                                      args: ControlArgs(mode: "image", path: "/tmp/bg.png", opacity: 0.2,
+                                                        fit: "cover", position: "top-left", repeats: true))
+        let argv = ["session", "background", "image", "/tmp/bg.png", "--opacity", "0.2",
+                    "--fit", "cover", "--position", "top-left", "--repeat", "--target", "s1"]
+        #expect(try request(argv) == expected)
+    }
+
+    @Test func sessionBackgroundText() throws {
+        let expected = ControlRequest(cmd: .sessionBackground, target: "active",
+                                      args: ControlArgs(text: "DRAFT", mode: "text", color: "#ff0000", opacity: 0.15))
+        let argv = ["session", "background", "text", "DRAFT", "--color", "#ff0000", "--opacity", "0.15"]
+        #expect(try request(argv) == expected)
+    }
+
+    @Test func sessionBackgroundColor() throws {
+        let expected = ControlRequest(cmd: .sessionBackground, target: "s1",
+                                      args: ControlArgs(mode: "color", color: "#112233"))
+        #expect(try request(["session", "background", "color", "#112233", "--target", "s1"]) == expected)
+    }
+
+    @Test func sessionBackgroundColorRejectsBadColor() {
+        // assert the color validation (not some unrelated parse error) fired.
+        #expect(validationMessage(["session", "background", "color", "red"])?.contains("color") == true)
+        #expect(validationMessage(["session", "background", "color", "#fff"])?.contains("color") == true)
+    }
+
+    @Test func sessionBackgroundClear() throws {
+        let expected = ControlRequest(cmd: .sessionBackground, target: "active", args: ControlArgs(mode: "clear"))
+        #expect(try request(["session", "background", "clear"]) == expected)
+    }
+
+    @Test(arguments: [(["image", "/tmp/bg.png", "--pane", "right"], ControlArgs(mode: "image", pane: "right", path: "/tmp/bg.png")),
+                      (["text", "PEER", "--pane", "split"], ControlArgs(text: "PEER", mode: "text", pane: "split")),
+                      (["color", "#201414", "--pane", "left"], ControlArgs(mode: "color", pane: "left", color: "#201414")),
+                      (["clear", "--pane", "scratch"], ControlArgs(mode: "clear", pane: "scratch"))])
+    func sessionBackgroundPaneEncodesForEveryMode(argv: [String], args: ControlArgs) throws {
+        #expect(try request(["session", "background"] + argv) == ControlRequest(cmd: .sessionBackground, target: "active", args: args))
+        #expect(validationMessage(["session", "background"] + argv.dropLast() + ["middle"]) == "--pane must be left, right, or scratch")
+    }
+
+    @Test func sessionBackgroundRejectsBadFit() {
+        #expect(validationMessage(["session", "background", "image", "/tmp/bg.png", "--fit", "fill"]) != nil)
+    }
+
+    @Test func sessionBackgroundRejectsBadPosition() {
+        #expect(validationMessage(["session", "background", "text", "X", "--position", "middle"]) != nil)
+    }
+
+    @Test func sessionBackgroundRejectsOutOfRangeOpacity() {
+        #expect(validationMessage(["session", "background", "image", "/tmp/bg.png", "--opacity", "1.5"]) != nil)
+        #expect(validationMessage(["session", "background", "text", "X", "--opacity", "-0.2"]) != nil)
+    }
+
+    @Test func sessionBackgroundRejectsBadColor() {
+        #expect(validationMessage(["session", "background", "text", "X", "--color", "red"]) != nil)
+        #expect(validationMessage(["session", "background", "text", "X", "--color", "#fff"]) != nil)
+    }
+
+    @Test func sessionBackgroundAcceptsValidColor() throws {
+        let expected = ControlRequest(cmd: .sessionBackground, target: "active",
+                                      args: ControlArgs(text: "X", mode: "text", color: "#ff8800"))
+        #expect(try request(["session", "background", "text", "X", "--color", "#ff8800"]) == expected)
+    }
+
+    @Test func sessionBackgroundRejectsEmptyAndTooLongText() {
+        #expect(validationMessage(["session", "background", "text", ""]) != nil)
+        #expect(validationMessage(["session", "background", "text",
+                                   String(repeating: "A", count: WatermarkConfig.maxTextLength + 1)]) != nil)
+    }
+
+    @Test func sessionBackgroundImageRejectsControlCharPath() {
+        // a newline in the path would smuggle an extra ghostty key into the per-surface overlay.
+        #expect(validationMessage(["session", "background", "image", "x.png\nclipboard-read = allow\ny.png"]) != nil)
     }
 
     @Test func versionParsesWithNoArgumentsAndTakesNoTarget() throws {

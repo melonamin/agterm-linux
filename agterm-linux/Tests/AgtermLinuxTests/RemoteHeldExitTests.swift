@@ -86,7 +86,7 @@ struct RemoteHeldExitTests {
     func removalBeforeHeldExitCompletes() throws {
         try bind(split: false)
         let removal = PresentationLayout(panes: [Self.remoteRight], primary: Self.remoteRight, shown: false)
-        #expect(store.applyRemoteLayout(removal, forSession: session.id) == [session.paneIdentity])
+        #expect(store.applyRemoteLayout(removal, forSession: session.id, attach: LinuxRemoteAttachLines()) == [session.paneIdentity])
         #expect(!store.remotePaneIsHeld(session.paneIdentity, forSession: session.id))
 
         router.paneHeld(primary, forSession: session.id)

@@ -69,6 +69,7 @@ final class SettingsModel {
         applyWorkspaceRowClickExpands()
         applyAttentionButtonEnabled()
         applyStatusReset()
+        applyBadgeReset()
         applyInterfaceElements()
         applyAutoHideSidebarInactiveWindows()
         applyFlaggedViewLayout()
@@ -101,16 +102,18 @@ final class SettingsModel {
     /// via the CONFIG_CHANGE clone). Read outside only by the UI-test `debug.appearance` probe (bare form).
     private(set) var lastAppliedIsDark = false
 
-    /// Re-feed the config on a macOS appearance flip so libghostty re-resolves the dual theme — the
-    /// system→settings half of light/dark sync. No-op unless following with both slots set, or when the
-    /// side is unchanged (`lastAppliedIsDark`). The RAW `theme = light:,dark:` text is IDENTICAL across
-    /// flips, so `writeGhosttyConfig()`/`apply()` would skip the reload — reload DIRECTLY instead; ghostty
-    /// already recorded the scheme (`set_color_scheme`) and re-resolves on `update_config`. Debounced, the
-    /// latest posted side wins. An automatic flip PRESERVES each session's ⌘+/⌘− zoom (unlike File ▸
+    /// appearanceChanged records a macOS appearance flip in libghostty with any theme, for its color
+    /// scheme report. With both sync slots set, also re-feed the config so libghostty re-resolves the
+    /// dual theme — the system→settings half of light/dark sync — unless the side is unchanged
+    /// (`lastAppliedIsDark`). The RAW `theme = light:,dark:` text is IDENTICAL across flips, so
+    /// `writeGhosttyConfig()`/`apply()` would skip the reload — reload DIRECTLY instead; ghostty
+    /// already recorded the scheme (`set_color_scheme`) and re-resolves on `update_config`. Debounced,
+    /// the latest posted side wins. An automatic flip PRESERVES each session's ⌘+/⌘− zoom (unlike File ▸
     /// Reload / `config.reload`) — wiping it on an OS schedule would surprise. A zero-surface reload is
     /// safe: the app-scheme set re-sides the chrome clone. `isDark` is the KVO-delivered side, never
     /// re-read from a view (whose `effectiveAppearance` lags around sleep/wake).
     private func appearanceChanged(isDark: Bool) {
+        GhosttyApp.shared.setColorScheme(isDark: isDark)
         guard settings.followSystemAppearance == true, settings.theme != nil, settings.darkTheme != nil else { return }
         appearanceDebouncer.schedule(after: Self.appearanceDebounceInterval) { [weak self] in
             guard let self else { return }
@@ -289,8 +292,8 @@ final class SettingsModel {
         persistAndApply()
     }
 
-    /// Persist the keyboard input source held while a terminal has the keyboard, nil for off, and apply it
-    /// to the current focus.
+    /// setTerminalInputSource persists the keyboard input source held while an agterm window has the
+    /// keyboard, nil for off, and applies it at once.
     func setTerminalInputSource(_ id: String?) {
         guard id != settings.terminalInputSource else { return }
         settings.terminalInputSource = id
@@ -337,6 +340,8 @@ final class SettingsModel {
     func setBlockedStatusSoundName(_ name: String?) { settings.blockedStatusSoundName = name; try? settingsStore.save(settings) }
     /// nil restores the default (clear on the first key), keeping the stored file minimal.
     func setStatusReset(_ mode: StatusReset?) { settings.statusReset = mode?.rawValue; persistAndApply() }
+    /// nil restores the default (clear the unseen badge on the first key).
+    func setBadgeReset(_ mode: StatusReset?) { settings.badgeReset = mode?.rawValue; persistAndApply() }
     /// Persist where a new (⌘T) session opens (nil = home). Read only at the next `AppActions.newSession()`,
     /// so it just saves — no config rewrite or surface reload.
     func setNewSessionDirectory(_ value: String?) { settings.newSessionDirectory = value; try? settingsStore.save(settings) }
@@ -777,6 +782,7 @@ final class SettingsModel {
         applyWorkspaceRowClickExpands()
         applyAttentionButtonEnabled()
         applyStatusReset()
+        applyBadgeReset()
         applyInterfaceElements()
         applyAutoHideSidebarInactiveWindows()
         applyFlaggedViewLayout()
@@ -824,6 +830,10 @@ final class SettingsModel {
         GhosttyApp.shared.setStatusReset(settings.effectiveStatusReset)
     }
 
+    private func applyBadgeReset() {
+        GhosttyApp.shared.setBadgeReset(settings.effectiveBadgeReset)
+    }
+
     private func applyInterfaceElements() {
         GhosttyApp.shared.setHiddenInterfaceElements(settings.resolvedHiddenInterfaceElements)
     }
@@ -860,6 +870,7 @@ final class SettingsModel {
         for store in library.openIDs().compactMap({ library.store(for: $0) }) {
             applyWindowSettings(to: store)
         }
+        NotificationCenter.default.post(name: .agtermWindowCatalogChanged, object: nil)
     }
 
     private func applyInactivePaneMute() {

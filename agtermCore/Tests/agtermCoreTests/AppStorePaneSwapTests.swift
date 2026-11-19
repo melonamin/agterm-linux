@@ -335,6 +335,49 @@ struct AppStorePaneSwapTests {
         }
     }
 
+    @Test func swapMovesEachPanesWorkWithItsTerminal() {
+        let fixture = makeSeededSession()
+        fixture.store.applyControlStatus(AgentIndicator(status: .active, statusPane: .left), forSession: fixture.session.id)
+
+        #expect(fixture.store.swapPanes(fixture.session.id) == nil)
+        fixture.store.applyControlStatus(AgentIndicator(status: .completed, statusPane: .left), forSession: fixture.session.id)
+
+        #expect(Array(fixture.session.paneActivity.keys) == [.right])
+        #expect(fixture.session.agentIndicator.status == .active)
+        #expect(fixture.session.agentIndicator.statusPane == .right)
+    }
+
+    private func workingSplitSession(shown: StatusPane) -> (AppStore, Session) {
+        let store = makeStore()
+        let ws = store.addWorkspace(name: "work")
+        let session = store.addSession(toWorkspace: ws.id, cwd: "/a")!
+        store.toggleSplit(session.id)
+        let other: StatusPane = shown == .left ? .right : .left
+        store.applyControlStatus(AgentIndicator(status: .active, statusPane: other), forSession: session.id)
+        store.applyControlStatus(AgentIndicator(status: .active, statusPane: shown), forSession: session.id)
+        return (store, session)
+    }
+
+    @Test func closingTheSplitLeavesTheLeftPanesWorkOnTheRow() {
+        let (store, session) = workingSplitSession(shown: .right)
+
+        store.closeSplit(session.id)
+
+        #expect(session.agentIndicator == AgentIndicator(status: .active, statusPane: .left))
+        #expect(Array(session.paneActivity.keys) == [.left])
+    }
+
+    @Test func aPrimaryExitPromotesTheSplitsWorkWithIt() {
+        let (store, session) = workingSplitSession(shown: .left)
+        session.surface = SpySurface()
+        session.splitSurface = SpySurface()
+
+        #expect(store.closePrimaryPane(session.id) == .promoted)
+
+        #expect(session.agentIndicator == AgentIndicator(status: .active, statusPane: .left))
+        #expect(Array(session.paneActivity.keys) == [.left])
+    }
+
     @Test(arguments: [true, false])
     func swapRefusesMissingSlotWithoutMutation(missingPrimary: Bool) {
         let fixture = makeSeededSession()
@@ -343,6 +386,23 @@ struct AppStorePaneSwapTests {
 
         #expect(fixture.store.swapPanes(fixture.session.id) == .slotNotRealized)
         #expect(State(fixture.session) == before)
+    }
+
+    @Test func aHeadlessSwapExchangesThePanesWithNoSurfaces() {
+        let (store, session) = makeHeadlessSession(split: true)
+        let primary = session.paneIdentity
+        let split = session.splitPaneIdentity!
+        session.currentCwd = "/left"
+        session.splitCwd = "/right"
+
+        #expect(store.swapPanes(session.id) == nil)
+        #expect(session.paneIdentity == split)
+        #expect(session.splitPaneIdentity == primary)
+        #expect(session.currentCwd == "/right")
+        #expect(session.splitCwd == "/left")
+        #expect(session.paneRole(forToken: split.uuidString) == .left)
+        #expect(store.swapPanes(session.id) == nil)
+        #expect(session.paneIdentity == primary)
     }
 
     @Test func swapRefusesUnknownOrSplitlessSessionWithoutMutation() {

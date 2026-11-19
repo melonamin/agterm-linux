@@ -1,0 +1,53 @@
+import Foundation
+import agtermCore
+
+/// What a Mac attaching to this host asks for: the attachable sessions, and a presentation stream for one of them.
+extension ServerActions {
+    /// remoteTree lists this server's attachable sessions with the zmx and socket directory a Mac attaches through.
+    /// A host is refused: the server answers for itself and never reaches out.
+    public func remoteTree(host: String?) async -> ControlResponse {
+        if host != nil { return ControlResponse(ok: false, error: "agterm-server lists only its own sessions") }
+        guard let listed = try? panes.runner.list() else {
+            return ControlResponse(ok: false, error: "could not read the zmx session list")
+        }
+        // an err row carries no client count: zmx listed the name but could not reach the daemon
+        let running = Set(listed.filter { $0.clients != nil }.map(\.name))
+        var daemons: [String: [String: String]] = [:]
+        for session in store.workspaces.flatMap(\.sessions) {
+            var roles = [(session.paneIdentity, "left")]
+            if session.hasSplit, let split = session.splitPaneIdentity { roles.append((split, "right")) }
+            for (identity, role) in roles where session.daemonBackedPanes.contains(identity) {
+                let name = ZmxSupport.daemonName(for: identity)
+                if running.contains(name) { daemons[session.id.uuidString, default: [:]][role] = name }
+            }
+            if let scratch = session.scratchDaemon, running.contains(ZmxSupport.scratchDaemonName(for: scratch.identity)) {
+                daemons[session.id.uuidString, default: [:]]["scratch"] = ZmxSupport.scratchDaemonName(for: scratch.identity)
+            }
+        }
+        let tree = tree()
+        let window = RemoteWindowProjection(id: catalog.id.uuidString, name: catalog.name, tree: tree)
+        let endpoint = ControlZmxEndpoint(executable: panes.configuration.zmxPath,
+                                          socketDirectory: panes.configuration.zmxSocketDirectory)
+        return ControlResponse(ok: true, result: ControlResult(remote: RemoteTreeMerger.candidates(windows: [window], daemons: daemons,
+                                                                                                    endpoint: endpoint, headless: true)))
+    }
+
+    /// openPresentation answers `zmx.present`; the stream starts once this reply is on the wire.
+    public func openPresentation(session target: String) -> ControlResponse {
+        // a session in its undo grace keeps its stream, and one removed for good is answered `ended` on it
+        if let id = UUID(uuidString: target), store.session(withID: id) == nil,
+           store.pendingCloseSession(withID: id) != nil || PresentationEnds.shared.contains(id) {
+            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
+        }
+        switch resolveSession(target) {
+        case .failure(let refusal): return refusal.response
+        case .success(let session):
+            // a session whose panes are gone keeps a stream while its scratch still runs; a page row has no daemon
+            // but takes its asks and picks through one
+            guard session.allPanesBackedByZmx || session.scratchDaemon != nil || session.content == .page else {
+                return ControlResponse(ok: false, error: "session is not live-backed, so nothing can be attached to it")
+            }
+            return ControlResponse(ok: true, result: ControlResult(id: session.id.uuidString))
+        }
+    }
+}

@@ -51,22 +51,26 @@ public enum HudMarkdown {
     #if canImport(Darwin)
     /// lines parses `source` as standard markdown. Blocks are separated by one blank row, except blocks
     /// sharing a list, since the parser does not say whether a list was tight or loose.
+    /// Off Darwin the source comes back as plain lines: only a presenting Mac draws a HUD, and it lays the
+    /// message out from the spec itself, so nothing measured from these may be published as the panel's size.
     static func lines(_ source: String) -> [Line] {
         let text = source.precomposedStringWithCanonicalMapping
+        #if canImport(Darwin)
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .full,
                                                               failurePolicy: .returnPartiallyParsedIfPossible)
-        guard let parsed = try? AttributedString(markdown: text, options: options) else {
-            return text.split(separator: "\n", omittingEmptySubsequences: false).map {
-                Line(lead: "", hang: "", runs: [Run(text: sanitized(String($0)), style: [])])
+        if let parsed = try? AttributedString(markdown: text, options: options) {
+            var walker = Walker()
+            for run in parsed.runs {
+                walker.add(Segment(text: String(parsed[run.range].characters),
+                                   inline: run.inlinePresentationIntent ?? [], link: run.link),
+                           block: run.presentationIntent?.components ?? [])
             }
+            return walker.finish()
         }
-        var walker = Walker()
-        for run in parsed.runs {
-            walker.add(Segment(text: String(parsed[run.range].characters),
-                               inline: run.inlinePresentationIntent ?? [], link: run.link),
-                       block: run.presentationIntent?.components ?? [])
+        #endif
+        return text.split(separator: "\n", omittingEmptySubsequences: false).map {
+            Line(lead: "", hang: "", runs: [Run(text: sanitized(String($0)), style: [])])
         }
-        return walker.finish()
     }
     #endif
 

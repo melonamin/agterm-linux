@@ -44,10 +44,10 @@ public struct HtmlBridgeError: Error, Equatable, Sendable {
 /// window or batch resolves exactly as it would over the socket.
 public enum HtmlBridge {
     // each needs more than one request and reply: a stream handed over, or work done after the reply
-    private static let refused: Set<Command> = [.zmxPresent, .sessionOverlayJobRun, .sessionOverlayPageServe, .zmxReset,
+    private static let refused: Set<Command> = [.zmxPresent, .catalogSubscribe, .sessionOverlayJobRun, .sessionOverlayPageServe, .zmxReset,
                                                 .sessionCompanionPageAttach]
     // commands that address no session, or address it some other way than by `target`
-    private static let notSessionTargeted: Set<Command> = [.sessionNew, .sessionGo, .sessionOverlayJobRun,
+    private static let notSessionTargeted: Set<Command> = [.sessionNew, .sessionRemoteNew, .sessionGo, .sessionUndo, .sessionOverlayJobRun,
                                                                   .sessionOverlayPageServe]
     // session commands outside the `session.` names; `ask.open` joins them unless it asks in the window's GUI
     private static let sessionTargeted: Set<Command> = [.notify, .fontInc, .fontDec, .fontReset, .keymapRun]
@@ -55,14 +55,15 @@ public enum HtmlBridge {
     private static let ownOverlay: Set<Command> = [.sessionOverlayClose, .sessionOverlayReload, .sessionOverlayResize,
                                                    .sessionOverlayNavigate, .sessionOverlaySubmit,
                                                    .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle,
-                                                   .sessionOverlayFollow, .sessionOverlaySearch, .sessionOverlayChanges]
+                                                   .sessionOverlayFollow, .sessionOverlaySearch, .sessionOverlayChanges,
+                                                   .sessionOverlayFiles, .sessionOverlayWrap, .sessionOverlayExpand]
     // these take their window as `target`, not as `args.window`
     private static let windowTargeted: Set<Command> = [.windowClose, .windowSelect, .windowRename, .windowDelete,
                                                        .windowResize, .windowMove, .windowZoom, .windowFullscreen,
                                                        .windowMinimize]
     // app-global commands that refuse any window
     private static let windowless: Set<Command> = [.hooksReload, .hooksList, .browserClear, .browserLinks,
-                                                   .recentList, .recentClear]
+                                                   .recentList, .recentClear, .updateCheck]
     // their ids name something else (a remote session, dashboard cells), and they still land in a local window
     private static let placedLocally: Set<Command> = [.zmxAttach, .zmxAttachGroup, .dashboard, .recentOpen]
 

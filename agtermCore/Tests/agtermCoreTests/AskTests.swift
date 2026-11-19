@@ -31,6 +31,25 @@ struct AskTests {
         #expect(registry.result(for: ask.id)?.windowID == windowID)
     }
 
+    @Test func anAnswerPastTheDeadlineResolvesCancelledBeforeAnyExpiryRuns() {
+        let session = Session(initialCwd: "/tmp")
+        var ask = PendingAsk(id: UUID().uuidString, title: "Continue?", buttons: buttons(count: 1))
+        ask.deadline = Date().addingTimeInterval(-1)
+        #expect(session.openAsk(ask))
+        AskRegistry.shared.register(id: ask.id, owner: .session(session.id, window: UUID()))
+
+        #expect(session.resolveAsk(id: ask.id, ControlAskResult(result: .answered, id: "button-0", label: "Button 0", index: 0)))
+
+        #expect(AskRegistry.shared.result(for: ask.id)?.result == ControlAskResult(result: .cancelled))
+    }
+
+    @Test func anAnchoredCopyKeepsTheDeadline() {
+        var ask = PendingAsk(id: UUID().uuidString, title: "Continue?", buttons: buttons(count: 1), style: .gui)
+        ask.deadline = Date(timeIntervalSince1970: 42)
+
+        #expect(ask.anchored(at: nil).deadline == ask.deadline)
+    }
+
     @Test func sessionResolutionRetainsItsRegisteredOutcomeSynchronously() {
         let registry = AskRegistry.shared
         let previousResolver = registry.resolveOwner
@@ -541,7 +560,8 @@ struct AskTests {
     }
 }
 
-struct OtherAnswer: Sendable {
+// a 65 KB argument line made CI's log drop every later line of the run, failures included
+struct OtherAnswer: Sendable, CustomTestStringConvertible {
     let multiple: Bool
     let selected: [String]
     let text: String?
@@ -552,5 +572,10 @@ struct OtherAnswer: Sendable {
         self.selected = selected
         self.text = text
         self.accepted = accepted
+    }
+
+    var testDescription: String {
+        let shown = text.map { $0.count > 80 ? "\($0.count) characters" : $0.debugDescription } ?? "nil"
+        return "multiple: \(multiple), selected: \(selected), text: \(shown), accepted: \(accepted)"
     }
 }

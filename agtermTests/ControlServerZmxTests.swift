@@ -3,6 +3,7 @@ import XCTest
 @testable import agterm
 import agtermCore
 import AgtermResponsibility
+import os
 
 /// Hosted coverage for the zmx group's app arms: the join against the live claim walk, and the refusals
 /// that must not read as an empty inventory.
@@ -31,7 +32,7 @@ final class ControlServerZmxTests: XCTestCase {
         let probe = LiveAttributionProbe(responsible: { pid in
             lookups[pid, default: 0] += 1
             return .live(pid == 100 ? 100 : root)
-        }, hostPID: { _ in 100 }, appPID: 300)
+        }, hosts: { _ in .current(100) }, appPID: 300)
         let server = ControlServer(library: library, actions: AppActions(library: library), settingsModel: settingsModel,
                                    identity: AppIdentity(version: "test", commit: "test"), zmxForegroundResolver: resolver, zmxClient: client,
                                    liveAttributionProbe: probe, socketPath: stateDir.appendingPathComponent("tree.sock").path)
@@ -75,18 +76,30 @@ final class ControlServerZmxTests: XCTestCase {
         let baseline = try XCTUnwrap(Responsibility.system.responsibleProcess(of: getpid()))
         let client = ZmxClient(executablePath: fixture.zmx.path, socketDirectory: try XCTUnwrap(fixture.environment["ZMX_DIR"]))
         let probe = LiveAttributionProbe(appPID: baseline)
-        XCTAssertEqual(probe.hostPID(client.endpoint), host)
+        let endpoint = URL(fileURLWithPath: fixture.paths.pidfile).deletingLastPathComponent().lastPathComponent
+        XCTAssertEqual(LiveAttributionProbe.publishedHosts(client.endpoint), .init(pids: [endpoint: host], current: endpoint))
         do {
             defer { try? String(host).write(toFile: fixture.paths.pidfile, atomically: false, encoding: .utf8) }
             try String(getpid()).write(toFile: fixture.paths.pidfile, atomically: false, encoding: .utf8)
-            XCTAssertNil(probe.hostPID(client.endpoint))
+            var written = [timeval(tv_sec: 1000, tv_usec: 0), timeval(tv_sec: 1000, tv_usec: 0)]
+            XCTAssertEqual(utimes(fixture.paths.pidfile, &written), 0)
+            XCTAssertEqual(LiveAttributionProbe.publishedHosts(client.endpoint).pids, [:])
         }
         let server = ControlServer(library: library, actions: AppActions(library: library), settingsModel: settingsModel,
                                    identity: AppIdentity(version: "test", commit: "test"), zmxClient: client,
                                    liveAttributionProbe: probe, socketPath: stateDir.appendingPathComponent("real-tree.sock").path)
         var nodes = server.buildTree(in: store).workspaces.flatMap(\.sessions)
         XCTAssertEqual(nodes.first { $0.id == supervised.id.uuidString }?.liveAttribution, "supervisor")
+        XCTAssertNil(nodes.first { $0.id == supervised.id.uuidString }?.liveHostStale)
         XCTAssertEqual(nodes.first { $0.id == bare.id.uuidString }?.liveAttribution, "app")
+        let keyed = URL(fileURLWithPath: fixture.paths.pidfile).deletingLastPathComponent()
+        let legacy = keyed.deletingLastPathComponent().appendingPathComponent(SessionHost.legacyEndpoint)
+        try FileManager.default.moveItem(at: keyed, to: legacy)
+        nodes = server.buildTree(in: store).workspaces.flatMap(\.sessions)
+        try FileManager.default.moveItem(at: legacy, to: keyed)
+        XCTAssertEqual(nodes.first { $0.id == supervised.id.uuidString }?.liveAttribution, "supervisor")
+        XCTAssertEqual(nodes.first { $0.id == supervised.id.uuidString }?.liveHostStale, true)
+        XCTAssertNil(nodes.first { $0.id == bare.id.uuidString }?.liveHostStale)
         XCTAssertEqual(kill(host, SIGKILL), 0)
         let deadline = Date().addingTimeInterval(3)
         repeat {
@@ -96,6 +109,67 @@ final class ControlServerZmxTests: XCTestCase {
         } while Date() < deadline
         XCTAssertEqual(nodes.first { $0.id == supervised.id.uuidString }?.liveAttribution, "orphaned")
         XCTAssertEqual(nodes.first { $0.id == bare.id.uuidString }?.liveAttribution, "app")
+    }
+
+    func testTreeMarksAPaneOnAnotherHostStaleOnlyWhileTheCurrentKeyIsKnown() throws {
+        let store = try XCTUnwrap(library.activeStore)
+        let workspace = try XCTUnwrap(store.workspaces.first)
+        let session = try XCTUnwrap(store.addSession(toWorkspace: workspace.id, cwd: "/tmp"))
+        session.surface = GhosttySurfaceView(workingDirectory: "/tmp", backedByZmx: true)
+        let row = "name=\(ZmxSupport.daemonName(for: session.paneIdentity))\tpid=200\tclients=1"
+        let client = ZmxClient(executablePath: "/tmp/zmx", socketDirectory: "/tmp/zmx-dir", runner: { _ in row })
+        let resolver = ZmxForegroundResolver(leaderProvider: { _ in [:] }, leaderProbe: { .foreground($0) })
+        func node(current: String?) throws -> ControlSessionNode {
+            let probe = LiveAttributionProbe(responsible: { $0 == 200 ? .live(101) : .live($0) },
+                                             hosts: { _ in .init(pids: ["current": 100, "earlier": 101], current: current) },
+                                             appPID: 300)
+            let server = ControlServer(library: library, actions: AppActions(library: library), settingsModel: settingsModel,
+                                       identity: AppIdentity(version: "test", commit: "test"), zmxForegroundResolver: resolver,
+                                       zmxClient: client, liveAttributionProbe: probe,
+                                       socketPath: stateDir.appendingPathComponent("stale.sock").path)
+            return try XCTUnwrap(server.buildTree(in: store).workspaces.flatMap(\.sessions).first { $0.id == session.id.uuidString })
+        }
+        XCTAssertEqual(try node(current: "current").liveAttribution, "supervisor")
+        XCTAssertEqual(try node(current: "current").liveHostStale, true)
+        XCTAssertEqual(try node(current: "missing").liveHostStale, true)
+        XCTAssertEqual(try node(current: nil).liveAttribution, "supervisor")
+        XCTAssertNil(try node(current: nil).liveHostStale)
+    }
+
+    func testPublishedHostTakesAPidStartedBeforeThePidfileWasWritten() throws {
+        try FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
+        let pidfile = stateDir.appendingPathComponent("pid").path
+        try "\(getpid())\n".write(toFile: pidfile, atomically: false, encoding: .utf8)
+        XCTAssertEqual(LiveAttributionProbe.publishedHost(pidfile: pidfile), getpid())
+        var written = [timeval(tv_sec: 1000, tv_usec: 0), timeval(tv_sec: 1000, tv_usec: 0)]
+        XCTAssertEqual(utimes(pidfile, &written), 0)
+        XCTAssertNil(LiveAttributionProbe.publishedHost(pidfile: pidfile))
+        for content in ["", "garbage", "0", "-5", "2147483647"] {
+            try content.write(toFile: pidfile, atomically: false, encoding: .utf8)
+            XCTAssertNil(LiveAttributionProbe.publishedHost(pidfile: pidfile), content)
+        }
+        XCTAssertNil(LiveAttributionProbe.publishedHost(pidfile: stateDir.appendingPathComponent("absent").path))
+    }
+
+    func testHelperEndpointKeyRunsOncePerHelperFileAndRetriesAFailure() throws {
+        try FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
+        let helper = stateDir.appendingPathComponent("agterm-session-host")
+        try Data("one".utf8).write(to: helper)
+        let answers = OSAllocatedUnfairLock(initialState: ["0a1b2c3d4e5f-100003", "garbage", "0a1b2c3d4e5f-100004"])
+        let runs = OSAllocatedUnfairLock(initialState: 0)
+        let cache = HelperEndpointKey(run: { _ in
+            runs.withLock { $0 += 1 }
+            return answers.withLock { $0.removeFirst() }
+        })
+        XCTAssertEqual(cache.key(helper: helper.path), "0a1b2c3d4e5f-100003")
+        XCTAssertEqual(cache.key(helper: helper.path), "0a1b2c3d4e5f-100003")
+        XCTAssertEqual(runs.withLock { $0 }, 1)
+        try FileManager.default.removeItem(at: helper)
+        try Data("two".utf8).write(to: helper)
+        XCTAssertNil(cache.key(helper: helper.path))
+        XCTAssertEqual(cache.key(helper: helper.path), "0a1b2c3d4e5f-100004")
+        XCTAssertEqual(runs.withLock { $0 }, 3)
+        XCTAssertNil(cache.key(helper: stateDir.appendingPathComponent("absent").path))
     }
 
     private var stateDir: URL!
@@ -254,6 +328,25 @@ final class ControlServerZmxTests: XCTestCase {
         XCTAssertEqual(destinationStore.selectedSessionID?.uuidString, id)
         XCTAssertEqual(frontStore.workspaces.flatMap(\.sessions).count, originalCount)
         XCTAssertEqual(library.activeWindowID, front)
+    }
+
+    func testAnAttachIntoABackgroundWindowIsOnDiskWhenItReturns() async throws {
+        let front = try XCTUnwrap(library.activeWindowID)
+        let destination = library.newWindow(name: "other").id
+        _ = try XCTUnwrap(library.loadStore(for: destination))
+        library.frontmostWindowID = front
+        let runner = FakeRemoteRunner(result: RemoteCommandResult(status: 0, stdout: Self.splitProjection, stderr: ""))
+        let server = makeServer(list: "", remoteRunner: runner)
+
+        let dispatched = await ControlDispatcher(actions: server).dispatch(ControlRequest(cmd: .zmxAttach, target: "s1",
+            args: ControlArgs(host: "buildbox", window: destination.uuidString)))
+
+        let id = try XCTUnwrap(dispatched?.result?.id)
+        let saved = PersistenceStore(directory: stateDir.appendingPathComponent("windows"), fileName: "\(destination.uuidString).json").load()
+        let attached = try XCTUnwrap(saved.workspaces.flatMap { $0.attached ?? [] }.first)
+        XCTAssertEqual(attached.session.id.uuidString, id)
+        XCTAssertEqual(attached.origin.host, "buildbox")
+        XCTAssertEqual(attached.origin.panes.count, 2)
     }
 
     func testAttachRefusesAClosedOrUnknownDestination() async throws {
@@ -421,6 +514,30 @@ final class ControlServerZmxTests: XCTestCase {
         XCTAssertEqual(store.workspace(forSession: companion)?.id, home)
     }
 
+    func testEveryAttachedRowReportsItsOriginSessionIdInTheTreeAndItsEdges() async throws {
+        let server = makeServer(list: "", remoteRunner: FakeRemoteRunner(result: Self.groupProjection))
+        let store = try XCTUnwrap(library.activeStore)
+        let anchor = try XCTUnwrap(library.readEvents(ControlEventReadOptions(cursor: nil, kinds: nil, limit: 100)).result?.events)
+
+        let parentReply = await server.attachRemoteSession(host: "buildbox", session: "s1")
+        let companionReply = await server.attachRemoteSession(host: "buildbox", session: "c1")
+        let parent = try XCTUnwrap(parentReply.result?.id)
+        let companion = try XCTUnwrap(companionReply.result?.id)
+        let tree = try XCTUnwrap(server.controlTree(window: nil).result?.tree)
+        let nodes = tree.workspaces.flatMap(\.sessions)
+        XCTAssertEqual(nodes.first { $0.id == parent }?.remoteSessionID, "s1")
+        XCTAssertEqual(nodes.first { $0.id == companion }?.remoteSessionID, "c1")
+        XCTAssertTrue(nodes.filter { $0.remoteHost == nil }.allSatisfy { $0.remoteSessionID == nil })
+        store.closeSession(try XCTUnwrap(UUID(uuidString: companion)))
+
+        let edges = try XCTUnwrap(library.readEvents(ControlEventReadOptions(
+            cursor: ControlEventCursor(run: anchor.run, after: anchor.next), kinds: [.remoteOpened, .remoteClosed], limit: 100
+        )).result?.events).items
+        XCTAssertEqual(edges.map(\.kind), [.remoteOpened, .remoteOpened, .remoteClosed])
+        XCTAssertEqual(edges.map(\.session), [parent, companion, companion])
+        XCTAssertEqual(edges.map(\.payload.remoteSessionID), ["s1", "c1", "c1"])
+    }
+
     func testACompanionWithNoAttachedParentStandsAlone() async throws {
         let server = makeServer(list: "", remoteRunner: FakeRemoteRunner(result: Self.groupProjection))
 
@@ -501,6 +618,23 @@ final class ControlServerZmxTests: XCTestCase {
         XCTAssertEqual(state.binding.localPane(forRemote: remoteRight), created.splitPaneIdentity)
         XCTAssertNotNil(created.splitPaneIdentity)
         XCTAssertEqual(state.connection, .connecting)
+        XCTAssertFalse(state.binding.originHeadless)
+    }
+
+    func testAttachingToAHeadlessOriginMarksTheRowsBinding() async throws {
+        let advertising = Self.splitProjection.replacingOccurrences(of: #"{"remote":{"#,
+                                                                    with: #"{"remote":{"presentation":1,"headless":true,"#)
+        let runner = FakeRemoteRunner(result: RemoteCommandResult(status: 0, stdout: advertising, stderr: ""))
+        let server = makeServer(list: "", remoteRunner: runner)
+        server.remoteTransport = RecordingTransport()
+        let store = try XCTUnwrap(library.activeStore)
+
+        let response = await server.attachRemoteSession(host: "buildbox", session: "s1")
+
+        XCTAssertTrue(response.ok)
+        let created = try XCTUnwrap(store.workspaces.flatMap(\.sessions).first { $0.remoteHost != nil })
+        XCTAssertFalse(store.catalogMirrored)
+        XCTAssertEqual(created.remotePresentation?.binding.originHeadless, true)
     }
 
     func testAttachingToAnOriginThatPredatesPresentationReadsUnsupported() async throws {
@@ -519,7 +653,7 @@ final class ControlServerZmxTests: XCTestCase {
     }
 
     // attach shipped with no focus call, so a teleported session opened with the keyboard still elsewhere
-    func testAttachFocusesTheSplitPaneOnceItsSurfacesMaterialize() async throws {
+    func testAttachFocusesThePrimaryPaneOnceItsSurfacesMaterialize() async throws {
         let runner = FakeRemoteRunner(result: RemoteCommandResult(status: 0, stdout: Self.splitProjection,
                                                                   stderr: ""))
         let server = makeServer(list: "", remoteRunner: runner)
@@ -543,12 +677,33 @@ final class ControlServerZmxTests: XCTestCase {
             created.surface = primary
             created.splitSurface = split
         }
-        for _ in 0..<20 where window.firstResponder !== split {
+        for _ in 0..<20 where window.firstResponder !== primary {
             try? await Task.sleep(nanoseconds: 30_000_000)
         }
         await realize.value
 
-        XCTAssertTrue(window.firstResponder === split)
+        XCTAssertTrue(window.firstResponder === primary)
+        XCTAssertFalse(created.splitFocused)
+    }
+
+    func testAnUnselectedAttachStoresThePrimaryPaneAsFocused() async throws {
+        let runner = FakeRemoteRunner(result: RemoteCommandResult(status: 0, stdout: Self.splitProjection,
+                                                                  stderr: ""))
+        let server = makeServer(list: "", remoteRunner: runner)
+        let store = try XCTUnwrap(library.activeStore)
+        let listing = await server.remoteTree(host: "buildbox")
+        let tree = try XCTUnwrap(listing.result?.remote)
+        let remote = try XCTUnwrap(tree.sessions.first { $0.id == "s1" })
+        let workspace = try XCTUnwrap(store.currentWorkspaceID)
+
+        let response = server.attach(remote, from: tree, host: "buildbox",
+                                     placement: ControlServer.RemotePlacement(store: store, workspace: workspace,
+                                                                              select: false))
+
+        XCTAssertTrue(response.ok)
+        let created = try XCTUnwrap(store.workspaces.flatMap(\.sessions).first { $0.remoteHost != nil })
+        XCTAssertTrue(created.hasSplit)
+        XCTAssertFalse(created.splitFocused)
     }
 
     func testListReportsTheEndpointOfTheInjectedClient() throws {
@@ -1165,4 +1320,8 @@ private final class RecordingTransport: RemotePresentationTransport {
         launches.append(argv)
         return Link()
     }
+}
+
+extension LiveAttributionProbe.Hosts {
+    static func current(_ pid: pid_t) -> Self { .init(pids: ["current": pid], current: "current") }
 }

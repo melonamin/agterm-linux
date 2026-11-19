@@ -41,10 +41,7 @@ public enum TerminfoInstall {
     }
 
     /// How the remote side ended: ssh's exit status, or the signal that killed it.
-    public enum Outcome: Equatable, Sendable {
-        case exited(Int32)
-        case signaled(Int32)
-    }
+    public typealias Outcome = ForegroundSpawn.Outcome
 
     /// Where the entry is looked up, in order. The database next to the running CLI comes first because
     /// the bundle is the only source whose entry is known to match this build; `TERMINFO` from the
@@ -56,13 +53,14 @@ public enum TerminfoInstall {
     static func candidateDirectories(clientPath: String?, environment: [String: String]) -> [String] {
         var candidates: [String] = []
         if let clientPath {
-            #if canImport(Glibc)
-            let bin = (clientPath as NSString).deletingLastPathComponent
-            let prefix = (bin as NSString).deletingLastPathComponent
+            let directory = (clientPath as NSString).deletingLastPathComponent
+            #if os(Linux)
+            // agterm-server's install keeps its resources beside the CLI
+            candidates.append((directory as NSString).appendingPathComponent("resources/terminfo"))
+            let prefix = (directory as NSString).deletingLastPathComponent
             candidates.append((prefix as NSString).appendingPathComponent("share/terminfo"))
             #else
-            let macOS = (clientPath as NSString).deletingLastPathComponent
-            let contents = (macOS as NSString).deletingLastPathComponent
+            let contents = (directory as NSString).deletingLastPathComponent
             candidates.append((contents as NSString).appendingPathComponent("Resources/terminfo"))
             #endif
         }
@@ -109,6 +107,11 @@ public enum TerminfoInstall {
     /// expected and answered on the terminal. The script runs through a quoted `/bin/sh -c` because sshd
     /// hands the command to the account's shell, which need not parse POSIX syntax.
     public static func installCommand(_ connection: Connection, ssh: String = "ssh") throws -> [String] {
+        try sshCommand(connection, ssh: ssh) + [CommandRestore.shellQuotedLine(["/bin/sh", "-c", remoteScript])]
+    }
+
+    /// sshCommand is the ssh invocation up to and including the destination, for any command run this way.
+    static func sshCommand(_ connection: Connection, ssh: String) throws -> [String] {
         let destination = connection.destination
         guard RemoteSession.isPlain(destination), !destination.hasPrefix("-") else { throw Failure.invalidDestination }
         var argv = [ssh] + executionOptions
@@ -117,7 +120,6 @@ public enum TerminfoInstall {
         if let jump = connection.jump { argv += ["-J", jump] }
         if let config = connection.config { argv += ["-F", config] }
         argv.append(destination)
-        argv.append(CommandRestore.shellQuotedLine(["/bin/sh", "-c", remoteScript]))
         return argv
     }
 
@@ -157,159 +159,12 @@ public enum TerminfoInstall {
         return source
     }
 
-    /// `posix_spawnp` rather than `Process`, which puts its child in a new process group: ssh reads its
-    /// password and host-key prompts from the controlling tty, and a background group doing that is
-    /// stopped by SIGTTIN, leaving the CLI waiting on a child that can never answer. Spawned this way the
-    /// child stays in the caller's foreground group and the prompt works.
-    #if canImport(Darwin)
+    /// ssh runs in the caller's foreground process group so its prompts work; see `ForegroundSpawn`.
     private static func install(argv: [String], source: Data, environment: [String: String]) throws -> Outcome {
-        var fds: [Int32] = [-1, -1]
-        // pipe reports through errno, unlike the posix_spawn calls that return the code itself
-        guard pipe(&fds) == 0 else { throw Failure.spawnFailed(operation: "pipe", errno: errno) }
-        let readEnd = fds[0]
-        let writeEnd = fds[1]
-
-        // the child gets stdin from the pipe and inherits stdout and stderr, and nothing else: another
-        // thread spawning between pipe() and close() would otherwise hand its child this pipe's write
-        // end, and ssh would wait for an EOF that only arrives when that unrelated child exits
-        var attributes: posix_spawnattr_t?
-        try check(posix_spawnattr_init(&attributes), "posix_spawnattr_init")
-        defer { posix_spawnattr_destroy(&attributes) }
-        // the child also inherits the spawning thread's signal mask and ignored handlers; a caller that
-        // blocks SIGTERM would leave ssh unkillable by it
-        var noSignals = sigset_t()
-        sigemptyset(&noSignals)
-        var allSignals = sigset_t()
-        sigfillset(&allSignals)
-        try check(posix_spawnattr_setsigmask(&attributes, &noSignals), "posix_spawnattr_setsigmask")
-        try check(posix_spawnattr_setsigdefault(&attributes, &allSignals), "posix_spawnattr_setsigdefault")
-        let flags = POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF
-        try check(posix_spawnattr_setflags(&attributes, Int16(flags)), "posix_spawnattr_setflags")
-        var actions: posix_spawn_file_actions_t?
-        try check(posix_spawn_file_actions_init(&actions), "posix_spawn_file_actions_init")
-        defer { posix_spawn_file_actions_destroy(&actions) }
-        try check(posix_spawn_file_actions_adddup2(&actions, readEnd, STDIN_FILENO), "posix_spawn_file_actions_adddup2")
-        try check(posix_spawn_file_actions_addinherit_np(&actions, STDOUT_FILENO), "posix_spawn_file_actions_addinherit_np")
-        try check(posix_spawn_file_actions_addinherit_np(&actions, STDERR_FILENO), "posix_spawn_file_actions_addinherit_np")
-
-        var arguments = try copyStrings(argv)
-        defer { arguments.forEach { free($0) } }
-        var variables = try copyStrings(environment.map { "\($0.key)=\($0.value)" })
-        defer { variables.forEach { free($0) } }
-        var pid: pid_t = 0
-        let spawned = argv[0].withCString { path in
-            arguments.withUnsafeMutableBufferPointer { args in
-                variables.withUnsafeMutableBufferPointer { vars in
-                    posix_spawnp(&pid, path, &actions, &attributes, args.baseAddress, vars.baseAddress)
-                }
-            }
+        do {
+            return try ForegroundSpawn.run(argv, input: .data(source), environment: environment)
+        } catch let failure as ForegroundSpawn.Failure {
+            throw Failure.spawnFailed(operation: failure.operation, errno: failure.errno)
         }
-        close(readEnd)
-        do { try check(spawned, "posix_spawnp") } catch { close(writeEnd); throw error }
-
-        // an ssh that fails before reading would otherwise SIGPIPE the CLI before it can report; the
-        // EPIPE the write gets instead is dropped because ssh's own stderr and status say what happened
-        _ = fcntl(writeEnd, F_SETNOSIGPIPE, 1)
-        source.withUnsafeBytes { buffer in
-            var offset = 0
-            while offset < buffer.count {
-                let written = write(writeEnd, buffer.baseAddress! + offset, buffer.count - offset)
-                if written < 0 && errno == EINTR { continue }
-                if written <= 0 { break }
-                offset += written
-            }
-        }
-        close(writeEnd)
-
-        var status: Int32 = 0
-        while waitpid(pid, &status, 0) < 0 {
-            guard errno == EINTR else { throw Failure.spawnFailed(operation: "waitpid", errno: errno) }
-        }
-        let signal = status & 0x7f
-        return signal == 0 ? .exited((status >> 8) & 0xff) : .signaled(signal)
-    }
-    #elseif canImport(Glibc)
-    /// A close-on-exec socket pair supplies stdin and lets the parent use MSG_NOSIGNAL when ssh exits
-    /// before reading. The child stays in the caller's foreground process group for password prompts.
-    private static func install(argv: [String], source: Data, environment: [String: String]) throws -> Outcome {
-        var fds: [Int32] = [-1, -1]
-        let socketType = Int32(SOCK_STREAM.rawValue) | Int32(SOCK_CLOEXEC.rawValue)
-        guard socketpair(AF_UNIX, socketType, 0, &fds) == 0 else {
-            throw Failure.spawnFailed(operation: "socketpair", errno: errno)
-        }
-        var readEnd = fds[0]
-        var writeEnd = fds[1]
-        defer {
-            if readEnd >= 0 { close(readEnd) }
-            if writeEnd >= 0 { close(writeEnd) }
-        }
-
-        var attributes = posix_spawnattr_t()
-        try check(posix_spawnattr_init(&attributes), "posix_spawnattr_init")
-        defer { posix_spawnattr_destroy(&attributes) }
-        var noSignals = sigset_t()
-        sigemptyset(&noSignals)
-        var allSignals = sigset_t()
-        sigfillset(&allSignals)
-        try check(posix_spawnattr_setsigmask(&attributes, &noSignals), "posix_spawnattr_setsigmask")
-        try check(posix_spawnattr_setsigdefault(&attributes, &allSignals), "posix_spawnattr_setsigdefault")
-        let flags = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF
-        try check(posix_spawnattr_setflags(&attributes, Int16(flags)), "posix_spawnattr_setflags")
-        var actions = posix_spawn_file_actions_t()
-        try check(posix_spawn_file_actions_init(&actions), "posix_spawn_file_actions_init")
-        defer { posix_spawn_file_actions_destroy(&actions) }
-        try check(posix_spawn_file_actions_adddup2(&actions, readEnd, STDIN_FILENO), "posix_spawn_file_actions_adddup2")
-        try check(posix_spawn_file_actions_addclosefrom_np(&actions, 3), "posix_spawn_file_actions_addclosefrom_np")
-
-        var arguments = try copyStrings(argv)
-        defer { arguments.forEach { free($0) } }
-        var variables = try copyStrings(environment.map { "\($0.key)=\($0.value)" })
-        defer { variables.forEach { free($0) } }
-        var pid: pid_t = 0
-        let spawned = argv[0].withCString { path in
-            arguments.withUnsafeMutableBufferPointer { args in
-                variables.withUnsafeMutableBufferPointer { vars in
-                    posix_spawnp(&pid, path, &actions, &attributes, args.baseAddress!, vars.baseAddress!)
-                }
-            }
-        }
-        close(readEnd)
-        readEnd = -1
-        try check(spawned, "posix_spawnp")
-
-        source.withUnsafeBytes { buffer in
-            var offset = 0
-            while offset < buffer.count {
-                let written = Glibc.send(writeEnd, buffer.baseAddress! + offset,
-                                         buffer.count - offset, Int32(MSG_NOSIGNAL))
-                if written < 0 && errno == EINTR { continue }
-                if written <= 0 { break }
-                offset += written
-            }
-        }
-        close(writeEnd)
-        writeEnd = -1
-
-        var status: Int32 = 0
-        while waitpid(pid, &status, 0) < 0 {
-            guard errno == EINTR else { throw Failure.spawnFailed(operation: "waitpid", errno: errno) }
-        }
-        let signal = status & 0x7f
-        return signal == 0 ? .exited((status >> 8) & 0xff) : .signaled(signal)
-    }
-    #endif
-
-    private static func check(_ result: Int32, _ operation: String) throws {
-        guard result == 0 else { throw Failure.spawnFailed(operation: operation, errno: result) }
-    }
-
-    private static func copyStrings(_ values: [String]) throws -> [UnsafeMutablePointer<CChar>?] {
-        var strings = values.map { strdup($0) }
-        guard strings.allSatisfy({ $0 != nil }) else {
-            strings.forEach { free($0) }
-            throw Failure.spawnFailed(operation: "strdup", errno: ENOMEM)
-        }
-        strings.append(nil)
-        return strings
     }
 }

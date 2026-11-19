@@ -159,7 +159,6 @@ struct OverlayCommandsTests {
         ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--companion"],
         ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--block"],
         ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--wait"],
-        ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--navigation"],
         ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--js"],
         ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--chromeless"],
         ["session", "overlay", "open", "--markdown", "/tmp/r.md", "--persistent"],
@@ -201,6 +200,14 @@ struct OverlayCommandsTests {
         #expect(req.args?.cwd == nil)
         #expect(req.args?.sizePercent == nil)
         #expect(req.args?.follow == true)
+    }
+
+    @Test func markdownOpenTakesNavigation() throws {
+        let req = try request(["session", "overlay", "open", "--markdown", "/tmp/r.md", "--navigation"])
+        #expect(req.args?.markdownFile == "/tmp/r.md")
+        #expect(req.args?.navigation == true)
+        #expect(rejects(["session", "overlay", "open", "--markdown", "/tmp/r.md", "--navigation", "--companion"]))
+        #expect(rejects(["session", "overlay", "open", "--markdown", "/tmp/r.md", "--navigation", "--chromeless"]))
     }
 
     @Test func markdownOpenSendsTheResolvedPathInItsOwnField() throws {
@@ -256,6 +263,36 @@ struct OverlayCommandsTests {
         #expect(rejects(["session", "overlay", "follow", "on", "--pane", "scratch"]))
     }
 
+    @Test(arguments: ["on", "off", "toggle"])
+    func wrapSendsItsModePaneAndTarget(_ mode: String) throws {
+        let req = try request(["session", "overlay", "wrap", mode, "--pane", "right", "--target", "s"])
+        #expect(req.cmd == .sessionOverlayWrap)
+        #expect(req.target == "s")
+        #expect(req.args?.mode == mode)
+        #expect(req.args?.pane == "right")
+    }
+
+    @Test func wrapRefusesABadModeOrPane() {
+        #expect(rejects(["session", "overlay", "wrap", "maybe"]))
+        #expect(rejects(["session", "overlay", "wrap"]))
+        #expect(rejects(["session", "overlay", "wrap", "on", "--pane", "scratch"]))
+    }
+
+    @Test(arguments: ["on", "off", "toggle"])
+    func expandSendsItsModePaneAndTarget(_ mode: String) throws {
+        let req = try request(["session", "overlay", "expand", mode, "--pane", "right", "--target", "s"])
+        #expect(req.cmd == .sessionOverlayExpand)
+        #expect(req.target == "s")
+        #expect(req.args?.mode == mode)
+        #expect(req.args?.pane == "right")
+    }
+
+    @Test func expandRefusesABadModeOrPane() {
+        #expect(rejects(["session", "overlay", "expand", "maybe"]))
+        #expect(rejects(["session", "overlay", "expand"]))
+        #expect(rejects(["session", "overlay", "expand", "on", "--pane", "scratch"]))
+    }
+
     @Test(arguments: [
         (["main()"], "main()" as String?, nil as String?),
         (["--next"], nil as String?, "next" as String?),
@@ -294,6 +331,20 @@ struct OverlayCommandsTests {
         #expect(rejects(["session", "overlay", "changes", "--next", "--pane", "scratch"]))
     }
 
+    @Test func filesSendsItsTargetPaneAndSession() throws {
+        let req = try request(["session", "overlay", "files", "--go", "src/b.go", "--pane", "right", "--target", "s"])
+        #expect(req.cmd == .sessionOverlayFiles)
+        #expect(req.target == "s")
+        #expect(req.args?.to == "src/b.go")
+        #expect(req.args?.pane == "right")
+    }
+
+    @Test func filesRefusesAMissingOrEmptyTarget() {
+        #expect(rejects(["session", "overlay", "files"]))
+        #expect(rejects(["session", "overlay", "files", "--go", ""]))
+        #expect(rejects(["session", "overlay", "files", "--go", "2", "--pane", "scratch"]))
+    }
+
     @Test func openHelpTellsFollowFileFromFollow() {
         let open = Session.Overlay.Open.helpMessage(columns: 400)
         #expect(open.contains("--follow-file"))
@@ -316,6 +367,41 @@ struct OverlayCommandsTests {
         #expect(req.target == nil)
         #expect(req.args?.page == "P1")
         #expect(rejects(["session", "overlay", "result", "--page", "P1", "--pane", "left"]))
+    }
+
+    @Test func pageSendsThePageSessionCommandWithItsSourceAndFollow() throws {
+        let file = try request(["session", "overlay", "open", "--html", "/tmp/a/./r.html", "--cwd", "/tmp/a/", "--page", "--follow",
+                                "--js", "--background-color", "#102030", "--target", "p1", "--window", "win"])
+        #expect(file == ControlRequest(cmd: .sessionPage, target: "p1", args: ControlArgs(
+            cwd: "/tmp/a", follow: true, window: "win", color: "#102030", html: "/tmp/a/r.html", javascript: true)))
+        let url = try request(["session", "overlay", "open", "--url", "https://example.com/", "--page", "--persistent"])
+        #expect(url.cmd == .sessionPage)
+        #expect(url.target == "active")
+        #expect(url.args?.url == "https://example.com/")
+        #expect(url.args?.persistent == true)
+        #expect(url.args?.follow == nil)
+        #expect(try request(["session", "overlay", "open", "--html", "/tmp/r.html", "--page", "--block"]).cmd == .sessionPage)
+    }
+
+    @Test(arguments: [
+        ["--html", "/tmp/r.html", "--page", "--companion"],
+        ["revdiff", "--page"],
+        ["--image", "/tmp/a.png", "--page"],
+        ["--markdown", "/tmp/r.md", "--page"],
+        ["--text", "/tmp/a.go", "--page"],
+        ["--html", "/tmp/r.html", "--page", "--pane", "right"],
+        ["--html", "/tmp/r.html", "--page", "--size-percent", "50"],
+        ["--html", "/tmp/r.html", "--page", "--size-percent", "50", "--width", "300"],
+        ["--url", "http://localhost:5173/", "--page", "--block"],
+    ])
+    func pageRefusesAnythingButAFullSizeFileOrURLPageAndCompanion(_ extra: [String]) {
+        #expect(rejects(["session", "overlay", "open"] + extra))
+    }
+
+    @Test func openHelpNamesTheNewRowForFollowAndThePageFlag() {
+        let open = Session.Overlay.Open.helpMessage(columns: 400)
+        #expect(open.contains("--page"))
+        #expect(open.contains("with --companion or --page, the new row"))
     }
 
     @Test func aPageMayBlockButAUrlMayNot() throws {

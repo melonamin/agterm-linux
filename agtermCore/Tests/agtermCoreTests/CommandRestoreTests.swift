@@ -3,6 +3,26 @@ import Testing
 @testable import agtermCore
 
 struct CommandRestoreTests {
+    @Test(arguments: ["/bin/sh", "/bin/bash", "/bin/zsh", "/bin/tcsh", "/usr/bin/fish",
+                      "/opt/homebrew/bin/fish", "/usr/local/bin/fish"].filter(FileManager.default.isExecutableFile))
+    func accountShellQuotingPreservesArguments(shell: String) throws {
+        let arguments = ["a\\\\b", "tail\\", "it's", "", "two words", "$HOME; echo unexpected",
+                         "'\u{301}", "\u{600}'", "'\u{200D}"]
+        let command = (["/usr/bin/printf", "%s\\0"] + arguments)
+            .map(CommandRestore.accountShellQuoted).joined(separator: " ")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: shell)
+        process.arguments = ["-c", command]
+        let output = Pipe()
+        process.standardOutput = output
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 0)
+        #expect(data == Data((arguments.joined(separator: "\0") + "\0").utf8))
+    }
+
     /// Builds a synthetic `KERN_PROCARGS2` blob: host-order argc, NUL-terminated exec path, `padding`
     /// extra NULs, then each arg NUL-terminated.
     private func blob(argc: Int32, execPath: String, padding: Int, args: [String]) -> Data {
@@ -164,6 +184,24 @@ struct CommandRestoreTests {
         #expect(CommandRestore.shouldRestore(argv: ["echo", "naïve — ✓"], denylist: []))
     }
 
+    @Test(arguments: [
+        ("/bin/tcsh", ["grep", "!needle", "log"], false),
+        ("/bin/csh", ["echo", "fix!x"], false),
+        ("tcsh", ["printf", "%s", "!"], false),
+        ("/bin/tcsh", ["grep", "needle", "log"], true),
+        ("/bin/zsh", ["grep", "!needle", "log"], true),
+        ("/opt/homebrew/bin/fish", ["grep", "!needle", "log"], true),
+        ("/bin/bash", ["grep", "!needle", "log"], true),
+    ] as [(String, [String], Bool)])
+    func shouldRestoreRefusesABangOnlyForACshFamilyReceiver(shell: String, argv: [String], expected: Bool) {
+        #expect(CommandRestore.shouldRestore(argv: argv, denylist: [], receivingShell: shell) == expected)
+    }
+
+    @Test func shouldRestoreWithoutAReceiverKeepsABang() {
+        #expect(CommandRestore.shouldRestore(argv: ["grep", "!needle", "log"], denylist: []))
+        #expect(!CommandRestore.shouldRestore(argv: ["vim", "!x"], denylist: ["vim"], receivingShell: "/bin/zsh"))
+    }
+
     @Test func shouldRestoreRefusesLossilyDecodedArguments() {
         // the argument bytes must be RAW, not a Swift literal: "\u{FFFD}" encodes as valid UTF-8, which
         // would pin the genuine-U+FFFD case while proving nothing about lossy decoding.
@@ -243,6 +281,23 @@ struct CommandRestoreTests {
         #expect(CommandRestore.shellQuotedLine(["echo", "$HOME", "*.txt"]) == "'echo' '$HOME' '*.txt'")
         // an embedded single quote is rendered as '\'' and stays literal.
         #expect(CommandRestore.shellQuotedLine(["echo", "it's"]) == "'echo' 'it'\\''s'")
+    }
+
+    // a canonical search skipped an apostrophe fused with a combining mark, which then closed the quote.
+    @Test(arguments: ["/bin/sh", "/bin/bash", "/bin/zsh"])
+    func shellQuotedLineRoundTripsApostrophesFusedWithMarks(shell: String) throws {
+        let arguments = ["it's", "it'\u{301}s; echo INJECTED", "x'\u{FE0F}", "y'\u{1F3FB}"]
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: shell)
+        process.arguments = ["-c", CommandRestore.shellQuotedLine(["/usr/bin/printf", "%s\\0"] + arguments)]
+        let output = Pipe()
+        process.standardOutput = output
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 0)
+        #expect(data == Data((arguments.joined(separator: "\0") + "\0").utf8))
     }
 
     @Test func basenameTakesLastPathComponent() {

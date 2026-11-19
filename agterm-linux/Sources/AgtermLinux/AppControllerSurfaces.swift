@@ -103,20 +103,13 @@ extension AppController {
     /// alive (hidden) when toggled off; removed only when its shell exits.
     private func syncScratch(_ s: Session) {
         guard let stack = sessionStacks[s.id] else { return }
+        if let previous = scratchSurfaces[s.id], s.scratchSurface == nil {
+            gtk_stack_remove(stack, W(previous.rootWidget))
+            scratchSurfaces[s.id] = nil
+        }
         if s.scratchActive {
             if scratchSurfaces[s.id] == nil {
-                let command = s.scratchCommand
-                s.scratchCommand = nil
-                // Scratch has no persisted pane identity. Its one surface still needs a stable spawn
-                // token for status routing and the message bus; hiding preserves it, recreation replaces it.
-                var environment = sessionEnv(for: s, pane: .scratch)
-                environment["AGTERM_PANE_ID"] = UUID().uuidString
-                let sc = GhosttySurface(sessionID: s.id, cwd: Self.scratchLaunchCwd(s), command: command,
-                                        env: environment, controller: self,
-                                        role: .scratch,
-                                        reportsPaneState: false)
-                let sid = s.id
-                sc.onExit = { [weak self] in self?.closeScratch(sid) }
+                let sc = makeScratchSurface(s)
                 s.scratchSurface = sc
                 scratchSurfaces[s.id] = sc
                 "scratch".withCString { _ = gtk_stack_add_named(stack, W(sc.rootWidget), $0) }
@@ -124,10 +117,6 @@ extension AppController {
             "scratch".withCString { gtk_stack_set_visible_child_name(stack, $0) }
         } else {
             "main".withCString { gtk_stack_set_visible_child_name(stack, $0) }
-            if let sc = scratchSurfaces[s.id], s.scratchSurface == nil {
-                gtk_stack_remove(stack, W(sc.rootWidget))
-                scratchSurfaces[s.id] = nil
-            }
         }
     }
 

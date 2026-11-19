@@ -19,6 +19,10 @@ paths:
 
 ## Menu bar and actions
 
+- agterm ▸ Check for Updates… sits under About Agterm and is enabled by `UpdateController.canCheck`, Sparkle's
+  `canCheckForUpdates` mirrored through KVO: off in a build without an update feed and while a check runs, on
+  again while a menu check shows its progress. The title-bar icon shares it; `update.check` has its own busy rule
+  (control-api.md).
 - `@MainActor AppActions` shares nontrivial behavior among titlebar/footer, menu, palette, and control:
   placement, directory picking, split/focus, and font. Trivial toggles may call their owner directly.
 - **`PaletteCommand.isEnabled(in:)` is the single owner of menu enablement.** Every menu item backed by a
@@ -61,6 +65,13 @@ paths:
   session shows the ssh waits and a failure, the latter hiding itself after `remoteAttachErrorSeconds`;
   a partial group attach moves the failure to the new parent row, and a window with no session or a parent
   row already gone falls back to `notifyCommandFailure`.
+- File ▸ Open Remote Window… uses the same host list and picker, then a second pick of the Mac's open windows
+  when the host is a Mac with several (`AppActions+RemoteAttach`, `RemoteOriginWindow`); one window or an
+  agterm-server host asks nothing. `window remote open --origin-window` is its control twin.
+- File ▸ New Remote Session… (`new_remote_session`, keyless) follows Attach Remote… with a palette row and shares its
+  enablement plus `localOnly`. `AppActions.newRemoteSession` captures the destination before `pickRemote`, asks a
+  Mac with several windows which one, then calls `RemoteAttaching.createRemoteSession`, the creator
+  `session.remote.new` runs, with failures in the Attach Remote HUD.
 
 - New Companion (`new_companion`, keyless) sits beside Duplicate Session in the row menu and the Session
   menu, with a palette row. On a remote row it asks the origin through `RemoteAttaching.createRemoteCompanion`,
@@ -69,6 +80,11 @@ paths:
   `terminalOnly` and takes the same remote route. `AppActions` reaches the local planner through
   `CompanionDuplicating`, which `ControlServer` implements, so the GUI and `session.companion.duplicate` share one
   planner; a refusal shows in a timed `RemoteAttachHud` over the session, falling back to `notifyCommandFailure`.
+- Convert to Companion (`convert_companion`, keyless) follows Duplicate as Companion in both menus, with a palette row;
+  a top-level page takes it too. `PaletteContext.activeSessionIsCompanion` disables it; a server window's row is
+  converted by its server and a row attached from another host by its origin.
+  `AppActions.convertToCompanion` shares `AppStore.convertToCompanion` with `session.companion.convert`, and a
+  refusal reaches the same timed HUD Duplicate as Companion uses.
 
 ## Dock menu
 
@@ -178,6 +194,14 @@ paths:
   Do not use SwiftUI mask/clipping because it reflows and loses the terminal's top row; do not use an
   opaque cover because it breaks translucency. Key each `HSplitView`/`VSplitView` identity by session and
   keep the terminal surface identities stable when changing axis.
+- That full-height compact split's pane hosts consume the native top inset, which a hidden deck entry
+  reads as 1pt against 32pt shown: its opacity-0 wrapper sits at the deck top. Every switch therefore
+  resized both panes by about 2 rows and showed a stale frame under the titlebar. `DeckPaneInset` lays
+  every pane out from `terminalDeckTop` instead, and the probe's top/bottom inset uses the same value.
+  A zero deck top (hidden toolbar) has no offset wrapper, so both keep the native inset there.
+  SwiftUI still moves a hidden top/bottom divider when the native inset flips, so that change stays a
+  re-arm trigger and leaves a one-frame divider jump on show. Moving the content below the band
+  removed every resize but made the compact toolbar look taller, which was rejected.
 - Sidebar icon follows `hasSplit` and `splitAxis`. The titlebar has seven accessibility states: `none`,
   `both`, `left`, and `right` for the left/right symbols, plus `both-horizontal`, `top`, and `bottom` for
   the top/bottom symbols. A shown split fills both halves; a hidden split fills the visible primary or

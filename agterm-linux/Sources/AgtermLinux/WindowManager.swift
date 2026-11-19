@@ -166,6 +166,7 @@ extension WindowLibrary {
     gWindows[id] = AppController(app: gApp, windowID: id, library: gLibrary)
     // Initial mapping can precede registry insertion, when map callbacks cannot resolve their owner.
     gWindows[id]?.resumeMappedSplitRatioRestores()
+    LinuxRemoteCatalogs.opened(id)
     gControlServer.attachPresentationHub()
     for controller in gWindows.values { controller.updateAttentionButton(refocusOnDismiss: false) }
 }

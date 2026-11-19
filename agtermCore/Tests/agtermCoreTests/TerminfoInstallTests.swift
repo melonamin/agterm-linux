@@ -4,8 +4,6 @@ import Testing
 
 struct TerminfoInstallTests {
     private let fixture: Fixture
-    private static let loginShells = ["/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash", "/bin/tcsh", "/bin/csh"]
-        .filter { FileManager.default.isExecutableFile(atPath: $0) }
 
     init() throws { fixture = try Fixture() }
 
@@ -100,7 +98,7 @@ struct TerminfoInstallTests {
     }
 
     // sshd hands the command to the account's login shell, so it must parse under every common one
-    @Test(arguments: loginShells)
+    @Test(arguments: ["/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash", "/bin/tcsh", "/bin/csh"])
     func theRemoteCommandCompilesTheSourceUnderEveryLoginShell(_ shell: String) throws {
         let remote = try #require(TerminfoInstall.installCommand(TerminfoInstall.Connection(destination: "buildbox")).last)
         let home = try fixture.remoteHome(withTic: true)
@@ -113,7 +111,7 @@ struct TerminfoInstallTests {
         #expect(FileManager.default.fileExists(atPath: "\(home.path)/.terminfo"))
     }
 
-    @Test(arguments: ["/bin/sh", "/bin/tcsh"].filter { FileManager.default.isExecutableFile(atPath: $0) })
+    @Test(arguments: ["/bin/sh", "/bin/tcsh"])
     func theRemoteCommandSaysSoAndExits3WhenTheHostHasNoTic(_ shell: String) throws {
         let remote = try #require(TerminfoInstall.installCommand(TerminfoInstall.Connection(destination: "buildbox")).last)
         let home = try fixture.remoteHome(withTic: false)
@@ -147,7 +145,6 @@ struct TerminfoInstallTests {
         #expect(try fixture.sshArguments().first == "-T")
         #expect(try fixture.sshArguments().contains("buildbox"))
     }
-
     @Test func aFailedDumpNeverStartsSsh() throws {
         let env = try fixture.database(name: "env", layout: "78")
         let infocmp = try fixture.fakeInfocmp(failingWith: "infocmp: no terminfo file for xterm-ghostty")
@@ -283,22 +280,23 @@ private struct Fixture {
         return dir.path
     }
 
-    /// The installed CLI and its sibling terminfo database on the current host.
+    /// The shape the installed CLI resolves into: `Contents/MacOS/agtermctl` beside `Contents/Resources/terminfo`,
+    /// and on Linux agterm-server's install, `agtermctl` beside `resources/terminfo`.
     func bundle(layout: String) throws -> (client: String, terminfo: String) {
-        #if canImport(Glibc)
-        let prefix = root.appendingPathComponent("agterm-linux")
-        try FileManager.default.createDirectory(at: prefix.appendingPathComponent("bin"), withIntermediateDirectories: true)
-        let client = prefix.appendingPathComponent("bin/agtermctl")
-        try Data().write(to: client)
-        let terminfo = try database(name: "agterm-linux/share/terminfo", layout: layout)
+        #if os(Linux)
+        let install = root.appendingPathComponent("agterm-server")
+        try FileManager.default.createDirectory(at: install, withIntermediateDirectories: true)
+        let server = install.appendingPathComponent("agtermctl")
+        try Data().write(to: server)
+        return (server.path, try database(name: "agterm-server/resources/terminfo", layout: layout))
         #else
         let contents = root.appendingPathComponent("agterm.app/Contents")
         try FileManager.default.createDirectory(at: contents.appendingPathComponent("MacOS"), withIntermediateDirectories: true)
         let client = contents.appendingPathComponent("MacOS/agtermctl")
         try Data().write(to: client)
         let terminfo = try database(name: "agterm.app/Contents/Resources/terminfo", layout: layout)
-        #endif
         return (client.path, terminfo)
+        #endif
     }
 
     /// A database the real `tic` compiled from `source`, so the real `infocmp` has something to dump.
@@ -357,19 +355,19 @@ private struct Fixture {
         return try #require(pid_t(text), "pgid recorded as '\(text)'")
     }
 
-    /// A stand-in for the remote account with a PATH containing only the tools the script needs.
-    /// On merged /usr systems, /bin also contains tic and cannot serve as a no-tic fixture.
     func remoteHome(withTic: Bool) throws -> (path: String, environment: [String: String]) {
         let home = root.appendingPathComponent("remote-home")
         let bin = root.appendingPathComponent("remote-bin")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
-        let mkdir = bin.appendingPathComponent("mkdir")
-        try FileManager.default.createSymbolicLink(at: mkdir, withDestinationURL: URL(fileURLWithPath: "/bin/mkdir"))
+        for tool in ["mkdir", "cat"] {
+            try FileManager.default.createSymbolicLink(atPath: bin.appendingPathComponent(tool).path,
+                                                       withDestinationPath: "/bin/\(tool)")
+        }
         if withTic {
             try script(at: bin.appendingPathComponent("tic"), body: """
             printf '%s\\n' "$@" > '\(root.appendingPathComponent("tic.args").path)'
-            /bin/cat > '\(root.appendingPathComponent("tic.stdin").path)'
+            cat > '\(root.appendingPathComponent("tic.stdin").path)'
             """)
         }
         return (home.path, ["HOME": home.path, "PATH": bin.path])
@@ -395,9 +393,10 @@ private struct Fixture {
         process.standardError = err
         let input = Pipe()
         process.standardInput = input
-        try process.run()
+        // written before launch: a child that exits unread would SIGPIPE a later write on Linux
         if let stdin { try input.fileHandleForWriting.write(contentsOf: Data(stdin.utf8)) }
         try input.fileHandleForWriting.close()
+        try process.run()
         let stdout = out.fileHandleForReading.readDataToEndOfFile()
         let stderr = err.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
@@ -418,8 +417,7 @@ private struct Fixture {
 
     @discardableResult
     private func script(at file: URL, body: String) throws -> String {
-        try "#!/bin/sh\n\(body)\n".write(to: file, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        try "#!/bin/sh\n\(body)\n".writeExecutable(to: file)
         return file.path
     }
 }

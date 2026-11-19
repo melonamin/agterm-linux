@@ -9,8 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private static let logger = Logger(subsystem: "com.umputun.agterm", category: "AppDelegate")
 
-    // leaves 150 ms after the listing's 550 ms worst case for the per-pane kernel reads
-    private static let exitCaptureBudget: Duration = .milliseconds(700)
+    // adds a nominal 150 ms for pane reads after the listing timeout and cleanup grace
+    static let exitCaptureBudget: Duration = .milliseconds(800)
 
     /// App-global window library, set on scene appear; terminate flushes every window's state.
     var library: WindowLibrary?
@@ -36,6 +36,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Holds the confirmed reset between the dialog or `zmx.reset` and the quit; set on scene appear.
     var liveReset: LiveResetCoordinator?
+
+    var updates: UpdateController?
 
     /// Strongly retains the current Dock menu's target objects so nil-sender dispatch never depends on
     /// AppKit's target lifetime; replaced whenever the Dock asks for a fresh menu.
@@ -377,7 +379,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if QuitReason.isSystemQuit(NSAppleEventManager.shared().currentAppleEvent) { return .terminateNow }
         if liveReset?.armablePending != nil { return .terminateNow }
         let counts = library.openCounts()
-        guard counts.windows > 0 else { return .terminateNow }
+        let flow = updates?.flow ?? UpdateFlow()
+        switch flow.quitAlert(openWindows: counts.windows) {
+        case .none: return .terminateNow
+        case .restart: return confirmRestart(library: library)
+        case .quit: break
+        }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Quit Agterm?"
@@ -385,6 +392,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                    mode: GhosttyApp.shared.restoreLaunchDecision.active)
         alert.addButton(withTitle: "Quit")
         alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+    }
+
+    private func confirmRestart(library: WindowLibrary) -> NSApplication.TerminateReply {
+        let counts = library.restartCounts()
+        let environment = ProcessInfo.processInfo.environment
+        let alert = NSAlert()
+        alert.messageText = "Restart to update?"
+        alert.informativeText = QuitPrompt.restartMessage(
+            localSessions: counts.localSessions, remote: counts.remote,
+            current: GhosttyApp.shared.restoreLaunchDecision.active,
+            next: settingsModel?.settings.effectiveRestoreMode ?? GhosttyApp.shared.restoreLaunchDecision.active,
+            customStateDirectory: ControlResolve.isCustomStateDirectory(environment: environment))
+        alert.addButton(withTitle: "Restart")
+        alert.addButton(withTitle: "Later")
         return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
     }
 

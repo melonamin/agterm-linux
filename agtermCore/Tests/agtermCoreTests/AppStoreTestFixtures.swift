@@ -10,6 +10,20 @@ import Testing
     return AppStore(persistence: PersistenceStore(directory: dir))
 }
 
+@MainActor func makeHeadlessSession(split: Bool) -> (store: AppStore, session: Session) {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("agterm-tests-\(UUID().uuidString)")
+    let store = AppStore(persistence: PersistenceStore(directory: dir), paneFinalizer: nil, headless: true)
+    let workspace = store.addWorkspace(name: "server")
+    let session = store.addSession(toWorkspace: workspace.id, cwd: "/srv")!
+    session.daemonBackedPanes = [session.paneIdentity]
+    if split {
+        session.hasSplit = true
+        session.splitPaneIdentity = UUID()
+        session.daemonBackedPanes.insert(session.splitPaneIdentity!)
+    }
+    return (store, session)
+}
+
 /// The same throwaway store, plus the Open Recent store it records closes into and the persistence it
 /// writes through, for the paths that read back what a close or a restore persisted.
 @MainActor func makeStoreWithRecentClosed() -> (AppStore, RecentClosedStore, PersistenceStore) {
@@ -17,6 +31,13 @@ import Testing
     let recentClosed = RecentClosedStore(directory: dir)
     let persistence = PersistenceStore(directory: dir)
     return (AppStore(persistence: persistence, recentClosedStore: recentClosed), recentClosed, persistence)
+}
+
+@MainActor func addPageRow(to store: AppStore, workspace: UUID, overlay: HtmlOverlay, cwd: String = "/page",
+                           backgroundColor: String? = nil) throws -> Session {
+    let page = try #require(store.addSession(toWorkspace: workspace, cwd: cwd, content: .page))
+    #expect(store.openHtmlOverlay(page.id, pane: nil, overlay: overlay, sizePercent: nil, backgroundColor: backgroundColor) == nil)
+    return page
 }
 
 /// Records every `MainTimer` schedule made while it is installed, so a test can fire ONE of them. The seam
@@ -101,10 +122,28 @@ enum CompanionGroupFailure: Error {
     case setup
 }
 
+@MainActor
+final class RecordingAttachLines: RemoteAttachLines {
+    var panes: [(daemon: String, local: UUID)] = []
+    var scratches: [String] = []
+    var scratchLocals: [UUID] = []
+
+    func paneAttach(_ origin: RemoteBinding.Origin, daemon: String, local: UUID) -> String {
+        panes.append((daemon, local))
+        return "attach-pane \(daemon)"
+    }
+
+    func scratchAttach(_ origin: RemoteBinding.Origin, daemon: String, local: UUID) -> String {
+        scratches.append(daemon)
+        scratchLocals.append(local)
+        return "attach-scratch \(daemon)"
+    }
+}
+
 final class SpySurface: PaneRoleMutableSurface {
     var teardownCount = 0
-    var promotedCount = 0
     var onTeardown: (() -> Void)?
+    var promotedCount = 0
     var assignedRoles: [SwappablePaneRole] = []
     var paneToken: String
     var backedByZmx: Bool
@@ -121,4 +160,24 @@ final class SpySurface: PaneRoleMutableSurface {
     }
     func promoteToPrimaryPane() { promotedCount += 1 }
     func setPaneRole(_ role: SwappablePaneRole) { assignedRoles.append(role) }
+}
+
+let attachedEndpoint = ControlZmxEndpoint(executable: "/bin/zmx", socketDirectory: "/tmp/zmx")
+
+@MainActor func addAttachedRow(to store: AppStore, workspace: UUID, host: String = "box", origin: String = "o1",
+                               page: Bool = false, split: Bool = false, catalogOwned: Bool = false) throws -> Session {
+    let row = try #require(store.addSession(toWorkspace: workspace, cwd: "/a", remoteHost: host, remoteSessionID: origin,
+                                            content: page ? .page : .terminal))
+    var daemons: [UUID: String] = page ? [:] : [row.paneIdentity: ZmxSupport.daemonName(for: UUID())]
+    if split {
+        let splitPane = UUID()
+        row.hasSplit = true
+        row.splitPaneIdentity = splitPane
+        daemons[splitPane] = ZmxSupport.daemonName(for: UUID())
+    }
+    store.bindRemote(RemoteBinding(remoteSessionID: origin, daemonsByLocalPane: daemons, presentationVersion: 1,
+                                   origin: RemoteBinding.Origin(host: host, endpoint: attachedEndpoint, sessionName: origin),
+                                   catalogOwned: catalogOwned),
+                     forSession: row.id)
+    return row
 }

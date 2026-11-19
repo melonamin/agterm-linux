@@ -9,6 +9,7 @@ extension AppController {
     @discardableResult
     func duplicateSession(_ id: UUID) -> Session? {
         noteUserActivity()
+        if sendRemoteGUI(ControlRequest(cmd: .sessionDuplicate, target: id.uuidString)) { return nil }
         guard let duplicate = store.duplicateSession(id) else { return nil }
         reconcile()
         return duplicate
@@ -86,6 +87,14 @@ extension AppController {
         }
         addContextButton(box, targets.count > 1 ? "Close \(targets.count) Sessions" : "Close Session",
                          unsafeBitCast(onCtxClose as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
+        if sessions.contains(where: { AttachedOrigin($0) != nil }) {
+            appendSidebarAction(to: box, title: "Terminate on Origin") { [weak self] in
+                guard let self else { return }
+                dismissContextMenu()
+                _ = sendRemoteGUI(ControlRequest(cmd: .sessionTerminate, target: sid.uuidString,
+                    args: ControlArgs(targets: targets.map(\.uuidString), undoable: true)))
+            }
+        }
         gtk_popover_set_child(POPOVER(popover), W(box))
         popupPopover(popover, keepingCapture: heldSearchEntry)
     }
@@ -145,7 +154,7 @@ extension AppController {
         guard let data, let ws = contextMoveTargets[OpaquePointer(data)], let id = contextMenuSession else { return }
         let targets = store.sidebarSelectionTargets(forContextSession: id)
         dismissContextMenu()
-        store.moveSessions(targets, toWorkspace: ws)
+        moveSessionsRespectingHost(targets, toWorkspace: ws)
         reconcile()
     }
 
@@ -154,7 +163,7 @@ extension AppController {
         let targets = store.sidebarSelectionTargets(forContextSession: id)
         let allFlagged = targets.compactMap { store.session(withID: $0) }.allSatisfy(\.flagged)
         dismissContextMenu()
-        store.setFlag(!allFlagged, forSessions: targets)
+        setFlagsFromGUI(targets, on: !allFlagged)
         syncSidebar()
     }
 
@@ -215,6 +224,8 @@ extension AppController {
         appendSidebarAction(to: box, title: allFlagged ? "Unflag All Sessions" : "Flag All Sessions") { [weak self] in
             guard let self else { return }
             self.dismissContextMenu()
+            if self.sendRemoteGUI(ControlRequest(cmd: .workspaceFlag, target: wsID.uuidString,
+                                                 args: ControlArgs(mode: allFlagged ? "off" : "on"))) { return }
             _ = self.setWorkspaceFlag(wsID.uuidString, window: nil, mode: allFlagged ? .off : .on)
         }
         addContextButton(box, "Rename", unsafeBitCast(onCtxWorkspaceRename as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
@@ -273,7 +284,7 @@ extension AppController {
     func confirmWorkspaceDelete(_ response: String) {
         defer { pendingDeleteWorkspace = nil }
         guard response == "delete", let id = pendingDeleteWorkspace, store.canRemoveWorkspace else { return }
-        store.removeWorkspace(id)
+        removeWorkspaceRespectingHost(id)
         reconcile()
     }
 
@@ -333,7 +344,7 @@ extension AppController {
         guard let id = contextMenuSession else { return }
         let targets = store.sidebarSelectionTargets(forContextSession: id)
         dismissContextMenu()
-        for target in targets { store.setAgentIndicator(AgentIndicator(), forSession: target) }
+        for target in targets { store.clearStatus(target) }
         syncSidebar()
     }
 
@@ -345,6 +356,8 @@ extension AppController {
             requestCloseSession(id, closingCoversFirst: false)
             return
         }
+        if sendRemoteGUI(ControlRequest(cmd: .sessionClose, target: targets.first?.uuidString,
+                                       args: ControlArgs(targets: targets.map(\.uuidString), undoable: true))) { return }
         if linuxSettingsStore().load().closeGraceUndoEnabled ?? true {
             if store.softCloseSessions(targets) { reconcileSoftClose() }
         } else {

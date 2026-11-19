@@ -30,6 +30,10 @@ session drag are out of scope.
 
 ## Model and persistence
 
+- A window's `WindowInfo.source` names the agterm-server or the Mac window (`originWindow`) it mirrors
+  (`WindowSource`); nil is this Mac's own tree. One is raised by host plus origin window, never opened twice.
+  A remote window is never seeded and saves no rows: its store loads empty with its saved
+  `RemoteWindowViewState` and is filled from the catalog (`WindowLibrary+Remote`, `control-api.md`).
 - Host-free `WindowLibrary` owns ordered `WindowInfo` values, live stores, and `frontmostWindowID`.
   Use `WindowInfo`, not `Window`, to avoid framework name collisions. `WindowsIndex` has its own version,
   independent of `Snapshot.version`; `WindowEntry` stores ID, name, and open state.
@@ -54,8 +58,8 @@ session drag are out of scope.
   `agtermCore` imports no `os`, since the agterm-linux fork builds it on Linux.
 - Bootstrap never throws. Load a valid index; otherwise recover every UUID-named per-window file before
   considering legacy migration or an empty seed. Recovered files are appended before `loadStore`, named
-  `window N`, all opened, and the first made frontmost. Missing/corrupt window snapshots open with a
-  default workspace/session. The library is never empty after launch.
+  `window N`, all opened, and the first made frontmost. Missing/corrupt window snapshots open as an
+  empty tree. The library is never empty after launch.
 
 ## Scene lifecycle
 
@@ -89,6 +93,11 @@ session drag are out of scope.
   writes it with `AEPutAttributePtr`. Never switch that read to `paramDescriptor`.
   The GUI-only prompt is keep-in-sync exempt and manually verified.
 - The window-close sheet takes its text from `QuitPrompt.windowCloseMessage` under the same mode rule.
+- Sparkle's Install and Relaunch quits through the same path with no quit reason. After the system-quit and Live-reset
+  guards, `UpdateFlow.quitAlert` picks "Restart to update?" (Restart / Later) once `updaterWillRelaunchApplication` has
+  fired; the mark outlives Later, since Sparkle's retry does not announce again, and clears at the cycle's end or abort.
+  `QuitPrompt.restartMessage` words it from `WindowLibrary.restartCounts` (this Mac's terminal rows; pages excluded)
+  and says to reopen with the same `AGTERM_STATE_DIR` when one is set, since Sparkle's relaunch drops it.
 - A confirmed Live sessions reset (`LiveResetCoordinator.pending`) skips the quit alert, since its own
   dialog or `zmx.reset --force` was the confirmation. `AppDelegate.exitFlush` fixes the order: capture,
   finalize pending closes, then the CHECKED save; only a fully saved snapshot arms the marker and the
@@ -130,7 +139,7 @@ session drag are out of scope.
   split, scratch, and overlay with `deckInteractive && isActive && !quickTerminal.holdsKey`. Read `holdsKey`,
   never `isVisible`: the predicate is app-level, so it inerts EVERY window, and a PINNED panel (a control
   `quick show`) stays on screen after agterm loses key. Gating on visibility there makes
-  `TerminalView.updateNSView` revoke first responder in every window on the next SwiftUI update, so the user
+  `TerminalSurfaceHost.updateNSView` revoke first responder in every window on the next SwiftUI update, so the user
   clicks into a terminal, types, and loses the keyboard again at the next title or status change. The same
   distinction governs `focusActiveSession`, `focusSplitPane`, the scratch's `suppressAutoFocus`,
   `coverHidesActiveSession` and the Command-W rungs. `holdsKey` follows the panel's own
@@ -210,6 +219,33 @@ session drag are out of scope.
 - `agterm-session-host` is a persistent responsibility root for Live daemons in one state directory.
   Reuse it across app restarts; host death leaves its panes orphaned and later panes can start a
   replacement host.
+- Each helper build and login session has its own host endpoint, `session-host-<key>` under the zmx socket
+  directory: the key is the first 12 hex digits of the helper image's `LC_UUID` plus the audit session id
+  (`agterm-session-host key`). An update or a forced logout therefore starts a new host for new panes
+  (#971), and the old one stays the root of its existing daemons, since responsibility cannot be moved.
+  The fixed `session-host` directory is a build predating keys; it is never served again.
+- On macOS 27 and later the client starts the host as a launchd job in `gui/<uid>` (`HostJob`), so the host
+  and its daemons get a coalition of their own. A spawned host stays in the coalition of the agterm that
+  started it, and loginwindow force-quitting a program BTM disallows in the background ends that whole
+  coalition, live panes included (#985). Responsibility disclaim does not change the coalition.
+  Each attempt has a unique label, `<bundleID>.session-host.<key>.<nonce>`, and a 0600 plist removed once
+  bootstrap returns. The host takes the key and label as arguments, exits when either is not its own, and
+  tries to boot out its label after serving ends, including on error.
+  A job host ends with the GUI login session, so the forced-logout case above applies to a spawned host only.
+  A definite bootstrap failure falls back to the disclaimed spawn, which keeps the shared coalition;
+  a timed-out one never starts a second host. Older macOS keeps the spawn.
+- A host whose panes are gone is retired, never killed: after every launch's reap `HostRetirer` runs
+  `agterm-session-host stop <dir>` off the main thread, which asks every other endpoint to stop and a host
+  refuses while it roots a live daemon. Reset Live Sessions… moves panes off an earlier host (`staleHost`),
+  and the relaunch's retirement then ends it. The stop client (`ClientConnector.stopExisting`) checks the
+  host's socket credentials, pid, hello and self-responsibility but never its image; pane creation keeps
+  the image check.
+- The app finds hosts from their pidfiles (`LiveAttributionProbe.publishedHost`): a pid counts when its
+  process started no later than the pidfile was last written. The executable path is no test after an
+  update. Measured: `proc_pidpath` keeps the old path when a new file lands there, names the moved path
+  when the old bundle is moved aside, and fails when nothing is left at the path.
+  The current key comes from running the bundled helper's `key`, cached by file identity
+  (`HelperEndpointKey`); when it cannot be read, no pane is called stale.
 - Keep all `responsibility_*` SPI lookups in the `AgtermResponsibility` target.
   If the SPI is unavailable, panes fall back to bare attach.
 - `SessionHostTrampoline` owns the `forkpty` child path through `execve`; no Swift runs there.
@@ -235,10 +271,15 @@ session drag are out of scope.
   resolution, a second render, and `viewDidMoveToWindow`. Poll `WindowRegistry.isRegistered`; selection
   waits for both open and registered. Never gate NSWindow work on `isOpen` alone.
 - `window.list` is served from `cachedWindowNodes`. Registration and unregistration post
-  `.agtermWindowAttachmentChanged`; observe it on `.main`, not synchronously, because unregister precedes
-  `closeWindow` and an immediate refresh captures `open: true` without geometry.
-- Refresh on every command, frontmost change, sidebar visibility change, attachment, and NSWindow
-  move/resize/fullscreen/minimize transitions. Ignore notification payloads: carrying non-Sendable
+  `.agtermWindowAttachmentChanged`. A `.main` observer runs inline for a main-thread post, so the close
+  handler's unregister refresh captures `open: true` without geometry; its `.agtermWindowCatalogChanged`
+  post after `closeWindow` replaces that node.
+- Refresh after main-actor dispatch except `events.read` and `msg.read`, frontmost change, sidebar
+  visibility change, attachment, NSWindow move/resize/fullscreen/minimize transitions, and
+  `.agtermWindowCatalogChanged`, which the GUI window close, rename and delete and the Settings
+  auto-follow fan-out post. A change to a `window.list` field outside dispatch owes one of these signals
+  or a direct `refreshWindowCache` (the remote-catalog dedupe, `ControlServer.takeFrontmost`), since an
+  idle follower's poll does not rebuild the cache. Ignore notification payloads: carrying non-Sendable
   `Notification` into a main-actor region fails Swift 6 Release WMO even when Debug passes.
 
 ## Control catalog

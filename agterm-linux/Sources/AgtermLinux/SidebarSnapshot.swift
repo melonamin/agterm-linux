@@ -39,6 +39,7 @@ struct SidebarSnapshot: Equatable {
         var hasCompanions = false
         var expanded = true
         var foldedAttention: String?
+        var foldedColor: String?
         var iconVisible = true
         var info: SessionInfo?
         var infoFontSize = AppSettings.defaultSidebarFontSize
@@ -184,6 +185,8 @@ private struct SidebarSnapshotBuilder {
         let glyph = LinuxStatusGlyphPresentation(indicator: session.agentIndicator, settings: settings)
         let unseen = session.unseenCount
         let badged = unseen > 0 && (settings.notificationBadgeEnabled ?? true)
+        let folded = !flattenCompanions && !session.isExpanded && !expandedParentIDs.contains(session.id)
+            ? store.companionsByStatus(of: session.id) : []
         return SidebarSnapshot.RowContent(
             name: flaggedView && settings.effectiveFlaggedViewLayout == .flat && !renaming
                 ? LinuxSidebarPolicy.flaggedRowLabel(for: session, in: store)
@@ -200,8 +203,8 @@ private struct SidebarSnapshotBuilder {
             shown: flattenCompanions || store.parent(of: session).map { $0.isExpanded || expandedParentIDs.contains($0.id) } != false,
             hasCompanions: !flattenCompanions && !store.companions(of: session.id).isEmpty,
             expanded: session.isExpanded || expandedParentIDs.contains(session.id),
-            foldedAttention: !flattenCompanions && !session.isExpanded && !expandedParentIDs.contains(session.id)
-                ? store.companionsNeedingAttention(of: session.id).map(\.displayName).joined(separator: ", ").linuxTrimmedOrNil : nil,
+            foldedAttention: folded.isEmpty ? nil : "companions: " + folded.map { "\($0.displayName) \($0.agentIndicator.status.rawValue)" }.joined(separator: ", "),
+            foldedColor: folded.first.flatMap { LinuxStatusGlyphPresentation(indicator: $0.agentIndicator, settings: settings)?.colorHex },
             iconVisible: !settings.isInterfaceElementHidden(.sessionIcons),
             info: visibleInfo(session), infoFontSize: settings.effectiveSidebarFontSize)
     }

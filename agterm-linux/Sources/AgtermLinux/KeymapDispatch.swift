@@ -432,6 +432,10 @@ extension AppController {
         case .duplicateCompanion: newCompanionFromGUI(duplicate: true)
         case .toggleOverlay: _ = setSessionOverlayVisibility(nil, window: nil, pane: nil, mode: .toggle)
         case .attachRemote: showRemoteAttach()
+        case .openRemoteWindow: showRemoteWindow()
+        case .newRemoteSession: showNewRemoteSession()
+        case .detachedSessions: showDetachedRemoteSessions()
+        case .convertCompanion: convertActiveCompanion()
         case .editFlaggedSessions: showMembershipEditor(workspaces: false)
         case .editFocusedWorkspaces: showMembershipEditor(workspaces: true)
 
@@ -442,7 +446,7 @@ extension AppController {
         case .deleteWindow: confirmDeleteWindow(windowID)
         case .newWorkspace: newWorkspace()
         case .renameWorkspace: if let ws = store.currentWorkspaceID { beginRename(id: ws, isWorkspace: true) }
-        case .deleteWorkspace: if store.canRemoveWorkspace, let ws = store.currentWorkspaceID { store.removeWorkspace(ws); reconcile() }
+        case .deleteWorkspace: if store.canRemoveWorkspace, let ws = store.currentWorkspaceID { removeWorkspaceRespectingHost(ws); reconcile() }
         case .newSession: newSession()
         case .openDirectory: openDirectory()
         case .renameSession: startRenameActive()

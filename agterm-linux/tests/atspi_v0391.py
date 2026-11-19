@@ -213,7 +213,8 @@ def verify_v0391(env, state):
         recent = request("recent.list", global_command=True)["recent"]
         item = next(item for item in recent if parent in item["sessionIDs"])
         restored = request("recent.open", item["id"])["recentOpen"]
-        assert restored["complete"] and row(parent) and row(child) and row(page_row) is None, restored
+        assert restored["complete"] and row(parent) and row(child) and row(page_row), restored
+        assert row(page_row).get("content") == "page", row(page_row)
         print("OK: v0.39.1 companions, tints, flagged order, overlay visibility/points, HUD options, forms, Recent, and lifecycle events")
     finally:
         stop(process)

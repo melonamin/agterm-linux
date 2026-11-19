@@ -23,14 +23,22 @@ public struct RemoteBinding: Equatable, Sendable {
     public let presentationVersion: Int?
     /// Nil for a binding built without one, which can then not be attached again.
     public let origin: Origin?
+    /// catalogOwned marks a row of a remote window: its server's catalog is the only writer of its pane
+    /// structure, so presentation layout never moves, hides or closes its panes.
+    public let catalogOwned: Bool
+    /// originHeadless marks an origin with no screen of its own, which keeps what this Mac cannot show yet for
+    /// this Mac rather than taking it back.
+    public let originHeadless: Bool
     private let localByRemotePane: [UUID: UUID]
     private let daemonsByLocalPane: [UUID: String]
 
     /// `daemonsByLocalPane` is what an attach knows: the daemon each local pane runs `zmx attach` against.
     /// A daemon name encodes the origin's pane identity, so the mapping is decoded once, here.
     public init(remoteSessionID: String, daemonsByLocalPane: [UUID: String], presentationVersion: Int?,
-                origin: Origin? = nil) {
+                origin: Origin? = nil, catalogOwned: Bool = false, originHeadless: Bool = false) {
         self.remoteSessionID = remoteSessionID
+        self.catalogOwned = catalogOwned
+        self.originHeadless = originHeadless
         self.presentationVersion = presentationVersion
         self.origin = origin
         self.daemonsByLocalPane = daemonsByLocalPane
@@ -43,10 +51,30 @@ public struct RemoteBinding: Equatable, Sendable {
 
     public func localPane(forRemote identity: UUID) -> UUID? { localByRemotePane[identity] }
 
+    /// replacingOrigin is this binding reached through `origin`, every pane mapping and flag kept.
+    func replacingOrigin(_ origin: Origin) -> RemoteBinding {
+        RemoteBinding(remoteSessionID: remoteSessionID, daemonsByLocalPane: daemonsByLocalPane,
+                      presentationVersion: presentationVersion, origin: origin, catalogOwned: catalogOwned,
+                      originHeadless: originHeadless)
+    }
+
+    /// adding is this binding with one more local pane attached to `daemon`, for a pane the origin added after the
+    /// attach. A mapping is never removed, so a pane closed here is never attached again.
+    func adding(local: UUID, daemon: String) -> RemoteBinding {
+        RemoteBinding(remoteSessionID: remoteSessionID, daemonsByLocalPane: daemonsByLocalPane.merging([local: daemon]) { $1 },
+                      presentationVersion: presentationVersion, origin: origin, catalogOwned: catalogOwned,
+                      originHeadless: originHeadless)
+    }
+
     /// daemonsByPane is the origin daemon each local pane attaches to.
     public var daemonsByPane: [UUID: String] { daemonsByLocalPane }
 
     public func daemon(forLocalPane identity: UUID) -> String? { daemonsByLocalPane[identity] }
+
+    /// scratchDaemon is the name the origin's scratch `identity` runs under there.
+    public func scratchDaemon(for identity: UUID) -> String {
+        originHeadless ? ZmxSupport.scratchDaemonName(for: identity) : ZmxSupport.daemonName(for: identity)
+    }
 
     func remotePane(forLocal identity: UUID) -> UUID? {
         localByRemotePane.first { $0.value == identity }?.key
@@ -76,10 +104,13 @@ public enum RemotePresentationConnection: Equatable, Sendable {
 
 /// RemotePresentationState is everything a viewer keeps about one attached session's presentation.
 public struct RemotePresentationState: Equatable, Sendable {
-    public let binding: RemoteBinding
+    public internal(set) var binding: RemoteBinding
     public var connection: RemotePresentationConnection
     public var mode: PresentationMode = .mirror
-    var layout: PresentationLayout?
+    public internal(set) var layout: PresentationLayout?
+    /// originEnded is set once the origin said it removed the session for good. Unlike `Session.ended`, which a
+    /// catalog or headless row keeps, the row itself is on its way out.
+    public internal(set) var originEnded = false
     var heldPanes: Set<UUID> = []
     /// Whether the glyph on the row is the bridge's. A flag and not a comparison of values: a pane swap
     /// rewrites the indicator without changing who set it, and a local write of the very same value does
@@ -88,9 +119,22 @@ public struct RemotePresentationState: Equatable, Sendable {
     /// False when the origin named a pane this Mac has no counterpart for: one the attach never mapped,
     /// one closed here since, or the origin's scratch. The glyph then carries no local owner.
     public internal(set) var statusOwnerResolved = true
+    /// activePanes is the origin's list of panes still reporting work, kept as origin panes so it follows a swap or
+    /// promotion here; nil when an older origin sends none. It describes the bridged glyph only.
+    var activePanes: [PresentationPane]?
     /// Whether the live HUD was opened by the bridge. Cleared whenever the HUD is discarded, so a panel the
     /// viewer's own program opens afterwards is never the bridge's to close.
     public internal(set) var hudBridged = false
+    /// mail is the origin's unacked mail keyed by origin pane, as the stream last reported it; nil while the origin
+    /// sends none. A catalog-owned row reads its catalog instead.
+    var mail: PresentationMail?
+    /// statusKeySent is set once plain typing on the bridged status went to the origin; a submit or an interrupt
+    /// still goes, so an origin clearing only on those hears them.
+    var statusKeySent = false
+    /// seenKeySent and seenSubmitSent bound the typing reported to the origin's unseen badge to the first key and
+    /// the first submit after the stream connects or a notification arrives.
+    var seenKeySent = false
+    var seenSubmitSent = false
 
     /// Whether the glyph on the row stands for a pane this Mac has no counterpart for. Every layer that
     /// turns `statusPane` into a local pane reads this first, since nil otherwise means the primary.

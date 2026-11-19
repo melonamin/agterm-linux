@@ -54,7 +54,7 @@
         "author": { "@type": "Person", "name": "Umputun", "url": "https://github.com/umputun" },
         "codeRepository": "https://github.com/umputun/agterm",
         "downloadUrl": "https://github.com/umputun/agterm/releases",
-        "softwareVersion": "0.41.1"
+        "softwareVersion": "0.43.0"
       }
     </script>
   </head>
@@ -588,8 +588,8 @@
           Close the app, keep the work.
         </h2>
         <p style="font-size: 18px; line-height: 1.55; color: #bfbab0; max-width: 60ch; margin: 0 0 44px">
-          A pane's process does not have to live inside agterm. Live sessions keep it running while the app restarts, and the same
-          sessions can be opened from another Mac.
+          A pane's process does not have to live inside agterm. Live sessions keep it running while the app restarts, the same
+          sessions can be opened from another Mac, and a Linux host can run them for you.
         </p>
 
         <div class="survive-grid">
@@ -656,8 +656,11 @@
               Open a session running on another Mac as a row in this sidebar, split included, with
               <span style="font-family: &quot;JetBrains Mono&quot;, monospace; color: #e6e1d7">agtermctl zmx attach HOST ID</span>.
               Its status glyph, notifications, HUD and title-bar context follow it here, and its panes take this Mac's size. The
-              other Mac runs agterm in Live sessions mode and is reached over key-based ssh.
-              <a href="/docs#remote-sessions" style="color: #6d82f3">Remote sessions</a>
+              other Mac runs agterm in Live sessions mode and is reached over key-based ssh. A Linux host can run your sessions
+              too: under agterm-server every shell keeps running when the Mac sleeps, the network drops or the window closes, and
+              a remote window on the Mac shows them with splits, companions, the scratch, overlays, asks, pages and agent status.
+              <a href="/docs#remote-sessions" style="color: #6d82f3">Remote sessions</a> ·
+              <a href="/docs#remote-server" style="color: #6d82f3">Remote server</a>
             </p>
           </div>
         </div>

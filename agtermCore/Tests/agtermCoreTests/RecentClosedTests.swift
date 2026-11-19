@@ -30,6 +30,47 @@ final class RecentClosedTests {
     }
 
     @MainActor
+    @Test func aHardCloseReturnsTheEntryItRecorded() throws {
+        let (store, recentClosed, _) = makeStoreWithRecentClosed()
+        let ws = store.addWorkspace(name: "work")
+        let session = try #require(store.addSession(toWorkspace: ws.id, cwd: "/a"))
+
+        let recent = store.closeSession(session.id)
+
+        #expect(recent != nil)
+        #expect(recent == recentClosed.load().first?.id)
+    }
+
+    @MainActor
+    @Test func closingAParentReturnsTheGroupsOneEntry() throws {
+        let (store, recentClosed, _) = makeStoreWithRecentClosed()
+        let ws = store.addWorkspace(name: "work")
+        let parent = try #require(store.addSession(toWorkspace: ws.id, cwd: "/a"))
+        let companion = try store.addCompanion(to: parent.id, options: CompanionOptions(cwd: "/c")).get()
+
+        let recent = store.closeSession(parent.id)
+
+        let entries = recentClosed.load()
+        #expect(entries.count == 1)
+        #expect(recent == entries.first?.id)
+        #expect(entries.first?.session?.snapshot.id == parent.id)
+        #expect(entries.first?.session?.companions?.map(\.id) == [companion.id])
+    }
+
+    @MainActor
+    @Test func aCloseThatRecordsNothingReturnsNoEntry() throws {
+        let (store, _, _) = makeStoreWithRecentClosed()
+        let ws = store.addWorkspace(name: "work")
+        let remote = try #require(store.addSession(toWorkspace: ws.id, cwd: "/a", remoteHost: "buildbox"))
+        let plain = makeStore()
+        let local = try #require(plain.addSession(toWorkspace: plain.addWorkspace(name: "w").id, cwd: "/a"))
+
+        #expect(store.closeSession(remote.id) == nil)
+        #expect(store.closeSession(UUID()) == nil)
+        #expect(plain.closeSession(local.id) == nil)
+    }
+
+    @MainActor
     @Test func closingAWorkspaceRecordsOnlyItsLocalSessionsAndCountsThem() {
         let (store, recentClosed, _) = makeStoreWithRecentClosed()
         store.addWorkspace(name: "keep")
@@ -150,6 +191,31 @@ final class RecentClosedTests {
         #expect(loaded[0].workspace?.focusMember == true)
     }
 
+    @Test func anEntrySavedWithoutAWindowStillDecodes() throws {
+        let data = try JSONEncoder().encode(RecentClosedState(items: [workspaceItem(title: "work")]))
+        #expect(!String(decoding: data, as: UTF8.self).contains("\"window\""))
+        try data.write(to: fileURL)
+
+        let loaded = RecentClosedStore(directory: directory).load()
+        #expect(loaded.count == 1)
+        #expect(loaded[0].window == nil)
+    }
+
+    @Test func aWindowClearKeepsOtherWindowsAndRemoteEntries() {
+        let store = RecentClosedStore(directory: directory)
+        let mine = UUID(), other = UUID()
+        store.record(workspaceItem(title: "a", window: mine))
+        let kept = workspaceItem(title: "b", window: other)
+        store.record(kept)
+        store.recordRemote(RemoteRecentClosedItem(host: "box", originSessionID: "o1", name: "remote",
+            placement: .init(workspaceID: UUID(), workspaceName: "w", workspaceIndex: 0, sessionIndex: 0, parentID: nil)))
+
+        store.clear(window: mine)
+
+        #expect(store.load().map(\.id) == [kept.id])
+        #expect(store.loadRemote().map(\.originSessionID) == ["o1"])
+    }
+
     // the persisted pin comes back, but nothing is armed — a reopen cannot execute a sticky override
     // mid-process.
     @MainActor
@@ -170,6 +236,299 @@ final class RecentClosedTests {
         #expect(reopened.pendingSplitRestoreCommand == nil)
     }
 
+    @MainActor
+    private struct PageGroup {
+        let store: AppStore
+        let recentClosed: RecentClosedStore
+        let workspace: Workspace
+        let root: Session
+        let terminal: Session
+        let nested: Session
+        let url: URL
+
+        init() throws {
+            (store, recentClosed, _) = makeStoreWithRecentClosed()
+            store.addWorkspace(name: "keep")
+            workspace = store.addWorkspace(name: "pages")
+            root = try addPageRow(to: store, workspace: workspace.id,
+                                  overlay: HtmlOverlay(source: .file(path: "/tmp/root.html", grantRoot: nil), javascript: true))
+            terminal = try store.addCompanion(to: root.id).get()
+            url = try #require(URL(string: "https://example.com"))
+            nested = try store.addPageCompanion(to: root.id, overlay: HtmlOverlay(source: .url(url), navigation: true)).get()
+        }
+
+        var order: [UUID] { store.workspaces.first { $0.id == workspace.id }?.sessions.map(\.id) ?? [] }
+
+        func expectReopenedWhole() {
+            #expect(order == [root.id, terminal.id, nested.id])
+            #expect(store.session(withID: root.id)?.htmlOverlay?.source == .file(path: "/tmp/root.html", grantRoot: nil))
+            #expect(store.session(withID: root.id)?.htmlOverlay?.javascript == true)
+            #expect(store.session(withID: nested.id)?.htmlOverlay?.source == .url(url))
+            #expect(store.session(withID: nested.id)?.htmlOverlay?.navigation == true)
+            #expect(store.companions(of: root.id).map(\.id) == [terminal.id, nested.id])
+        }
+    }
+
+    @MainActor
+    @Test func closingAPageRootRecordsItsWholeGroupAndReopensItsPages() throws {
+        let g = try PageGroup()
+
+        g.store.closeSession(g.root.id)
+
+        let item = try #require(g.recentClosed.load().first)
+        #expect(item.session?.snapshot.page != nil)
+        #expect(item.session?.companions?.map(\.id) == [g.terminal.id, g.nested.id])
+        #expect(item.session?.companions?.map { $0.page != nil } == [false, true])
+        #expect(g.store.restoreRecentClosed(item))
+        g.expectReopenedWhole()
+    }
+
+    @MainActor
+    @Test func softClosingAPageRootRecordsItsWholeGroup() throws {
+        let g = try PageGroup()
+
+        #expect(g.store.softCloseSession(g.root.id, grace: 60))
+        g.store.finalizeAllPendingCloses()
+
+        let item = try #require(g.recentClosed.load().first)
+        #expect(item.session?.snapshot.id == g.root.id)
+        #expect(item.session?.companions?.map(\.id) == [g.terminal.id, g.nested.id])
+        #expect(g.store.restoreRecentClosed(item))
+        g.expectReopenedWhole()
+    }
+
+    @MainActor
+    @Test func aSeparatelyClosedPageCompanionKeepsItsParentAndReopensUnderIt() throws {
+        let g = try PageGroup()
+
+        g.store.closeSession(g.nested.id)
+
+        let item = try #require(g.recentClosed.load().first)
+        #expect(item.session?.snapshot.parentID == g.root.id)
+        #expect(item.session?.snapshot.page?.source == .url(g.url))
+        #expect(g.store.restoreRecentClosed(item))
+        g.expectReopenedWhole()
+    }
+
+    @MainActor
+    @Test func aReopenedSessionAndItsCompanionAreNoLongerEnded() throws {
+        let (store, recentClosed, _) = makeStoreWithRecentClosed()
+        let ws = store.addWorkspace(name: "work")
+        let parent = try #require(store.addSession(toWorkspace: ws.id, cwd: "/a"))
+        let companion = try store.addCompanion(to: parent.id, options: CompanionOptions(cwd: "/c")).get()
+        store.closeSession(parent.id)
+        #expect(PresentationEnds.shared.contains(parent.id) && PresentationEnds.shared.contains(companion.id))
+
+        #expect(store.restoreRecentClosed(try #require(recentClosed.load().first)))
+
+        #expect(!PresentationEnds.shared.contains(parent.id))
+        #expect(!PresentationEnds.shared.contains(companion.id))
+    }
+
+    @MainActor
+    @Test func aReopenedWorkspacesSessionsAreNoLongerEnded() throws {
+        let (store, recentClosed, _) = makeStoreWithRecentClosed()
+        let ws = store.addWorkspace(name: "work")
+        let first = try #require(store.addSession(toWorkspace: ws.id, cwd: "/a"))
+        let second = try #require(store.addSession(toWorkspace: ws.id, cwd: "/b"))
+        _ = store.addWorkspace(name: "other")
+        store.removeWorkspace(ws.id)
+        #expect(PresentationEnds.shared.contains(first.id) && PresentationEnds.shared.contains(second.id))
+
+        #expect(store.restoreRecentClosed(try #require(recentClosed.load().first { $0.kind == .workspace })))
+
+        #expect(!PresentationEnds.shared.contains(first.id))
+        #expect(!PresentationEnds.shared.contains(second.id))
+    }
+
+    @MainActor
+    @Test func aClosedWorkspaceCarriesItsPageRowsAndReopensThem() throws {
+        let g = try PageGroup()
+
+        g.store.removeWorkspace(g.workspace.id)
+
+        let item = try #require(g.recentClosed.load().first { $0.kind == .workspace })
+        #expect(item.workspace?.snapshot.sessions.map(\.id) == [g.root.id, g.terminal.id, g.nested.id])
+        #expect(item.subtitle == "3 sessions")
+        #expect(g.store.restoreRecentClosed(item))
+        g.expectReopenedWhole()
+    }
+
+    @Test func aRemoteEntryIsKeptBesideTheLocalList() {
+        let store = RecentClosedStore(directory: directory)
+        let local = sessionItem(title: "local")
+        let remote = remoteItem(origin: "o1")
+
+        store.record(local)
+        store.recordRemote(remote)
+
+        #expect(store.load() == [local])
+        #expect(store.loadRemote() == [remote])
+    }
+
+    @Test func aBuildThatPredatesRemoteEntriesKeepsTheLocalList() throws {
+        let store = RecentClosedStore(directory: directory)
+        store.record(sessionItem(title: "local"))
+        store.recordRemote(remoteItem(origin: "o1"))
+
+        let legacy = try JSONDecoder().decode(LegacyRecentClosedState.self, from: Data(contentsOf: fileURL))
+
+        #expect(legacy.version == RecentClosedState.currentVersion)
+        #expect(legacy.items.map(\.title) == ["local"])
+    }
+
+    @Test func aLaterCloseOfTheSameOriginSessionReplacesItsEntry() {
+        let store = RecentClosedStore(directory: directory)
+        let other = remoteItem(origin: "o2")
+        let later = remoteItem(origin: "o1")
+        store.recordRemote(remoteItem(origin: "o1"))
+        store.recordRemote(other)
+
+        store.recordRemote(later)
+
+        #expect(store.loadRemote() == [later, other])
+    }
+
+    @Test func removingACloseDropsTheRemoteEntriesItWrote() {
+        let store = RecentClosedStore(directory: directory)
+        let closeID = UUID()
+        let kept = remoteItem(origin: "o3")
+        let single = remoteItem(origin: "o1")
+        store.recordRemote(single)
+        store.recordRemote(remoteItem(origin: "o2", closeID: closeID))
+        store.recordRemote(kept)
+
+        store.removeClose(closeID)
+        store.remove(single.id)
+
+        #expect(store.loadRemote() == [kept])
+    }
+
+    @Test func removingAnEntryKeepsTheRemoteEntriesItsCloseWrote() {
+        let store = RecentClosedStore(directory: directory)
+        let closeID = UUID()
+        let tied = remoteItem(origin: "o2", closeID: closeID)
+        store.recordRemote(tied)
+
+        store.remove(closeID)
+
+        #expect(store.loadRemote() == [tied])
+    }
+
+    @Test func theOriginsOwnEntryIsNotedOnTheMatchingRemoteEntry() {
+        let store = RecentClosedStore(directory: directory)
+        store.recordRemote(remoteItem(origin: "o1"))
+        store.recordRemote(remoteItem(origin: "o2"))
+
+        store.setOriginRecentID("r1", host: "box", sessionID: "o1")
+
+        #expect(store.loadRemote().map(\.originRecentID) == [nil, "r1"])
+    }
+
+    @Test func clearEmptiesBothLists() {
+        let store = RecentClosedStore(directory: directory)
+        store.record(sessionItem(title: "local"))
+        store.recordRemote(remoteItem(origin: "o1"))
+
+        store.clear()
+
+        #expect(store.load().isEmpty)
+        #expect(store.loadRemote().isEmpty)
+    }
+
+    @MainActor
+    @Test func aHardCloseOfAnAttachedRowWritesOnlyARemoteEntry() throws {
+        let (store, recentClosed, _) = makeStoreWithRecentClosed()
+        let ws = store.addWorkspace(name: "work")
+        _ = try #require(store.addSession(toWorkspace: ws.id, cwd: "/a"))
+        let row = try addAttachedRow(to: store, workspace: ws.id)
+        row.customName = "remote"
+
+        #expect(store.closeSession(row.id) == nil)
+
+        #expect(recentClosed.load().isEmpty)
+        let entry = try #require(recentClosed.loadRemote().first)
+        #expect(recentClosed.loadRemote().count == 1)
+        #expect(entry.host == "box")
+        #expect(entry.originSessionID == "o1")
+        #expect(entry.name == "remote")
+        #expect(entry.placement == RemoteRecentClosedItem.Placement(workspaceID: ws.id, workspaceName: "work", workspaceIndex: 0,
+                                                                    sessionIndex: 1, parentID: nil))
+        #expect(entry.closeID == nil)
+    }
+
+    @MainActor
+    @Test func undoingASoftCloseOfAnAttachedRowRemovesItsRemoteEntry() throws {
+        let (store, recentClosed, _) = makeStoreWithRecentClosed()
+        let ws = store.addWorkspace(name: "work")
+        let row = try addAttachedRow(to: store, workspace: ws.id)
+
+        #expect(store.softCloseSession(row.id, grace: 3600))
+        #expect(recentClosed.loadRemote().count == 1)
+        #expect(recentClosed.load().isEmpty)
+
+        #expect(store.undoPendingClose())
+        #expect(recentClosed.loadRemote().isEmpty)
+    }
+
+    @MainActor
+    @Test func undoingAGroupCloseRemovesEveryRemoteEntry() throws {
+        let (store, recentClosed, _) = makeStoreWithRecentClosed()
+        let ws = store.addWorkspace(name: "work")
+        let first = try addAttachedRow(to: store, workspace: ws.id, origin: "o1")
+        let second = try addAttachedRow(to: store, workspace: ws.id, origin: "o2")
+
+        #expect(store.softCloseSessions([first.id, second.id], grace: 3600))
+        #expect(Set(recentClosed.loadRemote().map(\.originSessionID)) == ["o1", "o2"])
+
+        #expect(store.undoPendingClose())
+        #expect(recentClosed.loadRemote().isEmpty)
+    }
+
+    @MainActor
+    @Test func aWorkspaceCloseKeepsItsLocalEntryLocalAndTiesTheRemoteOnesToIt() throws {
+        let (store, recentClosed, _) = makeStoreWithRecentClosed()
+        _ = store.addWorkspace(name: "other")
+        let ws = store.addWorkspace(name: "work")
+        let local = try #require(store.addSession(toWorkspace: ws.id, cwd: "/a"))
+        _ = try addAttachedRow(to: store, workspace: ws.id)
+
+        #expect(store.softRemoveWorkspace(ws.id, grace: 3600))
+
+        let item = try #require(recentClosed.load().first)
+        #expect(item.workspace?.snapshot.sessions.map(\.id) == [local.id])
+        #expect(item.workspace?.snapshot.attached == nil)
+        let entry = try #require(recentClosed.loadRemote().first)
+        #expect(entry.closeID == item.id)
+        #expect(entry.placement.workspaceIndex == 1)
+        #expect(entry.placement.sessionIndex == 1)
+
+        #expect(store.undoPendingClose())
+        #expect(recentClosed.load().isEmpty)
+        #expect(recentClosed.loadRemote().isEmpty)
+    }
+
+    @MainActor
+    @Test func aHardWorkspaceRemovalTiesTheRemoteEntriesToItsEntry() throws {
+        let (store, recentClosed, _) = makeStoreWithRecentClosed()
+        _ = store.addWorkspace(name: "other")
+        let ws = store.addWorkspace(name: "work")
+        _ = try #require(store.addSession(toWorkspace: ws.id, cwd: "/a"))
+        _ = try addAttachedRow(to: store, workspace: ws.id)
+
+        store.removeWorkspace(ws.id)
+
+        let item = try #require(recentClosed.load().first)
+        #expect(recentClosed.loadRemote().map(\.closeID) == [item.id])
+    }
+
+    private func remoteItem(origin: String, closeID: UUID? = nil) -> RemoteRecentClosedItem {
+        RemoteRecentClosedItem(host: "box", originSessionID: origin, name: origin,
+                               placement: .init(workspaceID: UUID(), workspaceName: "work", workspaceIndex: 0, sessionIndex: 0,
+                                                parentID: nil),
+                               closeID: closeID)
+    }
+
     private func sessionItem(id: UUID = UUID(), snapshotID: UUID = UUID(), title: String) -> RecentClosedItem {
         RecentClosedItem(
             id: id,
@@ -186,7 +545,7 @@ final class RecentClosedTests {
         )
     }
 
-    private func workspaceItem(id: UUID = UUID(), snapshotID: UUID = UUID(), title: String) -> RecentClosedItem {
+    private func workspaceItem(id: UUID = UUID(), snapshotID: UUID = UUID(), title: String, window: UUID? = nil) -> RecentClosedItem {
         RecentClosedItem(
             id: id,
             kind: .workspace,
@@ -199,7 +558,13 @@ final class RecentClosedTests {
                     sessions: [SessionSnapshot(id: UUID(), customName: "api", cwd: "/tmp")]
                 ),
                 selectedSessionID: nil
-            )
+            ),
+            window: window
         )
     }
+}
+
+private struct LegacyRecentClosedState: Decodable {
+    let version: Int
+    let items: [RecentClosedItem]
 }

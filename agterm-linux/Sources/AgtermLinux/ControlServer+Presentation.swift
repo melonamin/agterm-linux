@@ -25,6 +25,11 @@ final class LinuxPresentationStream: PresentationSink {
         return owner.send(line)
     }
 
+    func finish(_ frame: PresentationFrame) {
+        if let line = try? PresentationCodec.encode(frame), owner.sendFinal(line) { return }
+        owner.shutdown()
+    }
+
     func close(_: PresentationHub.CloseReason) { owner.shutdown() }
     func shutdown() { owner.shutdown() }
 
@@ -135,11 +140,16 @@ extension ControlServer {
     @MainActor
     func attachPresentationHub() {
         RemotePageEnds.shared.onEnd = { [weak self] page in
-            self?.pendingPageClaims[page] = nil
+            self?.pendingPageClaims = self?.pendingPageClaims.filter { $0.value.page != page } ?? [:]
             self?.pageServeStreams.removeValue(forKey: page)?.shutdown()
         }
-        presentationHub.onPresenterLost = { [weak self] id in self?.presenterLost(forSession: id) }
-        presentationHub.onPresenterFrame = { [weak self] id, body in self?.receivePresenterFrame(body, forSession: id) }
+        RemotePageEnds.shared.onWithdrawn = { [weak self] page in
+            self?.pendingPageClaims = self?.pendingPageClaims.filter { $0.value.page != page } ?? [:]
+            self?.pageServeStreams.removeValue(forKey: page)?.shutdown()
+        }
+        presentationHub.onOwnerLost = { [weak self] id, owner in self?.presenterLost(forSession: id, owner: owner) }
+        presentationHub.onOpenWork = { [weak self] id in self?.reconcileOpenWork(forSession: id) }
+        presentationHub.onPresenterFrame = { [weak self] id, sender, body in self?.receivePresenterFrame(body, forSession: id, from: sender) }
         overlayJobs.onFinished = { [weak self] job in
             self?.pendingJobCancels.remove(job.id)
             gLibrary?.store(forSession: job.session)?.finishRemoteOverlay(job)
@@ -149,6 +159,8 @@ extension ControlServer {
             controller.store.overlayJobs = overlayJobs
         }
         for stream in presentationStreams where !presentationSourceExists(stream.session) { stream.shutdown() }
+        trackOpenWorkPlaces()
+        mailRelay.start()
     }
 
     @MainActor
@@ -182,18 +194,22 @@ extension ControlServer {
     private func presenterRouter(forSession id: UUID) -> LinuxPresenterFrameRouter? {
         guard let controller = gWindows.values.first(where: { $0.store.session(withID: id) != nil }) else { return nil }
         return LinuxPresenterFrameRouter(store: controller.store,
-                                         takeBackAsk: { controller.takeBackRemoteAsk(forSession: $0) },
-                                         reconcile: { controller.reconcile(focusActive: false) })
+                                         takeBackAsk: { controller.takeBackRemoteAsk(forSession: $0, owner: $1) },
+                                         reconcile: { controller.reconcile(focusActive: false) },
+                                         takeBackPick: { id, owner, refused in
+            SessionPickBook.shared.handBack(session: id, owner: owner, refused: refused,
+                to: controller.pickController, window: controller.windowID)
+        }, forwardClick: { click, session, sender in controller.receiveForwardedLink(click, session: session, sender: sender) })
     }
 
     @MainActor
-    private func presenterLost(forSession id: UUID) {
-        presenterRouter(forSession: id)?.presenterLost(forSession: id)
+    private func presenterLost(forSession id: UUID, owner: Int) {
+        presenterRouter(forSession: id)?.presenterLost(forSession: id, owner: owner)
     }
 
     @MainActor
-    private func receivePresenterFrame(_ body: PresentationFrame.Body, forSession id: UUID) {
-        presenterRouter(forSession: id)?.receive(body, forSession: id)
+    private func receivePresenterFrame(_ body: PresentationFrame.Body, forSession id: UUID, from sender: Int) {
+        presenterRouter(forSession: id)?.receive(body, forSession: id, from: sender)
     }
 }
 
@@ -201,25 +217,37 @@ extension ControlServer {
 @MainActor
 struct LinuxPresenterFrameRouter {
     let store: AppStore
-    let takeBackAsk: (UUID) -> Void
+    let takeBackAsk: (UUID, Int) -> Void
     let reconcile: () -> Void
+    var takeBackPick: (UUID, Int, PresentationPickRef?) -> Void = { _, _, _ in }
+    var forwardClick: (PresentationLinkClick, UUID, Int) -> Void = { _, _, _ in }
 
-    func presenterLost(forSession id: UUID) {
-        takeBackAsk(id)
-        store.remoteOverlayPresenterLost(forSession: id)
+    func presenterLost(forSession id: UUID, owner: Int) {
+        store.remoteOverlayOwnerLost(forSession: id, owner: owner)
+        // The hub schedules shared OpenWork placement after removing the owner.
+        // That pass can choose another viewer before considering a local surface.
         reconcile()
     }
 
-    func receive(_ body: PresentationFrame.Body, forSession id: UUID) {
+    private func handBackPick(_ id: UUID, owner: Int, refused: PresentationPickRef? = nil) {
+        takeBackPick(id, owner, refused)
+    }
+
+    func receive(_ body: PresentationFrame.Body, forSession id: UUID, from sender: Int) {
         switch body {
         case .askResolve(let answer): _ = store.resolveRemoteAsk(answer, forSession: id)
+        case .pickResolve(let answer): SessionPickBook.shared.resolveRemote(answer, session: id)
+        case .pickRejected(let ref): handBackPick(id, owner: ref.owner, refused: ref)
+        case .statusClear(let clear): store.applyPresenterClear(clear, forSession: id, reset: linuxSettingsStore().load().effectiveStatusReset)
+        case .statusSeen(let seen): store.applyPresenterSeen(seen, forSession: id, badgeReset: linuxSettingsStore().load().effectiveBadgeReset)
+        case .linkClick(let click): forwardClick(click, id, sender)
         // a refused ask is not a lost presenter: its overlay jobs stay with it
         case .askRejected(let ref) where store.isPresentingRemotely(ref, forSession: id):
-            takeBackAsk(id)
+            takeBackAsk(id, ref.owner)
             reconcile()
-        case .pageState, .pageRejected, .pageClosed: store.receiveRemotePageFrame(body, forSession: id)
-        case .overlayRejected(let change): store.rejectRemoteOverlay(change.job, forSession: id)
-        case .overlayClosed(let change): store.remoteOverlaySurfaceClosed(change.job, forSession: id)
+        case .pageState, .pageResult, .pageRejected, .pageClosed: store.receiveRemotePageFrame(body, forSession: id, from: sender)
+        case .overlayRejected(let change): store.rejectRemoteOverlay(change.job, forSession: id, from: sender)
+        case .overlayClosed(let change): store.remoteOverlaySurfaceClosed(change.job, forSession: id, from: sender)
         default: break
         }
     }

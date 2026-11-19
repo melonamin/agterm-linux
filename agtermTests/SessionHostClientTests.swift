@@ -1,9 +1,15 @@
 import Darwin
 import XCTest
 import AgtermResponsibility
+@testable import agterm
 import agtermCore
 
 final class SessionHostClientTests: XCTestCase {
+    static func hostPaths(socketDirectory: String) throws -> SessionHost.Paths {
+        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/agterm-session-host").path
+        return try SessionHost.paths(socketDirectory: socketDirectory, key: XCTUnwrap(HelperEndpointKey.shared.key(helper: helper)))
+    }
+
     func testClientWithLoginArgvCreatesDisclaimedHostInPaneDirectory() throws {
         try XCTSkipUnless(Responsibility.system.isAvailable, "Required responsibility symbols are absent")
         let fixture = try Fixture()
@@ -150,6 +156,66 @@ final class SessionHostClientTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.directory.path))
     }
 
+    // regression: retirement read the host's image path, which names the old bundle an update moved aside.
+    func testStopRetiresAnIdleHostWhoseBundleWasMovedAside() throws {
+        try XCTSkipUnless(Responsibility.system.isAvailable, "Required responsibility symbols are absent")
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        try fixture.startClient(name: fixture.names[0])
+        _ = try fixture.waitForLeaders(count: 1)
+        let host = try fixture.hostPID()
+        defer { kill(host, SIGKILL) }
+        let jobs = fixture.hostJobs()
+        XCTAssertEqual(jobs.count, ProcessInfo.processInfo.isOperatingSystemAtLeast(.init(majorVersion: 27, minorVersion: 0, patchVersion: 0)) ? 1 : 0)
+        let endpointDirectory = URL(fileURLWithPath: fixture.paths.socket).deletingLastPathComponent().path
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: endpointDirectory).filter { $0.hasSuffix(".plist") }, [])
+        let keyed = URL(fileURLWithPath: fixture.paths.pidfile).deletingLastPathComponent()
+        try FileManager.default.moveItem(at: keyed, to: keyed.deletingLastPathComponent().appendingPathComponent(SessionHost.legacyEndpoint))
+        XCTAssertEqual(try fixture.runHelper(["stop", keyed.deletingLastPathComponent().path]),
+                       "\(SessionHost.legacyEndpoint) refused: live rooted daemons remain\n")
+        XCTAssertEqual(kill(host, 0), 0)
+        XCTAssertEqual(fixture.hostJobs(), jobs)
+        try fixture.endClients()
+        let bundle = fixture.executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let movedAside = bundle.deletingLastPathComponent().appendingPathComponent("Previous.app")
+        try FileManager.default.moveItem(at: bundle, to: movedAside)
+        try FileManager.default.copyItem(at: movedAside, to: bundle)
+        var path = [UInt8](repeating: 0, count: 4096)
+        XCTAssertGreaterThan(proc_pidpath(host, &path, UInt32(path.count)), 0)
+        XCTAssertTrue(String(decoding: path.prefix { $0 != 0 }, as: UTF8.self).contains("/Previous.app/"),
+                      "the live host's image must name the moved bundle")
+        let output = try fixture.runHelper(["stop", keyed.deletingLastPathComponent().path])
+        XCTAssertEqual(output, "\(SessionHost.legacyEndpoint) stopped\n")
+        let deadline = Date().addingTimeInterval(10)
+        while (kill(host, 0) == 0 || !fixture.hostJobs().isEmpty) && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        XCTAssertEqual(kill(host, 0), -1)
+        XCTAssertEqual(fixture.hostJobs(), [])
+    }
+
+    func testJobHostThatFindsTheEndpointTakenRemovesOnlyItsOwnJob() throws {
+        try XCTSkipUnless(Responsibility.system.isAvailable, "Required responsibility symbols are absent")
+        try XCTSkipUnless(ProcessInfo.processInfo.isOperatingSystemAtLeast(.init(majorVersion: 27, minorVersion: 0, patchVersion: 0)),
+                          "the session host starts as a launchd job on macOS 27 and later")
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        try fixture.startClient(name: fixture.names[0])
+        _ = try fixture.waitForLeaders(count: 1)
+        let host = try fixture.hostPID()
+        defer { kill(host, SIGKILL) }
+        let jobs = fixture.hostJobs()
+        XCTAssertEqual(jobs.count, 1)
+        let key = try fixture.runHelper(["key"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        try fixture.bootstrapHostJob(label: "\(fixture.bundleID).session-host.\(key).duplicate", key: key)
+        let deadline = Date().addingTimeInterval(10)
+        while fixture.hostJobs() != jobs && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        XCTAssertEqual(fixture.hostJobs(), jobs)
+        XCTAssertEqual(kill(host, 0), 0)
+        try fixture.startClient(name: fixture.names[1])
+        _ = try fixture.waitForLeaders(count: 2)
+        XCTAssertEqual(try fixture.hostPID(), host)
+        XCTAssertEqual(fixture.hostJobs(), jobs)
+    }
+
     final class Fixture {
         let directory = URL(fileURLWithPath: "/tmp/shc-\(UUID().uuidString)")
         let names = ["agterm-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "agterm-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]
@@ -157,6 +223,7 @@ final class SessionHostClientTests: XCTestCase {
         let zmx: URL
         let paths: SessionHost.Paths
         let environment: [String: String]
+        let bundleID = "com.umputun.clienttest.\(UUID().uuidString)"
         var clients: [Int32] = []
         var terminals: [Int32] = []
         private var terminalPeers: [Int32] = []
@@ -169,14 +236,14 @@ final class SessionHostClientTests: XCTestCase {
             executable = bundle.appendingPathComponent("Contents/MacOS/agterm-session-host")
             zmx = bundle.appendingPathComponent("Contents/MacOS/zmx")
             let socketDir = directory.appendingPathComponent("pane").path
-            paths = try SessionHost.paths(socketDirectory: socketDir)
+            paths = try SessionHostClientTests.hostPaths(socketDirectory: socketDir)
             environment = ["ZMX_DIR": socketDir, "ZMX_SESSION": "", "ZMX_SESSION_PREFIX": "", "ZMX_NO_DETACH_KEY": "1",
                            "SHELL": "/bin/sh", "HOME": directory.path, "PATH": "/usr/bin:/bin", "TERM": "xterm-256color", "CLIENT_MARKER": "unique pane value"]
             try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
             let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             try FileManager.default.copyItem(at: Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/agterm-session-host"), to: executable)
             try FileManager.default.copyItem(at: repo.appendingPathComponent("agterm/Resources/zmx/zmx"), to: zmx)
-            let info = ["CFBundleIdentifier": "com.umputun.clienttest.\(UUID().uuidString)", "CFBundleExecutable": "agterm-session-host"]
+            let info = ["CFBundleIdentifier": bundleID, "CFBundleExecutable": "agterm-session-host"]
             try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: bundle.appendingPathComponent("Contents/Info.plist"))
             try FileManager.default.createDirectory(at: URL(fileURLWithPath: paths.ownerLock).deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -318,6 +385,7 @@ final class SessionHostClientTests: XCTestCase {
                                                   to: evidenceDirectory.appendingPathComponent("zmx-logs"))
             }
             let survivors = killOwnedProcesses()
+            removeHostJobs()
             XCTAssertEqual(survivors, [], "fixture processes outlived cleanup; \(directory.path) is kept")
             guard survivors.isEmpty else { return }
             try? FileManager.default.removeItem(at: directory)
@@ -346,6 +414,45 @@ final class SessionHostClientTests: XCTestCase {
             }
         }
 
+        func hostJobs() -> [String] {
+            let list = Process()
+            list.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            list.arguments = ["list"]
+            let output = Pipe()
+            list.standardOutput = output
+            guard (try? list.run()) != nil else { return [] }
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            list.waitUntilExit()
+            let prefix = "\(bundleID).session-host."
+            return String(decoding: data, as: UTF8.self).split(separator: "\n")
+                .compactMap { $0.split(separator: "\t").last.map(String.init) }.filter { $0.hasPrefix(prefix) }.sorted()
+        }
+
+        func bootstrapHostJob(label: String, key: String) throws {
+            let plist = directory.appendingPathComponent("\(label).plist")
+            let job: [String: Any] = ["Label": label, "RunAtLoad": true, "KeepAlive": false, "AbandonProcessGroup": true,
+                                      "ProgramArguments": [executable.path, "host", environment["ZMX_DIR"] ?? "", key, label]]
+            try PropertyListSerialization.data(fromPropertyList: job, format: .xml, options: 0).write(to: plist)
+            let bootstrap = Process()
+            bootstrap.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            bootstrap.arguments = ["bootstrap", "gui/\(getuid())", plist.path]
+            try bootstrap.run()
+            let deadline = Date().addingTimeInterval(5)
+            while bootstrap.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+            if bootstrap.isRunning { kill(bootstrap.processIdentifier, SIGKILL); bootstrap.waitUntilExit(); throw POSIXError(.ETIMEDOUT) }
+            XCTAssertEqual(bootstrap.terminationStatus, 0)
+        }
+
+        private func removeHostJobs() {
+            for label in hostJobs() {
+                let bootout = Process()
+                bootout.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                bootout.arguments = ["bootout", "gui/\(getuid())/\(label)"]
+                try? bootout.run()
+                bootout.waitUntilExit()
+            }
+        }
+
         // `zmx kill` needs a daemon that answers, so a daemon it could not reach is found by its executable
         // instead: only this fixture's own copies live under `directory`.
         private func killOwnedProcesses() -> [Int32] {
@@ -369,9 +476,28 @@ final class SessionHostClientTests: XCTestCase {
             return String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
         }
 
+        func endClients() throws {
+            for pid in clients { kill(pid, SIGKILL); var status: Int32 = 0; _ = waitpid(pid, &status, 0) }
+            clients = []
+            for name in names { _ = try? runZmx(["kill", name, "--force"]) }
+            let deadline = Date().addingTimeInterval(10)
+            while try !ZmxListParser.parse(runZmx(["list"])).isEmpty {
+                guard Date() < deadline else { throw POSIXError(.ETIMEDOUT) }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
+
+        func runHelper(_ arguments: [String]) throws -> String {
+            try run(executable, arguments)
+        }
+
         private func runZmx(_ arguments: [String]) throws -> String {
+            try run(zmx, arguments)
+        }
+
+        private func run(_ program: URL, _ arguments: [String]) throws -> String {
             let process = Process()
-            process.executableURL = zmx
+            process.executableURL = program
             process.arguments = arguments
             process.environment = environment
             process.currentDirectoryURL = directory

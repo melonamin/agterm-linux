@@ -26,25 +26,29 @@ report_status() {
   "$status_wrapper" "$@" >/dev/null 2>&1 || true
 }
 
+# macOS 14 ships plutil but no jq. A Linux plutil, swift-corelibs' port, has no -type, so the platform picks the
+# tool, and the server installer requires jq there.
+# json_string prints a top-level string field of the JSON on stdin and fails when it is absent or not a string.
+json_string() {
+  if [[ $OSTYPE == darwin* ]]; then
+    /usr/bin/plutil -extract "$1" raw -o - - 2>/dev/null
+    return
+  fi
+  jq -er --arg key "$1" '.[$key] | strings' 2>/dev/null
+}
+
+# json_null succeeds when the JSON on stdin has the field and it is null.
+json_null() {
+  if [[ $OSTYPE == darwin* ]]; then
+    [ "$(/usr/bin/plutil -type "$1" - 2>/dev/null)" = "(any)" ]
+    return
+  fi
+  jq -e --arg key "$1" 'has($key) and .[$key] == null' >/dev/null 2>&1
+}
+
 assistant_message_contains_question() {
   local message prose question quoted_mark
-  if [ -x /usr/bin/plutil ]; then
-    message=$(/usr/bin/plutil -extract last_assistant_message raw -o - - 2>/dev/null) || return 1
-  elif command -v python3 >/dev/null 2>&1; then
-    message=$(python3 -c '
-import json
-import sys
-
-value = json.load(sys.stdin).get("last_assistant_message")
-if not isinstance(value, str):
-    raise SystemExit(1)
-sys.stdout.write(value)
-' 2>/dev/null) || return 1
-  elif command -v jq >/dev/null 2>&1; then
-    message=$(jq -er '.last_assistant_message | strings' 2>/dev/null) || return 1
-  else
-    return 1
-  fi
+  message=$(json_string last_assistant_message) || return 1
   # a ? that opens quoted text ("? for shortcuts") ends no word, yet its opener would pass as one
   quoted_mark=$'s/(^|[[:space:]])([“‘"\'([*_]+)\\?/\\1\\2/g'
   # a span becomes a word rather than nothing so "run `make test`?" keeps its ? attached
@@ -137,18 +141,8 @@ case "$action" in
   session-start|user-prompt-submit|pre-tool-use|post-tool-use)
     # codex's memory consolidation thread reaches these hooks but no user Stop handler, so its
     # events would leave the pane active and replace the foreground watcher. it is ephemeral, so its
-    # transcript_path is null, which plutil types as "(any)". foreground ephemeral sessions lose
-    # these updates too.
-    # Some plutil implementations reject JSON null. Probe separately so a failed parser does not
-    # consume the event before the Python/jq fallback can filter memory-thread hooks.
-    if [ -x /usr/bin/plutil ] && \
-      [ "$(printf '%s' '{"transcript_path":null}' | /usr/bin/plutil -type transcript_path - 2>/dev/null)" = "(any)" ]; then
-      [ "$(/usr/bin/plutil -type transcript_path - 2>/dev/null)" = "(any)" ] && exit 0
-    elif command -v python3 >/dev/null 2>&1; then
-      python3 -c 'import json, sys; sys.exit(0 if json.load(sys.stdin).get("transcript_path", False) is None else 1)' 2>/dev/null && exit 0
-    elif command -v jq >/dev/null 2>&1; then
-      jq -e 'has("transcript_path") and .transcript_path == null' >/dev/null 2>&1 && exit 0
-    fi
+    # transcript_path is null. foreground ephemeral sessions lose these updates too.
+    json_null transcript_path && exit 0
     ;;
 esac
 

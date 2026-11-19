@@ -68,6 +68,29 @@ public enum ControlResolve {
         return (base as NSString).appendingPathComponent("agterm.sock")
     }
 
+    /// defaultStateDirectory is the state directory when `AGTERM_STATE_DIR` is unset:
+    /// `~/Library/Application Support/agterm` on macOS; on Linux, where agterm-server lives, `$XDG_STATE_HOME/agterm`
+    /// (an absolute value only) or `~/.local/state/agterm`, so a bare ssh command finds it. `/tmp/agterm` with no HOME.
+    public static func defaultStateDirectory(environment: [String: String]) -> String {
+        #if os(Linux)
+        if let state = environment["XDG_STATE_HOME"], state.hasPrefix("/") {
+            return (state as NSString).appendingPathComponent("agterm")
+        }
+        return environment["HOME"].map { ($0 as NSString).appendingPathComponent(".local/state/agterm") } ?? "/tmp/agterm"
+        #else
+        return environment["HOME"].map { ($0 as NSString).appendingPathComponent("Library/Application Support/agterm") }
+            ?? "/tmp/agterm"
+        #endif
+    }
+
+    /// isCustomStateDirectory is whether `AGTERM_STATE_DIR` names a non-default directory, which a Launch Services
+    /// relaunch does not open.
+    public static func isCustomStateDirectory(environment: [String: String]) -> Bool {
+        guard let dir = environment["AGTERM_STATE_DIR"], !dir.isEmpty else { return false }
+        let standard = { (path: String) in URL(fileURLWithPath: path).standardizedFileURL.path }
+        return standard(dir) != standard(defaultStateDirectory(environment: environment))
+    }
+
     /// The control socket's ownership lock path.
     public static func ownershipLockPath(forSocket socketPath: String) -> String {
         socketPath + ".lock"

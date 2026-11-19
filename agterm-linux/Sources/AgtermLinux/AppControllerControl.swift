@@ -121,14 +121,19 @@ extension AppController {
     func openNewWindow() { openWindow(gLibrary.newWindow().id) }
 
     func reopenRecentClosed() {
+        if store.isRemoteWindow { sendRemoteHistory(.recentOpen); return }
+        if !library.remoteRecentClosedItems.isEmpty { sendRemoteHistory(.recentOpen); return }
         if library.reopenLatestRecentClosed(into: store) { reconcile() }
     }
 
     func clearRecentHistory() {
+        if store.isRemoteWindow { sendRemoteHistory(.recentClear); return }
         library.clearRecentClosedItems()
     }
 
     func undoPendingClose() {
+        if let id = LinuxRemoteCatalogs.windows[windowID]?.actions.takeUndo() { sendRemoteHistory(.sessionUndo, target: id); return }
+        if let undo = library.takeAttachedUndo(window: windowID) { undoAttachedFromGUI(undo); return }
         if store.undoPendingClose() { reconcile() }
     }
 
@@ -159,6 +164,8 @@ extension AppController {
     }
 
     func closeSessionFromGUI(_ id: UUID) {
+        if sendRemoteGUI(ControlRequest(cmd: .sessionClose, target: id.uuidString,
+            args: ControlArgs(undoable: linuxSettingsStore().load().closeGraceUndoEnabled ?? true))) { return }
         if linuxSettingsStore().load().closeGraceUndoEnabled ?? true {
             if store.softCloseSession(id) { reconcileSoftClose() }
         } else {

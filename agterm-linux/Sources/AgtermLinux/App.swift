@@ -328,6 +328,13 @@ private let onShutdown: @MainActor @convention(c) (OpaquePointer?, gpointer?) ->
         colorSchemeChangeDebouncer.cancel()
         gLibrary?.isTerminating = true
         flushOnQuit()
+        for controller in gWindows.values { controller.stopRemotePresentations() }
+        LinuxRemoteCatalogs.shutdown()
+        gControlServer.nativeCatalogHeartbeat?()
+        gControlServer.nativeCatalogHeartbeat = nil
+        for stream in gControlServer.catalogStreams { stream.shutdown() }
+        gControlServer.catalogStreams.removeAll()
+        gControlServer.mailRelay.stop()
         gControlServer.shutdownPresentationStreams()
         gControlServer.shutdownOverlayJobs()
         gControlServer.shutdownPageStreams()

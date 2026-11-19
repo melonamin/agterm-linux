@@ -104,7 +104,8 @@ extension AppController: ControlActions {
             linkOpenMode: linuxSettingsStore().load().effectiveLinkOpenMode,
             sidebarDensity: linuxSettingsStore().load().effectiveSidebarDensity
         )
-        let tree = projectingLinuxAutoFollow(baseTree)
+        var tree = projectingLinuxAutoFollow(baseTree)
+        tree.remote = library.remoteNode(for: windowID)
         return ControlResponse(ok: true, result: ControlResult(tree: tree))
     }
 
@@ -375,7 +376,7 @@ extension AppController: ControlActions {
         switch resolveSessionResponse(target) {
         case .failure(let response): return response
         case .success(let id):
-            store.clearUnseen(id)
+            store.markSeen(id)
             syncSidebar()
             return ok(id)
         }
@@ -448,13 +449,24 @@ extension AppController: ControlActions {
     }
 
     func scratchSession(_ target: String?, window: String?, mode: String?, command: String?) -> ControlResponse {
+        scratchSession(target, window: window, mode: mode, command: command, follow: false)
+    }
+
+    func scratchSession(_ target: String?, window: String?, mode: String?, command: String?, follow: Bool) -> ControlResponse {
         switch resolveSessionResponse(target) {
         case .failure(let response): return response
         case .success(let id):
             guard let session = store.session(withID: id) else { return err("no such session") }
             guard let parsed = ControlToggleMode.parse(mode) else { return err("invalid scratch mode: \(mode ?? "toggle")") }
-            if parsed.desiredValue(current: session.scratchActive) != session.scratchActive {
-                store.toggleScratch(id)
+            let want = parsed.desiredValue(current: session.scratchActive)
+            let replacingVisible = want && session.scratchActive && session.scratchSurface != nil && !(command ?? "").isEmpty
+            if want, let command, !command.isEmpty {
+                store.replaceScratch(id, emitVisibility: !replacingVisible)
+                session.scratchCommand = command
+            }
+            if want, follow, store.selectedSessionID != id { store.selectSession(id) }
+            if want != session.scratchActive {
+                store.toggleScratch(id, emitVisibility: !replacingVisible)
             }
             reconcile()
             updateToggleIcons()

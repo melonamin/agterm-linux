@@ -13,7 +13,7 @@ extension LinuxHtmlOverlayPage {
     func installTextRenderer() {
         guard overlay.source.kind == .text else { return }
         addBridgeScript(MarkdownAssets.shared.textScript, world: "agterm-text", atEnd: true)
-        guard overlay.source.textPath != nil else { return }
+        guard LinuxTextReads.location(self) != nil else { return }
         textPage = LinuxTextPage(page: self)
         _ = webkit_user_content_manager_register_script_message_handler(manager, "agtermTextPage", "agterm-text")
         connect(manager, "script-message-received::agtermTextPage", unsafeBitCast(onTextPageReport, to: GCallback.self),
@@ -28,6 +28,12 @@ private let onTextPageReport: @MainActor @convention(c) (OpaquePointer?, OpaqueP
 
 @MainActor
 extension AppController {
+    func supportsTextLog(_ id: UUID, pane: OverlayPane?, forwardedTo: Int? = nil) -> Bool {
+        guard let session = store.session(withID: id),
+              let owner = forwardedTo ?? store.pageRecipient(session, pane: pane) else { return true }
+        return store.presentationHub?.supports(PresentationHub.pageTextKind, owner: owner) == true
+    }
+
     func setSessionOverlayFollow(_ target: String?, window: String?, pane: OverlayPane?, mode: ControlToggleMode) -> ControlResponse {
         switch resolveSessionResponse(target) {
         case .failure(let response): return response
@@ -95,35 +101,12 @@ extension AppController {
 @MainActor
 extension LinuxControlDispatcher {
     func dispatchTextPage(_ request: ControlRequest) -> ControlResponse {
-        let pane: OverlayPane?
-        switch parseOverlayPane(request.args?.pane) {
-        case .rejected(let response): return response
-        case .pane(let value): pane = value
+        switch parseTextAction(request) {
+        case .refused(let response): return response
+        case .action(let pane, let action): return actions.runTextAction(action, session: request.target, pane: pane)
         }
-        if request.cmd == .sessionOverlayChanges {
-            guard let direction = request.args?.to, ["next", "prev"].contains(direction) else {
-                return actions.err(request.args?.to.map { "invalid overlay changes direction: \($0)" }
-                    ?? "session.overlay.changes requires to next or prev")
-            }
-            return actions.stepTextChanges(request.target, pane: pane, forward: direction == "next")
-        }
-        let search: TextSearchRequest
-        switch (request.args?.text, request.args?.to) {
-        case (nil, nil): return actions.err(OverlayHtmlError.searchRequest)
-        case (.some, .some): return actions.err(OverlayHtmlError.searchTextWithStep)
-        case (let text?, nil):
-            guard !text.isEmpty else { return actions.err("session.overlay.search: text must not be empty") }
-            search = .query(text)
-        case (nil, let to?):
-            switch to {
-            case "next": search = .next
-            case "prev": search = .previous
-            case "close": search = .close
-            default: return actions.err("invalid overlay search direction: \(to)")
-            }
-        }
-        return actions.searchTextPage(request.target, pane: pane, request: search)
     }
+
 }
 
 extension HtmlSource {

@@ -11,7 +11,9 @@ private enum LinuxOverlayReadSurface {
 @MainActor
 extension AppController {
     func appIdentity() -> ControlResponse {
-        ControlResponse(ok: true, result: ControlResult(app: LinuxAppMetadata.identity, installed: LinuxAppMetadata.installedIdentity()))
+        var result = ControlResult(app: LinuxAppMetadata.identity, installed: LinuxAppMetadata.installedIdentity())
+        result.macCatalog = gControlServer.originVersions
+        return ControlResponse(ok: true, result: result)
     }
 
     func captureRestoreCommands() -> ControlResponse {

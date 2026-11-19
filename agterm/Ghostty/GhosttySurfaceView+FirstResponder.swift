@@ -1,9 +1,19 @@
+import agtermCore
 import AppKit
 import GhosttyKit
 
 /// Who may take keyboard focus on a surface, which clicks reach the terminal at all, and how a responder
 /// transition is reported to libghostty and to the session model.
 extension GhosttySurfaceView {
+    /// Rechecked inside retries so a newly opened dialog can claim its region's input.
+    static func pickOwnsFocus(in window: NSWindow?, session: Session? = nil, pane: OverlayPane? = nil) -> Bool {
+        guard let window, let windowID = WindowRegistry.shared.windowID(for: window) else { return false }
+        if PickRegistry.shared.controller(for: windowID)?.modalPending == true { return true }
+        guard let session, let catcher = AskKeyCatcher.KeyCatcherView.sessionCatchers.object(forKey: session.id as NSUUID),
+              catcher.window === window else { return false }
+        return catcher.sessionInput?.blocksTerminalFocus(in: window, pane: pane) == true
+    }
+
     override var acceptsFirstResponder: Bool { !viewOnly }
 
     /// In view-only mode refuse hit-testing, so a click passes THROUGH to the SwiftUI cell overlay instead of
@@ -44,7 +54,6 @@ extension GhosttySurfaceView {
         // AX hears the move from here, NOT from `updateGhosttyFocus` (which this path deliberately skips):
         // the post is deferred a run-loop turn precisely because `window.firstResponder` reads stale here.
         postAccessibilityFocusChange()
-        TerminalInputSource.shared.requestRefresh()
         return result
     }
 
@@ -55,7 +64,6 @@ extension GhosttySurfaceView {
             if !suppressFocusChange { onFocusChange?(false) }
         }
         postAccessibilityFocusChange() // see becomeFirstResponder; the deferred post coalesces the pair
-        TerminalInputSource.shared.requestRefresh()
         return result
     }
 }

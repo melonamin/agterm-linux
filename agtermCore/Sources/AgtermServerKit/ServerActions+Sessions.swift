@@ -1,0 +1,354 @@
+import Foundation
+import agtermCore
+
+/// The session commands agterm-server serves. They change the catalog as a Mac window's commands change its
+/// store and start or end the daemons behind it; nothing here selects or focuses, since the Macs showing the
+/// catalog own their own selection.
+extension ServerActions {
+    public func createSession(_ options: ControlSessionCreateOptions) -> ControlResponse {
+        createSession(options, tint: nil)
+    }
+
+    public func createSession(_ options: ControlSessionCreateOptions, tint: SidebarTint?) -> ControlResponse {
+        if let refusal = windowRefusal(options.window) { return refusal }
+        let destination: (workspace: UUID, index: Int?)
+        switch sessionDestination(options) {
+        case .success(let resolved): destination = resolved
+        case .failure(let refusal): return refusal.response
+        }
+        let cwd = options.cwd ?? panes.baseEnvironment["HOME"] ?? "/"
+        guard let session = store.addSession(toWorkspace: destination.workspace, cwd: cwd, command: options.command,
+                                             name: options.name, wait: options.wait == true, at: destination.index, select: false,
+                                             tint: tint) else {
+            return ControlResponse(ok: false, error: "could not create session")
+        }
+        if let refusal = panes.start(.init(identity: session.paneIdentity, session: session, workspace: destination.workspace,
+                                           pane: .left, program: .creation(options.command, wait: options.wait),
+                                           directory: cwd)) {
+            store.discardSession(session.id, alreadyFinalized: session.paneIdentity)
+            return ControlResponse(ok: false, error: refusal)
+        }
+        return ControlResponse(ok: true, result: ControlResult(id: session.id.uuidString))
+    }
+
+    /// duplicateSession starts a plain shell right after the target in its workspace, in its focused directory,
+    /// copying nothing else.
+    public func duplicateSession(_ target: String?, window: String?) -> ControlResponse {
+        withSession(target, window: window) { session in
+            createSession(ControlSessionCreateOptions(window: nil, cwd: session.focusedCwd, workspace: nil, workspaceName: nil,
+                                                      createWorkspace: nil, command: nil, wait: nil, name: nil,
+                                                      after: session.id.uuidString, before: nil, noSelect: true))
+        }
+    }
+
+    public func renameSession(_ target: String?, window: String?, name: String) -> ControlResponse {
+        withSession(target, window: window) { session in
+            store.renameSession(session.id, to: name)
+            return ControlResponse(ok: true, result: ControlResult(id: session.id.uuidString))
+        }
+    }
+
+    public func closeSession(_ target: String?, window: String?) -> ControlResponse {
+        withSession(target, window: window) { session in
+            let closing = [session.id] + store.companions(of: session.id).map(\.id)
+            let recent = store.closeSession(session.id)
+            let closed = closing.filter { store.session(withID: $0) == nil }
+            return ControlResponse(ok: true, result: ControlResult(id: session.id.uuidString,
+                                                                   affected: closing.count > 1 ? closing.count : nil,
+                                                                   closed: closed.map(\.uuidString), recentID: recent?.uuidString))
+        }
+    }
+
+    public func closeSessions(_ targets: [String], window: String?) -> ControlResponse {
+        if let refusal = windowRefusal(window) { return refusal }
+        let ids: [UUID]
+        switch resolveSessionIDs(targets) {
+        case .failure(let refusal): return refusal.response
+        case .success(let resolved): ids = resolved
+        }
+        guard ids.count > 1 else {
+            guard let id = ids.first else { return ControlResponse(ok: false, error: "session.close requires at least one --target") }
+            return closeSession(id.uuidString, window: window)
+        }
+        let named = Set(ids)
+        let roots = ids.filter { store.session(withID: $0)?.parentID.map(named.contains) != true }
+        let closing = roots.flatMap { [$0] + store.companions(of: $0).map(\.id) }
+        for id in roots where store.session(withID: id) != nil { store.closeSession(id) }
+        let closed = closing.filter { store.session(withID: $0) == nil }
+        return ControlResponse(ok: true, result: ControlResult(affected: closed.count, closed: closed.map(\.uuidString)))
+    }
+
+    /// terminateSessions is `session.close` here: every row on this host is its own session, so closing it ends it.
+    public func terminateSessions(_ targets: [String], window: String?, undoable: Bool) -> ControlResponse {
+        targets.count == 1 ? closeSession(targets[0], window: window, undoable: undoable)
+            : closeSessions(targets, window: window, undoable: undoable)
+    }
+
+    public func splitSession(_ target: String?, window: String?, mode: String?) -> ControlResponse {
+        splitSession(target, window: window, mode: mode, axis: nil)
+    }
+
+    /// splitSession on `on` or a toggle that shows the split starts the right pane's daemon when the session has
+    /// none yet; `off` hides the pane and keeps its daemon, as on the Mac.
+    public func splitSession(_ target: String?, window: String?, mode: String?, axis: SplitAxis?) -> ControlResponse {
+        withSession(target, window: window) { session in
+            guard !session.ended else { return ControlResponse(ok: false, error: "session has ended") }
+            guard let parsed = ControlToggleMode.parse(mode) else {
+                return ControlResponse(ok: false, error: "invalid split mode: \(mode ?? "toggle")")
+            }
+            switch parsed {
+            case .on: store.setSplitVisibility(session.id, shown: true, axis: axis)
+            case .off: store.setSplitVisibility(session.id, shown: false)
+            case .toggle: store.toggleSplit(session.id, axis: axis)
+            }
+            if let split = session.splitPaneIdentity, !session.daemonBackedPanes.contains(split) {
+                let workspace = store.sessionLocation(ofSession: session.id)?.workspace
+                if let refusal = panes.start(.init(identity: split, session: session, workspace: workspace, pane: .right,
+                                                   directory: session.cwd(for: .left))) {
+                    store.closeSplit(session.id, alreadyFinalized: split)
+                    return ControlResponse(ok: false, error: refusal)
+                }
+            }
+            return ControlResponse(ok: true, result: ControlResult(id: session.id.uuidString))
+        }
+    }
+
+    public func closeSessionSplit(_ target: String?, window: String?) -> ControlResponse {
+        withSession(target, window: window) { session in
+            if session.hasSplit { store.closeSplit(session.id) }
+            return ControlResponse(ok: true, result: ControlResult(id: session.id.uuidString))
+        }
+    }
+
+    public func swapSessionPanes(_ target: String?, window: String?) async -> ControlResponse {
+        withSession(target, window: window) { session in
+            switch store.swapPanes(session.id) {
+            case nil: ControlResponse(ok: true, result: ControlResult(id: session.id.uuidString))
+            case .noSplit: ControlResponse(ok: false, error: "session has no split")
+            case .noSession: ControlResponse(ok: false, error: "no such session")
+            case .slotNotRealized, .roleNotMutable: ControlResponse(ok: false, error: "session not realized")
+            }
+        }
+    }
+
+    public func createCompanion(_ target: String?, options: CompanionOptions, window: String?) async -> ControlResponse {
+        withSession(target, window: window) { parent in
+            guard !parent.ended else { return ControlResponse(ok: false, error: "session has ended") }
+            var options = options
+            options.select = false
+            guard case .success(let companion) = store.addCompanion(to: parent.id, options: options) else {
+                return ControlResponse(ok: false, error: "could not create companion")
+            }
+            let workspace = store.sessionLocation(ofSession: companion.id)?.workspace
+            if let refusal = panes.start(.init(identity: companion.paneIdentity, session: companion, workspace: workspace,
+                                               pane: .left, program: .creation(options.command, wait: options.wait),
+                                               directory: companion.effectiveCwd)) {
+                store.discardSession(companion.id, alreadyFinalized: companion.paneIdentity)
+                return ControlResponse(ok: false, error: refusal)
+            }
+            return ControlResponse(ok: true, result: ControlResult(id: companion.id.uuidString,
+                                                                   parent: companion.parentID?.uuidString))
+        }
+    }
+
+    /// createPageCompanion creates a page row under the target, shown by each Mac that attaches it.
+    public func createPageCompanion(_ target: String?, window: String?, options: ControlSessionOverlayOpenOptions) -> ControlResponse {
+        withPageRow(target, window: window, options: options) { parent, overlay in
+            store.addPageCompanion(to: parent.id, overlay: overlay, select: false, backgroundColor: options.backgroundColor)
+        }
+    }
+
+    /// createPageSession creates a top-level page row after the target's group.
+    public func createPageSession(_ target: String?, window: String?, options: ControlSessionOverlayOpenOptions) -> ControlResponse {
+        withPageRow(target, window: window, options: options) { anchor, overlay in
+            store.addPageSession(after: anchor.id, overlay: overlay, select: false, backgroundColor: options.backgroundColor)
+        }
+    }
+
+    /// attachCompanionPage answers `session.companion.page.attach`: a token for one view of the page row.
+    public func attachCompanionPage(_ target: String?, window: String?) -> ControlResponse {
+        withSession(target, window: window) { streams.pageAttachments.offer($0) }
+    }
+
+    private func withPageRow(_ target: String?, window: String?, options: ControlSessionOverlayOpenOptions,
+                             create: (Session, HtmlOverlay) -> Result<Session, CompanionRefusal>) -> ControlResponse {
+        withSession(target, window: window) { session in
+            guard let page = options.page else { return ControlResponse(ok: false, error: OverlayHtmlError.pageSessionNeedsPage) }
+            // a page row has no forward path, so the server's loopback would load on the viewing Mac
+            if case .url(let url) = page, HtmlSource.isLoopback(url.absoluteString) {
+                return ControlResponse(ok: false, error: OverlayHtmlError.serverLoopbackRow)
+            }
+            let overlay = HtmlOverlay(pageRow: page, options: options)
+            guard case .success(let row) = create(session, overlay) else {
+                return ControlResponse(ok: false, error: "could not create page session")
+            }
+            return ControlResponse(ok: true, result: ControlResult(id: row.id.uuidString, pageID: overlay.id.uuidString,
+                                                                   parent: row.parentID?.uuidString))
+        }
+    }
+
+    public func readSessionText(_ target: String?, window: String?, options: ControlSessionTextOptions) -> ControlResponse {
+        withSession(target, window: window) { session in
+            let identity: UUID
+            switch daemonPane(of: session, token: options.paneID, pane: options.pane) {
+            case .success(let resolved): identity = resolved.identity
+            case .failure(let refusal): return refusal.response
+            }
+            guard let screen = panes.runner.screen(panes.daemonName(for: identity), all: options.all || options.lines != nil) else {
+                return ControlResponse(ok: false, error: "failed to read surface buffer")
+            }
+            let text = options.lines.map(screen.lastLines) ?? screen.text
+            return ControlResponse(ok: true, result: ControlResult(text: text))
+        }
+    }
+
+    public func readSurfaceCursor(_ target: String?, window: String?) -> ControlResponse {
+        readSurfaceCursor(target, window: window, paneID: nil)
+    }
+
+    /// readSurfaceCursor answers from the pane daemon's screen. The server has no window, so `active` is the
+    /// selected session's focused pane, and overlay and quick surfaces, which live on a presenting Mac, are refused.
+    public func readSurfaceCursor(_ target: String?, window: String?, paneID: String?) -> ControlResponse {
+        let raw = target ?? "active"
+        if let paneID, !paneID.isEmpty {
+            guard raw != "quick", TerminalSurfaceID(rawValue: raw) == nil else {
+                return ControlResponse(ok: false, error: "surface.cursor: --pane-id takes a session target")
+            }
+            return withSession(raw, window: window) { cursorResponse($0, token: paneID, pane: nil) }
+        }
+        if raw == "active" {
+            return withSession(raw, window: window) { cursorResponse($0, token: nil, pane: $0.focusedPane == .right ? .right : .left) }
+        }
+        guard let surfaceID = TerminalSurfaceID(rawValue: raw) else {
+            return ControlResponse(ok: false, error: raw == "quick" ? "surface not available: quick" : "invalid surface: \(raw)")
+        }
+        let pane: StatusPane
+        switch surfaceID.surface {
+        case .primary: pane = .left
+        case .split: pane = .right
+        case .scratch: pane = .scratch
+        case .overlay, .overlayLeft, .overlayRight: return ControlResponse(ok: false, error: "surface not available: \(raw)")
+        }
+        return withSession(surfaceID.sessionID.uuidString, window: window) { cursorResponse($0, token: nil, pane: pane) }
+    }
+
+    private func cursorResponse(_ session: Session, token: String?, pane: StatusPane?) -> ControlResponse {
+        let resolved: (identity: UUID, pane: StatusPane)
+        switch daemonPane(of: session, token: token, pane: pane) {
+        case .success(let found): resolved = found
+        case .failure(let refusal): return refusal.response
+        }
+        guard let screen = panes.runner.screen(panes.daemonName(for: resolved.identity), all: false),
+              let surface = TerminalZoomSurface(controlName: resolved.pane.rawValue) else {
+            return ControlResponse(ok: false, error: "failed to read surface cursor")
+        }
+        return ControlResponse(ok: true, result: ControlResult(id: TerminalSurfaceID(sessionID: session.id, surface: surface).rawValue,
+                                                               cursor: ControlCursor(column: screen.cursorColumn)))
+    }
+
+    public func typeSession(_ target: String?, window: String?, options: ControlSessionTypeOptions) async -> ControlResponse {
+        withSession(target, window: window) { session in
+            let resolved: (identity: UUID, pane: StatusPane)
+            switch daemonPane(of: session, token: options.paneID, pane: options.pane) {
+            case .success(let pane): resolved = pane
+            case .failure(let refusal): return refusal.response
+            }
+            let name = panes.daemonName(for: resolved.identity)
+            let paced = KeystrokeSegments.paced(options.text)
+            let bytes = KeystrokeSegments.ptyBytes(paced.head)
+            guard bytes.isEmpty || panes.runner.type(name, bytes: bytes) else {
+                return ControlResponse(ok: false, error: "the pane's zmx daemon did not accept the input")
+            }
+            if paced.pacedReturn {
+                Thread.sleep(forTimeInterval: KeystrokeSegments.submitGap)
+                // a failed call does not prove the Return was dropped: the daemon queues before it answers
+                guard panes.runner.type(name, bytes: [0x0D]) else {
+                    return ControlResponse(ok: false, error: "text typed, but its final Return could not be confirmed; do not retype the text")
+                }
+            }
+            // the input a blocked agent waited for has arrived, as `session.type` into a Mac pane clears it
+            if !options.text.isEmpty {
+                store.clearStatus(by: InterruptKeystroke.classify(text: options.text), pane: resolved.pane,
+                                  reset: Self.macDefaults.effectiveStatusReset, forSession: session.id)
+            }
+            var result = ControlResult(id: session.id.uuidString)
+            result.pane = resolved.pane.rawValue
+            return ControlResponse(ok: true, result: result)
+        }
+    }
+
+    // MARK: - Resolution
+
+    func withSession(_ target: String?, window: String?, _ body: (Session) -> ControlResponse) -> ControlResponse {
+        if let refusal = windowRefusal(window) { return refusal }
+        switch resolveSession(target) {
+        case .success(let session): return body(session)
+        case .failure(let refusal): return refusal.response
+        }
+    }
+
+    /// resolveSession resolves a session id, prefix or `active` across the catalog.
+    func resolveSession(_ target: String?) -> Result<Session, ActionRefusal> {
+        let target = target ?? "active"
+        let candidates = store.workspaces.flatMap { $0.sessions.map(\.id) }
+        let resolution = ControlResolve.resolve(target, candidates: candidates, active: store.selectedSessionID)
+        guard case .resolved(let id) = resolution, let session = store.session(withID: id) else {
+            return .refused(ControlResponse(ok: false, error: ControlResolve.errorMessage(noun: "session", target: target,
+                                                                                          resolution: resolution)))
+        }
+        return .success(session)
+    }
+
+    /// resolveSessionIDs resolves batch targets in order, deduplicated; one unresolved target refuses the batch.
+    func resolveSessionIDs(_ targets: [String]) -> Result<[UUID], ActionRefusal> {
+        var ids: [UUID] = []
+        for target in targets {
+            switch resolveSession(target) {
+            case .success(let session): if !ids.contains(session.id) { ids.append(session.id) }
+            case .failure(let refusal): return .failure(refusal)
+            }
+        }
+        return .success(ids)
+    }
+
+    /// daemonPane is the pane a `--pane`/`--pane-id` pair names, defaulting to the left one, when it has a daemon.
+    private func daemonPane(of session: Session, token: String?, pane: StatusPane?) -> Result<(identity: UUID, pane: StatusPane), ActionRefusal> {
+        guard case .pane(let resolved) = session.paneAddress(token: token, pane: pane) else {
+            return .refused(ControlResponse(ok: false, error: "unknown pane id: \(token ?? "")"))
+        }
+        let role = resolved ?? .left
+        if role == .scratch {
+            guard let scratch = session.scratchDaemon else { return .refused(ControlResponse(ok: false, error: "session not realized")) }
+            return .success((scratch.identity, role))
+        }
+        guard let identity = session.paneIdentity(for: role), session.daemonBackedPanes.contains(identity) else {
+            return .refused(ControlResponse(ok: false, error: "session not realized"))
+        }
+        return .success((identity, role))
+    }
+
+    private func sessionDestination(_ options: ControlSessionCreateOptions) -> Result<(workspace: UUID, index: Int?), ActionRefusal> {
+        if let anchor = options.after ?? options.before {
+            switch resolveSession(anchor) {
+            case .failure(let refusal): return .failure(refusal)
+            case .success(let session):
+                guard let location = store.sessionLocation(ofSession: session.id) else {
+                    return .refused(ControlResponse(ok: false, error: "no such session"))
+                }
+                return .success((location.workspace, options.before != nil ? location.index : location.index + 1))
+            }
+        }
+        if let name = options.workspaceName {
+            guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .refused(ControlResponse(ok: false, error: "workspace name must not be blank"))
+            }
+            let workspace = options.createWorkspace == true
+                ? store.ensureWorkspace(named: name, revealNewWorkspace: false) : store.workspace(named: name)
+            guard let workspace else {
+                return .refused(ControlResponse(ok: false, error: "no workspace named \"\(name)\" (pass --create-workspace to add it)"))
+            }
+            return .success((workspace.id, nil))
+        }
+        return resolveWorkspace(options.workspace).map { ($0, nil) }
+    }
+}

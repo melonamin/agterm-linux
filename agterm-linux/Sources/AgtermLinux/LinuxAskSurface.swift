@@ -110,6 +110,7 @@ extension AppController {
     }
 
     func syncAskSurfaces() {
+        if guiAskWindow != nil, replicaGUIAskSessionID == nil, pickController.pendingAsk == nil { dismissGUIAsk() }
         if let id = replicaGUIAskSessionID {
             let session = store.session(withID: id)
             let paneVisible = session.map { candidate in
@@ -119,11 +120,19 @@ extension AppController {
                 && !dashboard.isOpen && terminalZoom.target == nil && !pickController.modalPending
                 && paneVisible
             if !valid {
-                if let ask = session?.askPending {
+                if !originHoldsWork(id), let ask = session?.askPending {
                     session?.resolveAsk(id: ask.id, ControlAskResult(result: .cancelled))
                 }
                 dismissGUIAsk()
             }
+        }
+        if guiAskWindow == nil, let ask = pickController.pendingAsk { _ = showGUIAsk(ask) }
+        if guiAskWindow == nil, !pickController.modalPending, !dashboard.isOpen, terminalZoom.target == nil,
+           let session = store.activeSession, let ask = session.askPending, ask.style == .gui,
+           session.remotePresentation != nil, !session.askPresentedRemotely,
+           session.askPaneIdentity == nil || session.askTargetPane.map(session.rendersPane) == true {
+            replicaGUIAskSessionID = session.id
+            if !showGUIAsk(ask) { replicaGUIAskSessionID = nil }
         }
         if let ask = pickController.pendingAsk, let anchor = ask.anchor {
             let valid = store.selectedSessionID == anchor.sessionID && terminalZoom.target == nil

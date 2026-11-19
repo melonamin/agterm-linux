@@ -96,6 +96,19 @@ struct WindowCommandsTests {
             == ControlRequest(cmd: .windowMinimize, target: "9f3c", args: ControlArgs(mode: "off")))
     }
 
+    @Test func windowRemoteOpenSendsTheOriginWindow() throws {
+        var args = ControlArgs(host: "mac")
+        args.originWindow = "6f1c"
+
+        #expect(try request(["window", "remote", "open", "mac", "--origin-window", "6f1c"])
+            == ControlRequest(cmd: .windowRemoteOpen, args: args))
+    }
+
+    @Test func windowRemoteOpenSendsTheHost() throws {
+        #expect(try request(["window", "remote", "open", "buildbox"])
+            == ControlRequest(cmd: .windowRemoteOpen, args: ControlArgs(host: "buildbox")))
+    }
+
     @Test func windowMinimizeDefaultsActiveAndToggle() throws {
         #expect(try request(["window", "minimize"])
             == ControlRequest(cmd: .windowMinimize, target: "active", args: ControlArgs(mode: "toggle")))

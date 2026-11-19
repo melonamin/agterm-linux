@@ -34,10 +34,12 @@ extension AppController {
         func recolor(_ color: TintColor?) {
             if let workspaceID {
                 let current = store.workspaces.first { $0.id == workspaceID }?.tint
-                store.setTint(color.map { SidebarTint.recolor(current, to: .named($0), startingOn: LinuxTintPlacement.parts) }, forWorkspace: workspaceID)
+                setTintFromGUI(color.map { SidebarTint.recolor(current, to: .named($0), startingOn: LinuxTintPlacement.parts) }, id: workspaceID, workspace: true)
             } else if let color {
-                store.setTintColor(.named(color), forSessions: sessionIDs ?? [], startingOn: LinuxTintPlacement.parts)
-            } else { store.setTintColor(nil, forSessions: sessionIDs ?? []) }
+                for id in sessionIDs ?? [] {
+                    setTintFromGUI(SidebarTint.recolor(store.session(withID: id)?.tint, to: .named(color), startingOn: LinuxTintPlacement.parts), id: id)
+                }
+            } else { for id in sessionIDs ?? [] { setTintFromGUI(nil, id: id) } }
             syncSidebar()
         }
         for color in TintColor.allCases {
@@ -56,8 +58,10 @@ extension AppController {
                 LinuxTintPlacement.parts = parts
                 if let workspaceID {
                     let current = self.store.workspaces.first { $0.id == workspaceID }?.tint
-                    self.store.setTint(SidebarTint.place(current, on: parts), forWorkspace: workspaceID)
-                } else { self.store.setTintParts(parts, forSessions: sessionIDs ?? []) }
+                    self.setTintFromGUI(SidebarTint.place(current, on: parts), id: workspaceID, workspace: true)
+                } else {
+                    for id in sessionIDs ?? [] { self.setTintFromGUI(SidebarTint.place(self.store.session(withID: id)?.tint, on: parts), id: id) }
+                }
                 self.syncSidebar()
             }
         }
@@ -106,11 +110,12 @@ extension AppController {
         showPalette()
         paletteAll = LinuxPaletteList(items: TintColor.allCases.map { color in
             (row: LinuxPaletteRow(title: color.rawValue.capitalized), run: { [weak self] in
-                self?.store.setTintColor(color, forSessions: [id])
-                self?.syncSidebar()
+                guard let self else { return }
+                self.setTintFromGUI(SidebarTint.recolor(self.store.session(withID: id)?.tint, to: color), id: id)
+                self.syncSidebar()
             })
         } + [(row: LinuxPaletteRow(title: "Clear Tint"), run: { [weak self] in
-            self?.store.setTintColor(nil, forSessions: [id]); self?.syncSidebar()
+            self?.setTintFromGUI(nil, id: id); self?.syncSidebar()
         })])
         filterPalette("")
     }

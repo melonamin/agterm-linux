@@ -8,7 +8,7 @@ extension AppController {
         let overlay = HtmlOverlay(source: page, navigation: options.navigation,
                                   javascript: options.javascript, chromeless: options.chromeless,
                                   persistent: options.persistent, browse: options.browse,
-                                  clicked: options.clicked, textLog: options.textLog)
+                                  clicked: options.clicked, textLog: options.textLog, markdownLinks: options.markdownLinks)
         switch store.openRemotePage(id, overlay: overlay, options: options) {
         case .opened:
             if page.kind != .url { gControlServer.schedulePageClaimExpiry(after: AppStore.pageClaimWindow) }
@@ -58,6 +58,7 @@ extension AppController {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let image = markdown ? nil : try? ImageProbe.load(path: path).get().0
             let checked = markdown ? (try? MarkdownProbe.check(path: path).get()) != nil : image != nil
+            let links = markdown ? MarkdownPage.linkGrant(for: path) : nil
             runOnMain {
                 MainActor.assumeIsolated {
                     guard let self else { return }
@@ -65,7 +66,8 @@ extension AppController {
                     self.store.releaseHiddenClickedPage(id)
                     let options = ControlSessionOverlayOpenOptions(command: "", cwd: nil, wait: false,
                                                                    sizePercent: sizePercent, backgroundColor: nil,
-                                                                   page: markdown ? .markdown(path: path) : .image(path: path), clicked: true)
+                                                                   page: markdown ? .markdown(path: path) : .image(path: path), navigation: markdown,
+                                                                   clicked: true, markdownLinks: links)
                     let response = image.map { self.openProbedImage(id, path: path, probe: $0, options: options) }
                         ?? self.openResolvedPageOverlay(id, page: .markdown(path: path), options: options)
                     if !response.ok { GhosttyApp.openTerminalURL(url.absoluteString) }

@@ -11,7 +11,7 @@ extension AppController {
         library.saveIndex()
         if let id = store.selectedSessionID, let session = store.session(withID: id) {
             let hadUnseen = session.unseenCount > 0
-            store.clearUnseen(id)
+            store.markSeen(id)
             if hadUnseen {
                 NotificationManager.withdraw(windowID: windowID, sessionID: id)
                 syncSidebar()
@@ -66,6 +66,8 @@ extension AppController {
     /// The window is closing: capture its size for restore-on-reopen, then tear down its surfaces and
     /// drop it from the library + registry.
     func windowWillClose() {
+        LinuxRemoteCatalogs.closed(windowID)
+        gControlServer.originWindowClosed(windowID)
         LinuxHtmlOverlayRegistry.shared.releasePages(in: store)
         customCommandOrigin.invalidate()
         commitBackgroundOpacity()

@@ -106,11 +106,11 @@ final class ControlServerCompanionPageTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(reply).contains(#""ok":true"#))
         XCTAssertTrue(try XCTUnwrap(claim(first.token).1).contains("page not claimable"), "a token is claimed once")
         let (two, _) = try claim(second.token)
-        waitUntil("both channels adopted") { self.server.companionPageStreams.count == 2 }
+        waitUntil("both channels adopted") { self.server.pageAttachments.streams.count == 2 }
 
         close(one.fd)
         clients.removeAll { $0 === one }
-        waitUntil("the closed attachment is gone") { self.server.companionPageStreams.count == 1 }
+        waitUntil("the closed attachment is gone") { self.server.pageAttachments.streams.count == 1 }
 
         XCTAssertNotNil(store.session(withID: page.id), "a viewer leaving ends nothing on this Mac")
         let index = docs.appendingPathComponent("index.html").path
@@ -131,10 +131,10 @@ final class ControlServerCompanionPageTests: XCTestCase {
 
         let fresh = try attach(page)
         let claimed = try XCTUnwrap(server.claimPageServe(fresh.token).result?.id.flatMap(UUID.init(uuidString:)))
-        server.pageClaimUnanswered(claimed)
+        server.pageClaimUnanswered(claimed, token: fresh.token)
 
         XCTAssertNotNil(store.session(withID: page.id))
-        XCTAssertTrue(server.pendingCompanionClaims.isEmpty)
+        XCTAssertTrue(server.pageAttachments.claims.isEmpty)
     }
 
     func testClosingThePageHereEndsEveryAttachmentAndEveryUnclaimedToken() throws {
@@ -142,45 +142,111 @@ final class ControlServerCompanionPageTests: XCTestCase {
         let (one, _) = try claim(try attach(page).token)
         let (two, _) = try claim(try attach(page).token)
         let unclaimed = try attach(page)
-        waitUntil("both channels adopted") { self.server.companionPageStreams.count == 2 }
+        waitUntil("both channels adopted") { self.server.pageAttachments.streams.count == 2 }
 
         store.closeSession(page.id)
 
         let ends = offMain { [one.readLine(), two.readLine()] }
         XCTAssertEqual(ends?.compactMap { $0 }, [], "both channels end")
-        waitUntil("no attachment remains") { self.server.companionPageStreams.isEmpty }
-        XCTAssertNil(server.companionPageTokens[unclaimed.token])
+        waitUntil("no attachment remains") { self.server.pageAttachments.streams.isEmpty }
+        XCTAssertNil(server.pageAttachments.offers[unclaimed.token])
     }
 
     // a soft-closed page's window came from the live rows only, so its requests reached the frontmost window
     func testASoftClosedPageStillAnswersForItsOwnWindow() throws {
         let page = try filePage()
         let window = try XCTUnwrap(server.library.windowID(for: store))
-        let serving = CompanionPageServing(claim: UUID(), session: page.id, page: try XCTUnwrap(page.htmlOverlay?.id))
+        let attachment = PageServeStream.Attachment(claim: UUID(), session: page.id)
+        let overlay = try XCTUnwrap(page.htmlOverlay?.id)
 
         XCTAssertTrue(store.softCloseSession(page.id))
 
-        XCTAssertEqual(server.companionPagePlace(serving)?.window, window)
+        XCTAssertEqual(server.pageAttachmentPlace(attachment, page: overlay)?.window, window)
     }
 
-    func testOnlyAPageCompanionIsHandedOutAndALoopbackPageIsNot() throws {
-        XCTAssertEqual(server.attachCompanionPage(parent.id.uuidString, window: nil).error, "not a page companion")
+    func testOnlyAPageSessionIsHandedOutAndALoopbackPageIsNot() throws {
+        XCTAssertEqual(server.attachCompanionPage(parent.id.uuidString, window: nil).error, "not a page session")
         let loopback = try store.addPageCompanion(to: parent.id, overlay: HtmlOverlay(source: .url(try XCTUnwrap(URL(string: "http://localhost:3000/"))))).get()
         XCTAssertEqual(server.attachCompanionPage(loopback.id.uuidString, window: nil).error,
                        "a page on this Mac's loopback cannot be shown on another Mac")
+    }
+
+    func testAMarkdownPageCompanionIsNotHandedOutEvenWithALinkGrant() throws {
+        let grant = MarkdownLinkGrant(path: docs.appendingPathComponent("a.md").path, root: docs.path)
+        let overlay = HtmlOverlay(source: .markdown(path: grant.path), navigation: true, markdownLinks: grant)
+        let page = try store.addPageCompanion(to: parent.id, overlay: overlay).get()
+
+        XCTAssertEqual(server.attachCompanionPage(page.id.uuidString, window: nil).error,
+                       "a markdown, text or document page cannot be shown on another Mac")
+    }
+
+    func testATopLevelPageIsHandedOutWithNoParentAndALoopbackOneIsNot() throws {
+        let row = try pageRow()
+        let reply = server.attachCompanionPage(row.id.uuidString, window: nil)
+        XCTAssertTrue(reply.ok, reply.error ?? "")
+        XCTAssertNil(reply.result?.parent)
+        XCTAssertEqual(reply.result?.companionPage?.page, row.htmlOverlay?.id.uuidString)
+
+        let url = try XCTUnwrap(URL(string: "http://127.0.0.1:3000/"))
+        let loopback = try store.addPageSession(after: parent.id, overlay: HtmlOverlay(source: .url(url))).get()
+        XCTAssertEqual(server.attachCompanionPage(loopback.id.uuidString, window: nil).error,
+                       "a page on this Mac's loopback cannot be shown on another Mac")
+    }
+
+    func testAnUnreadableSavedPageIsNotHandedOut() throws {
+        let row = try store.addPageSession(after: parent.id, overlay: PageSnapshot(source: .unreadable("bad descriptor")).makeOverlay()).get()
+
+        let reply = server.attachCompanionPage(row.id.uuidString, window: nil)
+
+        XCTAssertFalse(reply.ok)
+        XCTAssertEqual(reply.error, "an unreadable saved page cannot be shown on another Mac")
+        XCTAssertTrue(server.pageAttachments.offers.isEmpty)
     }
 
     func testAUrlAttachmentHasALifetimeChannelAndNoBridge() throws {
         let page = try store.addPageCompanion(to: parent.id, overlay: HtmlOverlay(source: .url(try XCTUnwrap(URL(string: "https://example.com/"))))).get()
         let (client, reply) = try claim(try attach(page).token)
         XCTAssertTrue(try XCTUnwrap(reply).contains(#""ok":true"#))
-        waitUntil("the channel adopted") { self.server.companionPageStreams.count == 1 }
+        waitUntil("the channel adopted") { self.server.pageAttachments.streams.count == 1 }
 
         let answer = offMain { () -> PageServeFrame? in
             client.send(.bridge(id: 4, request: #"{"cmd":"tree"}"#))
             return client.frame()
         }
         XCTAssertEqual(answer ?? nil, .failure(id: 4, error: "a URL page has no bridge"))
+    }
+
+    func testAPageRowClosingItsWindowSoftClosesItsGroupThroughTheAppClose() throws {
+        let row = try pageRow()
+        let companion = try store.addCompanion(to: row.id).get()
+        let live = HtmlOverlayRegistry.shared.page(for: try XCTUnwrap(row.htmlOverlay), store: store)
+
+        live.webViewDidClose(live.webView)
+
+        waitUntil("the group soft-closed") { self.store.pendingCloseSession(withID: companion.id) != nil }
+        XCTAssertNotNil(store.pendingCloseSession(withID: row.id))
+        XCTAssertNil(store.session(withID: row.id))
+        XCTAssertTrue(store.undoPendingClose())
+        store.closeSession(row.id)
+    }
+
+    func testAControlCloseOrSubmitOfAPageRowClosesItAtOnceWithNoUndo() throws {
+        let closing = try pageRow()
+        let submitting = try pageRow()
+
+        XCTAssertTrue(server.closeSessionOverlay(closing.id.uuidString, window: nil, pane: nil).ok)
+        XCTAssertTrue(server.submitSessionOverlay(submitting.id.uuidString, window: nil, pane: nil, value: "x").ok)
+
+        for row in [closing, submitting] {
+            XCTAssertNil(store.session(withID: row.id))
+            XCTAssertNil(store.pendingCloseSession(withID: row.id))
+        }
+    }
+
+    private func pageRow() throws -> Session {
+        let index = docs.appendingPathComponent("index.html").path
+        return try store.addPageSession(after: parent.id, overlay: HtmlOverlay(source: .file(path: index, grantRoot: docs.path),
+                                                                               javascript: true)).get()
     }
 
     private func filePage() throws -> Session {

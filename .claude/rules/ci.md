@@ -7,6 +7,8 @@ paths:
 
 - `ci.yml` runs for pushes and PRs to `master`; concurrency cancels the older run for the same ref. All
   macOS jobs use `macos-26`. Releases are local; see `.claude/rules/release.md`.
+- `docs/ci-flakes.md` records every investigated intermittent failure by test name and log text; read it
+  before investigating a red run, and add an entry after one.
 - Every job carries its own `timeout-minutes`, with generous headroom over observed runtime. A job without
   one inherits GitHub's 360-minute default, so a wedge can hold its check pending for six hours. Give a new
   job a cap in the commit that adds it.
@@ -24,18 +26,43 @@ paths:
   touching libghostty, so `SessionHostServerTests` attach to a real daemon in the same `swift test`.
   `AGTERM_REQUIRE_ZMX=1` fails `requiredFixturePrerequisitesArePresent` when zmx or the responsibility SPI
   is missing, since the fixtures themselves skip silently.
+  It stages the shell integration with `scripts/setup-zmx-linux.sh --shell-integration`, cached by `GHOSTTY_REV`,
+  and points `AGTERM_SHELL_INTEGRATION` at it: the job builds no libghostty, so `agterm/Resources/ghostty` is
+  absent and the fish server pane would start without integration.
   It runs under `scripts/watchdog.sh`: past 600s the watchdog tries, within a 120s budget, to save the test
   processes' tree, open files and stacks, kills the tree, and the `test-hang` artifact carries what it got.
   A hang otherwise reaches only the job timeout, which records nothing.
+  On any failure the job also saves the last 45 minutes of the `com.umputun.agterm` unified log, capped at
+  120s, into that artifact: the server's presentation streams log their close reasons only there.
   A prior `swift build --build-tests --enable-code-coverage` step compiles outside it, so compile time on a
   slow runner does not count against the 600s; `swift test` with the same flag reuses that build. The
   35-minute job cap leaves room for a slow build plus the watchdog's 600s and 120s.
-  `coverage`, the only Swift-gated Linux job, downloads it for best-effort Coveralls.
+  `coverage` downloads it for best-effort Coveralls.
   `lint` installs SwiftLint and runs `swiftlint lint --strict`; every warning fails.
+- `linux` builds and tests `agtermCore` in the `swift:6.3.2-noble` container on ubuntu-24.04, the
+  toolchain agterm-server ships on, under the Swift filter. It installs jq, which the Codex status hook reads
+  JSON with where `/usr/bin/plutil` is absent, and runs as an unprivileged user because root passes the
+  permission checks several tests expect to fail.
+  It builds the x86_64 musl zmx with a zig 0.16.0 tarball through `scripts/setup.sh --zmx-only` into
+  `build/linux/x86_64`, cached by `ZMX_REV` and the patch digest, stages the shell integration from ghostty's
+  source at `GHOSTTY_REV` with `scripts/setup-zmx-linux.sh --shell-integration`, installs fish, and runs with
+  `AGTERM_REQUIRE_ZMX=1 AGTERM_REQUIRE_FISH=1` so `ServerLifecycleTests` drive real zsh, fish and bash panes rather
+  than skip.
+  Its `swift test` runs under `scripts/watchdog.sh` as container root, with only the test command under
+  `runuser`: past 600s the watchdog takes lldb stacks of `agtermCorePackageTests.xctest` first, within 300s,
+  and the `test-hang-linux` artifact carries them. lldb needs the container's `--cap-add=SYS_PTRACE` to attach
+  to another user's process. The 45-minute cap covers the build plus both watchdog budgets.
+  Darwin-only behavior keeps its tests behind
+  `#if canImport(Darwin)` beside the code; everything else runs on both platforms.
 - `build` and `hosted` each restore separate revision-keyed caches for libghostty and zmx, including each
-  build stamp, and install xcodegen. A zmx pin change does not rebuild libghostty. `build` runs Release
-  `scripts/build.sh`, the surface teardown script and the entitlement assertions. `build.sh` and
-  `release.sh` both pass `ARCHS=arm64`, so CI compiles the same slices the shipped app does.
+  build stamp, and install xcodegen. A zmx pin change does not rebuild libghostty. A libghostty cache miss
+  also runs the teardown patch's Zig tests inside `setup.sh`, and a zmx miss runs zmx's own `zig build test`;
+  bump the `ghosttykit-vN` or `zmx-vN` key when its gate changes, since a hit skips it. `build` runs Release
+  `scripts/build.sh`, the surface teardown script and the entitlement assertions. The teardown script fails
+  only on a control call unanswered for 60 s, and has no eight-producer case, removed after sustained runner
+  contention. `build.sh` and `release.sh` both pass `ARCHS=arm64`, so CI compiles the same slices the shipped
+  app does. Both app builds run under `scripts/with-helper-prebuild.sh`, which starts the Release helper
+  products before the app compile; the helper phase that otherwise builds them after the app still runs.
   `hosted` runs the Debug tests `scripts/test-app.sh` runs and needs nothing from `build`; it builds the
   bundled helpers itself. Staging and `xcodebuild build-for-testing` run in steps of their own, since one
   cache-hit run spent 1412s building and testing, and only `xcodebuild test-without-building` runs under the
@@ -46,7 +73,8 @@ paths:
   enable testability in the notarized Release app.
 - `hosted` sets the runner account's login shell to zsh, installs fish, and passes
   `TEST_RUNNER_AGTERM_REQUIRE_FISH=1` to `scripts/test-app.sh`. Its last step switches the login shell to
-  fish with `dscl` and runs only `SessionHostFishSeamTests/testPlainLoginShellStartsIntegratedFish`, with
+  fish with `dscl` and runs only `SessionHostFishSeamTests/testPlainLoginShellStartsIntegratedFish`, without
+  rebuilding, with
   `TEST_RUNNER_AGTERM_REQUIRE_FISH_LOGIN_SHELL=1`. Keep that order: switching before the hosted tests
   silently skips the zsh plain-login seam (#574), and the fish seam fails its login-shell check before the
   switch.
@@ -56,21 +84,25 @@ paths:
   Developer ID re-sign, which runs after CI's copy and is not covered by it.
   The helper check covers `agtermctl`, zmx and `agterm-session-host` and also verifies their signatures. Use
   `codesign -d --entitlements -`; the `:-` spelling is deprecated and warns.
-- The second pins the app's own Release set to the seven TCC keys, so neither a Debug-only hardened-runtime
-  exception nor a dropped TCC key can ship. It ignores `com.apple.security.get-task-allow`, which the
+- The second pins the ad-hoc Release app's set to the seven TCC keys plus `disable-library-validation`, which an
+  ad-hoc app needs to load `Sparkle.framework`, so neither a JIT exception nor a dropped TCC key can ship. The
+  notarized app's strict set is checked by `scripts/release.sh` after its Developer ID re-sign. It ignores `com.apple.security.get-task-allow`, which the
   ad-hoc "Sign to Run Locally" identity adds and the Developer ID re-sign drops. It compares `key=value`
   through `jq ... tojson`, not key names: a key set to `<false/>` is not granted and macOS treats it as
   absent, and codesign accepts `<string>true</string>`, which is not a Boolean and renders identically to
   one without `tojson`. Changing the set means editing that list in the same commit.
-- The third reads the two entitlements files rather than a build, and derives Debug's expected content
-  from the shipping file: Debug must be the shipping set plus exactly the three exceptions. Without it a
+- The third reads the entitlements files rather than a build, and derives the others from the shipping file:
+  Debug must be the shipping set plus exactly the three exceptions, `agterm-adhoc.entitlements` the shipping set
+  plus exactly `disable-library-validation`. Without it a
   TCC key added to the shipping file and missed in the Debug one leaves every job green, and Debug
   silently unable to prompt for that permission.
-- Debug and Release sign from different entitlements files. `agterm/agterm-debug.entitlements` adds
+- Debug and ad-hoc Release builds sign from their own entitlements files, and the Developer ID sign in
+  `scripts/release.sh` from `agterm/agterm.entitlements`. `agterm/agterm-debug.entitlements` adds
   `disable-library-validation`, `allow-jit` and `allow-unsigned-executable-memory`: Debug is ad-hoc signed
   and split into a stub plus `agterm.debug.dylib`, and `agtermTests` loads an ad-hoc `.xctest` into that
-  app, so library validation would reject both on a Team-ID mismatch. The Release bundle holds no dylib
-  and JIT-links nothing, so `agterm/agterm.entitlements` carries none of the three. The re-sign in
+  app, so library validation would reject both on a Team-ID mismatch. The Release bundle JIT-links
+  nothing and its only embedded library, `Sparkle.framework`, shares the app's Developer ID team, so
+  `agterm/agterm.entitlements` carries none of the three. The re-sign in
   `project.yml` reads `$CODE_SIGN_ENTITLEMENTS` rather than a literal path, so it follows the
   configuration. Restoring a literal path there would re-sign Debug from the shipping file, stripping the
   three exceptions and breaking the ad-hoc `.xctest` load in `make test-app`.

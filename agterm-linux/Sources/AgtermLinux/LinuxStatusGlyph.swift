@@ -24,6 +24,7 @@ struct LinuxStatusGlyphPresentation: Equatable {
         case .seal: "✹"
         case .bolt: "ϟ"
         case .bell: "🔔︎"
+        case .checkmark: "✔"
         }
         iconName = shape == .bell ? "preferences-system-notifications-symbolic" : nil
         let configured = switch status {

@@ -12,6 +12,7 @@ struct LinuxPaneLaunchProvider {
     let backedByZmx: Bool
     let shouldPace: Bool
     let resolve: @MainActor (StatusPane) -> LinuxLaunchSeed
+    let resolveDetached: @MainActor (StatusPane) -> LinuxLaunchSeed
 }
 
 struct LinuxLaunchSeedPolicy {
@@ -62,29 +63,28 @@ extension AppController {
         } else {
             environment = baseEnvironment
         }
-        return LinuxPaneLaunchProvider(
-            environment: environment,
-            backedByZmx: disposition.backedByZmx,
-            shouldPace: shouldPace
-        ) { [weak self, weak session] livePane in
+        let resolve: @MainActor (StatusPane, Bool) -> LinuxLaunchSeed = { [weak self, weak session] livePane, detached in
             guard let self, let session else {
                 return Self.unownedSeed(disposition: disposition)
             }
             return self.launchSeed(
-                session: session, pane: livePane, disposition: disposition, policy: policy
+                session: session, pane: livePane, disposition: disposition, policy: policy, detached: detached
             )
         }
+        return LinuxPaneLaunchProvider(environment: environment, backedByZmx: disposition.backedByZmx, shouldPace: shouldPace,
+            resolve: { resolve($0, false) }, resolveDetached: { resolve($0, true) })
     }
 
     private func launchSeed(session: Session, pane: StatusPane,
                             disposition: ZmxSupport.LaunchDisposition,
-                            policy: LinuxLaunchSeedPolicy) -> LinuxLaunchSeed {
+                            policy: LinuxLaunchSeedPolicy, detached: Bool = false) -> LinuxLaunchSeed {
         switch disposition {
         case .wrapped(let configuration):
             return LinuxLaunchSeed(
                 command: Self.wrappedAttachCommand(
                     configuration, replay: session.takePendingForegroundCommand(pane: pane),
-                    durable: durableCommand(session: session, pane: pane), denylist: policy.denylist, endsWithCommand: !session.wasRestored
+                    durable: durableCommand(session: session, pane: pane), denylist: policy.denylist, endsWithCommand: !session.wasRestored,
+                    detached: detached
                 ),
                 initialInput: nil,
                 waitAfterCommand: !session.wasRestored && requestedWait(session: session, pane: pane)
@@ -119,10 +119,11 @@ extension AppController {
 
     /// A captured argv, even a denylisted one, preempts the durable creation command after daemon loss.
     nonisolated static func wrappedAttachCommand(_ configuration: ZmxSupport.Configuration, replay: [String]?,
-                                                 durable: String?, denylist: Set<String>, endsWithCommand: Bool = false) -> String {
+                                                 durable: String?, denylist: Set<String>, endsWithCommand: Bool = false,
+                                                 detached: Bool = false) -> String {
         ZmxSupport.attachCommand(configuration, replaying: replay,
                                  creationCommand: replay == nil && !endsWithCommand ? durable : nil,
-                                 paneCommand: replay == nil && endsWithCommand ? durable : nil, denylist: denylist)
+                                 paneCommand: replay == nil && endsWithCommand ? durable : nil, denylist: denylist, detached: detached)
     }
 
     private func shouldPace(session: Session, pane: StatusPane,

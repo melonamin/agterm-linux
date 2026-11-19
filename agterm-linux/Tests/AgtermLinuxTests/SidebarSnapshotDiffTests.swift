@@ -274,6 +274,29 @@ struct SidebarSnapshotTests {
         #expect(!row.blink)
     }
 
+    @Test("folded companions show working status in urgency order and ignore unread-only rows")
+    func foldedCompanionStatus() throws {
+        let parent = Session(initialCwd: "/tmp", customName: "parent")
+        let model = store([Workspace(name: "one", sessions: [parent])])
+        let working = try model.addCompanion(to: parent.id, options: .init(name: "working", select: false)).get()
+        let blocked = try model.addCompanion(to: parent.id, options: .init(name: "blocked", select: false)).get()
+        let unread = try model.addCompanion(to: parent.id, options: .init(name: "unread", select: false)).get()
+        working.agentIndicator = AgentIndicator(status: .active)
+        blocked.agentIndicator = AgentIndicator(status: .blocked, color: "#112233")
+        unread.unseenCount = 1
+        _ = model.setSessionExpanded(parent.id, expanded: false)
+        func row() throws -> SidebarSnapshot.RowContent {
+            try #require(SidebarSnapshot.desired(from: model, settings: AppSettings(), renaming: nil,
+                expandedWorkspaceIDs: persistedExpansion(model)).sections[0].content[parent.id])
+        }
+        #expect(try row().foldedAttention == "companions: blocked blocked, working active")
+        #expect(try row().foldedColor == "#112233")
+        blocked.agentIndicator = .init(status: .idle)
+        #expect(try row().foldedAttention == "companions: working active")
+        working.agentIndicator = .init(status: .idle)
+        #expect(try row().foldedAttention == nil)
+    }
+
     @Test("renaming marks its row or header and drops the breadcrumb")
     func renamingContent() {
         let alpha = Session(initialCwd: "/tmp", customName: "alpha")

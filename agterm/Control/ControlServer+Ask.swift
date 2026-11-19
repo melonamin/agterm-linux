@@ -4,6 +4,23 @@ import agtermCore
 extension ControlServer {
     func openAsk(_ ask: PendingAsk, target: String?, window: String?,
                  placement: ControlAskPlacement, follow: Bool) -> ControlResponse {
+        timed(openAskNow(ask, target: target, window: window, placement: placement, follow: follow), deadline: ask.deadline) { [weak self] in
+            _ = self?.cancelAsk(ask.id, window: nil)
+        }
+    }
+
+    /// timed ends an ask or pick that opened at its `--timeout` deadline, through `cancel`, when it is still pending.
+    func timed(_ response: ControlResponse, deadline: Date?, cancel: @escaping @MainActor () -> Void) -> ControlResponse {
+        guard response.ok, let deadline else { return response }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(max(deadline.timeIntervalSinceNow, 0) * 1_000_000_000))
+            cancel()
+        }
+        return response
+    }
+
+    private func openAskNow(_ ask: PendingAsk, target: String?, window: String?,
+                            placement: ControlAskPlacement, follow: Bool) -> ControlResponse {
         if ask.style == .terminal {
             return resolver.resolveSession(target, window: window) { store, id in
                 presentTerminalAsk(ask, in: store, sessionID: id, placement: placement, follow: follow)
@@ -40,7 +57,7 @@ extension ControlServer {
                   DashboardControllerRegistry.shared.controller(for: windowID)?.isOpen != true else {
                 return ControlResponse(ok: false, error: "session not visible")
             }
-            switch resolvePanePlacement(placement.pane, paneID: placement.paneID, in: session,
+            switch session.panePlacement(placement.pane, paneID: placement.paneID,
                                         requireVisible: true, invalidPaneError: "ask pane must be left or right") {
             case let .resolved(identity, pane):
                 anchor = AskAnchor(sessionID: sessionID, pane: pane, paneIdentity: identity)
@@ -73,7 +90,7 @@ extension ControlServer {
         }
         let identity: UUID?
         let pane: OverlayPane?
-        switch resolvePanePlacement(placement.pane, paneID: placement.paneID, in: session,
+        switch session.panePlacement(placement.pane, paneID: placement.paneID,
                                     requireVisible: true, invalidPaneError: "ask pane must be left or right") {
         case let .resolved(resolvedIdentity, resolvedPane):
             identity = resolvedIdentity
@@ -89,16 +106,16 @@ extension ControlServer {
         return ControlResponse(ok: true, result: ControlResult(id: ask.id, pane: pane?.rawValue))
     }
 
-    /// Hands a session-associated ask to the viewer presenting that session, or returns nil for the caller to
+    /// Hands a session-associated ask to the viewer its pane routes to, or returns nil for the caller to
     /// handle locally. Visibility here is irrelevant, since nothing is drawn here; the pane only has to exist,
     /// and the viewer refuses one it cannot show. `follow` raises nothing for the same reason.
     private func presentAskRemotely(_ ask: PendingAsk, in store: AppStore, sessionID: UUID,
                                     placement: ControlAskPlacement) -> ControlResponse? {
-        guard store.presentationHub?.hasPresenter(session: sessionID) == true,
+        guard let hub = store.presentationHub, hub.subscriberCount(session: sessionID) > 0,
               let session = store.session(withID: sessionID), let windowID = library.windowID(for: store) else {
             return nil
         }
-        switch resolvePanePlacement(placement.pane, paneID: placement.paneID, in: session,
+        switch session.panePlacement(placement.pane, paneID: placement.paneID,
                                     requireVisible: false, invalidPaneError: "ask pane must be left or right") {
         case let .resolved(identity, pane):
             guard let opened = store.presentAskRemotely(ask, in: session, paneIdentity: identity, window: windowID) else {
@@ -111,12 +128,12 @@ extension ControlServer {
         }
     }
 
-    /// Takes back the ask a viewer was presenting for `sessionID`, after the viewer went away or refused it.
+    /// Takes back the ask viewer `owner` was presenting for `sessionID`, after that viewer refused it.
     /// A terminal ask is drawn here from now on; a GUI one moves into its window's slot when its target is
     /// shown and the slot is free, and otherwise ends cancelled with `presentation-lost`.
-    func takeBackRemoteAsk(forSession sessionID: UUID) {
+    func takeBackRemoteAsk(forSession sessionID: UUID, owner: Int) {
         guard let store = library.store(forSession: sessionID),
-              let ask = store.takeBackRemoteAsk(forSession: sessionID) else { return }
+              let ask = store.takeBackRemoteAsk(forSession: sessionID, owner: owner) else { return }
         guard let session = store.session(withID: sessionID), let windowID = library.windowID(for: store),
               let controller = PickRegistry.shared.controller(for: windowID), guiAskFits(session, in: store, windowID: windowID) else {
             store.failHandback(forSession: sessionID)
@@ -133,7 +150,7 @@ extension ControlServer {
     }
 
     /// Whether a GUI ask anchored to `session` could be shown now: the rule `presentAsk` applies at open.
-    private func guiAskFits(_ session: Session, in store: AppStore, windowID: UUID) -> Bool {
+    func guiAskFits(_ session: Session, in store: AppStore, windowID: UUID) -> Bool {
         guard guiTargetShown(session.id, in: store, windowID: windowID) else { return false }
         guard session.askPaneIdentity != nil else { return true }
         guard let pane = session.askTargetPane else { return false }
@@ -147,20 +164,30 @@ extension ControlServer {
             && DashboardControllerRegistry.shared.controller(for: windowID)?.isOpen != true
     }
 
-    /// Applies what a session's presenter sent about work it was handed.
-    func receivePresenterFrame(_ body: PresentationFrame.Body, forSession sessionID: UUID) {
+    /// Applies what viewer `sender` of a session sent about work it was handed.
+    func receivePresenterFrame(_ body: PresentationFrame.Body, forSession sessionID: UUID, from sender: Int) {
         guard let store = library.store(forSession: sessionID) else { return }
         switch body {
         case .askResolve(let answer):
             store.resolveRemoteAsk(answer, forSession: sessionID)
         case .askRejected(let ref) where store.isPresentingRemotely(ref, forSession: sessionID):
-            takeBackRemoteAsk(forSession: sessionID)
+            takeBackRemoteAsk(forSession: sessionID, owner: ref.owner)
+        case .pickResolve(let answer):
+            SessionPickBook.shared.resolveRemote(answer, session: sessionID)
+        case .pickRejected(let ref):
+            takeBackRemotePick(forSession: sessionID, owner: ref.owner, refused: ref)
         case .overlayRejected(let change):
-            store.rejectRemoteOverlay(change.job, forSession: sessionID)
+            store.rejectRemoteOverlay(change.job, forSession: sessionID, from: sender)
         case .overlayClosed(let change):
-            store.remoteOverlaySurfaceClosed(change.job, forSession: sessionID)
-        case .pageState, .pageClosed, .pageRejected:
-            receiveRemotePageFrame(body, in: store, forSession: sessionID)
+            store.remoteOverlaySurfaceClosed(change.job, forSession: sessionID, from: sender)
+        case .pageState, .pageResult, .pageClosed, .pageRejected:
+            receiveRemotePageFrame(body, in: store, forSession: sessionID, from: sender)
+        case .linkClick(let click):
+            receiveForwardedClick(click, forSession: sessionID, from: sender)
+        case .statusClear(let clear):
+            store.applyPresenterClear(clear, forSession: sessionID, reset: GhosttyApp.shared.statusReset)
+        case .statusSeen(let seen):
+            store.applyPresenterSeen(seen, forSession: sessionID, badgeReset: GhosttyApp.shared.badgeReset)
         default:
             break
         }

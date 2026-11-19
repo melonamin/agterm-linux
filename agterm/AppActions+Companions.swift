@@ -16,6 +16,7 @@ extension AppActions {
     /// Opens a companion of `id`, a sibling when `id` is itself a companion, and selects it. Store-scoped like
     /// `duplicateSession(_:in:)`.
     func newCompanion(_ id: UUID, in store: AppStore) {
+        if performRemote(.newCompanion(parent: id), in: store, select: true) { return }
         if store.session(withID: id)?.remoteHost != nil {
             return createRemoteCompanion(.terminal(CompanionOptions()), of: id, in: store, action: "New Companion")
         }
@@ -38,6 +39,7 @@ extension AppActions {
     }
 
     func duplicateAsCompanion(_ id: UUID, in store: AppStore) {
+        if performRemote(.duplicateCompanion(id), in: store, select: true) { return }
         if store.session(withID: id)?.remoteHost != nil {
             return createRemoteCompanion(.duplicate, of: id, in: store, action: "Duplicate as Companion")
         }
@@ -69,6 +71,59 @@ extension AppActions {
                 hud.fail(reply.error ?? "the companion was not created")
             }
         }
+    }
+
+    /// convertToCompanion shows refusals in a timed HUD, with notification fallback.
+    func convertToCompanion(_ id: UUID, in store: AppStore) {
+        if performRemote(.convertCompanion(id), in: store) { return }
+        if forwardAttached(ControlRequest(cmd: .sessionCompanionConvert, target: id.uuidString), row: id, in: store,
+                           action: "Convert to Companion") { return }
+        switch store.convertToCompanion(id) {
+        case .failure(let refusal):
+            showCompanionRefusal(refusal.message, action: "Convert to Companion", over: id, in: store)
+        case .success:
+            store.noteUserActivity()
+            focusActiveSession()
+        }
+    }
+
+    /// moveCompanion puts a companion under another top-level session for the sidebar drop and the row menu; the
+    /// control command calls the store itself, since this reports only through the HUD.
+    func moveCompanion(_ id: UUID, under parentID: UUID, at index: Int?, in store: AppStore) {
+        if let remote = store.remoteActions {
+            // the slot counts the rows shown here; the server's group also holds the rows this window detached
+            let visible = store.companions(of: parentID).map(\.id).filter { $0 != id }
+            let group = remote.mirror.catalog?.workspaces.flatMap(\.sessions).filter { $0.fields.parent == parentID && $0.id != id }
+                .map(\.id) ?? []
+            let mapped = RemoteOperation.companionIndex(slot: index, visible: visible, group: group)
+            _ = performRemote(.moveCompanion(id, parent: parentID, index: mapped), in: store)
+            return
+        }
+        var args = ControlArgs()
+        args.parent = parentID.uuidString
+        args.index = index
+        if forwardAttached(ControlRequest(cmd: .sessionCompanionMove, target: id.uuidString, args: args), row: id, in: store,
+                           action: "Move Companion") { return }
+        switch store.moveCompanion(id, under: parentID, at: index) {
+        case .failure(let refusal):
+            showCompanionRefusal(refusal.message, action: "Move Companion", over: id, in: store)
+        case .success:
+            store.noteUserActivity()
+        }
+    }
+
+    // a refusal shows in a timed HUD over the session, falling back to a notification when there is no window for it
+    private func showCompanionRefusal(_ message: String, action: String, over id: UUID, in store: AppStore) {
+        guard let remoteAttacher, let windowID = library.windowID(for: store) else {
+            return NotificationManager.shared.notifyCommandFailure(name: action, detail: message)
+        }
+        RemoteAttachHud(attacher: remoteAttacher, session: id.uuidString, window: windowID.uuidString, action: action).fail(message)
+    }
+
+    func convertActiveSessionToCompanion() {
+        guard uiActionsEnabled else { return }
+        guard let store, let id = store.selectedSessionID else { return }
+        convertToCompanion(id, in: store)
     }
 
     func duplicateActiveSessionAsCompanion() {

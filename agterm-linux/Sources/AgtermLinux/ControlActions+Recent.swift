@@ -4,7 +4,7 @@ import agtermCore
 @MainActor
 extension AppController {
     func listRecentClosed() -> ControlResponse {
-        ControlResponse(ok: true, result: ControlResult(recent: library.recentClosedItems.map(ControlRecentItem.init)))
+        ControlResponse(ok: true, result: ControlResult(recent: ControlRecentItem.merged(library.recentClosedItems, remote: library.remoteRecentClosedItems)))
     }
 
     func clearRecentClosed() -> ControlResponse {
