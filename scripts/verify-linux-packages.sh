@@ -102,6 +102,7 @@ verify_payload "$WORK/tar/agterm-linux"
 [[ "$(dpkg-deb -f "$DEB" Version)" == "$PACKAGE_VERSION-1" ]]
 dpkg-deb -f "$DEB" Depends | grep -Fq 'libwebkitgtk-6.0-4'
 dpkg-deb -f "$DEB" Depends | grep -Fq 'python3'
+dpkg-deb -f "$DEB" Depends | grep -Fq 'libcurl4t64'
 dpkg-deb -f "$DEB" Depends | grep -Fq 'librsvg2-common'
 dpkg-deb -f "$DEB" Depends | grep -Fq 'webp-pixbuf-loader'
 dpkg-deb -x "$DEB" "$WORK/deb"
@@ -113,6 +114,7 @@ verify_payload "$WORK/deb/opt/agterm-linux"
 [[ "$(rpm --dbpath "$WORK/rpmdb" -qp --queryformat '%{ARCH}' "$RPM")" == "$HOST_ARCH" ]]
 [[ "$(rpm --dbpath "$WORK/rpmdb" -qp --queryformat '%{VERSION}-%{RELEASE}' "$RPM")" == "$PACKAGE_VERSION-1" ]]
 rpm --dbpath "$WORK/rpmdb" -qp --requires "$RPM" | grep -Fq 'webkitgtk6.0'
+rpm --dbpath "$WORK/rpmdb" -qp --requires "$RPM" | grep -Fxq 'libcurl'
 rpm --dbpath "$WORK/rpmdb" -qp --requires "$RPM" | grep -Fq 'python3'
 rpm --dbpath "$WORK/rpmdb" -qp --requires "$RPM" | grep -Fq 'webp-pixbuf-loader'
 (
@@ -136,7 +138,7 @@ if [[ -f "$ARCH" ]]; then
   grep -Fxq 'pkgname = agterm-linux-bin' "$WORK/arch/.PKGINFO"
   grep -Fxq "pkgver = $VERSION-1" "$WORK/arch/.PKGINFO"
   grep -Fxq "arch = $HOST_ARCH" "$WORK/arch/.PKGINFO"
-  for dependency in bash glibc gtk4 libadwaita libepoxy webkitgtk-6.0 python librsvg webp-pixbuf-loader; do
+  for dependency in bash glibc gtk4 libadwaita libepoxy webkitgtk-6.0 python curl librsvg webp-pixbuf-loader; do
     grep -Fxq "depend = $dependency" "$WORK/arch/.PKGINFO"
   done
   verify_payload "$WORK/arch/usr/lib/agterm-linux"

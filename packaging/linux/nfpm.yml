@@ -44,6 +44,7 @@ overrides:
       - libadwaita-1-0 (>= 1.5)
       - libwebkitgtk-6.0-4
       - libepoxy0
+      - libcurl4t64
       - librsvg2-common
       - webp-pixbuf-loader
   rpm:
@@ -55,4 +56,5 @@ overrides:
       - libadwaita >= 1.5
       - webkitgtk6.0
       - libepoxy
+      - libcurl
       - webp-pixbuf-loader
