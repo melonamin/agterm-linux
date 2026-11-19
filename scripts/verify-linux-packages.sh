@@ -132,6 +132,7 @@ verify_payload "$WORK/rpm/opt/agterm-linux"
 [[ "$(readlink "$WORK/rpm/usr/bin/agtermctl")" == '/opt/agterm-linux/bin/agtermctl' ]]
 
 if [[ -f "$ARCH" ]]; then
+  command -v zstd >/dev/null || { echo "zstd is required to verify the Arch package" >&2; exit 1; }
   [[ "$(awk -v name="$(basename "$ARCH")" '$2 == name { count++ } END { print count+0 }' "$CHECKSUMS")" == 1 ]]
   mkdir -p "$WORK/arch"
   tar -xf "$ARCH" -C "$WORK/arch"
