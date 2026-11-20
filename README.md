@@ -268,7 +268,8 @@ Prereleases retain DEB, RPM, and tar formats.
 Download a new package and repeat `pacman -U` to upgrade; GitHub Releases is not a pacman repository.
 
 The tarball bundles the Swift runtime, libghostty, Ghostty resources, and zmx but expects GTK4,
-libadwaita, WebKitGTK 6.0, and libcurl from the host:
+libadwaita, WebKitGTK 6.0, and libcurl from the host.
+Agent status hooks also require Python 3 and jq:
 
 ```sh
 tar xzf agterm-linux-vX.Y.Z-x86_64.tar.gz
@@ -328,7 +329,7 @@ Requirements:
 
 - Swift 6.3.2.
 - GTK4, libadwaita, WebKitGTK 6.0, libepoxy, pkg-config, git, curl, ca-certificates, and xz.
-- Python 3 at runtime for the bundled Codex status hooks; DEB and RPM installs include this dependency.
+- Python 3 and jq at runtime for agent status hooks; DEB, RPM and Arch installs include these dependencies.
 - SVG image loading at runtime for toolbar and sidebar icons (`librsvg2-common` on Ubuntu/Debian).
 - WebP image loading at runtime for image and Markdown pages (`webp-pixbuf-loader`).
 - zsh, required by the shared `agtermCore` tests.

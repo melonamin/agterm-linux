@@ -184,4 +184,6 @@ Tar, DEB, RPM and Arch packages pass payload and runtime checks; clean Ubuntu an
 The first hosted branch run failed only in `CodexStatusHookTests` because the Swift container lacked `jq`.
 Removing `jq` locally reproduces the same 22 issues across 26 tests; restoring it passes all 26 tests.
 Both CI test environments now install the hook's Linux JSON dependency, matching the release workflow.
+DEB, RPM and Arch packages also declare `jq`, and package verification requires that declaration.
+Tar users' documented runtime requirements include it.
 The complete GUI run and hosted branch CI remain release gates.

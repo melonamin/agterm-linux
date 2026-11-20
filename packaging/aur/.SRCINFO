@@ -13,6 +13,7 @@ pkgbase = agterm-linux-bin
 	depends = libepoxy
 	depends = webkitgtk-6.0
 	depends = python
+	depends = jq
 	depends = curl
 	depends = librsvg
 	depends = webp-pixbuf-loader
