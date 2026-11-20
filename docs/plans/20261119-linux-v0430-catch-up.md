@@ -173,3 +173,15 @@ and the PR's actual tar/DEB/RPM build and verification scripts pass.
 PR #1 remains the explicitly unmerged Linux-port tracking draft.
 The user subsequently approved both merges; their patches are now on `linux-port`.
 No review comment or PR edit was posted.
+
+## Combined release validation
+
+Both approved PRs are merged and the v0.43.0 upstream and Linux release notes are staged in the repository.
+The combined branch passes all 637 Linux tests, Release builds, strict lint, boundary and CLI drift checks.
+The real-SSH two-viewer scenario also passes after both merges.
+Tar, DEB, RPM and Arch packages pass payload and runtime checks; clean Ubuntu and Fedora installs execute the CLI.
+
+The first hosted branch run failed only in `CodexStatusHookTests` because the Swift container lacked `jq`.
+Removing `jq` locally reproduces the same 22 issues across 26 tests; restoring it passes all 26 tests.
+Both CI test environments now install the hook's Linux JSON dependency, matching the release workflow.
+The complete GUI run and hosted branch CI remain release gates.

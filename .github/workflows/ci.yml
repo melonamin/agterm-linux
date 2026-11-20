@@ -108,10 +108,10 @@ jobs:
           fetch-tags: true
       - name: Trust checkout directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - name: Install test shell
+      - name: Install test shells and hook dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ripgrep zsh fish csh tcsh
+          apt-get install -y --no-install-recommends jq ripgrep zsh fish csh tcsh
       - name: Materialize and verify upstream boundary tag
         run: |
           git tag --force "$UPSTREAM_BASE_TAG" "$UPSTREAM_BASE_COMMIT"
@@ -191,7 +191,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libepoxy-dev librsvg2-common webp-pixbuf-loader pkg-config git curl ca-certificates xz-utils ncurses-bin \
-            ripgrep zsh fish csh tcsh gcc file at-spi2-core dbus-x11 gir1.2-atspi-2.0 openbox python3-gi xdotool xvfb xauth x11-xkb-utils ibus ibus-gtk4 \
+            jq ripgrep zsh fish csh tcsh gcc file at-spi2-core dbus-x11 gir1.2-atspi-2.0 openbox python3-gi xdotool xvfb xauth x11-xkb-utils ibus ibus-gtk4 \
             libatk-bridge2.0-0 libgl1-mesa-dri libegl-mesa0 mesa-utils
           curl -fsSLo /tmp/zig.tar.xz \
             https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
