@@ -5,8 +5,7 @@
 #
 # Note: the binary finds the vendored libghostty via an absolute rpath into
 # agterm-linux/vendor/ghostty/lib, so this is a personal install tied to this
-# checkout. A redistributable package must bundle the .so + relocate the rpath
-# (and ship a hicolor icon for the .desktop's Icon= key — not included here).
+# checkout. A redistributable package must bundle the .so + relocate the rpath.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -59,10 +58,19 @@ rm -f "$APP_DIR/com.umputun.agterm.linux.desktop"
 # so the .desktop's Icon= key + the taskbar/notification icon resolve.
 ICON_SRC="$(ls agterm/AppIcon.icon/Assets/*.png 2>/dev/null | head -1)"
 ICON_BASE="$HOME/.local/share/icons/hicolor"
+# macOS masks the icon's corners at display time, while a Linux shell shows a PNG as drawn.
+rounded_icon() {
+  local size="$1" out="$2" radius
+  radius=$(( (size * 224 + 500) / 1000 ))
+  magick "$ICON_SRC" -resize "${size}x${size}!" -alpha set \
+    \( -size "${size}x${size}" xc:none -fill white \
+       -draw "roundrectangle 0,0,$((size - 1)),$((size - 1)),${radius},${radius}" \) \
+    -compose DstIn -composite "$out"
+}
 if [ -n "$ICON_SRC" ] && command -v magick >/dev/null 2>&1; then
   for sz in 16 32 48 64 128 256 512; do
     install -d "$ICON_BASE/${sz}x${sz}/apps"
-    magick "$ICON_SRC" -resize "${sz}x${sz}" "$ICON_BASE/${sz}x${sz}/apps/io.github.melonamin.agterm.png"
+    rounded_icon "$sz" "$ICON_BASE/${sz}x${sz}/apps/io.github.melonamin.agterm.png"
     rm -f "$ICON_BASE/${sz}x${sz}/apps/com.umputun.agterm.linux.png"
   done
   command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "$ICON_BASE" 2>/dev/null || true

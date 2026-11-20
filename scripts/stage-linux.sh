@@ -78,17 +78,26 @@ install -m644 "$DESKTOP" "$DEST/share/applications/io.github.melonamin.agterm.de
 install -m644 "$DESKTOP" "$DEST/io.github.melonamin.agterm.desktop"
 
 ICON_SRC="$(find "$ROOT/agterm/AppIcon.icon/Assets" -maxdepth 1 -type f -name '*.png' -print -quit)"
-if [[ -n "$ICON_SRC" ]]; then
+IMAGE_CONVERTER="$(command -v magick || command -v convert || true)"
+# macOS masks the icon's corners at display time, while a Linux shell shows a PNG as drawn.
+rounded_icon() {
+  local size="$1" out="$2" radius
+  radius=$(( (size * 224 + 500) / 1000 ))
+  "$IMAGE_CONVERTER" "$ICON_SRC" -resize "${size}x${size}!" -alpha set \
+    \( -size "${size}x${size}" xc:none -fill white \
+       -draw "roundrectangle 0,0,$((size - 1)),$((size - 1)),${radius},${radius}" \) \
+    -compose DstIn -composite "$out"
+}
+if [[ -n "$ICON_SRC" && -n "$IMAGE_CONVERTER" ]]; then
+  for size in 16 32 48 64 128 256 512; do
+    ICON_DIR="$DEST/share/icons/hicolor/${size}x${size}/apps"
+    mkdir -p "$ICON_DIR"
+    rounded_icon "$size" "$ICON_DIR/io.github.melonamin.agterm.png"
+  done
+  install -m644 "$DEST/share/icons/hicolor/256x256/apps/io.github.melonamin.agterm.png" \
+    "$DEST/share/pixmaps/io.github.melonamin.agterm.png"
+elif [[ -n "$ICON_SRC" ]]; then
   install -m644 "$ICON_SRC" "$DEST/share/pixmaps/io.github.melonamin.agterm.png"
-  IMAGE_CONVERTER="$(command -v magick || command -v convert || true)"
-  if [[ -n "$IMAGE_CONVERTER" ]]; then
-    for size in 16 32 48 64 128 256 512; do
-      ICON_DIR="$DEST/share/icons/hicolor/${size}x${size}/apps"
-      mkdir -p "$ICON_DIR"
-      "$IMAGE_CONVERTER" "$ICON_SRC" -resize "${size}x${size}" \
-        "$ICON_DIR/io.github.melonamin.agterm.png"
-    done
-  fi
 fi
 
 cat > "$DEST/bin/agterm-linux" <<'LAUNCH'
