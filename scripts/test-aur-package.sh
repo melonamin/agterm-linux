@@ -37,7 +37,7 @@ docker run --rm \
     -v "$OUT:/output" \
     -w /repo archlinux:base-devel bash -euo pipefail -c '
         pacman -Syu --noconfirm --needed git curl patchelf gtk4 libadwaita libepoxy webkitgtk-6.0 \
-            python librsvg webp-pixbuf-loader namcap desktop-file-utils \
+            python jq librsvg webp-pixbuf-loader namcap desktop-file-utils \
             python-gobject at-spi2-core dbus openbox xdotool xorg-server-xvfb xorg-xauth \
             xorg-setxkbmap ibus mesa libglvnd ttf-dejavu
         # makepkg must run unprivileged, including when the outer runner is root.
