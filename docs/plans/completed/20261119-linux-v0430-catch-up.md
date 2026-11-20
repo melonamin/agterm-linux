@@ -57,9 +57,9 @@ Preserve all other branches and worktrees.
 - [x] Full GTK suite and Linux packages, metadata/runtime closure and clean-container installation.
 - [x] Review complete downstream diff and protected test equality.
 - [x] Commit and push the candidate and merge reviewed PRs #61 and #62 with user approval.
-- [ ] Inspect exact-commit branch CI for the combined release candidate.
-- [ ] Prepare and inspect full release notes, artifact set and immutable release-tag gate.
-- [ ] Verify published artifacts, checksums and attestations after approval.
+- [x] Inspect exact-commit branch CI for the combined release candidate.
+- [x] Prepare and inspect full release notes, artifact set and immutable release-tag gate.
+- [x] Verify published artifacts, checksums and attestations after approval.
 
 ## Validation commands
 
@@ -83,7 +83,7 @@ Mise's Swift 6.3.2 UBI9 fallback cannot load the host's libraries.
 Use the CI-pinned `swift:6.3.2-noble` container with the workflow's native dependency list for local validation.
 Keep build logs, caches and temporary data on persistent disk under `/mnt/bulk/agterm-catch-up-20261119`.
 
-## Candidate evidence
+## Initial candidate evidence
 
 - Shared package: 6,895 tests in 323 suites pass with Swift 6.3.2.
   Real zmx/fish lifecycle requirements were enabled.
@@ -119,7 +119,7 @@ Keep build logs, caches and temporary data on persistent disk under `/mnt/bulk/a
   Installer tests verify the pinned v0.43.0 archive and refuse tampered bytes before unpacking.
 
 Local validation artifacts live under `/mnt/bulk/agterm-catch-up-20261119`.
-The plan remains open through branch CI and the separate release-tag/publication gate.
+The catch-up is complete; final branch CI and publication evidence are recorded below.
 
 ## Local integration commits
 
@@ -130,10 +130,10 @@ The plan remains open through branch CI and the separate release-tag/publication
 - `f04e68f4`: use unique short socket-only runtime directories and clean up repeatable real-SSH fixtures.
 
 `origin/master` already points to `be92bc63eca595a2955a0dc5c9a2b1e593e31a66` with approval.
-`origin/linux-port` is still `7f95d856d10df58d1d3964e1416d668aae721708`.
+Before this catch-up, `origin/linux-port` pointed to `7f95d856d10df58d1d3964e1416d668aae721708`.
 Acceptance fixes were committed as `41bb1a89` and pushed to `origin/linux-port` with user approval.
 PR #61 merged as `e876da44`; PR #62 merged as `27d7cdf9`.
-Exact-commit hosted CI, release-tag approval, publication and artifact attestations remain pending.
+Exact-commit hosted CI passed, the user approved publication, and the public artifacts and attestations are verified below.
 
 ## Acceptance follow-up
 
@@ -157,7 +157,7 @@ Host state, live user sessions, the protected shared test, macOS sources and oth
 
 Final acceptance logs and package artifacts are under `/mnt/bulk/agterm-catch-up-20261119/acceptance-final-*`.
 The 6,895 shared tests remain applicable because this follow-up changes no shared code.
-The final Linux package passes all 635 tests, Debug/Release builds, strict lint, CLI drift and boundary checks.
+Before the two PR merges, the Linux package passed all 635 tests, Debug/Release builds, strict lint, CLI drift and boundary checks.
 The tar/DEB/RPM payload was rebuilt after the fixes; the matching Arch package builds, installs and passes its real GTK scenario.
 The host's systemd user-service installation remains unexecuted.
 
@@ -176,7 +176,7 @@ No review comment or PR edit was posted.
 
 ## Combined release validation
 
-Both approved PRs are merged and the v0.43.0 upstream and Linux release notes are staged in the repository.
+Both approved PRs are merged and the v0.43.0 upstream and Linux release notes are committed in the repository.
 The combined branch passes all 637 Linux tests, Release builds, strict lint, boundary and CLI drift checks.
 The real-SSH two-viewer scenario also passes after both merges.
 Tar, DEB, RPM and Arch packages pass payload and runtime checks; clean Ubuntu and Fedora installs execute the CLI.
@@ -186,4 +186,47 @@ Removing `jq` locally reproduces the same 22 issues across 26 tests; restoring i
 Both CI test environments now install the hook's Linux JSON dependency, matching the release workflow.
 DEB, RPM and Arch packages also declare `jq`, and package verification requires that declaration.
 Tar users' documented runtime requirements include it.
-The complete GUI run and hosted branch CI remain release gates.
+All 77 GUI scenarios and hosted branch CI pass for source commit `9e140da63ef790a5b20f54088e61f8b6b31f9206`.
+
+## Published release
+
+The user approved publication and requested credits for every contributor.
+Release: https://github.com/melonamin/agterm-linux/releases/tag/linux-v0.43.0
+Source commit: `9e140da63ef790a5b20f54088e61f8b6b31f9206`.
+Annotated tag object: `872dd30047992d332a0f26388e7cc73fd0f070c5`.
+The release preserves exact upstream v0.43.0 and excludes later upstream commits.
+
+Branch CI: https://github.com/melonamin/agterm-linux/actions/runs/44655644889
+Release workflow: https://github.com/melonamin/agterm-linux/actions/runs/44661694738
+Both runs completed successfully.
+The release run passes 6,895 shared tests, 637 Linux tests, 9 required bundled-runtime lifecycle tests,
+all 77 GTK GUI scenarios, lint, boundary checks, and Debug/Release builds.
+
+The published assets are:
+
+- `agterm-linux-v0.43.0-x86_64.tar.gz`
+- `agterm-linux-v0.43.0-x86_64.deb`
+- `agterm-linux-v0.43.0-x86_64.rpm`
+- `agterm-linux-bin-0.43.0-1-x86_64.pkg.tar.zst`
+- `agterm-linux-v0.43.0-SHA256SUMS`
+
+All five assets were downloaded independently from the public release.
+The checksum manifest passes for all four packages, and GitHub build-provenance attestations verify for all five assets.
+Downloaded payloads pass package metadata, declared dependencies and runtime-library closure checks.
+The tar payload records the expected source commit.
+Fresh Ubuntu 24.04 and Fedora 43 containers install the public DEB/RPM, execute CLI and server-installer help,
+and run the installed Codex hook through question detection, background-event suppression and foreground status.
+The publication job also builds, installs and exercises the exact Arch package before publishing it.
+
+The public release body credits every GitHub author in `linux-v0.41.1..linux-v0.43.0`:
+@umputun, @melonamin, @alexandru-savinov, @valeronm, @arogulin, @fAntel, @maxshevelev,
+@vnazarenko, @NaikSoftware, @nkt, @pySilver, @Romancha, @bot-rogerthat, @sysradium and @megabyde.
+Recorded Claude Opus 5.5 co-author credit is also acknowledged.
+The published body was read back and checked against the complete prepared notes and contributor inventory.
+
+AUR publication skipped because `AUR_SSH_PRIVATE_KEY` is not configured.
+The verified Arch package is available directly from the GitHub release.
+AppImage and host systemd installation retain the limitations documented above.
+The protected shared test, unrelated screenshot, host sessions and other worktrees remain unchanged.
+
+Final publication evidence is under `/mnt/bulk/agterm-catch-up-20261119/published-*`.
