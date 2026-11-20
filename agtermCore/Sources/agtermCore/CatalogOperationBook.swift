@@ -37,49 +37,61 @@ public final class CatalogOperationBook {
     /// serve answers a repeated `opID` from the table, refuses another epoch, and otherwise runs the command once.
     /// Its marker is in the table while it runs, so the command's own save records the id.
     public func serve(_ request: ControlRequest, opID: String, host: any CatalogOperationHost) async -> ControlResponse {
+        var pending: (ControlRequest, @MainActor (ControlResponse) -> Void)?
+        var response: ControlResponse?
+        serve(request, opID: opID, host: host, run: { pending = ($0, $1) }, completion: { response = $0 })
+        if let (request, done) = pending { done(await host.runOperation(request)) }
+        return response ?? Self.unsaved(opID)
+    }
+
+    /// Callback transport entry point; the table and receipts retain the async path's semantics.
+    public func serve(_ request: ControlRequest, opID: String, host: any CatalogOperationHost,
+                      run: @MainActor (ControlRequest, @escaping @MainActor (ControlResponse) -> Void) -> Void,
+                      completion: @escaping @MainActor (ControlResponse) -> Void) {
         guard Self.receiptCommands.contains(request.cmd) else {
-            return ControlResponse(ok: false, error: "\(request.cmd.rawValue) takes no operation id")
+            return completion(ControlResponse(ok: false, error: "\(request.cmd.rawValue) takes no operation id"))
         }
-        guard CatalogReceipt.isValidOpID(opID) else { return ControlResponse(ok: false, error: "invalid operation id") }
-        guard let store = host.operationStore else { return Self.gone }
+        guard CatalogReceipt.isValidOpID(opID) else { return completion(ControlResponse(ok: false, error: "invalid operation id")) }
+        guard let store = host.operationStore else { return completion(Self.gone) }
         let hub = host.operationHub
         var table = settleHeld(in: store, host: host)
-        if let recorded = table.receipt(opID) { return durable(store) ? Self.reply(recorded) : Self.unsaved(opID) }
+        if let recorded = table.receipt(opID) { return completion(durable(store) ? Self.reply(recorded) : Self.unsaved(opID)) }
         guard request.args?.epoch == hub.epoch else {
             let error = "the catalog is at epoch \(hub.epoch); take its snapshot and send the command again"
             let refusal = CatalogReceipt(opID: opID, epoch: hub.epoch, outcome: .refused, error: error)
-            return save(refusal, into: &table, host: host) ? Self.reply(refusal) : Self.unsaved(opID)
+            return completion(save(refusal, into: &table, host: host) ? Self.reply(refusal) : Self.unsaved(opID))
         }
         if let refusal = host.operationRefusal(request) {
             let receipt = CatalogReceipt(opID: opID, epoch: hub.epoch, outcome: .refused, error: refusal)
-            return save(receipt, into: &table, host: host) ? Self.reply(receipt) : Self.unsaved(opID)
+            return completion(save(receipt, into: &table, host: host) ? Self.reply(receipt) : Self.unsaved(opID))
         }
         hub.refresh()
         let before = hub.rev
         table.record(CatalogReceipt(opID: opID, epoch: hub.epoch, outcome: .applied), at: Self.position(hub))
         store.catalogOperations = table
-        let response = await host.runOperation(request)
-        hub.refresh()
-        let receipt: CatalogReceipt
-        if !response.ok {
-            receipt = CatalogReceipt(opID: opID, epoch: hub.epoch, outcome: .refused, error: response.error)
-        } else if hub.rev > before {
-            receipt = CatalogReceipt(opID: opID, epoch: hub.epoch, outcome: .applied, rev: hub.rev)
-        } else {
-            receipt = CatalogReceipt(opID: opID, epoch: hub.epoch, outcome: .noop)
+        run(request) { [self] response in
+            hub.refresh()
+            let receipt: CatalogReceipt
+            if !response.ok {
+                receipt = CatalogReceipt(opID: opID, epoch: hub.epoch, outcome: .refused, error: response.error)
+            } else if hub.rev > before {
+                receipt = CatalogReceipt(opID: opID, epoch: hub.epoch, outcome: .applied, rev: hub.rev)
+            } else {
+                receipt = CatalogReceipt(opID: opID, epoch: hub.epoch, outcome: .noop)
+            }
+            // another request may have recorded its own operation while this one ran
+            guard let current = host.operationStore else {
+                held.append(receipt)
+                return completion(Self.unsaved(opID))
+            }
+            table = settleHeld(in: current, host: host)
+            guard save(receipt, into: &table, host: host) else { return completion(Self.unsaved(opID)) }
+            var reply = response
+            var result = reply.result ?? ControlResult()
+            result.receipt = receipt
+            reply.result = result
+            completion(reply)
         }
-        // another request may have recorded its own operation while this one ran
-        guard let current = host.operationStore else {
-            held.append(receipt)
-            return Self.unsaved(opID)
-        }
-        table = settleHeld(in: current, host: host)
-        guard save(receipt, into: &table, host: host) else { return Self.unsaved(opID) }
-        var reply = response
-        var result = reply.result ?? ControlResult()
-        result.receipt = receipt
-        reply.result = result
-        return reply
     }
 
     /// lookup answers `catalog.op` from the table. An id the origin has not seen is fenced, so the command arriving

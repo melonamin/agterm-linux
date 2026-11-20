@@ -173,11 +173,11 @@ public enum ZmxSupport {
     /// creation command and the pane ends with it (`session new --command`).
     public static func attachCommand(_ configuration: Configuration, replaying argv: [String]?,
                                      creationCommand: String? = nil, paneCommand: String? = nil,
-                                     denylist: Set<String>) -> String {
+                                     denylist: Set<String>, detached: Bool = false) -> String {
         let creation = paneCommand.map(Creation.endingPane) ?? creationCommand.map(Creation.returningToShell)
         let payload = creationArguments(configuration, replaying: argv, creation: creation, denylist: denylist)
-        var arguments = configuration.attachArguments + payload
-        if let host = configuration.sessionHostExecutablePath {
+        var arguments = [configuration.executablePath, "attach"] + (detached ? ["--detached"] : []) + [configuration.daemonName] + payload
+        if !detached, let host = configuration.sessionHostExecutablePath {
             let endsPane = argv == nil && paneCommand != nil && !payload.isEmpty
             arguments = [host, "client", configuration.daemonName] + (endsPane ? ["--ends-pane"] : []) + ["--"] + arguments
         }

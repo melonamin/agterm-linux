@@ -82,31 +82,37 @@ extension AppStore {
     /// at most `remoteTextDeadline`. A presenter that does not list `page.text`, or `page.files` for a file jump or
     /// `page.expand` for an expand, is never sent one: it cannot decode the action and would end the whole presentation.
     public func remoteTextAction(_ sessionID: UUID, pane: OverlayPane?, _ action: TextPageAction) async -> RemoteTextOutcome {
+        await withCheckedContinuation { continuation in
+            remoteTextAction(sessionID, pane: pane, action) { continuation.resume(returning: $0) }
+        }
+    }
+
+    /// Callback entry point for hosts using a different main loop.
+    public func remoteTextAction(_ sessionID: UUID, pane: OverlayPane?, _ action: TextPageAction,
+                                 completion: @escaping @MainActor (RemoteTextOutcome) -> Void) {
         guard let session = session(withID: sessionID), let slot = session.remoteOverlays.slot(pane), slot.page != nil
-        else { return .local }
+        else { return completion(.local) }
         // a headless origin holds the page with no owner until a viewer takes it
         guard let hub = presentationHub, let owner = slot.owner, hub.isConnected(owner: owner) else {
-            return .failed(OverlayResultError.viewerGone)
+            return completion(.failed(OverlayResultError.viewerGone))
         }
-        guard hub.supports(PresentationHub.pageTextKind, owner: owner) else { return .local }
-        if case .files = action, !hub.supports(PresentationHub.pageFilesKind, owner: owner) { return .local }
-        if case .expand = action, !hub.supports(PresentationHub.pageExpandKind, owner: owner) { return .local }
+        guard hub.supports(PresentationHub.pageTextKind, owner: owner) else { return completion(.local) }
+        if case .files = action, !hub.supports(PresentationHub.pageFilesKind, owner: owner) { return completion(.local) }
+        if case .expand = action, !hub.supports(PresentationHub.pageExpandKind, owner: owner) { return completion(.local) }
         var seq = 0
         session.remoteOverlays.updatePage(slot.job) { seq = $0.nextSeq() }
         let wait = RemoteTextWait(job: slot.job, seq: seq)
         let command = action.command(page: slot.job, seq: seq)
         let deadline = remoteTextDeadline
-        return await withCheckedContinuation { continuation in
             // registered before the send, which can drop a stalled viewer and end the page synchronously
-            remoteTextWaits[wait] = continuation
+            remoteTextWaits[wait] = completion
             guard hub.send(.pageCommand(command), toOwner: owner) else {
                 return settleRemoteText(wait, .failed(OverlayResultError.viewerGone))
             }
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: deadline)
+            let parts = deadline.components
+            MainTimer.schedule(after: Double(parts.seconds) + Double(parts.attoseconds) / 1e18) { [weak self] in
                 self?.settleRemoteText(wait, .failed(OverlayResultError.presenterSilent))
             }
-        }
     }
 
     /// receiveRemoteTextResult applies the state a result from viewer `sender` carries, then answers the action waiting
@@ -128,6 +134,6 @@ extension AppStore {
     }
 
     private func settleRemoteText(_ wait: RemoteTextWait, _ outcome: RemoteTextOutcome) {
-        remoteTextWaits.removeValue(forKey: wait)?.resume(returning: outcome)
+        remoteTextWaits.removeValue(forKey: wait)?(outcome)
     }
 }

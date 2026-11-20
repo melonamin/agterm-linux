@@ -413,7 +413,7 @@ public final class PresentationHub {
     /// scheduleOpenWork asks for a placement pass over `session`'s open work (`onOpenWork`).
     public func scheduleOpenWork(_ session: UUID) {
         guard openWorkDue.insert(session).inserted else { return }
-        Task { @MainActor [weak self] in
+        MainTimer.schedule(after: 0) { [weak self] in
             guard let self, self.openWorkDue.remove(session) != nil else { return }
             self.onOpenWork?(session)
         }

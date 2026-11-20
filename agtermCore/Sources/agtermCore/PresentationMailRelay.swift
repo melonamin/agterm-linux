@@ -29,13 +29,11 @@ public final class PresentationMailRelay {
     private func schedule() {
         guard !scheduled else { return }
         scheduled = true
-        DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.scheduled = false
-                guard self.token != nil else { return }
-                self.flush()
-            }
+        MainTimer.schedule(after: 0) { [weak self] in
+            guard let self else { return }
+            self.scheduled = false
+            guard self.token != nil else { return }
+            self.flush()
         }
     }
 }

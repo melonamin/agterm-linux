@@ -68,7 +68,6 @@ final class MockControlActions: ControlActions {
         case hooksReload
         case hooksList
         case recentList
-        case recentClear
         case recentOpen(target: String?, window: String?)
         case browserClear
         case browserLinks(LinkOpenMode?)
@@ -148,6 +147,7 @@ final class MockControlActions: ControlActions {
         case askResult(target: String, window: String?)
         case askCancel(target: String, window: String?)
         case restoreClear
+        case recentClear
         case restoreCapture
     }
 

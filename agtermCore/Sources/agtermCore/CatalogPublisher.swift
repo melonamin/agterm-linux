@@ -32,7 +32,7 @@ public final class CatalogPublisher {
         withObservationTracking {
             hub.refresh()
         } onChange: { [weak self] in
-            Task { @MainActor in self?.markDirty() }
+            MainActorHop.enqueue { self?.markDirty() }
         }
     }
 }

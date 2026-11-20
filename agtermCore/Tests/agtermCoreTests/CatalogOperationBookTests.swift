@@ -36,6 +36,20 @@ struct CatalogOperationBookTests {
         return ControlRequest(cmd: cmd, args: args)
     }
 
+    @Test func callbackOperationRecordsAndReplaysWithoutAnExecutorHop() {
+        var first: ControlResponse?
+        let run: @MainActor (ControlRequest, @escaping @MainActor (ControlResponse) -> Void) -> Void = { _, done in
+            host.runs += 1
+            done(host.answer(host.store))
+        }
+        book.serve(request(), opID: "op-1", host: host, run: run, completion: { first = $0 })
+        #expect(first?.result?.receipt?.outcome == .applied)
+        var repeated: ControlResponse?
+        book.serve(request(), opID: "op-1", host: host, run: run, completion: { repeated = $0 })
+        #expect(repeated?.result?.receipt == first?.result?.receipt)
+        #expect(host.runs == 1)
+    }
+
     @Test func anOperationThatChangesTheCatalogIsAppliedAtItsRevision() async {
         let reply = await book.serve(request(), opID: "op-1", host: host)
 

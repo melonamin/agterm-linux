@@ -31,12 +31,10 @@ extension AppStore {
         withObservationTracking {
             _ = selectedPaneIdentities()
         } onChange: { [weak self] in
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.paneFocusDebouncer.schedule(after: 0.1) { [weak self] in self?.emitPaneFocusChanges() }
-                    self.trackPaneFocus()
-                }
+            MainActorHop.enqueue {
+                guard let self else { return }
+                self.paneFocusDebouncer.schedule(after: 0.1) { [weak self] in self?.emitPaneFocusChanges() }
+                self.trackPaneFocus()
             }
         }
     }

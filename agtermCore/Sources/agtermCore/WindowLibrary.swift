@@ -90,6 +90,7 @@ public final class WindowLibrary {
     @ObservationIgnored public var presentationHub: PresentationHub?
     @ObservationIgnored private let launchPaneDrop: (([UUID]) -> Void)?
     @ObservationIgnored private let launchInventorySink: ((Set<UUID>?) -> Void)?
+    @ObservationIgnored private let defaultSessionCwd: String
     @ObservationIgnored private var launchInventoryComplete = true
     @ObservationIgnored private var treeEventDebouncers: [UUID: Debouncer]
     @ObservationIgnored private var isBootstrapping = true
@@ -122,9 +123,10 @@ public final class WindowLibrary {
 
     /// Preserves the pre-zmx initializer symbol for source and incremental-build compatibility.
     public convenience init(directory: URL = PersistenceStore.defaultDirectory,
-                            controlEventRing: ControlEventRing? = nil) {
+                            controlEventRing: ControlEventRing? = nil,
+                            defaultSessionCwd: String = FileManager.default.homeDirectoryForCurrentUser.path) {
         self.init(directory: directory, paneFinalizer: nil, launchInventorySink: nil,
-                  controlEventRing: controlEventRing)
+                  controlEventRing: controlEventRing, defaultSessionCwd: defaultSessionCwd)
     }
 
     /// Creates the library rooted at `directory`, running migration/recovery and the strict pane inventory.
@@ -134,6 +136,7 @@ public final class WindowLibrary {
                 launchInventorySink: ((Set<UUID>?) -> Void)? = nil,
                 launchPaneDrop: (([UUID]) -> Void)? = nil,
                 controlEventRing: ControlEventRing? = nil,
+                defaultSessionCwd: String = FileManager.default.homeDirectoryForCurrentUser.path,
                 flaggedLayout: FlaggedViewLayout = .flat) {
         self.directory = directory
         self.flaggedLayout = flaggedLayout
@@ -142,6 +145,7 @@ public final class WindowLibrary {
         self.paneFinalizer = paneFinalizer
         self.launchInventorySink = launchInventorySink
         self.launchPaneDrop = launchPaneDrop
+        self.defaultSessionCwd = defaultSessionCwd
         self.treeEventDebouncers = [:]
         self.stores = [:]
         self.windows = []
@@ -377,15 +381,15 @@ public final class WindowLibrary {
 
     // MARK: - Mutation
 
-    /// Creates a window seeded with "workspace 1" and one $HOME session, opens it, and persists the index.
-    /// Defaults the name to "window N".
+    /// Creates a window seeded with "workspace 1" and one session at the host-provided default cwd,
+    /// opens it, and persists the index. Defaults the name to "window N".
     @discardableResult
     public func newWindow(name: String? = nil) -> WindowInfo {
         // the name feeds {AGT_WINDOW_NAME}; see TerminalText.
         let info = WindowInfo(name: name.map(TerminalText.sanitized)?.trimmedOrNil ?? defaultWindowName)
         let store = makeStore(for: info.id, persistence: persistenceStore(for: info.id))
         let workspace = store.addWorkspace(name: "workspace 1")
-        store.addSession(toWorkspace: workspace.id, cwd: FileManager.default.homeDirectoryForCurrentUser.path)
+        store.addSession(toWorkspace: workspace.id, cwd: defaultSessionCwd)
         windows.append(info)
         stores[info.id] = store
         openSetVersion += 1

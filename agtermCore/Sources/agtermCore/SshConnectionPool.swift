@@ -13,21 +13,23 @@ public final class SshConnectionPool {
     public let host: String
     private let prefix: String
     private let runner: Runner
+    private let automaticPreparation: Bool
     private var slots: [Slot] = []
     private var closed = false
 
     private final class Slot {
         let path: String
         var users: Set<String> = []
-        var preparing: Task<Bool, Never>?
+        var waiters: [@MainActor (Bool) -> Void] = []
         init(path: String) { self.path = path }
     }
 
     /// `key` names the pool's owner, so two windows or two state directories never share a master.
-    public init(host: String, root: String, key: String, runner: @escaping Runner) {
+    public init(host: String, root: String, key: String, automaticPreparation: Bool = true, runner: @escaping Runner) {
         self.host = host
         prefix = root + "/" + Self.hash(key)
         self.runner = runner
+        self.automaticPreparation = automaticPreparation
     }
 
     /// lease returns the control path `user` rides: the slot it already holds, else the first with room, else a
@@ -38,7 +40,7 @@ public final class SshConnectionPool {
         let slot = slots.first { $0.users.contains(user) }
             ?? slots.first { $0.users.count < Self.channelsPerConnection } ?? addSlot()
         slot.users.insert(user)
-        if !closed { Task { [weak self] in await self?.ready(slot.path) } }
+        if !closed, automaticPreparation { Task { [weak self] in await self?.ready(slot.path) } }
         return slot.path
     }
 
@@ -61,23 +63,36 @@ public final class SshConnectionPool {
     /// that one start. False when there is no master, and the caller then fails its attempt rather than connect.
     @discardableResult
     public func ready(_ path: String) async -> Bool {
-        guard !closed, RemoteSession.isHost(host), let slot = slots.first(where: { $0.path == path }) else { return false }
-        if let preparing = slot.preparing { return await preparing.value }
-        let task = Task { @MainActor [weak self, runner, host] in
-            if await runner(Self.checkCommand(host: host, path: path)) == 0 { return self?.closed == false }
-            guard self?.closed == false else { return false }
-            let started = await runner(Self.startCommand(host: host, path: path)) == 0
-            guard self?.closed == false else {
-                // the pool closed while this master was starting; its exit command already ran and missed it
-                if started { _ = await runner(Self.exitCommand(host: host, path: path)) }
-                return false
-            }
-            return started
+        await withCheckedContinuation { continuation in
+            ready(path, launch: { [runner] argv, done in
+                Task { @MainActor in done(await runner(argv)) }
+            }, completion: { continuation.resume(returning: $0) })
         }
-        slot.preparing = task
-        let started = await task.value
-        if slot.preparing == task { slot.preparing = nil }
-        return started
+    }
+
+    /// Callback preparation lets hosts with a native UI loop share the same leases and in-flight start.
+    public func ready(_ path: String,
+                      launch: @escaping @MainActor ([String], @escaping @MainActor (Int32) -> Void) -> Void,
+                      completion: @escaping @MainActor (Bool) -> Void) {
+        guard !closed, RemoteSession.isHost(host), let slot = slots.first(where: { $0.path == path }) else { return completion(false) }
+        slot.waiters.append(completion)
+        guard slot.waiters.count == 1 else { return }
+        let finish: @MainActor (Bool) -> Void = { [weak self] success in
+            let callbacks = slot.waiters
+            slot.waiters = []
+            for callback in callbacks { callback(success && self?.closed == false) }
+        }
+        launch(Self.checkCommand(host: host, path: path)) { [weak self] status in
+            if status == 0 { return finish(true) }
+            guard let self, !closed else { return finish(false) }
+            launch(Self.startCommand(host: host, path: path)) { [weak self, host] status in
+                guard self?.closed == false else {
+                    if status == 0 { launch(Self.exitCommand(host: host, path: path)) { _ in finish(false) } } else { finish(false) }
+                    return
+                }
+                finish(status == 0)
+            }
+        }
     }
 
     /// close drops every lease and returns the commands that end the pool's masters.
@@ -160,12 +175,14 @@ public final class PooledTransport: RemotePresentationTransport {
 
 /// DeferredLink stands in for a link until it opens, keeping what was sent meanwhile; one stopped first never opens.
 @MainActor
-final class DeferredLink {
+public final class DeferredLink {
     private var inner: RemotePresentationLink?
     private var pending: [Data] = []
     private var stopped = false
 
-    func attach(_ open: () -> RemotePresentationLink) {
+    public init() {}
+
+    public func attach(_ open: () -> RemotePresentationLink) {
         guard !stopped else { return }
         let link = open()
         inner = link
@@ -173,7 +190,7 @@ final class DeferredLink {
         pending.removeAll()
     }
 
-    func fail(_ close: () -> Void) {
+    public func fail(_ close: () -> Void) {
         guard !stopped else { return }
         stopped = true
         pending.removeAll()
@@ -182,12 +199,12 @@ final class DeferredLink {
 }
 
 extension DeferredLink: @MainActor RemotePresentationLink {
-    func send(_ line: Data) {
+    public func send(_ line: Data) {
         guard let inner else { return pending.append(line) }
         inner.send(line)
     }
 
-    func stop() {
+    public func stop() {
         stopped = true
         pending.removeAll()
         inner?.stop()

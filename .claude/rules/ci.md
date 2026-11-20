@@ -5,6 +5,10 @@ paths:
 
 ## CI (`ci.yml`)
 
+- Linux branch and release jobs pin the exact incorporated upstream tag for boundary checks.
+  After building the bundled zmx and shell resources, they run `ServerLifecycleTests` with
+  `AGTERM_REQUIRE_ZMX=1`, `AGTERM_REQUIRE_FISH=1`, and explicit bundled runtime paths.
+  Missing prerequisites must fail this gate instead of silently skipping real process coverage.
 - `ci.yml` runs for pushes and PRs to `master`; concurrency cancels the older run for the same ref. All
   macOS jobs use `macos-26`. Releases are local; see `.claude/rules/release.md`.
 - `docs/ci-flakes.md` records every investigated intermittent failure by test name and log text; read it

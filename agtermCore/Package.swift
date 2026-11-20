@@ -1,11 +1,14 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
+let coreTarget = Target.target(name: "agtermCore", dependencies: [.product(name: "TOMLDecoder", package: "TOMLDecoder")])
+
 let package = Package(
     name: "agtermCore",
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "agtermCore", targets: ["agtermCore"]),
+        .library(name: "agtermctlKit", targets: ["agtermctlKit"]),
         .library(name: "AgtermResponsibility", targets: ["AgtermResponsibility"]),
         .executable(name: "agtermctl", targets: ["agtermctl"]),
         .executable(name: "agterm-server", targets: ["agterm-server"]),
@@ -15,7 +18,7 @@ let package = Package(
         .package(url: "https://github.com/dduan/TOMLDecoder", from: "0.4.5"),
     ],
     targets: [
-        .target(name: "agtermCore", dependencies: [.product(name: "TOMLDecoder", package: "TOMLDecoder")]),
+        coreTarget,
         .target(name: "AgtermResponsibility"),
         .testTarget(name: "agtermCoreTests", dependencies: ["agtermCore"]),
         .target(
@@ -40,9 +43,10 @@ let package = Package(
 )
 
 #if os(Linux)
-// Foundation's attributed Markdown parser is Darwin only; agterm-server parses with swift-markdown instead
+// Foundation's attributed Markdown APIs are absent on Linux. Keep the parser dependency local to the
+// hosts that need it so upstream Darwin builds retain their original dependency graph and behavior.
 package.dependencies.append(.package(url: "https://github.com/swiftlang/swift-markdown", exact: "0.8.0"))
-package.targets[0].dependencies.append(.product(name: "Markdown", package: "swift-markdown"))
+coreTarget.dependencies.append(.product(name: "Markdown", package: "swift-markdown"))
 #endif
 
 #if os(macOS)

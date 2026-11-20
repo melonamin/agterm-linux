@@ -5,17 +5,12 @@ public enum QuitReason {
     private static let restart = fourCharacterCode("rest")
     private static let reallyLogOut = fourCharacterCode("rlgo")
 
-    #if canImport(Darwin)
-    /// Whether a quit came from the system (shutdown, restart, logout) rather than from the user. A nil
-    /// event, an event with no reason, and a scripted quit all answer false, so the caller keeps its
-    /// confirmation.
-    public static func isSystemQuit(_ event: NSAppleEventDescriptor?) -> Bool {
-        // an attribute, not a param, despite AERegistry.h calling kAEQuitReason a parameter: loginwindow's
-        // -[LogoutUtilities addLogOutAttibutesToQuitAppleEvent:] writes it with AEPutAttributePtr.
-        guard let reason = event?.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason)) else { return false }
-        return skipsConfirmation(typeCode: reason.typeCodeValue)
+    /// Whether a quit reason identifies a system shutdown, restart, or logout rather than a user request.
+    /// A missing reason and scripted quits answer false, so the host keeps its confirmation.
+    public static func isSystemQuit(reasonTypeCode: UInt32?) -> Bool {
+        guard let reasonTypeCode else { return false }
+        return skipsConfirmation(typeCode: reasonTypeCode)
     }
-    #endif
 
     static func skipsConfirmation(typeCode: UInt32) -> Bool {
         typeCode == shutDown || typeCode == restart || typeCode == reallyLogOut

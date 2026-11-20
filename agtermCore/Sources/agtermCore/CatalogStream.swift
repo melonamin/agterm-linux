@@ -27,7 +27,7 @@ public protocol CatalogStreamHost: AnyObject {
 /// The viewer speaks first; its hello subscribes it to the hub the host picks.
 @MainActor
 public final class CatalogStream: CatalogSink {
-    static let limits = ControlStreamOwner.Limits(maxLineBytes: CatalogCodec.maxFrameBytes,
+    public static let limits = ControlStreamOwner.Limits(maxLineBytes: CatalogCodec.maxFrameBytes,
                                                   maxPendingLines: PresentationCodec.maxPendingFrames, writeTimeoutSeconds: 5)
     static let heartbeatSeconds: UInt64 = 10
 
@@ -36,7 +36,7 @@ public final class CatalogStream: CatalogSink {
     private var hub: CatalogHub?
     private var subscriber: CatalogHub.SubscriberID?
 
-    init(owner: ControlStreamOwner, host: any CatalogStreamHost) {
+    public init(owner: ControlStreamOwner, host: any CatalogStreamHost) {
         self.owner = owner
         self.host = host
     }
@@ -70,7 +70,7 @@ public final class CatalogStream: CatalogSink {
 
     public func shutdown() { owner.shutdown() }
 
-    func receive(_ line: Data) {
+    public func receive(_ line: Data) {
         guard let host else { return }
         let frame: CatalogFrame
         do {
@@ -104,7 +104,7 @@ public final class CatalogStream: CatalogSink {
         }
     }
 
-    func closed() {
+    public func closed() {
         if let hub, let subscriber {
             hub.unsubscribe(subscriber)
             host?.catalogViewersChanged()
