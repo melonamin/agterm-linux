@@ -141,9 +141,16 @@ def verify_live_scratch(env, state):
         wait_for(lambda: "SCRATCH-SURVIVED" in request("session.text", identity, {"pane": "scratch", "all": True})["text"],
                  "relaunch did not restore the scratch daemon's screen")
         assert int(marker.read_text()) == pid and Path(f"/proc/{pid}").exists(), "relaunch replaced the scratch process"
+        replacement = Path(state, "scratch-replacement.pid")
+        command = "/bin/sh -c " + shlex.quote("echo $$ > " + shlex.quote(str(replacement)) + "; exec sleep 3600")
+        request("session.scratch", identity, {"mode": "on", "command": command})
+        wait_for(replacement.exists, "scratch command replacement did not start")
+        wait_for(lambda: not Path(f"/proc/{pid}").exists() or Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z",
+                 "scratch replacement left its previous program running")
+        pid = int(replacement.read_text())
         request("session.close", identity)
         wait_for(lambda: not Path(f"/proc/{pid}").exists() or Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z",
                  "session close left its scratch program running")
-        print("OK: live scratch process and screen survive hide and relaunch, then end with their session")
+        print("OK: live scratch survives hide/relaunch, replaces its command, and ends with its session")
     finally:
         stop(process)

@@ -105,11 +105,13 @@ Keep build logs, caches and temporary data on persistent disk under `/mnt/bulk/a
   The Arch package builds, installs and passes the installed GTK/WebKit scenario.
   The libcurl dependency is declared for every package, and the release container now provisions zstd for Arch extraction.
   The packaged upstream version and server SHA-256 pins match the exact v0.43.0 metadata.
-- The full GTK run passed 73 of 74 scenarios.
-  Its only failure exercised the pre-fix hidden-origin launch path; rerunning the entire remote-v0391 scenario
-  after that fix passed, completing coverage of all 74 scenarios.
-  The real-SSH GUI-origin scenario also passed, and the 20-row headless scenario passed on repeated runs.
-  Earlier old status/Recent expectations and page/job offer-token failures are resolved.
+- The expanded GTK run passed 76 of 77 scenarios.
+  Its only failure exposed stale GDK Ctrl state when committing Ctrl-Tab from an entry.
+  The fix passes the full entry scenario and the separate two-Ctrl/pre-held-Ctrl scenario.
+  The final feature-specific GUI scenario additionally proves pointer-drag companion reparenting and selected-disclosure contrast.
+  The combined real-SSH acceptance scenario passes two-viewer handoffs, owner loss, pages, mail, history,
+  remote session-link previews/clicks, attached restart, palette creation and catalog operations.
+  A native origin-window picker also selects the second of several real Live GTK windows over SSH.
 - The protected ConfigPaths test equals v0.43.0, and macOS application sources equal the selected tag.
   The unrelated site screenshot and all other worktrees are unchanged.
 - The headless server systemd installation was not run on the host.
@@ -128,5 +130,43 @@ The plan remains open through branch CI and the separate release-tag/publication
 
 `origin/master` already points to `be92bc63eca595a2955a0dc5c9a2b1e593e31a66` with approval.
 `origin/linux-port` is still `7f95d856d10df58d1d3964e1416d668aae721708`.
-The local candidate is clean and awaits the Linux branch push gate.
+The local candidate has uncommitted acceptance fixes and awaits the Linux branch push gate.
 Exact-commit hosted CI, release notes, release-tag approval, publication and artifact attestations remain pending.
+
+## Acceptance follow-up
+
+The user's deeper GUI audit found nine Linux adapter gaps after `50cdbbc1`:
+
+- Defer terminal link selection until libghostty releases its callback locks.
+- Populate an attached terminal's origin session ID at creation.
+- Add companion conversion and reparenting to the row menu.
+- Route cross-group companion pointer drops through the shared reparent resolver.
+- Resolve Scratch-relative links against Scratch's reported directory.
+- Resolve remote link previews with the clicked pane identity.
+- Paint selected companion disclosures with the selection foreground.
+- Include attached-origin undo records in the palette, refresh arriving receipts, and prefer the newest local or origin close.
+- Trust observed Ctrl transitions when GDK's cached modifier state lags the release.
+
+All changes stay in Linux adapters, tests and documentation.
+No protocol, keymap format or shared model shape changed.
+The existing control commands cover the new row-menu/drop wiring; purely visual disclosure paint needs no extra control command.
+The bundled agent skill therefore needs no command/model update.
+Host state, live user sessions, the protected shared test, macOS sources and other worktrees are preserved.
+
+Final acceptance logs and package artifacts are under `/mnt/bulk/agterm-catch-up-20261119/acceptance-final-*`.
+The 6,895 shared tests remain applicable because this follow-up changes no shared code.
+The final Linux package passes all 635 tests, Debug/Release builds, strict lint, CLI drift and boundary checks.
+The tar/DEB/RPM payload was rebuilt after the fixes; the matching Arch package builds, installs and passes its real GTK scenario.
+The host's systemd user-service installation remains unexecuted.
+
+## Open PR review
+
+All three open fork PRs were inspected at their exact current heads.
+PR #61 (`83c478772968bdda48faba99ffdb291681615f2d`) is recommended for merge:
+637 Linux tests and strict lint pass in an isolated checkout, and a real GTK status hook finds a private
+`~/.local/bin` helper while the current branch fails that same lookup.
+PR #62 (`50e8ee67dd2238a04b766497ba83afd0141fc0f0`) is recommended for merge:
+both ImageMagick 6 and 7 render all seven icon sizes with transparent corners, visual inspection passes,
+and the PR's actual tar/DEB/RPM build and verification scripts pass.
+PR #1 remains the explicitly unmerged Linux-port tracking draft.
+No PR was merged, edited or commented on, and neither contributor patch was applied to the maintained checkout.

@@ -230,7 +230,8 @@ extension AppController {
         }
         guard let created = store.addSession(
             toWorkspace: workspace, cwd: Self.homeCwd, command: primary,
-            name: remote.name, wait: true, select: select, remoteHost: host, tint: tint, parentID: parent
+            name: remote.name, wait: true, select: select, remoteHost: host, remoteSessionID: remote.id,
+            tint: tint, parentID: parent
         ) else {
             return ControlResponse(ok: false, error: "could not create the session")
         }

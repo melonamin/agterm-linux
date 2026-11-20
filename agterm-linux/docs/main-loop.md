@@ -54,6 +54,11 @@ This is for callbacks that fire off-main (libghostty's C callbacks, worker-queue
 GTK or main-actor state.
 `GhosttyApp.scheduleTick` is the same pattern hand-rolled with a coalescing flag.
 `runOnMain` exists only in the Linux target.
+Terminal link opens also take this hop when the callback already runs on the main thread.
+libghostty can hold surface locks during `GHOSTTY_ACTION_OPEN_URL`; selecting a session inline can
+reconcile or free that surface and deadlock the UI and control socket.
+`GhosttyApp.queueTerminalLink` copies the URL and reveal modifier, then checks the weak surface again
+after the callback returns.
 Host-free `agtermCore` uses `MainActorHop.enqueue` for nonisolated observation callbacks such as pane focus.
 Its lock-protected scheduler defaults to Dispatch on macOS; `installGLibMainTimer()` installs the GLib hop
 before any store exists.

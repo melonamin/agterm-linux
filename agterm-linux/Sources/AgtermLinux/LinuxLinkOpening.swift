@@ -55,30 +55,32 @@ extension GhosttySurface {
         }
     }
 
-    func openLink(_ raw: String) -> Bool {
+    func openLink(_ raw: String, browserOverride: Bool? = nil) -> Bool {
+        let reveal = browserOverride ?? linkBrowserOverride
         let session = controller?.store.session(withID: sessionID)
-        let directory = isSplitPane ? session?.splitCwd ?? session?.effectiveCwd : session?.effectiveCwd
+        let directory = role == .scratch ? session?.scratchCwd ?? session?.effectiveCwd
+            : isSplitPane ? session?.splitCwd ?? session?.effectiveCwd : session?.effectiveCwd
         let locations = LinkPolicy.locations(for: raw, origin: linkClickOrigin, cwd: directory)
-        guard !locations.isEmpty else { return openResolvedLink(raw) }
+        guard !locations.isEmpty else { return openResolvedLink(raw, browserOverride: reveal) }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let location = locations.first { FileManager.default.fileExists(atPath: $0.path) }
             runOnMain { MainActor.assumeIsolated {
                 guard let self else { return }
-                if !self.openResolvedLink(raw, location: location) { GhosttyApp.openTerminalURL(raw) }
+                if !self.openResolvedLink(raw, location: location, browserOverride: reveal) { GhosttyApp.openTerminalURL(raw) }
             } }
         }
         return true
     }
 
-    private func openResolvedLink(_ raw: String, location: LinkPolicy.LinkLocation? = nil) -> Bool {
+    private func openResolvedLink(_ raw: String, location: LinkPolicy.LinkLocation? = nil, browserOverride: Bool) -> Bool {
         guard let controller else { return false }
-        let mode = linkBrowserOverride ? LinkOpenMode.browser : linuxSettingsStore().load().effectiveLinkOpenMode
+        let mode = browserOverride ? LinkOpenMode.browser : linuxSettingsStore().load().effectiveLinkOpenMode
         if case .remotePane = linkClickOrigin, let forward = ForwardedPage(raw) {
             return controller.openLoopbackLink(forward, session: sessionID, mode: mode)
         }
         let route = location.map { LinkPolicy.route(for: $0, mode: mode, origin: linkClickOrigin) }
             ?? LinkPolicy.route(for: raw, mode: mode, origin: linkClickOrigin)
-        if linkBrowserOverride, let file = route.localFile {
+        if browserOverride, let file = route.localFile {
             GhosttyApp.openTerminalURL(file.absoluteString)
             return true
         }

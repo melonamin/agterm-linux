@@ -511,10 +511,11 @@ extension AppController {
             syncSidebar(preferMoving: Set(move.ids))
             return
         }
+        let ids = LinuxSidebarPolicy.draggedSessionBlock(source: source, selection: store.sidebarSelectionIDs)
+        if handleCompanionDrop(ids, onto: target, y: y, targetHeight: targetHeight) { return }
         guard let tgt = store.sessionLocation(ofSession: target) else { return }
         let dropTarget = SidebarDrop.SessionDropTarget.sessionRow(workspace: tgt.workspace, sessionIndex: tgt.index, sessionCount: tgt.count)
         let slot = LinuxSidebarPolicy.dropInsertionSlot(targetIndex: tgt.index, y: y, height: targetHeight)
-        let ids = LinuxSidebarPolicy.draggedSessionBlock(source: source, selection: store.sidebarSelectionIDs)
         let sources = ids.compactMap { id -> SidebarDrop.SessionSource? in
             guard let location = store.sessionLocation(ofSession: id) else { return nil }
             return SidebarDrop.SessionSource(workspace: location.workspace, index: location.index)

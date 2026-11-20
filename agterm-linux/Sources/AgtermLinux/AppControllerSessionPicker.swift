@@ -47,8 +47,9 @@ extension AppController {
     /// model BEFORE selecting is load-bearing: `selectSession` grabs focus, whose blur reaches
     /// `cancelSessionSwitch`, which must find the cycle already over.
     /// GTK/X11 updates the device's modifier state in a separate XkbStateNotify after the key release.
-    /// The cached state can still be stale at a zero-delay MainTimer callback. Use an idle to give pending
-    /// GDK work priority before reading it. Reacquire the device instead of retaining an event-owned pointer.
+    /// Use an idle to give pending GDK work priority before checking keys held before this window gained focus.
+    /// HeldControlKeys uses observed transitions when the device cache still lags them.
+    /// Reacquire the device instead of retaining an event-owned pointer.
     func scheduleSessionSwitchCommit(releasing keycode: UInt32) {
         runOnMain { [weak self] in
             MainActor.assumeIsolated {

@@ -1,4 +1,5 @@
 import CGtk
+import Foundation
 import agtermCore
 
 @MainActor
@@ -24,7 +25,8 @@ extension GhosttySurface {
         if let raw {
             let text = LinkHover.label(for: raw) { [weak self] id in
                 guard let self, let controller,
-                      let target = controller.library.sessionLinkTarget(id, from: linkClickOrigin, pane: nil) else { return nil }
+                      let target = controller.library.sessionLinkTarget(id, from: linkClickOrigin,
+                          pane: UUID(uuidString: paneToken)) else { return nil }
                 return controller.library.store(for: target.windowID)?.session(withID: target.sessionID)?.displayName
             }
             gtk_label_set_text(label, text)

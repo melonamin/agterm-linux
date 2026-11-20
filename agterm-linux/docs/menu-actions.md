@@ -44,19 +44,18 @@ its own path.
 
 ## The commit waits for the LAST Ctrl key
 
-The release handler schedules a GLib idle through `runOnMain`, then reads the keyboard device's
-**current** modifier state and commits only once its Ctrl bit clears.
+The release handler schedules a GLib idle through `runOnMain` and commits after the last held Ctrl is released.
 This matches macOS's `.control`-cleared test, which the GDK event mask cannot answer on its own: a
 release event carries the modifier state from BEFORE it, so that mask's control bit is set whether or
 not the other Ctrl key remains down (see `ModifierKeyMods`).
 GTK/X11 updates its cached device state in a separate `XkbStateNotify` after the release event.
-The cached state can still report Ctrl held from a zero-delay `MainTimer` callback, stranding the cycle.
-The idle runs below GDK's event priority, giving pending GDK work precedence before the read.
-The device read also sees physical Ctrl keys already held when the window gained focus.
+The cached state can still report Ctrl held even from an idle, stranding the cycle.
+`HeldControlKeys` therefore trusts observed press/release pairs and keeps the cycle open while another
+observed Ctrl remains down.
+It consults the keyboard device only for Ctrl keys already held when the window gained focus.
+The idle gives pending GDK work precedence before that fallback read.
 The deferred closure reacquires the default display, seat, and keyboard; no event-owned pointer leaves
 the callback.
-`HeldControlKeys` tracks observed Ctrl keycodes as a fallback for a backend that supplies no current
-event device.
 Any press arriving with the control bit clear resyncs that set, so a lost release heals on the next
 unmodified keystroke instead of blocking every later commit.
 

@@ -157,6 +157,7 @@ extension ControlServer {
                         }
                         if let window = box.window, reply.result?.undoable == true, let undo = reply.result?.undoID {
                             gLibrary.noteAttachedUndo(AttachedUndo(host: origin.host, undoID: undo, sessions: Array(ended), initiated: initiated), window: window)
+                            gWindows[window]?.refreshPaletteContents()
                         }
                         return ControlResponse(ok: true)
                     }

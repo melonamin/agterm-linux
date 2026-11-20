@@ -81,6 +81,18 @@ struct SessionSwitcherTests {
         #expect(!commits)
         commits = preHeld.released(keycode: right, controlStillHeld: false)
         #expect(commits)
+
+        // GDK can still report Ctrl down after the last observed release, even from a GLib idle.
+        var stale = HeldControlKeys()
+        stale.pressed(keyval: 0xFFE3, keycode: left, state: 0)
+        commits = stale.released(keycode: left, controlStillHeld: true)
+        #expect(commits)
+        stale.pressed(keyval: 0xFFE3, keycode: left, state: 0)
+        stale.pressed(keyval: 0xFFE4, keycode: right, state: control)
+        commits = stale.released(keycode: left, controlStillHeld: false)
+        #expect(!commits)
+        commits = stale.released(keycode: right, controlStillHeld: true)
+        #expect(commits)
     }
 
     @Test("the switcher cycles at most ten candidates")

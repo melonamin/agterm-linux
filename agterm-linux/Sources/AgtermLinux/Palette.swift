@@ -31,7 +31,8 @@ extension AppController {
                                             canStepWindows: library.canStepWindows,
                                             activeSessionHasSplit: activeSession?.hasSplit ?? false,
                                             activeSplitAxis: activeSession?.splitAxis,
-                                            hasPendingClose: store.pendingCloseSummary != nil || !(remoteActions?.undoIDs.isEmpty ?? true),
+                                            hasPendingClose: store.pendingCloseSummary != nil || !(remoteActions?.undoIDs.isEmpty ?? true)
+                                                || library.attachedUndos[windowID] != nil,
                                             hasRecentClosed: recent,
                                             hasActiveSession: activeSession != nil,
                                             attentionNavigationAcrossWindows: store.attentionNavigationAcrossWindows,

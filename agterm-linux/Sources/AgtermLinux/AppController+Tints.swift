@@ -81,6 +81,7 @@ extension AppController {
 
     func appendSessionParityMenu(to box: OpaquePointer?, targets: [UUID]) {
         if targets.count == 1, let id = targets.first {
+            appendCompanionPlacementMenu(to: box, session: id)
             appendSidebarAction(to: box, title: "New Companion") { [weak self] in
                 guard let self else { return }
                 self.dismissContextMenu()

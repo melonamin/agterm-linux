@@ -93,6 +93,7 @@ struct GhosttyConfigThemeTests {
         .agterm-sidebar row.agterm-selected > .agterm-session-row-body > .agterm-session-row-content > label,
         .agterm-sidebar row.agterm-selected > .agterm-session-row-body > .agterm-session-row-content > image,
         .agterm-sidebar row.agterm-selected > .agterm-session-row-body > .agterm-session-row-content > entry,
+        .agterm-sidebar row.agterm-selected > .agterm-session-row-body > .agterm-session-row-content > stack > button.agterm-companion-disclosure,
         .agterm-sidebar row.agterm-selected > .agterm-session-row-body > .agterm-session-info { color: #444444; }
         .agterm-sidebar button { color: #222222; }
         .agterm-sidebar separator { background-color: alpha(#222222, 0.22); }

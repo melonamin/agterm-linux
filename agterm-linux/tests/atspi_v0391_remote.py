@@ -70,6 +70,8 @@ def verify_remote_v0391(env, state, catalog_only=False):
         viewer_process, viewer_app = launch(viewer_env)
         if catalog_only:
             verify_gui_origin_catalog(origin_env, viewer_env, origin, request, row)
+            from atspi_v0430_origin import verify_origin_window_picker
+            verify_origin_window_picker(origin_env, viewer_env, viewer_process, viewer_app, request)
             return
         viewer = request(viewer_env, "zmx.attach", origin, {"host": "local-test"})["id"]
         wait_for(lambda: row(viewer_env, viewer).get("presentation", {}).get("state") == "connected",

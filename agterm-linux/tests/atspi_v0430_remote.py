@@ -10,7 +10,7 @@ import tempfile
 from atspi_smoke import ROOT, launch, raw_control_json, stop, wait_for
 
 
-def verify_v0430_remote(env, state):
+def verify_v0430_remote(env, state, acceptance=False, history_only=False):
     config = env.get("AGTERM_TEST_SSH_CONFIG")
     assert config, "this scenario requires an isolated real SSH host"
     root = Path(state)
@@ -55,7 +55,7 @@ def verify_v0430_remote(env, state):
         created = request(origin_env, "session.new", args={"name": "SSH origin"})["id"]
         for index in range(19):
             request(origin_env, "session.new", args={"name": "SSH scale " + str(index), "noSelect": True})
-        viewer, _ = launch(viewer_env)
+        viewer, viewer_app = launch(viewer_env)
         local_window = request(viewer_env, "window.list")["windows"][0]["id"]
         remote_window = request(viewer_env, "window.remote.open", args={"host": "local-test"})["id"]
         wait_for(lambda: row(remote_window, created), "remote catalog did not install its snapshot", timeout=30)
@@ -71,6 +71,7 @@ def verify_v0430_remote(env, state):
         request(viewer_env, "session.reattach", fresh, {"window": remote_window})
         wait_for(lambda: row(remote_window, fresh), "detached catalog row did not reattach")
         attached = request(viewer_env, "zmx.attach", created, {"host": "local-test", "window": local_window})["id"]
+        assert row(local_window, attached).get("remoteSessionID") == created, "attachment tree omitted the origin session id"
         wait_for(lambda: row(local_window, attached).get("presentation", {}).get("state") == "connected",
                  "attached row did not connect its presentation stream", timeout=30)
         document = root / "catalog-page.html"
@@ -82,11 +83,22 @@ def verify_v0430_remote(env, state):
         wait_for(lambda: row(local_window, standalone).get("htmlOverlays", [{}])[0].get("state") == "loaded",
                  "top-level page did not attach", timeout=30)
         stop(viewer)
-        viewer, _ = launch(viewer_env)
+        viewer, viewer_app = launch(viewer_env)
         wait_for(lambda: row(local_window, attached) and row(local_window, attached).get("presentation", {}).get("state") == "connected",
                  "persisted terminal attachment did not reconnect", timeout=30)
         wait_for(lambda: row(local_window, standalone) and row(local_window, standalone).get("htmlOverlays", [{}])[0].get("state") == "loaded",
                  "persisted page attachment did not reclaim its page", timeout=30)
+        if history_only:
+            from atspi_v0430_history import verify_attached_history
+            request(viewer_env, "window.close", remote_window)
+            verify_attached_history(origin_env, viewer_env, viewer, viewer_app, local_window, root, request)
+            return
+        if acceptance:
+            request(viewer_env, "window.close", remote_window)
+            from atspi_v0430_viewers import verify_viewer_handoffs
+            verify_viewer_handoffs(origin_env, viewer_env, viewer, viewer_app, local_window, attached, created, root, request)
+            remote_window = request(viewer_env, "window.remote.open", args={"host": "local-test"})["id"]
+            wait_for(lambda: row(remote_window, created), "catalog did not reconnect after viewer acceptance")
         request(viewer_env, "session.split", attached, {"mode": "on", "window": local_window})
         wait_for(lambda: row(local_window, attached).get("hasSplit"), "origin split did not reach attached row", timeout=30)
         request(viewer_env, "session.split.close", attached, {"window": local_window})

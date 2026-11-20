@@ -65,23 +65,30 @@ enum SessionSwitchKey: Equatable {
     }
 }
 
-/// The Ctrl keys observed down, retained as a fallback when GTK cannot report the live keyboard-device
-/// state. The device state is authoritative on release because the set cannot contain Ctrl keys that were
-/// already held when the window gained focus. A press arriving with Ctrl clear resyncs the fallback,
-/// so a key up lost to a blur or grab cannot strand a phantom forever.
+/// Observed Ctrl transitions are authoritative: GDK's cached device state can lag a release even at idle.
+/// Consult that cache only for keys already held when the window gained focus.
+/// A press arriving with Ctrl clear resyncs keys whose release was lost to a blur or grab.
 struct HeldControlKeys: Equatable, Sendable {
     private var down: Set<UInt32> = []
+    private var unobservedControl = false
 
     mutating func pressed(keyval: UInt32, keycode: UInt32, state: UInt32) {
-        if state & ModifierKeyMods.controlBit == 0 { down.removeAll() }
+        if state & ModifierKeyMods.controlBit == 0 {
+            down.removeAll()
+            unobservedControl = false
+        } else if down.isEmpty {
+            unobservedControl = true
+        }
         guard ModifierKeyMods.modifierBit(forKeyval: keyval) == ModifierKeyMods.controlBit else { return }
         down.insert(keycode)
     }
 
     mutating func released(keycode: UInt32, controlStillHeld: Bool?) -> Bool {
-        down.remove(keycode)
+        let observed = down.remove(keycode) != nil
+        if !down.isEmpty { return false }
+        if observed, !unobservedControl { return true }
         if let controlStillHeld {
-            if !controlStillHeld { down.removeAll() }
+            if !controlStillHeld { unobservedControl = false }
             return !controlStillHeld
         }
         return down.isEmpty

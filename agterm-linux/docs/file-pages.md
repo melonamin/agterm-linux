@@ -2,6 +2,7 @@
 
 Ctrl-click a local image, Markdown, HTML, source, configuration, text, or log path to open it over its session.
 Paths under `/home`, relative paths against the pane's directory, and `path:line[:column]` locations are supported.
+Relative links in Scratch use Scratch's own reported directory.
 The literal filename wins when a file actually includes a colon or trailing punctuation.
 Ctrl+Shift-click reveals a local file in the desktop file manager.
 Remote-pane paths remain remote and are never read from the viewer's disk.

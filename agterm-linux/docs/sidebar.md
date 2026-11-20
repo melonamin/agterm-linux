@@ -30,7 +30,13 @@ Companion rows share their parent's workspace and ordering group.
 Tree rows reserve the same measured disclosure gutter, including leaves, so parent and peer icons align.
 Companions add one indentation step beyond that gutter; flagged layouts omit it.
 Disclosure buttons use compact padding so adding companions does not change the row height.
+Their foreground follows the selected row, including themes with a light selection on a dark sidebar.
 The disclosure button changes persisted expansion; selecting a hidden companion reveals it transiently.
+The row menu offers Convert to Companion for a top-level session and Move to… for a companion.
+Both use the same placement commands as the palette and control socket and preserve the session's running panes.
+A single companion dragged onto another parent joins that group first.
+Drops among another group's companions use the target row's upper/lower insertion slot.
+Same-group, flagged and multi-row drags retain their sibling ordering rules.
 Folded parents retain an attention marker for their hidden children.
 Flagged layouts flatten companions and use the shared parent-qualified label, so collapsed parents cannot hide flagged children.
 Session and workspace tints apply independently to icons and names.

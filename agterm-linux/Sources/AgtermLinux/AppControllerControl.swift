@@ -133,7 +133,9 @@ extension AppController {
 
     func undoPendingClose() {
         if let id = LinuxRemoteCatalogs.windows[windowID]?.actions.takeUndo() { sendRemoteHistory(.sessionUndo, target: id); return }
-        if let undo = library.takeAttachedUndo(window: windowID) { undoAttachedFromGUI(undo); return }
+        if let newest = library.attachedUndos[windowID]?.last,
+           newest.initiated > (store.pendingCloseSummary?.closedAt ?? .distantPast),
+           let undo = library.takeAttachedUndo(window: windowID) { undoAttachedFromGUI(undo); return }
         if store.undoPendingClose() { reconcile() }
     }
 
