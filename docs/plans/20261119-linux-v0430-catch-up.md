@@ -56,7 +56,8 @@ Preserve all other branches and worktrees.
 - [x] Real SSH/headless-server and multi-instance workflows.
 - [x] Full GTK suite and Linux packages, metadata/runtime closure and clean-container installation.
 - [x] Review complete downstream diff and protected test equality.
-- [ ] Commit candidate, present branch push gate, then inspect exact-commit branch CI.
+- [x] Commit and push the candidate and merge reviewed PRs #61 and #62 with user approval.
+- [ ] Inspect exact-commit branch CI for the combined release candidate.
 - [ ] Prepare and inspect full release notes, artifact set and immutable release-tag gate.
 - [ ] Verify published artifacts, checksums and attestations after approval.
 
@@ -130,8 +131,9 @@ The plan remains open through branch CI and the separate release-tag/publication
 
 `origin/master` already points to `be92bc63eca595a2955a0dc5c9a2b1e593e31a66` with approval.
 `origin/linux-port` is still `7f95d856d10df58d1d3964e1416d668aae721708`.
-The local candidate has uncommitted acceptance fixes and awaits the Linux branch push gate.
-Exact-commit hosted CI, release notes, release-tag approval, publication and artifact attestations remain pending.
+Acceptance fixes were committed as `41bb1a89` and pushed to `origin/linux-port` with user approval.
+PR #61 merged as `e876da44`; PR #62 merged as `27d7cdf9`.
+Exact-commit hosted CI, release-tag approval, publication and artifact attestations remain pending.
 
 ## Acceptance follow-up
 
@@ -169,4 +171,5 @@ PR #62 (`50e8ee67dd2238a04b766497ba83afd0141fc0f0`) is recommended for merge:
 both ImageMagick 6 and 7 render all seven icon sizes with transparent corners, visual inspection passes,
 and the PR's actual tar/DEB/RPM build and verification scripts pass.
 PR #1 remains the explicitly unmerged Linux-port tracking draft.
-No PR was merged, edited or commented on, and neither contributor patch was applied to the maintained checkout.
+The user subsequently approved both merges; their patches are now on `linux-port`.
+No review comment or PR edit was posted.
