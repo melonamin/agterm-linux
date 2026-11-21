@@ -18,11 +18,17 @@ env:
   LINUX_SOURCEKIT_LIB_PATH: "/usr/lib/libsourcekitdInProc.so"
   ZIG_SHA256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
 
+permissions:
+  contents: read
+
 jobs:
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       swift: ${{ steps.filter.outputs.swift }}
       cookbook: ${{ steps.filter.outputs.cookbook }}
