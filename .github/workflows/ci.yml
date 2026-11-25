@@ -11,12 +11,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  UPSTREAM_BASE_TAG: "v0.43.0"
-  UPSTREAM_BASE_COMMIT: "be92bc63eca595a2955a0dc5c9a2b1e593e31a66"
+  UPSTREAM_BASE_TAG: "v0.44.1"
+  UPSTREAM_BASE_COMMIT: "f37a8a2fcc01a626bed2c114a590bb97ced8d328"
   SWIFTLINT_VERSION: "0.65.0"
   SWIFTLINT_SHA256: "79306a34e5c7cc55a220cd108cbb861dcad5f10138dcdf261e2624ae8b0a486b"
   LINUX_SOURCEKIT_LIB_PATH: "/usr/lib/libsourcekitdInProc.so"
-  ZIG_SHA256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
+  ZIG_SHA256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
 
 permissions:
   contents: read
@@ -183,7 +183,7 @@ jobs:
     # Keep headroom for both on a hosted runner, including runtime-cache misses.
     timeout-minutes: 75
     # The official Swift image carries the toolchain; apt adds GTK4, libadwaita and GL deps,
-    # and the independently pinned Zig versions build libghostty and zmx.
+    # and pinned Zig 0.17 builds libghostty and zmx.
     container: swift:6.3.2-noble
     steps:
       - uses: actions/checkout@v7
@@ -200,14 +200,10 @@ jobs:
             jq ripgrep zsh fish csh tcsh gcc file at-spi2-core dbus-x11 gir1.2-atspi-2.0 openbox python3-gi xdotool xvfb xauth x11-xkb-utils ibus ibus-gtk4 \
             libatk-bridge2.0-0 libgl1-mesa-dri libegl-mesa0 mesa-utils
           curl -fsSLo /tmp/zig.tar.xz \
-            https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+            https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
           echo "${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum --check
           tar -xJf /tmp/zig.tar.xz -C /opt
-          echo "/opt/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
-          curl -fsSLo /tmp/zig17.tar.xz \
-            https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
-          echo "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026  /tmp/zig17.tar.xz" | sha256sum --check
-          tar -xJf /tmp/zig17.tar.xz -C /opt
+          echo "/opt/zig-x86_64-linux-0.17.0" >> "$GITHUB_PATH"
           echo "GHOSTTY_ZIG=/opt/zig-x86_64-linux-0.17.0/zig" >> "$GITHUB_ENV"
       - name: Materialize and verify upstream boundary tag
         run: |

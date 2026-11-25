@@ -14,7 +14,7 @@ VENDOR="$1"
 source "$ROOT/linux/zmx.env"
 # shellcheck source=../linux/arch.sh
 source "$ROOT/linux/arch.sh"
-ZMX_PATCH_DIGEST="$(cat "$ROOT/scripts/zmx-patches"/*.patch "$ROOT/scripts/zmx-patches/ghostty"/*.patch | sha256sum | cut -c1-16)"
+ZMX_PATCH_DIGEST="$(cat "$ROOT/scripts/zmx-patches"/*.patch | sha256sum | cut -c1-16)"
 ZMX_STAMP="$ZMX_REV $ZIG_TARGET $ZMX_PATCH_DIGEST"
 
 [[ -x "$VENDOR/zmx" ]] || { echo "missing executable zmx: $VENDOR/zmx" >&2; exit 1; }

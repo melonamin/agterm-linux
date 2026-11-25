@@ -13,7 +13,7 @@ source "$ROOT/linux/ghostty-build.sh"
 source "$ROOT/linux/zmx.env"
 # shellcheck source=../linux/arch.sh
 source "$ROOT/linux/arch.sh"
-ZMX_PATCH_DIGEST="$(cat "$ROOT/scripts/zmx-patches"/*.patch "$ROOT/scripts/zmx-patches/ghostty"/*.patch | sha256sum | cut -c1-16)"
+ZMX_PATCH_DIGEST="$(cat "$ROOT/scripts/zmx-patches"/*.patch | sha256sum | cut -c1-16)"
 ZMX_STAMP="$ZMX_REV $ZIG_TARGET $ZMX_PATCH_DIGEST"
 
 cache_is_complete() {
@@ -40,16 +40,16 @@ done
 ZIG=""
 if $need_zmx; then
   if command -v mise >/dev/null; then
-    ZIG="$(mise where zig@0.16.0 2>/dev/null || true)/bin/zig"
+    ZIG="$(mise where zig@0.17.0 2>/dev/null || true)/bin/zig"
   fi
   if [[ ! -x "$ZIG" ]]; then
     ZIG="$(command -v zig || true)"
   fi
-  [[ -x "$ZIG" ]] || { echo "zig 0.16.0 is required to build Linux runtimes" >&2; exit 1; }
-  [[ "$($ZIG version)" == "0.16.0" ]] || { echo "setup-linux.sh requires zig 0.16.0" >&2; exit 1; }
+  [[ -x "$ZIG" ]] || { echo "zig 0.17.0 is required to build Linux runtimes" >&2; exit 1; }
+  [[ "$($ZIG version)" == "0.17.0" ]] || { echo "setup-linux.sh requires zig 0.17.0" >&2; exit 1; }
 fi
 
-# Ghostty 1.4 uses Zig 0.17; zmx retains its independent 0.16 pin.
+# Ghostty 1.4 and zmx 1.0.1 both use Zig 0.17.
 GHOSTTY_ZIG="${GHOSTTY_ZIG:-}"
 if $need_ghostty; then
   if [[ ! -x "$GHOSTTY_ZIG" ]] && command -v mise >/dev/null; then
@@ -100,7 +100,7 @@ if $need_ghostty; then
   cp -R "$GHOSTTY_BUILD/src/shell-integration" "$GHOSTTY_STAGE/share/ghostty/shell-integration"
 
   echo "fetching pinned Ghostty theme dependency..."
-  curl -fsSLo "$GHOSTTY_BUILD/ghostty-themes.tgz" "$GHOSTTY_THEMES_URL"
+  curl --proto =https --proto-redir =https -fsSLo "$GHOSTTY_BUILD/ghostty-themes.tgz" "$GHOSTTY_THEMES_URL"
   echo "$GHOSTTY_THEMES_SHA256  $GHOSTTY_BUILD/ghostty-themes.tgz" | sha256sum --check
   tar -xzf "$GHOSTTY_BUILD/ghostty-themes.tgz" -C "$GHOSTTY_STAGE/share/ghostty/themes" --strip-components=1
   cp "$ROOT/linux/ghostty-resources.env" "$GHOSTTY_STAGE/share/ghostty/themes/.agterm-resource-manifest"
@@ -125,17 +125,8 @@ if $need_zmx; then
   ZMX_SLUG="${ZMX_SLUG%.git}"
   echo "fetching zmx $ZMX_REV..."
   mkdir -p "$ZMX_BUILD"
-  curl -fsSLo "$BUILD_DIR/zmx.tgz" "https://codeload.github.com/$ZMX_SLUG/tar.gz/$ZMX_REV"
+  curl --proto =https --proto-redir =https -fsSLo "$BUILD_DIR/zmx.tgz" "https://codeload.github.com/$ZMX_SLUG/tar.gz/$ZMX_REV"
   tar -xzf "$BUILD_DIR/zmx.tgz" -C "$ZMX_BUILD" --strip-components=1
-  ZMX_GHOSTTY_REV="$(sed -n 's|.*ghostty-org/ghostty#\([0-9a-f]\{40\}\)".*|\1|p' "$ZMX_BUILD/build.zig.zon")"
-  [[ -n "$ZMX_GHOSTTY_REV" ]] || { echo "missing zmx ghostty revision" >&2; exit 1; }
-  ZMX_GHOSTTY="$BUILD_DIR/zmx-ghostty"
-  mkdir -p "$ZMX_GHOSTTY"
-  curl -fsSLo "$BUILD_DIR/zmx-ghostty.tgz" "https://codeload.github.com/ghostty-org/ghostty/tar.gz/$ZMX_GHOSTTY_REV"
-  tar -xzf "$BUILD_DIR/zmx-ghostty.tgz" -C "$ZMX_GHOSTTY" --strip-components=1
-  for ghostty_patch in "$ROOT/scripts/zmx-patches/ghostty"/*.patch; do
-    git -C "$ZMX_GHOSTTY" apply --whitespace=nowarn "$ghostty_patch"
-  done
   for zmx_patch in "$ROOT/scripts/zmx-patches"/*.patch; do
     echo "applying $(basename "$zmx_patch")..."
     git -C "$ZMX_BUILD" apply --whitespace=nowarn "$zmx_patch"
@@ -148,6 +139,7 @@ if $need_zmx; then
     export XDG_CACHE_HOME="$BUILD_DIR/xdg-cache"
     # Explicit targets use the baseline CPU; native defaults can SIGILL on another runner or user host.
     "$ZIG" build -Doptimize=ReleaseSafe -Dtarget="$ZIG_TARGET"
+    env -u ZMX_NO_DETACH_KEY "$ZIG" build test --summary all
   )
   mkdir -p "$ZMX_STAGE"
   install -m0755 "$ZMX_BUILD/zig-out/bin/zmx" "$ZMX_STAGE/zmx"

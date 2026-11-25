@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build and launch agterm-linux (the GTK4/libadwaita port).
-# Requires the mise toolchain (zig 0.16.0 + swift 6.3.2) and a built libghostty
+# Requires the mise toolchain (zig 0.17.0 + swift 6.3.2) and a built libghostty
 # in agterm-linux/vendor/ (run scripts/setup-linux.sh once).
 set -euo pipefail
 cd "$(dirname "$0")/.."
