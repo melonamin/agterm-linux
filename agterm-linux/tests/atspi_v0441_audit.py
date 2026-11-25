@@ -128,6 +128,13 @@ def verify_gui(env, state):
 def verify_live(env, state):
     root = Path(state)
     env = live_environment(env, root)
+    hangup_fixture = root / 'pty-hangup.so'
+    subprocess.run(['cc', '-shared', '-fPIC', '-Wall', '-Wextra', '-Werror', '-o', str(hangup_fixture),
+                    str(Path(ROOT, 'tests/pty_hangup_fixture.c')), '-ldl'], check=True)
+    observed_hangup = root / 'pty-hangup-observed'
+    env = dict(env, LD_PRELOAD=env['LD_PRELOAD'] + ':' + str(hangup_fixture),
+               AGTERM_TEST_PTY_HUP_GATE=str(root / 'startup-answer'),
+               AGTERM_TEST_PTY_HUP_OBSERVED=str(observed_hangup))
     process, app = launch(env)
     inventory = None
 
@@ -183,8 +190,12 @@ def verify_live(env, state):
                 'command': '/usr/bin/python3 ' + shlex.quote(str(query)) + ' ' + shlex.quote(str(answer)), 'wait': True})['id']
             wait_for(answer.exists, 'startup query did not complete')
             assert answer.read_bytes().startswith(b'\x1b[') and answer.read_bytes().endswith(b'R'), answer.read_bytes()
+            if startup_attempt == 0:
+                wait_for(observed_hangup.exists, 'fixture did not observe a readable PTY hangup')
             try:
                 wait_for(lambda: 'STARTUP-QUERY-DONE' in request('session.text', queried)['text'], 'startup output was lost')
+                if startup_attempt == 0:
+                    print('STARTUP readable HUP output:', request('session.text', queried)['text'], flush=True)
             except AssertionError:
                 print('STARTUP failed attempt:', startup_attempt + 1, 'of', startup_repeats, flush=True)
                 print('STARTUP failure row:', row(queried), flush=True)
