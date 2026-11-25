@@ -439,3 +439,20 @@ Causes not found, left as backlog items with their capture steps:
   exit other than a completed prebuild.
 - The plain fish login shell step runs `test-without-building` instead of `xcodebuild test`, which rebuilt the
   app for one test.
+
+## Linux release provisioning and runtime cache
+
+- **Symptom.** Release run `45680572680` stops emitting output after SwiftLint setup and before the Zig checksum.
+  It is cancelled after more than 19 minutes without a download result; no tests or publication start.
+  A fresh tag-ref dispatch, `45684417158`, gets past provisioning but misses the runtime cache used by branch CI.
+- **Cause, demonstrated for the cache miss.** The release container installs `zstd`, while branch CI uses gzip.
+  The cache action includes compression in its version, independently of the explicit cache key.
+  The stored branch cache version is `bca0266e2bfc7f16831cdddd75ddf5031bd1cd7621c15dc8f6afc68b932961b3`,
+  exactly the SHA-256 of `agterm-linux/vendor/ghostty|agterm-linux/vendor/zmx|gzip|1.0`.
+  With `zstd-without-long` the same paths produce a different version and cannot restore that entry.
+  Branch run `45670569018` logs extraction of `cache.tgz` for the identical explicit runtime key.
+  The download stall's network cause is unconfirmed; it is separate from this deterministic cache mismatch.
+- **Fix.** Keep the first release container on branch CI's gzip path; only the separate Arch job needs zstd.
+  Bound the Zig download's connection, total time and low-speed interval, with two retries and unchanged SHA-256 verification.
+  Allow 75 minutes for provisioning, cold builds and the full GTK suite, matching the Linux app CI budget.
+  Dispatch the maintained workflow against the existing tag to apply infrastructure fixes without moving its source.

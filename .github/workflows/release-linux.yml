@@ -41,7 +41,7 @@ jobs:
       package_version: ${{ steps.release.outputs.package_version }}
       commit: ${{ steps.release.outputs.commit }}
       source_date_epoch: ${{ steps.release.outputs.source_date_epoch }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     container: swift:6.3.2-noble
     defaults:
       run:
@@ -95,12 +95,13 @@ jobs:
 
       - name: Install Linux build and test dependencies
         run: |
+          # Match branch CI's gzip runtime cache; Arch's separate job supplies its own zstd.
           apt-get update
           apt-get install -y --no-install-recommends \
             libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libepoxy-dev pkg-config \
             librsvg2-dev librsvg2-common webp-pixbuf-loader libgirepository1.0-dev gobject-introspection \
             git curl jq ca-certificates xz-utils unzip zsh fish csh tcsh gcc file imagemagick ripgrep \
-            rpm cpio zstd desktop-file-utils patchelf ncurses-bin \
+            rpm cpio desktop-file-utils patchelf ncurses-bin \
             at-spi2-core dbus-x11 gir1.2-atspi-2.0 openbox python3-gi xdotool xvfb xauth x11-xkb-utils ibus ibus-gtk4 \
             libatk-bridge2.0-0 libgl1-mesa-dri libegl-mesa0 mesa-utils
           curl -fsSLo /tmp/swiftlint.zip \
@@ -110,7 +111,8 @@ jobs:
           chmod +x /usr/local/bin/swiftlint
           swift --version
           swiftlint --version
-          curl -fsSLo /tmp/zig.tar.xz \
+          curl --retry 2 --retry-all-errors --connect-timeout 30 --max-time 900 \
+            --speed-limit 1024 --speed-time 120 -fsSLo /tmp/zig.tar.xz \
             https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
           echo "${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum --check
           tar -xJf /tmp/zig.tar.xz -C /opt

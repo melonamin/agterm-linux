@@ -466,6 +466,7 @@ If Linux-only fixes must follow an already-published upstream-matched release, u
 The release workflow checks out the exact existing tag, reruns shared-core tests and strict SwiftLint,
 builds and validates the release formats, then publishes the x86_64 artifacts, consolidated SHA-256
 checksums, and GitHub build-provenance attestations.
+Rebuilding an existing tag uses the maintained workflow and the exact tagged source without moving the tag.
 Release notes copy the matching upstream product notes, omit its macOS installation boilerplate, and
 append a separate Linux section with formats, compatibility, verification, and source details.
 
