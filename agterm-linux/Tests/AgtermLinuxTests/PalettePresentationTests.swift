@@ -23,6 +23,20 @@ struct PalettePresentationTests {
             == LinuxPaletteRow(title: "Edit Keymap"))
     }
 
+    @Test("GTK origin history remains available through the remote-window palette")
+    func originHistoryEnablement() {
+        let connected = PaletteContext(hasRecentClosed: true, remoteWindow: true, remoteConnected: true)
+        #expect(!PaletteCommand.reopenRecent.isEnabled(in: connected))
+        #expect(LinuxPaletteRow.action(.reopenRecent, in: connected, chord: nil).enabled)
+        for context in [
+            PaletteContext(hasRecentClosed: true, remoteWindow: true),
+            PaletteContext(remoteWindow: true, remoteConnected: true),
+            PaletteContext(hasRecentClosed: true, pickerActive: true, remoteWindow: true, remoteConnected: true)
+        ] {
+            #expect(!LinuxPaletteRow.action(.reopenRecent, in: context, chord: nil).enabled)
+        }
+    }
+
     /// Two catalog titles flip with UI state, so a row must be built against the LIVE `PaletteContext`.
     /// The context-free `PaletteCommand.title` left the palette offering "Flag Session" for an already
     /// flagged session and "Show Flagged Sessions" while the flagged view was already on; macOS passes

@@ -5,6 +5,7 @@ import base64
 import contextlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -175,7 +176,9 @@ def verify_clipboard_osc52(env):
             paths = read_clipboard()
             assert paths == osc52_reply(COPIED_PATHS), f"a read did not convert an advertised uri-list: {paths!r}"
             paths = pasted()
-            assert paths == COPIED_PATHS, f"a paste did not convert an advertised uri-list: {paths!r}"
+            assert shlex.split(paths) == ["/tmp/one two", "/tmp/three"], (
+                f"a paste did not preserve advertised file paths as shell arguments: {paths!r}"
+            )
 
         type_line(f"printf '\\033]52;c;{base64.b64encode(LITERAL_URL.encode()).decode()}\\007'")
         wait_for(lambda: clipboard_text(clipboard) == LITERAL_URL, "the file:// write did not reach the GDK clipboard")

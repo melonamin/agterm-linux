@@ -17,7 +17,11 @@ extension AppController {
         // Omit fixed commands that would be no-ops in the current UI state (shared visibility predicates).
         let activeSession = store.selectedSessionID.flatMap { store.session(withID: $0) }
         let remoteActions = LinuxRemoteCatalogs.windows[windowID]?.actions
-        let recent = !(remoteActions?.recentItems?.isEmpty ?? true) || !library.recentClosedItems.isEmpty || !library.remoteRecentClosedItems.isEmpty
+        let recent = if let remoteActions {
+            !(remoteActions.recentItems?.isEmpty ?? true)
+        } else {
+            !library.recentClosedItems.isEmpty || !library.remoteRecentClosedItems.isEmpty
+        }
         let paletteContext = PaletteContext(canRemoveWorkspace: store.canRemoveWorkspace,
                                             hasFlaggedSessions: !store.flaggedSessions.isEmpty,
                                             sidebarShowsWorkspaceTree: store.sidebarMode == .tree,

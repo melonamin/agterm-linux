@@ -91,7 +91,14 @@ extension LinuxPaletteRow {
     /// The chord renders as kitty syntax (`Chord.displayString`), which is what the user writes in
     /// `keymap.conf` — deliberately NOT macOS's `glyphString`, since Linux has no menu-glyph convention.
     static func action(_ command: PaletteCommand, in context: PaletteContext, chord: Chord?) -> LinuxPaletteRow {
-        LinuxPaletteRow(title: command.title(in: context), shortcut: chord?.displayString, enabled: command.isEnabled(in: context))
+        // GTK exposes the origin's Recent Closed menu action through the palette; the shared catalog
+        // disables the macOS local-history palette action in server windows.
+        let enabled = if command == .reopenRecent, context.remoteWindow {
+            context.remoteConnected && context.hasRecentClosed && !context.modalActive
+        } else {
+            command.isEnabled(in: context)
+        }
+        return LinuxPaletteRow(title: command.title(in: context), shortcut: chord?.displayString, enabled: enabled)
     }
 
     /// A persisted window target. Closed entries use the same explicit "Open Window" wording as macOS;
