@@ -22,6 +22,8 @@ agtermctl session overlay changes --prev
 Text pages use the upstream bundled renderer for line numbers, syntax highlighting, and diff change navigation.
 Diff files color each file's code in its own language over the added and removed row bands.
 The find box, `/`, Ctrl+F, Return/Shift+Return, and `n`/`N` operate on the visible text page.
+Search counts the whole displayed file while painting highlights around the viewport.
+Scrolling and match navigation update the painted highlights without blocking continued typing in large logs.
 Diff pages expose previous/next buttons and `[`/`]` shortcuts, plus file navigation.
 Text pages support wrapping; JSONL pages expose structured-record expansion.
 Control readback is `htmlOverlays[].text`, including the source, language, target line, search, and changes.
