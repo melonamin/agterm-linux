@@ -6,6 +6,10 @@ The downstream starting point is `984861cdd5cd8a1338d8640c1d597b6fddbc34c3`, inc
 The user selected the stable release and excluded the 24 later commits on upstream/master.
 Preserve other branches, worktrees, live application state, and unrelated screenshots.
 
+Publication is stopped at the user's request.
+The earlier tag approval is withdrawn; no `linux-v0.44.1` tag or release has been created.
+The maintained branches contain candidate `8162c363`; the isolated branch carries audit fixes `6baaa886` and `c442fce7`.
+
 ## Integration rules
 
 - Keep upstream protocol, persistence, models, and shared CLI implementations.
@@ -142,6 +146,67 @@ The Arch test runner keeps temporary data on the persistent bind mount in `5e9de
   The protected ConfigPaths test matches upstream exactly; the screenshot and downstream changelog are untouched.
 
 Logs and runtime artifacts are retained under `/mnt/bulk/agterm-v0441-task`.
-The maintained-branch push, exact-commit hosted CI, release tag, release text publication,
-and downloaded artifact/attestation checks remain pending their explicit gates.
+The earlier approved maintained-branch pushes and exact-commit hosted CI are complete for `8162c363`.
+The additional audit fixes need a separate maintained-branch push and fresh hosted CI before release preparation.
+The release tag, release text publication, and downloaded artifact/attestation checks remain pending their explicit gates.
 Do not move this plan to completed until those release steps pass.
+
+## Additional feature audit and fixes
+
+The feature audit compares the published `linux-v0.43.0` binaries with the exact v0.44.1 candidate.
+It covers GUI, keymap, control/read-back, persistence, actual transfers, real SSH origins and two-viewer lifecycle behavior.
+The audit exposed four Linux adapter gaps and a large-log search problem also present in the previous release.
+All five have focused regressions and fixes:
+
+| Finding | Fix and regression |
+| --- | --- |
+| Live `--wait` disappears after config reload | Reassert exit policy even without a watermark; a gated command exits zero and retains first/final output after reload. |
+| Takeover refused during disconnected retries | Queue API/key claims until the role report, preserve intent across failed attempts and late held-exit callbacks; two real viewers independently test API and keyboard takeover after the other viewer types. |
+| Bare Recent Closed reopens unrelated origin history | Resolve attached history before catalog routing, refuse a remote destination and pin the local destination before SSH; explicit catalog requests retain their origin history route. |
+| Empty companion cwd becomes a misleading version error | Reuse the portable argument encoder for cwd, command and name; empty values and dash-prefixed arguments are exercised against the shipped upstream server/CLI/zmx. |
+| Large-log keyboard search stops at a partial query | Keep whole-document match counts while painting only viewport highlights; real keyboard typing, followed appends, scrolling and distant navigation exercise 5,001 matches. |
+
+The renderer change is a portable WebKit optimization in the existing shared resource.
+It keeps StaticRange highlights and the existing safety cap, coalesces scroll/resize repainting with animation frames,
+and refreshes after wrapping without adding an idle polling loop.
+The macOS renderer assertion now checks bounded painting and inclusion of the navigated match.
+It cannot be executed on the Linux validation host.
+
+Five local audit scenarios join the default GTK suite: `v0441-audit-gui`, `v0441-audit-live`,
+`v0441-audit-transfers`, `v0441-audit-pages`, and `v0441-audit-capture`.
+The window-activation fixture matches both process ID and title so identically titled viewers cannot mask keyboard failures.
+`AGTERM_ATSPI_SCENARIOS` selects a comma-separated subset of the default suite for bounded batches.
+Unknown scenario names are rejected; each batch still runs the script's resource, teardown and app-log guards.
+Real-SSH extensions use the existing `AGTERM_TEST_SSH_CONFIG` fixture and the following environment:
+
+```sh
+AGTERM_ATSPI_SCENARIO=v0441-remote AGTERM_AUDIT_REMOTE=extended scripts/test-linux-ui.sh
+AGTERM_ATSPI_SCENARIO=v0441-remote AGTERM_AUDIT_REMOTE=lead scripts/test-linux-ui.sh
+AGTERM_ATSPI_SCENARIO=v0430-viewers scripts/test-linux-ui.sh
+```
+
+Optional `AGTERM_TEST_ORIGIN_SERVER`, `AGTERM_TEST_REMOTE_CLI`, and `AGTERM_TEST_ORIGIN_ZMX` select the exact shipped bundle.
+The explicit upgrade scenario takes `AGTERM_AUDIT_BASELINE` pointing to the extracted published v0.43.0 payload.
+These real-SSH and archived-release fixtures are intentionally separate from the self-contained default suite.
+
+Final local validation:
+
+- 7,190 shared tests in 335 suites and 650 Linux tests in 96 suites pass.
+- Debug and Release/WMO builds, strict SwiftLint 0.65.0, exact-v0.44.1 core/protected-file checks,
+  CLI drift, JavaScript syntax and whitespace checks pass.
+- The staged Release payload starts its CLI and passes real keyboard search, followed append,
+  scrolled highlight coverage and distant navigation using its staged renderer resources.
+- Real SSH extended controls, independently deferred API/key takeover, existing two-viewer regressions,
+  delayed restart publication and the actual published-v0.43.0 process upgrade pass.
+- All 84 default GTK scenario bodies pass in the aggregate run, whose outer runner subsequently exits 143.
+  Three disjoint 28-scenario batches rerun all assertions and postflight guards.
+  Two batches exit zero; the other passes 27 scenarios and fails an existing custom-command launch-toast assertion.
+  That scenario passed in the aggregate run and passes its isolated rerun with exit zero and unchanged assertions.
+  The intermittent toast failure and the aggregate shutdown status remain validation limitations, not proven product regressions.
+  Do not describe this as a clean single aggregate runner exit.
+- GTK verification is isolated Xvfb/X11 with software rendering; Wayland and macOS execution remain unverified.
+  The aarch64 server archive is hash-checked but has not executed on aarch64 hardware.
+
+Current logs and screenshots are retained under `/mnt/bulk/agterm-v0441-feature-audit`.
+The original feature matrix and failure evidence remain in that directory's `report.md`.
+The release gate stays withdrawn; fresh branch CI and release/package publication checks require the later authorized release flow.

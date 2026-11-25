@@ -75,8 +75,14 @@ def verify_v0441(env, state):
             assert not refusal['ok'] and 'not a workspace' in refusal['error'], refusal
 
         # Warm launch forwarding must select the target after the default activation raises a window.
+        applications = Path(env['XDG_DATA_HOME'], 'applications')
+        applications.mkdir(parents=True, exist_ok=True)
+        (applications / 'agterm-audit-uri.desktop').write_text(
+            '[Desktop Entry]\nType=Application\nName=agterm isolated URI acceptance\n'
+            'Exec=' + BIN + ' %u\nNoDisplay=true\nMimeType=x-scheme-handler/agterm;\n')
+        subprocess.run(['gio', 'mime', 'x-scheme-handler/agterm', 'agterm-audit-uri.desktop'], env=env, check=True)
         request('session.select', child)
-        subprocess.run([BIN, 'agterm://session/' + parent], env=env, check=True, timeout=10)
+        subprocess.run(['gio', 'open', 'agterm://session/' + parent], env=env, check=True, timeout=10)
         wait_for(lambda: row(parent).get('active'), 'external URI did not select root session')
 
         source = root / 'clicked.txt'
@@ -89,6 +95,7 @@ def verify_v0441(env, state):
         script = "printf '\\033[2J\\033[H%s' " + shlex.quote(str(source)) + '; exec sleep 3600'
         linked = request('session.new', args={'name': 'Detected opener', 'command': '/bin/sh -c ' + shlex.quote(script)})['id']
         wait_for(lambda: str(source) in request('session.text', linked).get('text', ''), 'link fixture did not print')
+        cursor = request('events.read')['events']
         frame = collect(app, role='frame')[0]
         bounds = window_extents(frame)
         sidebar = wait_for(lambda: sidebar_column(app), 'sidebar not allocated')
@@ -101,6 +108,10 @@ def verify_v0441(env, state):
         wait_for(marker.exists, 'detected file did not run configured opener')
         assert marker.read_text().splitlines() == [str(source), 'left', pwd.getpwuid(os.getuid()).pw_dir], marker.read_text()
         assert not row(linked).get('htmlOverlays'), row(linked)
+        events = request('events.read', args={'run': cursor['run'], 'after': str(cursor['next']),
+                                              'kinds': ['opener.run'], 'limit': 100})['events']['items']
+        assert any(event.get('session') == linked and event.get('payload', {}).get('path') == str(source)
+                   for event in events), ('configured opener did not emit its real control event', events)
         marker.unlink()
         script = ("printf '\\033[2J\\033[H\\033]8;;file://" + str(source)
                   + "\\007OPEN_FILE_OPEN_FILE_OPEN_FILE\\033]8;;\\007'; exec sleep 3600")

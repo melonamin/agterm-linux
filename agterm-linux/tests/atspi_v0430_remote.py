@@ -26,13 +26,15 @@ def verify_v0430_remote(env, state, acceptance=False, history_only=False, v0441_
     tools.mkdir()
     ssh = tools / "ssh"
     setting = "SetEnv=AGTERM_STATE_DIR=" + str(origin)
+    if remote_cli := env.get("AGTERM_TEST_REMOTE_CLI"):
+        setting += " AGTERM_TEST_REMOTE_CLI=" + remote_cli
     ssh.write_text("#!/bin/sh\nexec /usr/bin/ssh -F " + shlex.quote(config) + " -o " + shlex.quote(setting) + ' "$@"\n')
     ssh.chmod(0o755)
     origin_env = dict(env, AGTERM_STATE_DIR=str(origin), AGTERM_CONTROL_SOCKET=str(origin / "agterm.sock"), XDG_RUNTIME_DIR=str(runtime))
     viewer_env = dict(env, PATH=str(tools) + ":" + env["PATH"])
-    binary = Path(ROOT).parent / "agtermCore/.build/debug/agterm-server"
+    binary = Path(env.get("AGTERM_TEST_ORIGIN_SERVER", str(Path(ROOT).parent / "agtermCore/.build/debug/agterm-server")))
     log = open(root / "server.log", "w", encoding="utf-8")
-    server = subprocess.Popen([str(binary), "--state-dir", str(origin), "--zmx", str(Path(ROOT, "vendor/zmx/zmx")),
+    server = subprocess.Popen([str(binary), "--state-dir", str(origin), "--zmx", env.get("AGTERM_TEST_ORIGIN_ZMX", str(Path(ROOT, "vendor/zmx/zmx"))),
                                "--resources", str(resources)], env=origin_env, stdout=log, stderr=log)
     viewer = None
 
@@ -55,8 +57,13 @@ def verify_v0430_remote(env, state, acceptance=False, history_only=False, v0441_
         if v0441_only:
             viewer, viewer_app = launch(viewer_env)
             local_window = request(viewer_env, "window.list")["windows"][0]["id"]
-            from atspi_v0441_remote import verify_v0441_remote
-            verify_v0441_remote(origin_env, viewer_env, viewer, viewer_app, local_window, root, request)
+            if env.get("AGTERM_AUDIT_REMOTE") in ("extended", "lead"):
+                from atspi_v0441_remote_audit import verify_remote, verify_lead
+                check = verify_lead if env.get("AGTERM_AUDIT_REMOTE") == "lead" else verify_remote
+                check(origin_env, viewer_env, viewer, viewer_app, local_window, root, request)
+            else:
+                from atspi_v0441_remote import verify_v0441_remote
+                verify_v0441_remote(origin_env, viewer_env, viewer, viewer_app, local_window, root, request)
             return
         created = request(origin_env, "session.new", args={"name": "SSH origin"})["id"]
         for index in range(19):

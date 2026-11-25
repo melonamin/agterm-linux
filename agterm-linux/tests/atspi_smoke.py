@@ -415,7 +415,7 @@ def focus_accessible_window(window, process_id):
     # AT-SPI can expose a newly presented GTK window before X11 marks it visible.
     # Keep targeting this exact title while the window manager finishes mapping it.
     command = [
-        "xdotool", "search", "--onlyvisible", "--name", f"^{re.escape(title)}$",
+        "xdotool", "search", "--onlyvisible", "--all", "--pid", str(process_id), "--name", f"^{re.escape(title)}$",
         "windowactivate", "--sync", "%@",
     ]
     assert poll(lambda: subprocess.run(command, check=False, stdout=subprocess.DEVNULL,
@@ -7453,9 +7453,10 @@ def main():
     scenario = os.environ.get("AGTERM_ATSPI_SCENARIO")
     if scenario is None:
         failures = []
-        for child_scenario in (
+        scenarios = (
             "normal", "upstream-controls", "upstream-v0391", "upstream-v0400", "upstream-v0411", "upstream-v0430", "sidebar-v0400", "links-v0400", "remote-v0391", "html-overlay", "overlay-visual", "live-restart", "live-fish-restart", "live-command-restart",
             "v0430-gui", "v0430-input", "v0430-sidebar", "v0441", "live-wait-output", "live-control-memory", "live-scratch",
+            "v0441-audit-gui", "v0441-audit-live", "v0441-audit-transfers", "v0441-audit-pages", "v0441-audit-capture",
             "startup-environment",
             "dashboard-modal", "context-menu",
             "window-key-dispatch",
@@ -7480,7 +7481,13 @@ def main():
             "clipboard-osc52",
             "auto-follow", "hidden-toolbar", "desktop-actions",
             "theme-many-sessions",
-        ):
+        )
+        selected = os.environ.get("AGTERM_ATSPI_SCENARIOS")
+        selected = selected.split(",") if selected else scenarios
+        unknown = set(selected) - set(scenarios)
+        if unknown:
+            raise ValueError("unknown GTK scenarios: " + ", ".join(sorted(unknown)))
+        for child_scenario in selected:
             child_env = dict(os.environ, AGTERM_ATSPI_SCENARIO=child_scenario)
             result = subprocess.run([sys.executable, __file__], env=child_env)
             if result.returncode != 0:
@@ -7557,6 +7564,27 @@ def main():
         elif scenario == "v0441":
             from atspi_v0441 import verify_v0441
             verify_v0441(env, state)
+        elif scenario == "v0441-audit-gui":
+            from atspi_v0441_audit import verify_gui
+            verify_gui(env, state)
+        elif scenario == "v0441-audit-live":
+            from atspi_v0441_audit import verify_live
+            verify_live(env, state)
+        elif scenario == "v0441-audit-transfers":
+            from atspi_v0441_transfers import verify_transfers
+            verify_transfers(env, state)
+        elif scenario == "v0441-audit-pages":
+            from atspi_v0441_pages import verify_pages
+            verify_pages(env, state)
+        elif scenario == "v0441-audit-late-restart":
+            from atspi_v0441_late_restart import verify_late_restart
+            verify_late_restart(env, state)
+        elif scenario == "v0441-audit-capture":
+            from atspi_v0441_capture import verify_capture
+            verify_capture(env, state)
+        elif scenario == "v0441-audit-upgrade":
+            from atspi_v0441_upgrade import verify_upgrade
+            verify_upgrade(env, state)
         elif scenario == "v0430-input":
             from atspi_v0430_input import verify_input_v0430
             verify_input_v0430(env, state)
