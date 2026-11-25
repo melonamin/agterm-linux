@@ -222,3 +222,14 @@ Application code is unchanged because the evidence does not establish a product 
 The fixture now runs five rapid startup/exit queries with the original response and output assertions,
 and preserves the failed row, visible text, scrollback, DSR bytes and screenshot if it fails again.
 Fresh exact-commit CI remains required before tagging.
+
+Hosted run `45659129555` on `75e53c36` passes all five startup-query repetitions and 83 GTK scenarios.
+Its sole failure is the GUI audit's context action after dragging a companion.
+The uncalibrated container-center click does not establish that the intended row's menu opened.
+Ten isolated original-path repetitions pass under a two-CPU root container, so no product defect is established.
+The audit now targets the name label, uses the existing bounded sidebar pointer calibration,
+and verifies that the intended session owns the open menu before checking its required action.
+A correct menu missing the action still fails without retrying that assertion.
+Failures retain model, accessibility and screenshot diagnostics.
+Ten calibrated GUI repetitions pass with all assertions and postflight guards under a two-CPU root container.
+Application code remains unchanged; the test correction requires fresh exact-commit CI before release tagging.

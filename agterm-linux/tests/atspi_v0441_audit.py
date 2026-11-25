@@ -6,8 +6,8 @@ from pathlib import Path
 import shlex
 import subprocess
 
-from atspi_smoke import (ROOT, activate, collect, launch, mouse_click, mouse_drag, press_x11_key,
-                         raw_control_json, run_palette_action, sidebar_session_row,
+from atspi_smoke import (ABSOLUTE_DYS, ROOT, activate, collect, launch, mouse_click, mouse_drag,
+                         poll, press_escape, press_x11_key, raw_control_json, run_palette_action,
                          sidebar_session_row_label, stop, wait_for)
 
 
@@ -41,9 +41,29 @@ def verify_gui(env, state):
         return next(row for row in rows() if row['id'] == identity)
 
     def context_action(name, action):
-        mouse_click(lambda: sidebar_session_row(app, name), process.pid, button='right')
-        activate(wait_for(lambda: next(iter(collect(app, role='push button', name=action)), None),
-                          'missing context action: ' + action))
+        identity = next(item['id'] for item in rows() if item['name'] == name)
+        try:
+            # Reacquire the moved label and calibrate pointer placement as the other sidebar tests do.
+            # Only retry a missed/wrong-row click; a correct menu missing its action must still fail.
+            for dy in ABSOLUTE_DYS:
+                mouse_click(lambda: sidebar_session_row_label(app, name), process.pid, button='right', dy=dy)
+                if poll(lambda: collect(app, role='push button', name='Close Session')
+                        and row(identity).get('active'), timeout=1):
+                    print('CONTEXT opened:', name, 'pointer offset:', dy, flush=True)
+                    break
+                press_escape(process.pid)
+            else:
+                raise AssertionError('context menu did not open on ' + name)
+            activate(wait_for(lambda: next(iter(collect(app, role='push button', name=action)), None),
+                              'missing context action: ' + action))
+        except AssertionError:
+            from atspi_smoke import describe_tree
+            from x11_capture import capture
+            print('CONTEXT failure model:', tree(), flush=True)
+            describe_tree(app)
+            with contextlib.suppress(Exception):
+                capture(Path(env['AGTERM_UI_ARTIFACT_DIR']) / 'v0441-context-failure.png')
+            raise
 
     try:
         before = {row['id'] for row in rows()}
