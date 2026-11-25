@@ -23,8 +23,11 @@ public protocol ControlActions {
     func duplicateAsCompanion(_ target: String?, window: String?, select: Bool) async -> ControlResponse
     /// convertToCompanion nests the target and its companions under a fresh session in its slot.
     func convertToCompanion(_ target: String?, window: String?) -> ControlResponse
-    /// moveCompanion puts the target companion under `parent`, at `index` among its companions or last.
+    /// moveCompanion puts the target session under `parent`, a top-level one with its companions, at `index` among
+    /// the parent's companions or last.
     func moveCompanion(_ target: String?, parent: String, index: Int?, window: String?) async -> ControlResponse
+    /// promoteCompanion makes the target companion a top-level session at `placement`.
+    func promoteCompanion(_ target: String?, placement: ControlCompanionPromotion, window: String?) async -> ControlResponse
     /// Hands out one attachment of the target page companion to another Mac.
     func attachCompanionPage(_ target: String?, window: String?) -> ControlResponse
     /// Folds or unfolds a parent's companions in the sidebar tree.
@@ -161,7 +164,7 @@ public protocol ControlActions {
     func readQuickText(all: Bool, lines: Int?) async -> ControlResponse
     func typeSession(_ target: String?, window: String?, options: ControlSessionTypeOptions) async -> ControlResponse
     func copySessionSelection(_ target: String?, window: String?) -> ControlResponse
-    func pasteSession(_ target: String?, window: String?, pane: StatusPane?) -> ControlResponse
+    func pasteSession(_ target: String?, window: String?, pane: StatusPane?) async -> ControlResponse
     func selectAllSession(_ target: String?, window: String?) -> ControlResponse
     func searchSession(_ target: String?, window: String?,
                        text: String?, to: String?) async -> ControlResponse
@@ -320,6 +323,10 @@ public protocol ControlActions {
     /// attachRemoteGroup attaches a remote top-level session, then each companion its origin lists, from one
     /// discovery read. A partial attach answers not ok with `result.id` and `result.remoteGroup` still set.
     func attachRemoteGroup(host: String, session: String, window: String?) async -> ControlResponse
+    /// attachRemoteSession into `workspace` of the window rather than its current one; nil is the window form.
+    func attachRemoteSession(host: String, session: String, window: String?, workspace: ControlAttachWorkspace?) async -> ControlResponse
+    /// attachRemoteGroup with its parent row in `workspace`; nil is the window form.
+    func attachRemoteGroup(host: String, session: String, window: String?, workspace: ControlAttachWorkspace?) async -> ControlResponse
     /// resolveMessagePane resolves a bus address to a live pane: a role picks the slot's pane now, a pane id
     /// must be a live pane of the named session. Never falls back to the active pane or another role.
     func resolveMessagePane(_ address: MessageAddress) -> Result<MessageRecipient, MessagePaneError>

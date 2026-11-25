@@ -93,12 +93,30 @@ struct RemoteSessionCreateTests {
             == ["session", "new", "--window=6f1c", "--workspace-name=dev", "--create-workspace", "--no-select"])
     }
 
+    @Test func argumentsWithNoWorkspaceNameCreateInTheOriginsRoot() {
+        let create = RemoteSessionCreate(host: "mac")
+
+        #expect(create.arguments(origin: .mac(window: "6f1c"), workspaceName: nil)
+            == ["session", "new", "--window=6f1c", "--workspace=root", "--no-select"])
+    }
+
     @Test func argumentsForAServerNameNoWindowAndCarryCwdAndCommand() {
         let create = RemoteSessionCreate(host: "srv", cwd: "/srv/app", command: "make run")
 
         #expect(create.arguments(origin: .server, workspaceName: "dev")
             == ["session", "new", "--workspace-name=dev", "--create-workspace", "--no-select",
                 "--cwd=/srv/app", "--command=make run"])
+    }
+
+    // a bare `--cwd=` reached the origin as a missing value, and its CLI exited 64
+    @Test func argumentsKeepAnEmptyValueAsItsOwnWordAndJoinADashLeadingOne() {
+        let empty = RemoteSessionCreate(host: "srv", cwd: "", command: "")
+        let dashed = RemoteSessionCreate(host: "srv", cwd: "-dir", command: "-v")
+
+        #expect(empty.arguments(origin: .server, workspaceName: "dev")
+            == ["session", "new", "--workspace-name=dev", "--create-workspace", "--no-select", "--cwd", "", "--command", ""])
+        #expect(dashed.arguments(origin: .server, workspaceName: "dev")
+            == ["session", "new", "--workspace-name=dev", "--create-workspace", "--no-select", "--cwd=-dir", "--command=-v"])
     }
 
     @Test func originKindTakesOnlyALiveMacOrAServer() {

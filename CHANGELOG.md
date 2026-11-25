@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.44.1 - 2026-11-22
+
+### Improved
+
+- a companion's context menu separates **Move to**, which lists the workspaces and Top-Level Sessions, from **Move Under**, which lists the sessions it can become a companion of, grouped by workspace #1081 @umputun
+- launch diagnostics now log startup milestones once per process in a `launch` log category, for a relaunch that shows no window: `log show --last 1h --predicate 'subsystem == "com.umputun.agterm" AND category == "launch"'` #1080 @umputun
+
+### Bug Fixes
+
+- **codex in a Live pane draws its composer band again.** Some programs query the terminal at startup, and in a Live pane those queries could go unanswered before the pane's terminal attached, so codex drew its composer without the background band until it exited. A Live pane now holds a program until its terminal attaches, up to 5 s locally and 30 s on agterm-server, and a fast command's output reaches the pane when the terminal attaches in time. Plain login shells start at once. With agterm-server also updated, this Mac asks for the hold when it opens a session, companion or scratch with a command, uses Duplicate as Companion to copy a program, or restarts a pane the window lays out. Restart codex in an affected pane to pick up the fix #1083 @umputun
+- a `--wait` session or overlay now stays open after its command exits even if its background changed or the config reloaded while it ran #1083 @umputun
+- local Live panes, remote windows and sessions attached from another Mac reclaim their saved lead after a relaunch or a reopened window. A restored pane takes the lead back if its previous attachment still holds it, or if another attachment took the vacant lead without claiming it and has not been used since #1082 @umputun
+
+## v0.44.0 - 2026-11-21
+
+### New Features
+
+- **Top-level sessions outside workspaces.** Sessions can sit at the top of the sidebar, above the named workspaces and outside any of them. File ▸ New Top-Level Session creates one (`new_root_session` is the keymap action), and a session gets there by drag or Move to ▸ Top-Level Sessions. The last named workspace can now be deleted. In the control API the group is `root`: `session new --workspace root`, `session move root`, `workspace focus --target root`, and `tree` lists it as a workspace node with `root: true` #1069 @umputun
+- **Turn a companion into a top-level session and back.** Drop a companion on a workspace row or between top-level sessions, or pick a workspace in its Move to menu, and it becomes a top-level session there. Dropping a top-level session on the middle of another one makes it that session's companion, together with its own companions. `agtermctl session move --target C --top-level [WORKSPACE | --after X | --before X]` and `session move --parent SID` are the control forms, and it works on agterm-server windows and sessions attached from another Mac #1073 @umputun
+- **Run your own program on a ⌘-clicked file.** An `open` line in `keymap.conf` runs a command of your choice on a ⌘-clicked picture, markdown, text or HTML file path instead of agterm's built-in page, such as `open *.md --error-hud glow-page.sh "$AGT_PATH"`; an OSC 8 hyperlink keeps the built-in page. In a remote session whose origin runs this version, a file within the page size limit is copied to this Mac and your rule runs on the copy. `keymap list` reports the rules and each run emits an `opener.run` event #1051 @umputun
+- **Paste and drop files and images into remote panes.** ⌘V, Edit ▸ Paste, a drop and `agtermctl session paste` follow one rule: files and folders paste as shell-escaped paths, otherwise text pastes as text, otherwise a clipboard image is saved as a PNG and its path pasted, which Claude Code attaches. In a remote pane the files or image are copied to that host first, so the pasted path exists there. An image-only clipboard used to paste nothing, locally too #1035 @umputun
+- **Open session links from other apps.** agterm registers `agterm://` with macOS, so a notification's click-through, a browser link, a note or `open "agterm://session/$AGTERM_SESSION_ID"` selects that session and raises its window, starting agterm first when needed. A cold launch by such a link or by `open -a agterm <folder>` no longer loses a saved window #1041 @umputun
+- a top-level session attached from another Mac or an agterm-server into a regular window picks up companions created or moved under it on the origin, when the origin runs this version. `tree` reports `followsCompanions` #1044 @umputun
+- `zmx attach` takes `--workspace`, `--workspace-name` and `--create-workspace`, so a script can bring each of another host's sessions into its own local workspace #1049 @umputun
+
+### Improved
+
+- **The bundled zmx is v1.0.1, built with Zig 0.17.** Live sessions started by the previous version keep running across the update and reconnect as before, with no Reset Live Sessions needed #1077 @umputun @quetz #1065
+- a remote pane that reconnects after its ssh dropped takes its lead back when this Mac led it at the drop and either still holds the lead or another Mac only filled the gap without using the pane, instead of coming back covered. It applies to sessions started after the update #1072 @umputun
+- `annotate-in-plannotator-tui` cookbook recipe: the replies chord works on a session attached from another Mac, reading the transcript on the Mac where Claude runs #1036 @pySilver
+- a followed log page with a search open updates faster #1075 @umputun
+- upgrading straight from 0.42.x with the `remote-session-restore` cookbook recipe: keep its four hooks for the first launch of this version, then remove them as the v0.43.0 entry describes #999
+- `session overlay open` refuses `/dev/fd` paths from shell process substitution with a hint, since agterm needs a named file #1078 @umputun
+
+### Bug Fixes
+
+- **agterm opens its window again after an unclean exit.** After a crash, force quit or kill, the next launch could show no window and no control socket until a reopen event arrived #1053 @alexandru-savinov
+- a session that printed and then exited could lose its last output, as on a Live `session new --command ... --wait` pane. The full fix applies to sessions started after the update #1056 @alexandru-savinov
+- one stopped or slow Live session left every Live pane without its command captured at quit, so Rerun had nothing to replay #1043 @umputun #1042
+- a `session restart` whose new shell took longer than 10 s to confirm left the pane ended on an attached Mac, which never reattached it #1057 @umputun #1055
+- agterm-server crashed and was restarted by systemd when asked to open a page, such as by `session overlay open` run on that host #1060 @umputun #1058
+- creating a remote companion with a value starting with "-", or a remote session with an empty `--cwd`, failed with a message that the other host's agterm was too old #1061 @umputun
+- a reconnecting remote pane showed "Taking over…" although the reconnect claims no lead; it shows "Reconnecting…". `session lead` and a key press on that cover now take the lead once the reconnect reports in, where the command answered ok and did nothing and the key was swallowed #1068 #1071 @umputun #1066
+- a bare `recent open` of an attached session with an agterm-server window frontmost put it in that window, which removed it, and the entry was gone from Recent Closed too. It is refused now #1070 @umputun
+- an image page could show a broken image for very large pictures (48 and 55 MB PNGs in testing), and a failed page reload could look successful. Large images also open faster and use less memory #1074 @umputun
+- Edit Keymap, Edit Hooks and Edit ghostty.conf only beeped when a hidden session overlay blocked them; they now show that overlay, unless a pane overlay is showing #1040 @umputun
+
 ## v0.43.0 - 2026-11-17
 
 ### New Features
@@ -7,7 +54,7 @@
 - **agterm updates itself.** DMG and Homebrew installs check for updates once a day after Sparkle's one-time question on the second launch is answered yes, and agterm ▸ Check for Updates… checks at once. An update found while you work shows as an arrow at the right end of the title bar; Settings ▸ Interface ▸ Update available hides it. Installing asks to restart, and Live sessions keep running and reconnect. `agtermctl update check` checks from the CLI and `agtermctl version` reports `updates`. Builds from source never update themselves, and this version itself is still installed by hand or with `brew upgrade` #1029 @umputun
 - **Open a Mac window as a remote window.** File ▸ Open Remote Window… now accepts another Mac running agterm with Live sessions, not only an agterm-server host. The window follows that Mac's window live, and creating, renaming, moving, splitting and closing sessions, companions and workspaces act on the origin Mac. With several windows there a picker asks which one; `agtermctl window remote open HOST --origin-window W` names it #1018 @umputun
 - **New Remote Session.** File ▸ New Remote Session… starts a shell on a host from `remotes.conf`, another Mac with Live sessions or an agterm-server, and attaches it at the end of the current workspace, with no `ssh HOST agtermctl session new` and Attach Remote… round trip. `agtermctl session new --remote HOST` is the control form, and `new_remote_session` is a keymap action #1034 @umputun
-- **Remote sessions behave like local ones.** Sessions in an agterm-server window and sessions attached from another Mac run split, scratch, restart, terminate, undo, Duplicate as Companion and Recent Closed on their host, and attached sessions come back after a relaunch. A file path ⌘-clicked in a remote pane opens from the far side, and a loopback URL opens through an ssh forward. Clearing a status or unseen badge mirrored from the origin clears it there. Users of the `remote-session-restore` cookbook recipe should remove its `replay` line from `hooks.conf`, since agterm now does this itself and the recipe would add duplicate sessions #999 @umputun #1000 @maxshevelev
+- **Remote sessions behave like local ones.** Sessions in an agterm-server window and sessions attached from another Mac run split, scratch, restart, terminate, undo, Duplicate as Companion and Recent Closed on their host, and attached sessions come back after a relaunch. A file path ⌘-clicked in a remote pane opens from the far side, and a loopback URL opens through an ssh forward. Clearing a status or unseen badge mirrored from the origin clears it there. If you used the `remote-session-restore` cookbook recipe on 0.42.x, keep all four of its hooks for the first 0.43.0 launch: 0.42.x did not save attached sessions, so the recipe brings them back, and 0.43.0 saves each row as it returns. Before quitting, recover rows still waiting with Retry or `~/bin/remote-restore retry`, and reattach by hand any the recipe dropped. Then remove the four lines from `hooks.conf`, run `agtermctl hooks reload`, and delete `~/bin/remote-restore`; replay left on past that point duplicates rows on the next launch #999 @umputun #1000 @maxshevelev
 - agterm-server serves more of the control API to scripts and agents on the host: `events`, `session wait`, `session info`, `surface cursor` and `zmx list|screen|prune` work there as on a Mac, `session new` and `companion new` take `--command CMD --wait`, and `tree` reports each pane's foreground program. It also keeps flags and tints, and a remote window saves its sessions' backgrounds, fold state and context overrides, workspace focus and filter, and flagged order #999 @umputun
 - **Asks, pickers, pages and status sounds reach the Mac you are typing on.** For a session attached from several Macs, new work opens on the Mac leading the target pane, and an open ask, pick or page moves when the lead moves. When the presenting Mac leaves, another attached Mac takes over, so an agent's question on an agterm-server no longer waits for a screen that never comes #1008 #1012 #1023 @umputun #1007 #1017
 - **Move a companion under another session.** Drag a companion onto another top-level session or into its group, or use Move to in the companion's row menu; it keeps its id and running panes. `agtermctl session move --parent SID [--index N]` is the control form, and it works on agterm-server windows and attached rows #1014 @umputun

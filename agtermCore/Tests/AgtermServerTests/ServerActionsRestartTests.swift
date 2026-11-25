@@ -3,6 +3,24 @@ import Testing
 @testable import AgtermServerKit
 import agtermCore
 
+private final class DelayedLeader: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Int32?
+
+    var pid: Int32? {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
+}
+
+@MainActor
+private final class ZmxHoldArgv {
+    let daemon: String
+    var ran = false
+    init(daemon: String) { self.daemon = daemon }
+    var argv: [String] { ran ? ["-zsh"] : ["/usr/local/lib/agterm-server/zmx", "attach", "--detached", daemon, "/bin/zsh"] }
+}
+
 @MainActor
 struct ServerActionsRestartTests {
     private let harness: ServerHarness
@@ -134,6 +152,24 @@ struct ServerActionsRestartTests {
         #expect(harness.store.session(withID: session.id) == nil)
     }
 
+    @Test func aParentClosedByAFailedHeldRestartStartsItsRecoveryShellAtOnce() async throws {
+        let session = try newSession()
+        _ = try harness.session(await harness.actions.createCompanion(session.id.uuidString, options: CompanionOptions(select: false),
+                                                                      window: nil))
+        running(session.paneIdentity)
+        harness.processes.ends = []
+        let launches = harness.runner.launches.count
+        var args = ControlArgs(command: "true", pane: "left")
+        args.attachPending = true
+
+        let reply = await harness.actions.serve(ControlRequest(cmd: .sessionRestart, target: session.id.uuidString, args: args))
+
+        #expect(reply.ok == false)
+        let recovery = try #require(harness.runner.launches.dropFirst(launches).last)
+        #expect(recovery.name == ZmxSupport.daemonName(for: session.paneIdentity))
+        #expect(recovery.environment["ZMX_HOLD_UNTIL_ATTACH"] == nil)
+    }
+
     @Test func aRightPaneRestartKeepsTheSplitAndItsIdentity() async throws {
         let session = try newSession(split: true)
         let split = try #require(session.splitPaneIdentity)
@@ -233,6 +269,252 @@ struct ServerActionsRestartTests {
         let snapshot = await offPool { viewer.first { if case .snapshot = $0 { true } else { false } } }
         #expect(snapshot != nil)
         return viewer
+    }
+
+    @Test func aShellConfirmedAfterTheReplyDeadlineIsStillAnnouncedOnce() async throws {
+        let session = try newSession()
+        running(session.paneIdentity)
+        let leader = DelayedLeader()
+        harness.actions.daemonLeader = { _ in leader.pid }
+        harness.actions.restartWaits.shell = .milliseconds(50)
+        let viewer = try await viewer(of: session)
+        defer { viewer.disconnect() }
+
+        let reply = await restart(session, command: "make test")
+
+        #expect(reply.error == "the old shell ended (pid 100) and the replacement was requested but could not be verified in time")
+        #expect(harness.panes.isRestarting(session.paneIdentity))
+        leader.pid = 101
+        let frame = await offPool { viewer.first { if case .respawn = $0 { true } else { false } } }
+        guard case .respawn(let respawns)? = frame else { Issue.record("no respawn frame"); return }
+        #expect(respawns.generations == [ZmxSupport.daemonName(for: session.paneIdentity): 1])
+        #expect(await eventually { !self.harness.panes.isRestarting(session.paneIdentity) })
+    }
+
+    @Test func aHeldReplacementIsAnnouncedAtOnceAndConfirmedOnlyOnceItRuns() async throws {
+        let session = try newSession()
+        running(session.paneIdentity)
+        let creator = ZmxHoldArgv(daemon: ZmxSupport.daemonName(for: session.paneIdentity))
+        harness.actions.foregroundArgv = { pid in pid == 101 ? creator.argv : nil }
+        harness.actions.restartWaits.shell = .milliseconds(50)
+        let viewer = try await viewer(of: session)
+        defer { viewer.disconnect() }
+
+        let reply = await restart(session, command: "make test")
+
+        #expect(reply.error == "the old shell ended (pid 100) and the replacement was requested but could not be verified in time")
+        let frame = await offPool { viewer.first { if case .respawn = $0 { true } else { false } } }
+        guard case .respawn(let respawns)? = frame else { Issue.record("no respawn frame"); return }
+        #expect(respawns.generations == [ZmxSupport.daemonName(for: session.paneIdentity): 1])
+        #expect(harness.panes.isRestarting(session.paneIdentity), "a held child is announced but not yet confirmed")
+        creator.ran = true
+        #expect(await eventually { !self.harness.panes.isRestarting(session.paneIdentity) })
+    }
+
+    @Test func aReplacementThatRunsWithinTheReplyWaitIsConfirmedInTheReply() async throws {
+        let session = try newSession()
+        running(session.paneIdentity)
+        let creator = ZmxHoldArgv(daemon: ZmxSupport.daemonName(for: session.paneIdentity))
+        var reads = 0
+        harness.actions.foregroundArgv = { _ in
+            reads += 1
+            if reads > 3 { creator.ran = true }
+            return creator.argv
+        }
+
+        let reply = await restart(session, command: "make test")
+
+        #expect(reply.ok, "\(reply.error ?? "")")
+        #expect(reply.result?.restart?.newPid == 101)
+        #expect(reads > 3)
+    }
+
+    @Test func aReplacementThatVanishesBeforeItRunsIsNeitherAnnouncedNorConfirmed() async throws {
+        let session = try newSession()
+        running(session.paneIdentity)
+        let leader = DelayedLeader()
+        leader.pid = 101
+        harness.actions.daemonLeader = { _ in leader.pid }
+        harness.actions.foregroundArgv = { _ in
+            leader.pid = nil
+            return nil
+        }
+        harness.actions.restartWaits.follow = .milliseconds(300)
+
+        let reply = await restart(session, command: "make test")
+
+        #expect(reply.ok == false)
+        #expect(await eventually { !self.harness.panes.isRestarting(session.paneIdentity) })
+        #expect(try await respawnCounts(session).isEmpty)
+    }
+
+    @Test func aLiveReplacementWhoseArgvIsWithheldIsConfirmed() async throws {
+        let session = try newSession()
+        running(session.paneIdentity)
+        harness.actions.foregroundArgv = { _ in nil }
+
+        let reply = await restart(session, command: "sudo make install")
+
+        #expect(reply.ok, "\(reply.error ?? "")")
+        #expect(reply.result?.restart?.newPid == 101)
+    }
+
+    @Test func aPaneClosedWhileItsReplacementIsHeldIsNeverConfirmed() async throws {
+        let session = try newSession()
+        running(session.paneIdentity)
+        let creator = ZmxHoldArgv(daemon: ZmxSupport.daemonName(for: session.paneIdentity))
+        harness.actions.foregroundArgv = { _ in creator.argv }
+        let viewer = try await viewer(of: session)
+        defer { viewer.disconnect() }
+
+        let pending = Task { await restart(session, command: "make test") }
+        _ = await offPool { viewer.first { if case .respawn = $0 { true } else { false } } }
+        _ = harness.store.closeSession(session.id)
+        #expect(harness.store.session(withID: session.id) == nil)
+        let reply = await pending.value
+
+        #expect(reply.ok == false)
+        #expect(await eventually { !self.harness.panes.isRestarting(session.paneIdentity) })
+    }
+
+    @Test func aReplacementNeverConfirmedReleasesThePaneWithoutAnnouncingIt() async throws {
+        let session = try newSession()
+        running(session.paneIdentity)
+        harness.actions.daemonLeader = { _ in nil }
+        harness.actions.restartWaits.shell = .milliseconds(50)
+        harness.actions.restartWaits.follow = .milliseconds(200)
+
+        let reply = await restart(session, command: "make test")
+
+        #expect(reply.ok == false)
+        #expect(await eventually { !self.harness.panes.isRestarting(session.paneIdentity) })
+        #expect(try await respawnCounts(session).isEmpty)
+    }
+
+    @Test func aShellSeenOnlyAfterTheFollowWindowIsNeverAnnounced() async throws {
+        let session = try newSession()
+        running(session.paneIdentity)
+        harness.actions.daemonLeader = { _ in
+            Thread.sleep(forTimeInterval: 0.3)
+            return 101
+        }
+        harness.actions.restartWaits.shell = .milliseconds(50)
+        harness.actions.restartWaits.follow = .milliseconds(100)
+
+        let reply = await restart(session, command: "make test")
+
+        #expect(reply.ok == false)
+        #expect(await eventually { !self.harness.panes.isRestarting(session.paneIdentity) })
+        #expect(try await respawnCounts(session).isEmpty)
+    }
+
+    @Test func aLaterRestartWhoseKillFailsLeavesTheFirstFollowItsHold() async throws {
+        let session = try newSession()
+        running(session.paneIdentity)
+        let leader = DelayedLeader()
+        harness.actions.daemonLeader = { _ in leader.pid }
+        harness.actions.restartWaits.shell = .milliseconds(50)
+        let daemon = ZmxSupport.daemonName(for: session.paneIdentity)
+        _ = await restart(session, command: "make test")
+        harness.runner.killOutcome = .failed("SessionUnresponsive")
+        harness.runner.records = [ZmxSessionRecord(name: daemon, clients: 1, leaderPID: 100)]
+
+        let refused = await restart(session, command: "true")
+
+        #expect(refused.error?.hasSuffix("nothing was started") == true)
+        #expect(harness.panes.isRestarting(session.paneIdentity), "the refused restart must release only its own hold")
+        leader.pid = 101
+        #expect(await eventually { !self.harness.panes.isRestarting(session.paneIdentity) })
+        #expect(try await respawnCounts(session) == [daemon: 1])
+    }
+
+    @Test func aLaterRestartWhoseKillSucceedsTakesThePaneSoOnlyItsShellIsAnnounced() async throws {
+        let session = try newSession()
+        running(session.paneIdentity)
+        let leader = DelayedLeader()
+        harness.actions.daemonLeader = { _ in leader.pid }
+        harness.actions.restartWaits.shell = .milliseconds(50)
+        let daemon = ZmxSupport.daemonName(for: session.paneIdentity)
+        _ = await restart(session, command: "make test")
+        harness.runner.records = [ZmxSessionRecord(name: daemon, clients: 1, leaderPID: 101)]
+        harness.processes.shell(101, job: 301)
+        harness.processes.ends = [SIGKILL]
+        harness.processes.onSignal = { signal in if signal == SIGHUP { leader.pid = 102 } }
+
+        _ = await restart(session, command: "true")
+
+        #expect(await eventually { !self.harness.panes.isRestarting(session.paneIdentity) })
+        #expect(try await respawnCounts(session) == [daemon: 1])
+    }
+
+    @Test func aRestartUnderUndoCloseIsStillAnnouncedWhileTheSessionIsParked() async throws {
+        let session = try newSession()
+        running(session.paneIdentity)
+        let leader = DelayedLeader()
+        harness.actions.daemonLeader = { _ in leader.pid }
+        harness.actions.restartWaits.shell = .milliseconds(50)
+        _ = await restart(session, command: "make test")
+        #expect(harness.store.softCloseSession(session.id, grace: 600))
+        defer { _ = harness.store.finalizePendingClose(ofSession: session.id) }
+
+        leader.pid = 101
+
+        #expect(await eventually { !self.harness.panes.isRestarting(session.paneIdentity) })
+        #expect(harness.store.pendingCloseSession(withID: session.id) === session)
+        #expect(try await respawnCounts(session) == [ZmxSupport.daemonName(for: session.paneIdentity): 1])
+    }
+
+    @Test func aShellThatExitsWhilePendingEndsTheFollowSoTheExitSettles() async throws {
+        let session = try newSession()
+        running(session.paneIdentity)
+        harness.actions.daemonLeader = { _ in nil }
+        harness.actions.restartWaits.shell = .milliseconds(50)
+        _ = await restart(session, command: "false")
+
+        FileManager.default.createFile(atPath: harness.panes.exitRecord(session.paneIdentity), contents: nil)
+
+        #expect(await eventually { !self.harness.panes.isRestarting(session.paneIdentity) })
+        harness.runner.records = []
+        harness.observer.apply([], listedAt: Date())
+        #expect(harness.store.session(withID: session.id) == nil)
+    }
+
+    @Test func aListingBegunBeforeConfirmationCannotSettleTheConfirmedPane() async throws {
+        let session = try newSession()
+        running(session.paneIdentity)
+        let leader = DelayedLeader()
+        harness.actions.daemonLeader = { _ in leader.pid }
+        harness.actions.restartWaits.shell = .milliseconds(50)
+        _ = await restart(session, command: "make test")
+        let listedAt = Date()
+        leader.pid = 101
+        #expect(await eventually { !self.harness.panes.isRestarting(session.paneIdentity) })
+
+        harness.observer.apply([], listedAt: listedAt)
+
+        #expect(harness.store.session(withID: session.id) === session)
+        #expect(session.daemonBackedPanes.contains(session.paneIdentity))
+    }
+
+    private func respawnCounts(_ session: Session) async throws -> [String: Int] {
+        var fds: [Int32] = [-1, -1]
+        #expect(socketpair(AF_UNIX, UnixSocket.streamType, 0, &fds) == 0)
+        harness.actions.streams.adoptPresentationStream(descriptor: fds[0], session: session.id)
+        let viewer = ServerStreamsTests.Viewer(fd: fds[1])
+        defer { viewer.disconnect() }
+        try viewer.send(.hello(PresentationHello(version: PresentationCodec.version, kinds: PresentationHub.supportedKinds, mode: .mirror)))
+        let frame = await offPool { viewer.first { if case .snapshot = $0 { true } else { false } } }
+        guard case .snapshot(let snapshot)? = frame else { Issue.record("no snapshot"); return [:] }
+        return snapshot.respawns?.generations ?? [:]
+    }
+
+    private func eventually(_ seconds: Double = 120, _ condition: @MainActor () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
     }
 
     @Test func aConfirmedRestartPublishesTheRespawnToTheSessionsViewers() async throws {

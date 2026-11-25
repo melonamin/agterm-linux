@@ -177,6 +177,7 @@ final class FakeProcessTable: ProcessTable, @unchecked Sendable {
     private var storedTable: [ProcessRecord]? = []
     private var storedSignals: [(signal: Int32, pids: [Int32])] = []
     private var storedEnds: Set<Int32> = [SIGHUP, SIGKILL]
+    private var storedOnSignal: (@Sendable (Int32) -> Void)?
 
     var table: [ProcessRecord]? {
         get { lock.withLock { storedTable } }
@@ -186,6 +187,10 @@ final class FakeProcessTable: ProcessTable, @unchecked Sendable {
     var ends: Set<Int32> {
         get { lock.withLock { storedEnds } }
         set { lock.withLock { storedEnds = newValue } }
+    }
+    var onSignal: (@Sendable (Int32) -> Void)? {
+        get { lock.withLock { storedOnSignal } }
+        set { lock.withLock { storedOnSignal = newValue } }
     }
 
     func shell(_ shell: Int32, job: Int32? = nil) {
@@ -201,6 +206,7 @@ final class FakeProcessTable: ProcessTable, @unchecked Sendable {
             storedSignals.append((signal, pids))
             if storedEnds.contains(signal) { storedTable = storedTable?.filter { !pids.contains($0.pid) } }
         }
+        onSignal?(signal)
     }
 }
 
@@ -231,16 +237,20 @@ final class ServerHarness {
                          controlEventSink: { events.receive($0) }, paneFinalizer: { ids in
             MainActor.assumeIsolated { panes.end(ids) }
         }, headless: true, askRegistry: AskRegistry())
-        CatalogRoot.seedWorkspace(in: store)
-        // a launch window on the real clock expires under a loaded run before the test claims the job
+        CatalogRoot.provision(store, fresh: true)
+        // a launch window or page claim window on the real clock expires under a loaded run before the test claims it
         let jobClock = Date()
         self.jobClock = jobClock
         actions = ServerActions(store: store, catalog: catalog, identity: AppIdentity(version: "1.2.3"), panes: panes,
                                 events: events, overlayJobs: OverlayJobs(now: { jobClock }))
+        actions.streams.now = { jobClock }
         actions.streams.presentationHelloDeadline = 60
         actions.recentClosed = recentClosed
         actions.processes = processes
-        actions.restartWaits = (program: .milliseconds(200), shell: .seconds(5), poll: .milliseconds(10))
+        // ceilings, not latencies: the start-of-run burst on CI holds the main actor about a minute
+        actions.restartWaits = (program: .milliseconds(200), shell: .seconds(120), follow: .seconds(180), poll: .milliseconds(10))
+        let runner = runner
+        actions.daemonLeader = { target in runner.records?.last { $0.name == target.name }?.leaderPID }
         let observer = PaneObserver(store: store, panes: panes, cwd: { _ in nil })
         self.observer = observer
         actions.paneExited = { session, identity in observer.settleExited(session, identity: identity) }

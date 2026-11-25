@@ -18,6 +18,34 @@ struct SnapshotRoundTripTests {
         #expect(ids == [local.id])
     }
 
+    @Test func aLivePaneThatLedOrWasNeverAttachedSavesItsLeadAndARestoreArmsIt() throws {
+        let store = makeStore()
+        let ws = store.addWorkspace(name: "work")
+        let session = try #require(store.addSession(toWorkspace: ws.id, cwd: "/a"))
+        let split = UUID(), scratch = UUID()
+        session.hasSplit = true
+        session.splitPaneIdentity = split
+        store.recordLiveScratch(session.id, identity: scratch)
+        let led = ZmxLeadAttachment(claim: false)
+        ZmxLeadBook.shared.begin(led, pane: session.paneIdentity)
+        _ = ZmxLeadBook.shared.apply(try #require(ZmxLeadNotice(title: "zmx-role;\(led.nonce):leader:1")), pane: session.paneIdentity)
+        let followed = ZmxLeadAttachment(claim: true)
+        ZmxLeadBook.shared.begin(followed, pane: split)
+        _ = ZmxLeadBook.shared.apply(try #require(ZmxLeadNotice(title: "zmx-role;\(followed.nonce):follower:1")), pane: split)
+        ZmxLeadBook.shared.arm([scratch: "hidden"])
+
+        let saved = try JSONDecoder().decode(Snapshot.self, from: JSONEncoder().encode(store.snapshot()))
+        #expect(saved.workspaces[0].sessions[0].leads == [session.paneIdentity: led.nonce, scratch: "hidden"])
+        ZmxLeadBook.shared.disarm([scratch])
+
+        let restored = makeStore()
+        restored.restore(from: saved, launchRestore: true)
+
+        #expect(ZmxLeadBook.shared.pendingReclaim(pane: session.paneIdentity) == led.nonce)
+        #expect(ZmxLeadBook.shared.pendingReclaim(pane: scratch) == "hidden")
+        #expect(ZmxLeadBook.shared.pendingReclaim(pane: split) == nil)
+    }
+
     @Test func aWorkspaceOfOnlyRemoteSessionsSnapshotsEmptyRatherThanVanishing() {
         let store = makeStore()
         let ws = store.addWorkspace(name: "remote only")
@@ -910,4 +938,48 @@ struct SnapshotRoundTripTests {
         #expect(snap.isSplit == nil)
         #expect(snap.fontSize == nil)
     }
+
+    @Test func anEmptyRootRoundTripsAndIsTheOnlyWorkspaceMarkedRoot() throws {
+        let store = makeStore()
+        store.addWorkspace(name: "work")
+        store.ensureRoot()
+        let root = try #require(store.rootWorkspace)
+
+        let snapshot = store.snapshot()
+
+        #expect(snapshot.workspaces.map(\.root) == [nil, true])
+        let restored = makeStore()
+        restored.restore(from: snapshot)
+        #expect(restored.rootWorkspace?.id == root.id)
+        #expect(restored.rootWorkspace?.sessions.isEmpty == true)
+        #expect(restored.namedWorkspaces.map(\.name) == ["work"])
+    }
+
+    @Test func rootSessionsRoundTripInTheRoot() throws {
+        let store = makeStore()
+        store.addWorkspace(name: "work")
+        store.ensureRoot()
+        let root = try #require(store.rootWorkspace)
+        let top = try #require(store.addSession(toWorkspace: root.id, cwd: "/top"))
+        let restored = makeStore()
+
+        restored.restore(from: store.snapshot())
+
+        #expect(restored.rootWorkspace?.sessions.map(\.id) == [top.id])
+    }
+
+    @Test func aLegacyWorkspaceDecodesAsNamedAndEncodesWithoutARootKey() throws {
+        let json = #"{"id":"00000000-0000-0000-0000-000000000001","name":"work","sessions":[]}"#
+        let workspace = try JSONDecoder().decode(WorkspaceSnapshot.self, from: Data(json.utf8))
+        #expect(workspace.root == nil)
+        let encoded = try #require(String(data: try JSONEncoder().encode(workspace), encoding: .utf8))
+        #expect(!encoded.contains("root"))
+    }
+
+    @Test func aMalformedRootKeyDecodesAsNamed() throws {
+        let json = #"{"id":"00000000-0000-0000-0000-000000000001","name":"work","sessions":[],"root":"yes"}"#
+        let workspace = try JSONDecoder().decode(WorkspaceSnapshot.self, from: Data(json.utf8))
+        #expect(workspace.root == nil)
+    }
+
 }

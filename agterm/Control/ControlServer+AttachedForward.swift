@@ -4,7 +4,8 @@ import agtermCore
 /// AttachedPlan is a request on rows attached from another host, decided on the main actor and sent to their origin
 /// from a worker, so the accept thread never waits on ssh and an origin that is this Mac cannot deadlock it.
 enum AttachedPlan: Sendable {
-    case forward(AttachedForward, origin: AttachedOrigin, row: UUID, then: AttachedFollowUp)
+    /// attaches is the forward's own `attachesPane`, false for a restart of a pane this window does not lay out.
+    case forward(AttachedForward, origin: AttachedOrigin, row: UUID, then: AttachedFollowUp, attaches: Bool)
     case terminate(TerminatePlan)
 }
 
@@ -19,6 +20,8 @@ enum AttachedFollowUp: Sendable, Equatable {
     case select
     /// moveUnder moves the row under the local `parent` at `index`, the slot the origin was not told.
     case moveUnder(parent: UUID, index: Int?)
+    /// promoteHere makes the row top-level at the local placement, which the origin was not told.
+    case promoteHere(CompanionPromotion)
 }
 
 /// TerminatePlan is a `session.terminate` split by where each root runs: one origin close per origin, and the local
@@ -42,7 +45,7 @@ extension ControlServer {
     func attachedRoute(_ request: ControlRequest) -> RemoteRoute? {
         if request.cmd == .sessionTerminate { return terminateRoute(request) }
         let forwarded: Set<Command> = [.sessionRestart, .zmxKill, .zmxKillPane, .sessionCompanionConvert, .sessionCompanionMove,
-                                       .sessionDuplicate, .sessionSplit, .sessionSplitClose, .sessionScratch, .sessionRestore]
+                                       .sessionCompanionPromote, .sessionDuplicate, .sessionSplit, .sessionSplitClose, .sessionScratch, .sessionRestore]
         // a request the command's own checks refuse goes on to the dispatcher, which answers it in its own words
         guard forwarded.contains(request.cmd), !ControlDispatcher.refusesArguments(request) else { return nil }
         // zmx.kill refuses `active` itself; resolving it here would aim the kill at whatever is in front
@@ -54,9 +57,12 @@ extension ControlServer {
             return .refused(ControlResponse(ok: false, error: refusal))
         }
         if request.cmd == .sessionCompanionMove { return companionMoveRoute(request, row: row, origin: origin, in: store) }
+        if request.cmd == .sessionCompanionPromote { return companionPromoteRoute(request, row: row, origin: origin, in: store) }
         switch attachedForward(request, row: row, origin: origin) {
         case .failure(let refusal): return .refused(ControlResponse(ok: false, error: refusal.message))
-        case .success(let (forward, then)): return .attached(.forward(forward, origin: origin, row: id, then: then))
+        case .success(let (forward, then)):
+            let attaches = forward.attachesPane && restartedPaneIsMounted(request, row: row, origin: origin)
+            return .attached(.forward(forward, origin: origin, row: id, then: then, attaches: attaches))
         }
     }
 
@@ -77,7 +83,25 @@ extension ControlServer {
             return .refused(ControlResponse(ok: false, error: CompanionMoveRefusal.otherHost.message))
         }
         return .attached(.forward(.moveCompanion(session: origin.session, parent: parentOrigin.session), origin: origin, row: row.id,
-                                  then: .moveUnder(parent: parentID, index: request.args?.index)))
+                                  then: .moveUnder(parent: parentID, index: request.args?.index), attaches: false))
+    }
+
+    /// companionPromoteRoute asks the origin only when the row's parent shares its origin: a row nested here under a
+    /// local row or another host's is a companion on this Mac alone, so it is promoted here as a local one is. A shared
+    /// origin does not prove the same grouping there, which the origin's own reply settles.
+    private func companionPromoteRoute(_ request: ControlRequest, row: Session, origin: AttachedOrigin, in store: AppStore) -> RemoteRoute? {
+        guard let placement = ControlDispatcher.companionPromotion(request.args) else { return nil }
+        let promotion: CompanionPromotion
+        switch promotionTarget(placement, in: store) {
+        case .failure(let response): return .refused(response)
+        case .success(let resolved): promotion = resolved
+        }
+        if case .failure(let refusal) = store.canPromoteCompanion(row.id, to: promotion) {
+            return .refused(ControlResponse(ok: false, error: refusal.message))
+        }
+        guard let parent = row.parentID.flatMap(store.session(withID:)), let parentOrigin = AttachedOrigin(parent),
+              parentOrigin.shares(origin) else { return nil }
+        return .attached(.forward(.promoteCompanion(session: origin.session), origin: origin, row: row.id, then: .promoteHere(promotion), attaches: false))
     }
 
     /// originScratchRefusal is why an attached row cannot show its origin's scratch: a row runs no scratch of its own.
@@ -180,6 +204,15 @@ extension ControlServer {
         return .success((role, originToken))
     }
 
+    /// restartedPaneIsMounted is false for a restart of a pane this window does not lay out: no terminal here would attach
+    /// to release a hold, so the origin starts it at once. The local role is the one a swap here put it in.
+    private func restartedPaneIsMounted(_ request: ControlRequest, row: Session, origin: AttachedOrigin) -> Bool {
+        guard request.cmd == .sessionRestart, case .success(let pane) = originPane(request.args, of: row, origin: origin, token: .strict) else {
+            return true
+        }
+        return OverlayPane(rawValue: pane.role.rawValue).map(row.rendersPane) ?? false
+    }
+
     /// originRole is the role the origin's pane `token` holds there, which a swap on this Mac alone does not change.
     private func originRole(of row: Session, pane token: String) -> ZmxPaneRole? {
         guard let layout = row.remotePresentation?.layout, let pane = UUID(uuidString: token), layout.panes.contains(pane) else {
@@ -222,18 +255,19 @@ extension ControlServer {
         switch plan {
         case .terminate(let terminate):
             return await runTerminate(terminate)
-        case .forward(let forward, let origin, let row, let then):
-            let outcome = await runOnOrigin(forward, origin: origin)
+        case .forward(let forward, let origin, let row, let then, let attaches):
+            let outcome = await runOnOrigin(forward, origin: origin, attaches: attaches)
             guard case .done(let reply) = outcome else { return Self.failure(outcome) }
             return await follow(then, reply: reply, origin: origin, row: row)
         }
     }
 
-    private func runOnOrigin(_ forward: AttachedForward, origin: AttachedOrigin) async -> AttachedOutcome {
-        guard let argv = try? RemoteSession.controlCommand(host: origin.host, arguments: forward.words, operands: forward.operands) else {
+    private func runOnOrigin(_ forward: AttachedForward, origin: AttachedOrigin, attaches: Bool) async -> AttachedOutcome {
+        guard let result = await runRemoteControl(host: origin.host, arguments: forward.words, operands: forward.operands,
+                                              attaching: attaches) else {
             return .refused("invalid host")
         }
-        return forward.outcome(of: await remoteRunner.run(argv, deadline: Self.remoteCompanionDeadline), host: origin.host)
+        return forward.outcome(of: result, host: origin.host)
     }
 
     private static func failure(_ outcome: AttachedOutcome) -> ControlResponse {
@@ -258,6 +292,17 @@ extension ControlServer {
                 return ControlResponse(ok: false, error: "moved on \(origin.host), but not here: \(refusal.message)")
             }
             return ControlResponse(ok: true, result: ControlResult(id: row.uuidString, parent: parent.uuidString))
+        case .promoteHere(let promotion):
+            guard let store = library.store(forSession: row) else {
+                return ControlResponse(ok: false, error: "top-level on \(origin.host), but not here: no such session")
+            }
+            // the origin's new group starts empty, so a stream reconnecting meanwhile cannot hand its first companion in
+            // as the baseline
+            if reply.ok, store.session(withID: row)?.companionsBaselined == false { store.baselineCompanions([], forSession: row) }
+            if case .failure(let refusal) = store.promoteCompanion(row, to: promotion) {
+                return ControlResponse(ok: false, error: "top-level on \(origin.host), but not here: \(refusal.message)")
+            }
+            return ControlResponse(ok: true, result: ControlResult(id: row.uuidString))
         case .attachAfter, .nestUnderCreated:
             let created = then == .attachAfter ? reply.result?.id : reply.result?.parent
             guard let created, UUID(uuidString: created) != nil else {
@@ -269,7 +314,13 @@ extension ControlServer {
                                        + "\(attached.error ?? "attach failed"); `agtermctl zmx attach \(origin.host) \(created)` attaches it")
             }
             guard then == .nestUnderCreated else { return attached }
-            library.store(forSession: row)?.nest(row, under: local)
+            let store = library.store(forSession: row)
+            // nesting a row that moved under another session meanwhile would split that group
+            guard store?.session(withID: row)?.parentID == nil else {
+                return ControlResponse(ok: false, error: "converted on \(origin.host) and attached its new parent here, "
+                                       + "but the row moved under another session meanwhile and stays there")
+            }
+            store?.nest(row, under: local)
             return ControlResponse(ok: true, result: ControlResult(id: row.uuidString, parent: local.uuidString))
         }
     }
@@ -299,7 +350,7 @@ extension ControlServer {
             if !reply.ok { failures.append(reply.error ?? "could not close the local sessions") }
         }
         for group in plan.groups {
-            let outcome = await runOnOrigin(.terminate(sessions: group.sessions, undoable: plan.undoable), origin: group.origin)
+            let outcome = await runOnOrigin(.terminate(sessions: group.sessions, undoable: plan.undoable), origin: group.origin, attaches: false)
             guard case .done(let reply) = outcome else {
                 failures.append(Self.failure(outcome).error ?? "the terminate failed on \(group.origin.host)")
                 continue
@@ -348,7 +399,11 @@ extension ControlServer: RemoteAttachLines {
 
     /// scratchAttach never claims the lead either, as the origin's own scratch client does not.
     func scratchAttach(_ origin: RemoteBinding.Origin, daemon: String, local: UUID) -> String {
-        let lead = ZmxLeadAttachment(claim: false)
+        scratchAttach(origin, daemon: daemon, local: local, reclaim: nil)
+    }
+
+    func scratchAttach(_ origin: RemoteBinding.Origin, daemon: String, local: UUID, reclaim: String?) -> String {
+        let lead = ZmxLeadAttachment(claim: false, reclaim: reclaim)
         guard let line = try? RemoteSession.attachPaneCommand(host: origin.host, endpoint: origin.endpoint, daemon: daemon,
                                                               session: "scratch", pane: .left, lead: lead) else {
             return Self.unaddressable(origin.host, what: "scratch")

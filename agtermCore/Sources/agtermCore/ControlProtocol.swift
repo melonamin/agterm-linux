@@ -43,6 +43,7 @@ public enum Command: String, Codable, Sendable, CaseIterable {
     case sessionCompanionDuplicate = "session.companion.duplicate"
     case sessionCompanionConvert = "session.companion.convert"
     case sessionCompanionMove = "session.companion.move"
+    case sessionCompanionPromote = "session.companion.promote"
     /// A viewer asking for one attachment of a page companion: a single-use token for `session.overlay.page.serve`
     /// plus what the page shows.
     case sessionCompanionPageAttach = "session.companion.page.attach"
@@ -191,6 +192,9 @@ public struct ControlArgs: Codable, Sendable, Equatable {
     public var panes: [String]?
     /// scratch is the target session's scratch identity, or `none`, when a scratch operation was decided.
     public var scratch: String?
+    /// attachPending says the caller attaches a pane this command creates, so agterm-server holds its command until
+    /// that attach; a Mac ignores it, its own surfaces attaching at once.
+    public var attachPending: Bool?
     /// timeout is how many seconds an `ask.open` or `pick.open` waits for an answer before its origin cancels it.
     public var timeout: Double?
     /// token is the offer token a `session.overlay.job.run` helper claims its job with.

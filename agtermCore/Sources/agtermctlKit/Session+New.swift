@@ -5,7 +5,7 @@ extension Session {
     struct New: RequestCommand {
         static let configuration = CommandConfiguration(abstract: "Create a session.")
         @Option(name: .long, help: "Working directory (defaults to $HOME).") var cwd: String?
-        @Option(name: .long, help: "Target workspace by id/prefix/active (defaults to the current one). Mutually exclusive with --workspace-name.") var workspace: String?
+        @Option(name: .long, help: "Target workspace by id/prefix/active, or 'root' for top-level sessions (defaults to the current one). Excludes --workspace-name.") var workspace: String?
         @Option(name: .long, help: "Target workspace by name; errors if not found unless --create-workspace. Mutually exclusive with --workspace.") var workspaceName: String?
         @Flag(name: .long, help: "With --workspace-name, create the workspace when it does not exist (reuse it otherwise).") var createWorkspace = false
         @Option(name: .long, help: "Run this command as the session's process instead of the login shell (no echoed command line; the session closes when it exits).") var command: String?
@@ -22,6 +22,7 @@ extension Session {
         @OptionGroup var tint: TintCreateOptions
         @OptionGroup var options: ClientOptions
         @OptionGroup var operation: OperationOptions
+        @OptionGroup var attach: AttachOptions
         var echoesResultID: Bool { true }
 
         func validate() throws {
@@ -72,15 +73,15 @@ extension Session {
                 return ControlRequest(cmd: .sessionRemoteNew, args: options.withWindow(args))
             }
             if let parent {
-                return operation.stamp(ControlRequest(cmd: .sessionCompanionNew, target: parent,
+                return attach.stamp(operation.stamp(ControlRequest(cmd: .sessionCompanionNew, target: parent,
                                                       args: options.withWindow(tint.apply(to:
                     ControlArgs(name: name, cwd: cwd, noSelect: noSelect ? true : nil, command: command,
-                                wait: wait ? true : nil)))))
+                                wait: wait ? true : nil))))))
             }
-            return operation.stamp(ControlRequest(cmd: .sessionNew, args: options.withWindow(tint.apply(to:
+            return attach.stamp(operation.stamp(ControlRequest(cmd: .sessionNew, args: options.withWindow(tint.apply(to:
                 ControlArgs(name: name, cwd: cwd, workspace: workspace, workspaceName: workspaceName,
                             createWorkspace: createWorkspace ? true : nil, noSelect: noSelect ? true : nil,
-                            command: command, wait: wait ? true : nil, after: after, before: before)))))
+                            command: command, wait: wait ? true : nil, after: after, before: before))))))
         }
     }
 }

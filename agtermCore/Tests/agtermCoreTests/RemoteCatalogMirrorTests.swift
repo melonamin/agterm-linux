@@ -42,9 +42,19 @@ final class RemoteCatalogMirrorTests {
         var states: [RemoteCatalogMirror.State] = []
         var collapsedWorkspaces: [UUID] = []
         var bindOK = true
+        var viewSaves = 0
+        var onViewSave: (() -> Void)?
 
         var claimed: [UUID] = []
-        func attachCommand(host: String, pane: CatalogPane, claim: Bool) -> String { "attach \(host) \(pane.daemon)\(claim ? " claim" : "")" }
+        var reclaims: [UUID: String] = [:]
+        func catalogViewStateChanged() {
+            viewSaves += 1
+            onViewSave?()
+        }
+        func attachCommand(host: String, pane: CatalogPane, claim: Bool) -> String {
+            reclaims[pane.identity] = ZmxLeadBook.shared.pendingReclaim(pane: pane.identity)
+            return "attach \(host) \(pane.daemon)\(claim ? " claim" : "")"
+        }
         func catalogClaimLead(_ identity: UUID, session _: UUID) { claimed.append(identity) }
         func catalogRowAdded(_ session: Session) { added.append(session.id) }
         func catalogRowRemoved(_ sessionID: UUID) { removed.append(sessionID) }
@@ -89,6 +99,100 @@ final class RemoteCatalogMirrorTests {
 
     private func delta(_ rev: Int, _ change: CatalogChange, epoch: String = "e1") {
         _ = mirror.receive(.delta(epoch: epoch, rev: rev, change: change))
+    }
+
+    @Test func theMirrorAdoptsTheOriginsMarkedRootStoredLast() throws {
+        let rootID = UUID()
+        let top = session(panes: [pane()])
+        var marked = snapshot([session(panes: [pane()])])
+        marked.workspaces.append(CatalogWorkspace(id: rootID, name: "", root: true, sessions: [top]))
+        _ = mirror.receive(.hello(CatalogHello(version: 1, epoch: "e1", versions: Self.versions)))
+        _ = mirror.receive(.snapshot(marked))
+
+        #expect(store.workspaces.map(\.isRoot) == [false, true])
+        #expect(store.rootWorkspace?.id == rootID)
+        #expect(store.rootWorkspace?.sessions.map(\.id) == [top.fields.id])
+    }
+
+    @Test func theMirrorSelectsTheFirstRowInDisplayOrder() throws {
+        let rootID = UUID()
+        let top = session(panes: [pane()])
+        var marked = snapshot([session(panes: [pane()])])
+        marked.workspaces.append(CatalogWorkspace(id: rootID, name: "", root: true, sessions: [top]))
+        _ = mirror.receive(.hello(CatalogHello(version: 1, epoch: "e1", versions: Self.versions)))
+        _ = mirror.receive(.snapshot(marked))
+
+        #expect(store.selectedSessionID == top.fields.id)
+    }
+
+    @Test(arguments: [false, true])
+    func aCatalogMoveOfTheSelectedRowOutOfTheFocusSetRevealsIt(destinationMarked: Bool) throws {
+        let rootID = UUID()
+        let top = session(panes: [pane()]), other = session(panes: [pane()])
+        var before = snapshot([other])
+        before.workspaces.append(CatalogWorkspace(id: rootID, name: "", root: true, sessions: [top]))
+        _ = mirror.receive(.hello(CatalogHello(version: 1, epoch: "e1", versions: Self.versions)))
+        _ = mirror.receive(.snapshot(before))
+        store.selectSession(top.fields.id)
+        store.restoreFocus(ids: destinationMarked ? [rootID, workspaceID] : [rootID], enabled: true)
+        var after = snapshot([other, top], rev: 1)
+        after.workspaces.append(CatalogWorkspace(id: rootID, name: "", root: true, sessions: []))
+
+        _ = mirror.receive(.snapshot(after))
+
+        #expect(store.workspace(forSession: top.fields.id)?.id == workspaceID)
+        #expect(store.selectedSessionID == top.fields.id)
+        #expect(store.focusEnabled == destinationMarked)
+        #expect(store.focusedWorkspaceIDs == (destinationMarked ? [rootID, workspaceID] : [rootID]))
+        #expect(effects.viewSaves == (destinationMarked ? 0 : 1))
+    }
+
+    @Test func theViewStateSavedForAFocusRevealHoldsOnlyWorkspacesTheCatalogKept() throws {
+        let rootID = UUID(), goneID = UUID()
+        let top = session(panes: [pane()]), other = session(panes: [pane()])
+        var before = snapshot([other])
+        before.workspaces.append(CatalogWorkspace(id: goneID, name: "gone", sessions: []))
+        before.workspaces.append(CatalogWorkspace(id: rootID, name: "", root: true, sessions: [top]))
+        _ = mirror.receive(.hello(CatalogHello(version: 1, epoch: "e1", versions: Self.versions)))
+        _ = mirror.receive(.snapshot(before))
+        store.selectSession(top.fields.id)
+        store.restoreFocus(ids: [rootID, goneID], enabled: true)
+        var saved: RemoteWindowViewState?
+        effects.onViewSave = { [store] in saved = RemoteWindowViewState.capture(from: store) }
+        var after = snapshot([other, top], rev: 1)
+        after.workspaces.append(CatalogWorkspace(id: rootID, name: "", root: true, sessions: []))
+
+        _ = mirror.receive(.snapshot(after))
+
+        let state = try #require(saved)
+        #expect(state.focusedWorkspaces == [rootID])
+        #expect(!state.workspaceFilter)
+    }
+
+    @Test func aCatalogReorderInsideTheSelectedRowsWorkspaceKeepsTheFilter() throws {
+        let rootID = UUID()
+        let first = session(panes: [pane()]), second = session(panes: [pane()])
+        var before = snapshot([first, second])
+        before.workspaces.append(CatalogWorkspace(id: rootID, name: "", root: true, sessions: [session(panes: [pane()])]))
+        _ = mirror.receive(.hello(CatalogHello(version: 1, epoch: "e1", versions: Self.versions)))
+        _ = mirror.receive(.snapshot(before))
+        store.selectSession(second.fields.id)
+        store.restoreFocus(ids: [rootID], enabled: true)
+        var after = snapshot([second, first], rev: 1)
+        after.workspaces.append(before.workspaces[1])
+
+        _ = mirror.receive(.snapshot(after))
+
+        #expect(store.workspaces[0].sessions.map(\.id) == [second.fields.id, first.fields.id])
+        #expect(store.selectedSessionID == second.fields.id)
+        #expect(store.focusEnabled)
+        #expect(effects.viewSaves == 0)
+    }
+
+    @Test func anOlderPeersCatalogLeavesTheMirrorWithoutARoot() {
+        open([session(panes: [pane()])])
+
+        #expect(store.rootWorkspace == nil)
     }
 
     @Test func theSnapshotBuildsEveryRowWithItsCatalogIdentitiesAndAttaches() throws {
@@ -484,6 +588,22 @@ final class RemoteCatalogMirrorTests {
         #expect(row.surface === surface)
         #expect(!surface.tornDown)
         #expect(effects.removed.isEmpty)
+    }
+
+    @Test func aCompanionMadeTopLevelInPlaceReportsTheTreeChange() throws {
+        let parent = session(panes: [pane()])
+        var companion = session(panes: [pane()])
+        companion.fields.parent = parent.id
+        let before = open([parent, companion])
+        let row = try #require(store.session(withID: companion.id))
+        companion.fields.parent = nil
+        let seen = events.drafts.count
+
+        for (rev, change) in before.changes(to: snapshot([parent, companion])).enumerated() { delta(rev + 1, change) }
+
+        #expect(row.parentID == nil)
+        #expect(store.workspaces.first?.sessions.map(\.id) == [parent.id, companion.id])
+        #expect(events.drafts.dropFirst(seen).contains { $0.kind == .treeChanged })
     }
 
     @Test func aCompanionMovedUnderAnotherParentKeepsItsRowAndTakesTheNewGroupAndOrder() throws {
@@ -1194,6 +1314,28 @@ final class RemoteCatalogMirrorTests {
     }
 
     private func attach(_ pane: CatalogPane, claim: Bool = false) -> String { "attach box \(pane.daemon)\(claim ? " claim" : "")" }
+
+    @Test func onlyTheFirstSnapshotOffersEachShownPaneItsSavedLead() throws {
+        let left = pane(), right = pane(), hiddenPane = pane(), laterPane = pane()
+        let split = session(panes: [left, right])
+        let hidden = session(panes: [hiddenPane])
+        let later = session(panes: [laterPane])
+        let saved: [UUID: RemoteWindowViewState.SessionView] = [
+            split.id: .init(leads: [left.identity: "n1"]), hidden.id: .init(leads: [hiddenPane.identity: "n2"]),
+            later.id: .init(leads: [laterPane.identity: "n3"]),
+        ]
+        mirror = RemoteCatalogMirror(host: "box", store: store, effects: effects,
+                                     viewState: RemoteWindowViewState(sessions: saved, detachedSessions: [hidden.id]))
+
+        _ = open([split, hidden])
+        _ = mirror.receive(.snapshot(snapshot([split, hidden, later], rev: 1)))
+
+        #expect(store.session(withID: later.id) != nil)
+        #expect(effects.reclaims == [left.identity: "n1"])
+        #expect(ZmxLeadBook.shared.pendingReclaim(pane: left.identity) == nil)
+        #expect(ZmxLeadBook.shared.pendingReclaim(pane: hiddenPane.identity) == nil)
+        #expect(ZmxLeadBook.shared.pendingReclaim(pane: laterPane.identity) == nil)
+    }
 
     @Test func aMacWindowTheUserOpenedClaimsTheLeadOfItsFirstRowsOnly() throws {
         reopen(claimOnOpen: true)

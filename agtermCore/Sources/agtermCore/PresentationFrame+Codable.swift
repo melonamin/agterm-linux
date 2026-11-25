@@ -2,7 +2,7 @@ import Foundation
 
 extension PresentationFrame: Codable {
     private enum CodingKeys: String, CodingKey {
-        case kind, gen, rev, hello, snapshot, status, context, info, layout, hud, notify, message, mail, sound, ask, pick, overlay, page, respawn, link,
+        case kind, gen, rev, hello, snapshot, status, context, info, layout, hud, notify, message, mail, companions, sound, ask, pick, overlay, page, respawn, link,
              pending, lead
     }
 
@@ -24,6 +24,7 @@ extension PresentationFrame: Codable {
         case "notify": body = .notify(try container.decode(PresentationNotify.self, forKey: .notify))
         case "message": body = .message(try container.decode(PresentationMessage.self, forKey: .message))
         case "mail": body = .mail(try container.decode(PresentationMail.self, forKey: .mail))
+        case "companions": body = .companions(try container.decode(PresentationCompanions.self, forKey: .companions))
         case "sound": body = .sound(try container.decode(PresentationSound.self, forKey: .sound))
         case "presenter.acquire": body = .presenterAcquire
         case "presenter.granted": body = .presenterGranted
@@ -55,6 +56,7 @@ extension PresentationFrame: Codable {
         case "pane.respawn": body = .respawn(try container.decode(PresentationRespawns.self, forKey: .respawn))
         case "link.click": body = .linkClick(try container.decode(PresentationLinkClick.self, forKey: .link))
         case "link.refused": body = .linkRefused(try container.decode(PresentationLinkRefusal.self, forKey: .link))
+        case "link.snapshot": body = .linkSnapshot(try container.decode(PresentationLinkSnapshot.self, forKey: .link))
         case "status.clear": body = .statusClear(try container.decode(PresentationStatusClear.self, forKey: .status))
         case "status.seen": body = .statusSeen(try container.decode(PresentationSeen.self, forKey: .status))
         case "pending.chunk": body = .pendingChunk(try container.decode(PresentationPendingChunk.self, forKey: .pending))
@@ -79,6 +81,7 @@ extension PresentationFrame: Codable {
         case .notify(let notify): try container.encode(notify, forKey: .notify)
         case .message(let message): try container.encode(message, forKey: .message)
         case .mail(let mail): try container.encode(mail, forKey: .mail)
+        case .companions(let companions): try container.encode(companions, forKey: .companions)
         case .sound(let sound): try container.encode(sound, forKey: .sound)
         case .askRequest(let ask): try container.encode(ask, forKey: .ask)
         case .askResolve(let answer): try container.encode(answer, forKey: .ask)
@@ -99,6 +102,7 @@ extension PresentationFrame: Codable {
         case .respawn(let respawns): try container.encode(respawns, forKey: .respawn)
         case .linkClick(let click): try container.encode(click, forKey: .link)
         case .linkRefused(let refusal): try container.encode(refusal, forKey: .link)
+        case .linkSnapshot(let snapshot): try container.encode(snapshot, forKey: .link)
         case .statusClear(let clear): try container.encode(clear, forKey: .status)
         case .statusSeen(let seen): try container.encode(seen, forKey: .status)
         case .pendingChunk(let chunk): try container.encode(chunk, forKey: .pending)

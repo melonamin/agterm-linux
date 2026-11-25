@@ -12,6 +12,22 @@ struct AttachedForwardTests {
         RemoteCommandResult(status: status, stdout: String(decoding: try JSONEncoder().encode(response), as: UTF8.self), stderr: "")
     }
 
+    @Test func aForwardThatStartsAProgramThisMacAttachesHoldsIt() {
+        let held: [AttachedForward] = [
+            .restart(session: "s", paneID: "p", command: nil), .scratch(session: "s", mode: "on", command: "top"),
+        ]
+        let plain: [AttachedForward] = [
+            .convert(session: "s"), .duplicate(after: "s", cwd: nil), .split(session: "s", mode: "on", axis: nil),
+            .split(session: "s", mode: "toggle", axis: nil), .scratch(session: "s", mode: "on", command: nil),
+            .split(session: "s", mode: "off", axis: nil), .scratch(session: "s", mode: "off", command: nil), .closeSplit(session: "s"),
+            .terminate(sessions: ["s"], undoable: false), .moveCompanion(session: "s", parent: "p"),
+            .killPane(session: "s", pane: .left, paneID: "p"),
+        ]
+
+        #expect(held.map(\.attachesPane) == Array(repeating: true, count: held.count))
+        #expect(plain.map(\.attachesPane) == Array(repeating: false, count: plain.count))
+    }
+
     @Test func anOkReplyIsDone() throws {
         let reply = ControlResponse(ok: true, result: ControlResult(id: "s1"))
 
@@ -46,6 +62,28 @@ struct AttachedForwardTests {
         #expect(move.outcome(of: try printed(unknown, status: 1), host: "box") == tooOld)
         #expect(move.outcome(of: RemoteCommandResult(status: 255, stdout: "", stderr: ""), host: "box")
             == .unknown("box gave no answer; whether the companion was moved there is unknown"))
+    }
+
+    @Test func aCompanionPromotionNamesTheOriginSessionAndIsTooOldWhereTheOriginLacksIt() throws {
+        let promote = AttachedForward.promoteCompanion(session: "c1")
+        let unknown = ControlResponse(ok: false, error: "invalid request: Cannot initialize Command from invalid String value session.companion.promote")
+
+        #expect(promote.words == ["session", "move", "--target", "c1", "--top-level"])
+        #expect(promote.command == .sessionCompanionPromote)
+        #expect(promote.outcome(of: RemoteCommandResult(status: 64, stdout: "", stderr: "Error: Unknown option '--top-level'"), host: "box") == tooOld)
+        #expect(promote.outcome(of: try printed(unknown, status: 1), host: "box") == tooOld)
+        #expect(promote.outcome(of: RemoteCommandResult(status: 255, stdout: "", stderr: ""), host: "box")
+            == .unknown("box gave no answer; whether the companion became a top-level session there is unknown"))
+    }
+
+    @Test func anOriginWhereTheSessionIsAlreadyTopLevelSatisfiesOnlyAPromotion() throws {
+        let already = ControlResponse(ok: false, error: CompanionPromotionRefusal.notCompanion.message)
+        let promote = AttachedForward.promoteCompanion(session: "c1")
+
+        #expect(promote.outcome(of: try printed(already, status: 1), host: "box") == .done(already))
+        #expect(promote.outcome(of: try printed(ControlResponse(ok: false, error: "no such session"), status: 1), host: "box")
+            == .refused("no such session"))
+        #expect(forward.outcome(of: try printed(already, status: 1), host: "box") == .refused(already.error ?? ""))
     }
 
     @Test(arguments: [("", "box gave no answer; whether the pane was killed there is unknown"),

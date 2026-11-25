@@ -75,7 +75,7 @@ extension WorkspaceSidebar.Coordinator {
     func menu(forRow row: Int) -> NSMenu? {
         guard let outline = outlineView, row >= 0, let node = outline.item(atRow: row) as? SidebarNode else { return nil }
         let menu = NSMenu()
-        // explicit enabled state (Delete is disabled at the last workspace), not responder-chain auto-enabling.
+        // explicit enabled state (a remote window's server-blocked items), not responder-chain auto-enabling.
         menu.autoenablesItems = false
         let sessionTargets = node.kind == .session ? store.sidebarSelectionTargets(forContextSession: node.id) : []
         let sessionCount = sessionTargets.count
@@ -156,20 +156,35 @@ extension WorkspaceSidebar.Coordinator {
                 }
                 menu.addItem(.separator())
             }
-            let targets = store.workspaces.filter { workspace in
+            // an owner predating top-level sessions has no root to move into
+            let ownerLacksRoot = store.isRemoteWindow && store.rootWorkspace == nil
+                && sessionTargets.contains { store.session(withID: $0)?.parentID == nil }
+            let targets = store.displayWorkspaces.filter { workspace in
                 sessionTargets.contains { ownerWorkspaceID(ofSession: $0) != workspace.id }
                     && store.canMoveSessions(sessionTargets, toWorkspace: workspace.id)
             }
-            if sessionCount == 1, let id = sessionTargets.first, let submenu = companionMoveMenu(for: id) {
-                let moveTo = NSMenuItem(title: "Move to", action: nil, keyEquivalent: "")
-                moveTo.submenu = submenu
-                moveTo.isEnabled = !serverBlocked
-                menu.addItem(moveTo)
-            } else if !targets.isEmpty {
+            let companionID = sessionCount == 1 ? sessionTargets.first : nil
+            let promotions = companionID.flatMap(companionPromotionMenu(for:))
+            let parents = companionID.flatMap(companionParentMenu(for:))
+            if promotions != nil || parents != nil {
+                for (title, submenu) in [("Move to", promotions), ("Move Under", parents)] {
+                    guard let submenu else { continue }
+                    let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                    item.submenu = submenu
+                    item.isEnabled = !serverBlocked
+                    menu.addItem(item)
+                }
+            } else if !targets.isEmpty || ownerLacksRoot {
                 let moveTo = NSMenuItem(title: "Move to", action: nil, keyEquivalent: "")
                 let submenu = NSMenu()
+                submenu.autoenablesItems = false
+                if ownerLacksRoot {
+                    let unavailable = NSMenuItem(title: ControlWorkspaceNode.rootLabel, action: nil, keyEquivalent: "")
+                    unavailable.isEnabled = false
+                    submenu.addItem(unavailable)
+                }
                 for target in targets {
-                    let item = NSMenuItem(title: target.name, action: #selector(menuMove(_:)), keyEquivalent: "")
+                    let item = NSMenuItem(title: target.label, action: #selector(menuMove(_:)), keyEquivalent: "")
                     item.target = self
                     item.representedObject = SessionBatchRequest(sessionIDs: sessionTargets, targetID: target.id)
                     submenu.addItem(item)
@@ -177,6 +192,9 @@ extension WorkspaceSidebar.Coordinator {
                 moveTo.submenu = submenu
                 moveTo.isEnabled = !serverBlocked
                 menu.addItem(moveTo)
+            }
+            if let root = store.rootWorkspace, ownerWorkspaceID(ofSession: node.id) == root.id {
+                addRootFocusItems(to: menu, root: root.id)
             }
             // "Flag"/"Unflag" toggles flagged working-set membership; the label reflects the current state.
             let allFlagged = !sessionTargets.isEmpty && sessionTargets.allSatisfy { store.session(withID: $0)?.flagged == true }
@@ -305,24 +323,47 @@ extension WorkspaceSidebar.Coordinator {
     @objc private func menuMove(_ sender: NSMenuItem) {
         guard let request = sender.representedObject as? SessionBatchRequest, let targetID = request.targetID else { return }
         if store.remoteActions != nil {
-            for id in request.sessionIDs { actions.performRemote(.moveSession(id, to: .workspace(targetID)), in: store) }
+            let ids = request.sessionIDs
+            let operation: RemoteOperation = ids.count == 1 ? .moveSession(ids[0], to: .workspace(targetID))
+                : .moveSessions(ids, to: .workspace(targetID))
+            actions.performRemote(operation, in: store)
             return
         }
         store.moveSessions(request.sessionIDs, toWorkspace: targetID)
     }
 
-    private func companionMoveMenu(for id: UUID) -> NSMenu? {
+    private func companionPromotionMenu(for id: UUID) -> NSMenu? {
+        guard store.session(withID: id)?.parentID != nil else { return nil }
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        // an owner predating top-level sessions has no root to promote into
+        if store.isRemoteWindow, store.rootWorkspace == nil {
+            let unavailable = NSMenuItem(title: ControlWorkspaceNode.rootLabel, action: nil, keyEquivalent: "")
+            unavailable.isEnabled = false
+            submenu.addItem(unavailable)
+        }
+        for workspace in store.displayWorkspaces {
+            guard case .success = store.canPromoteCompanion(id, to: .workspace(workspace.id, slot: nil)) else { continue }
+            let item = NSMenuItem(title: workspace.label, action: #selector(menuPromoteCompanion(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = SessionBatchRequest(sessionIDs: [id], targetID: workspace.id)
+            submenu.addItem(item)
+        }
+        return submenu.items.isEmpty ? nil : submenu
+    }
+
+    private func companionParentMenu(for id: UUID) -> NSMenu? {
         guard let parentID = store.session(withID: id)?.parentID else { return nil }
         let submenu = NSMenu()
         submenu.autoenablesItems = false
-        for workspace in store.workspaces {
+        for workspace in store.displayWorkspaces {
             let parents = workspace.sessions.filter { candidate in
                 guard candidate.parentID == nil, candidate.id != parentID else { return false }
                 if case .success = store.canMoveCompanion(id, under: candidate.id) { return true }
                 return false
             }
             guard !parents.isEmpty else { continue }
-            submenu.addItem(.sectionHeader(title: workspace.name))
+            submenu.addItem(.sectionHeader(title: workspace.label))
             for parent in parents {
                 let item = NSMenuItem(title: parent.displayName, action: #selector(menuMoveCompanion(_:)), keyEquivalent: "")
                 item.target = self
@@ -337,6 +378,12 @@ extension WorkspaceSidebar.Coordinator {
         guard let request = sender.representedObject as? SessionBatchRequest, let id = request.sessionIDs.first,
               let parentID = request.targetID else { return }
         actions.moveCompanion(id, under: parentID, at: nil, in: store)
+    }
+
+    @objc private func menuPromoteCompanion(_ sender: NSMenuItem) {
+        guard let request = sender.representedObject as? SessionBatchRequest, let id = request.sessionIDs.first,
+              let workspace = request.targetID else { return }
+        actions.promoteCompanion(id, to: .workspace(workspace, slot: nil), in: store)
     }
 
     @objc private func menuClose(_ sender: NSMenuItem) {
@@ -429,6 +476,31 @@ extension WorkspaceSidebar.Coordinator {
     @objc private func menuToggleFocusMembership(_ sender: NSMenuItem) {
         guard let node = sender.representedObject as? SidebarNode else { return }
         actions.setFocusMembership(node.id, member: !store.focusedWorkspaceIDs.contains(node.id), in: store)
+    }
+
+    private func addRootFocusItems(to menu: NSMenu, root: UUID) {
+        menu.addItem(.separator())
+        let label = ControlWorkspaceNode.rootLabel
+        let focus = NSMenuItem(title: store.isSoleFocus(root) ? "Unfocus \(label)" : "Focus \(label)",
+                               action: #selector(menuFocusRoot(_:)), keyEquivalent: "")
+        focus.target = self
+        menu.addItem(focus)
+        let member = store.focusedWorkspaceIDs.contains(root)
+        let membership = NSMenuItem(title: member ? "Remove \(label) from Focus" : "Add \(label) to Focus",
+                                    action: #selector(menuToggleRootFocusMembership(_:)), keyEquivalent: "")
+        membership.target = self
+        menu.addItem(membership)
+        menu.addItem(.separator())
+    }
+
+    @objc private func menuFocusRoot(_: NSMenuItem) {
+        guard let root = store.rootWorkspace?.id else { return }
+        actions.focusWorkspace(root, in: store)
+    }
+
+    @objc private func menuToggleRootFocusMembership(_: NSMenuItem) {
+        guard let root = store.rootWorkspace?.id else { return }
+        actions.setFocusMembership(root, member: !store.focusedWorkspaceIDs.contains(root), in: store)
     }
 
     /// "Open Directory…": pick a folder and add a session rooted there.

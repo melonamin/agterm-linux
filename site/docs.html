@@ -641,10 +641,10 @@ command &quot;Session here&quot; ctrl+a&gt;n agtermctl session new --cwd &quot;$
           <!-- WORKSPACES -->
           <section id="workspaces" class="doc-v2" style="scroll-margin-top: 88px; padding-top: 56px">
 <h2>Workspaces &amp; sessions</h2>
-<p>A <strong>session</strong> is one running shell with a name, a working directory and its own scrollback: the unit you work in, and a row in the sidebar. A <strong>workspace</strong> is a named group of sessions for one project or context. A session can move between workspaces while it runs, keeping its shell and scrollback.</p>
+<p>A <strong>session</strong> is one running shell with a name, a working directory and its own scrollback: the unit you work in, and a row in the sidebar. A <strong>workspace</strong> is a named group of sessions for one project or context. A session can move between workspaces while it runs, keeping its shell and scrollback. A session can also sit outside any workspace, among the window's <a href="#workspaces-top-level">top-level sessions</a>.</p>
 <h3 id="workspaces-sidebar">The sidebar</h3>
 <ul>
-<li>The sidebar is a two-level tree: workspaces, each holding sessions. A workspace row has a filled folder icon, a session row an outlined terminal.</li>
+<li>The sidebar is a two-level tree: the top-level sessions first, with no row above them, then the workspaces, each holding sessions. A workspace row has a filled folder icon, a session row an outlined terminal.</li>
 <li>A session is named after its working directory's last folder. Renaming pins a name of your own; clearing it restores automatic naming. Rename inline by double-clicking a row's name.</li>
 <li>The four icons at the bottom of the sidebar add a workspace, add a session, and toggle the workspace filter and the flagged view.</li>
 <li>A click on a workspace's icon folds it at once.</li>
@@ -659,6 +659,17 @@ A session's right-click context menu.
 </figcaption>
 </figure>
 <p><strong>Several rows at once.</strong> Shift-click and ⌘-click select several sessions. Right-clicking inside the selection keeps it, so <strong>Flag</strong>, <strong>Tint</strong>, <strong>Close</strong> and <strong>Move to</strong> act on all of them; right-clicking a row outside it narrows the menu to that row. Dragging moves the selection, and dragged sessions keep running.</p>
+<h3 id="workspaces-top-level">Top-Level Sessions</h3>
+<p>The top-level sessions are the sessions outside any workspace, for a shell that belongs to no project. Menus name the group <strong>Top-Level Sessions</strong>.</p>
+<ul>
+<li><strong>File ▸ New Top-Level Session</strong> (the <code>new_root_session</code> action, no default key, also in the action palette) opens a shell there in the usual new-session directory.</li>
+<li>By default every other new session, from New Session, Open Directory or a script that names no destination, goes where the selected session is, the top-level sessions included, unless you just created a workspace or the focus filter shows exactly one group without it; <a href="#agtermctl-addressing">Addressing</a> has the full rule. A script can name the top-level sessions as <code>root</code>.</li>
+<li>Drag a session among the top-level sessions to put it there, or into a workspace to move it out. <strong>Move to ▸ Top-Level Sessions</strong> does the same from the context menu.</li>
+<li>Deleting the last workspace is allowed; the window keeps its top-level sessions.</li>
+<li>A new window opened while a session among the top-level sessions is selected starts its first shell among its own top-level sessions; otherwise, and from the Dock menu or a remote window, it starts in <code>workspace 1</code>.</li>
+<li>A session among the top-level sessions shows no workspace name: the title bar, Recent Closed and the Attach Remote picker leave it out, and <code>{AGT_WORKSPACE_NAME}</code> expands empty. Reopening one puts it back among the top-level sessions.</li>
+<li>A server window whose server predates top-level sessions shows these items disabled.</li>
+</ul>
 <h3 id="companions">Companions</h3>
 <p>A companion keeps a related shell or program next to a session: a log tail, a watcher, a second shell for the same task. It is an ordinary session pinned to its parent, listed right after it and indented under it.</p>
 <figure>
@@ -669,7 +680,9 @@ Two parents, each with its companions indented under it; the blocked <code>logs<
 </figure>
 <ul>
 <li>The parent's disclosure triangle folds its companions away. A folded parent shows a small stack marker while a hidden companion has an agent status, in that status's color; blocked wins over working, working over completed, and the marker's tooltip lists each companion's status. A hidden companion's unread notifications count in its workspace's badge.</li>
-<li>Drag a companion among its siblings to reorder it, or onto another top-level session, or into that session's companions, to move it under that session, in any workspace of the window. <strong>Move to</strong> in a companion's context menu lists the window's other top-level sessions. From a script: <code>agtermctl session move --parent SID [--index N]</code>. In the flagged view a drag never changes a companion's parent; use Move to there.</li>
+<li>Drag a companion among its siblings to reorder it, or onto another top-level session, or into that session's companions, to move it under that session, in any workspace of the window or among its top-level sessions. <strong>Move Under</strong> in a companion's context menu lists the window's other top-level sessions. From a script: <code>agtermctl session move --parent SID [--index N]</code>. In the flagged view a drag never changes a companion's parent; use Move Under there.</li>
+<li>Drop a top-level session on another top-level session's row to make it that session's companion, in any workspace of the window; its own companions come with it. A drop between rows still reorders. From a script: <code>agtermctl session move --target SID --parent PARENT</code>.</li>
+<li>Drop a companion on a workspace row, or between top-level sessions, to make it a top-level session there; a workspace picked in <strong>Move to</strong> does the same, at the end. From a script: <code>agtermctl session move --target SID --top-level [WORKSPACE | --after X | --before X]</code>, which with no destination puts it right after its former group.</li>
 <li>Moving the parent carries its companions.</li>
 <li>Closing a companion closes only it. Closing the parent closes the group, and one Reopen Closed Item brings it all back.</li>
 <li>While a parent has companions, its shell exiting starts a fresh shell in the same directory instead of closing the session; one that exits again within 2 seconds closes the group. A Mac viewing that session attaches to the new shell.</li>
@@ -716,13 +729,14 @@ agtermctl session overlay open --html report.html --page</code></pre>
 <ul>
 <li>New Companion and Duplicate as Companion ask that Mac to create the companion under its own session and attach it here. Closing it here only detaches it.</li>
 <li>Convert to Companion runs on that Mac, and its new parent attaches here.</li>
-<li>A companion moves only under another session from that Mac: when the parent changes, that Mac moves it under its own session first, then the row moves here; a reorder under the same parent stays here. Another Mac attached to the same sessions keeps the old grouping until it attaches them again.</li>
+<li>A session moves only under another session from that Mac: when the parent changes, that Mac moves its own session first, with the companions it has there, then the row moves here with the companions shown under it; a reorder under the same parent stays here. Another Mac attached to the same sessions keeps the old grouping until it attaches them again.</li>
+<li>Making a companion top-level runs on that Mac when its parent comes from there too, and the row then takes its place here; under a parent from anywhere else only this Mac's grouping changes.</li>
 <li>A page companion opened there is that Mac's page, shown here through its own channel; it stays there when you close it here.</li>
 </ul>
 <h3 id="workspaces-finder">Opening sessions from Finder</h3>
 <ul>
-<li>Drag up to 20 folders from Finder onto the tree to open sessions there. A drop on a row lands in that row's workspace; a drop on empty sidebar space uses the current workspace, or the focused one when the workspace filter narrows the tree to exactly one. Folded workspaces spring open while you hover and close again if you cancel.</li>
-<li><code>open -a agterm &lt;path&gt;</code>, or Open With ▸ agterm on a folder in Finder, adds a session in that directory to the last-active window. This works while agterm is running; otherwise launch it first. To place the session precisely, use <code>agtermctl session new --cwd &lt;path&gt;</code>.</li>
+<li>Drag up to 20 folders from Finder onto the tree to open sessions there. A drop on a row lands in that row's workspace, or among the top-level sessions for one of theirs; a drop on empty sidebar space uses the current workspace, or the focused one when the workspace filter narrows the tree to exactly one. Folded workspaces spring open while you hover and close again if you cancel.</li>
+<li><code>open -a agterm &lt;path&gt;</code>, or Open With ▸ agterm on a folder in Finder, adds a session in that directory to the last-active window, starting agterm first when it is not running. A remote window shows only its server's sessions, so it refuses the folder, with a notification when banners are on. To place the session precisely, use <code>agtermctl session new --cwd &lt;path&gt;</code>.</li>
 <li>Folder-picking panels (<strong>Open Directory…</strong> and the Settings directory choosers) open in the focused pane's directory, or in the directory already configured where there is one, else in your home directory.</li>
 </ul>
 <h3 id="workspaces-narrow">Narrowing the sidebar</h3>
@@ -738,6 +752,7 @@ agtermctl session overlay open --html report.html --page</code></pre>
 <ul>
 <li>Focus one workspace to zoom to it, or mark several from their row menus and apply the filter once with the sidebar's grid button. Marking never narrows the tree on its own, and suspending the filter keeps the set for one click back.</li>
 <li><strong>View ▸ Edit Focused Workspaces…</strong> marks and unmarks workspaces the same way.</li>
+<li>The top-level sessions take part like a workspace: the context menu of a session among them offers <strong>Focus Top-Level Sessions</strong> and <strong>Add Top-Level Sessions to Focus</strong>, View ▸ Focus reads the same while the top-level sessions are current, and the focus editor lists them first. While the filter is on and they are not focused, the ordinary tree hides them; the flagged view ignores the filter, as for workspaces.</li>
 <li>Creating a workspace while the filter is on adds it to the set. Selecting a session outside the set suspends the filter rather than discarding it.</li>
 <li>The set is per window and remembered across restarts.</li>
 </ul>
@@ -823,11 +838,20 @@ agtermctl session overlay open --html report.html --page</code></pre>
 </ul>
 <h3 id="terminals-search">Search</h3>
 <p>⌘F opens a search bar at the top of the focused terminal. It highlights matches in the live scrollback with an "N of M" counter. Enter steps forward, Shift-Enter back, Esc closes.</p>
+<h3 id="terminals-paste">Paste and drop</h3>
+<p>⌘V, Edit ▸ Paste, a drop onto a pane and <a href="/commands#session"><code>agtermctl session paste</code></a> follow one rule, in a local pane and a remote one alike:</p>
+<ol>
+<li>Files and folders copied in Finder, or dropped, paste as their paths, shell-escaped.</li>
+<li>Otherwise text pastes as text.</li>
+<li>Otherwise an image, such as a screenshot on the clipboard, is saved as a PNG and its path is pasted. Claude Code attaches a pasted image path, so ⌘V of a screenshot gives it the image.</li>
+</ol>
+<p>In a pane whose program runs on another host, an attached session's pane or a remote window's pane, the files, folders or image are copied to that host first, and the path pasted is the one there. A folder is copied without the symbolic links and special files inside it, and an offered link or special file is refused. A panel over the session shows the copy unless another panel is already up there, and a failure shows as a panel or a notification. The copy is limited to 100 MB and 10,000 files and folders; anything larger pastes nothing and says why. A pane takes one copy at a time, and a second paste while one runs is refused. Pasted files are kept under <code>agterm/paste</code> in the cache folder of the host that runs the program (<code>~/Library/Caches</code> on a Mac, <code>~/.cache</code> on Linux), readable only by you; pastes older than 24 hours are removed on the next paste.</p>
+<p>Ctrl-V is the program's own key: Claude Code's Ctrl-V reads the clipboard of the host it runs on, which in a remote pane is not yours, so use ⌘V there. A paste binding of your own in <code>ghostty.conf</code>, and the bundled one that pastes from the V position on a Latin layout such as Dvorak, paste text only and copy no files into a remote pane.</p>
 <h3 id="terminals-overlay">Overlay</h3>
 <p>An overlay runs one program in a temporary terminal over a session and disappears when the program exits, leaving the session as it was. Scripts and agents use it to show an interactive program, such as a diff viewer or a process monitor, full size, as a floating panel, or over one split pane while the other stays live. The <a href="#agtermctl-overlays">agtermctl reference</a> has the commands.</p>
 <ul>
 <li>The same slot can hold a <strong>HUD</strong>: a small passive panel with a message instead of a program. The session stays focused and typable under it.</li>
-<li>⇧⌘J hides a session's program and page overlays without closing them, and brings them back; a hidden program keeps running. The View menu, the command palette, an optional title-bar button (<strong>Settings ▸ Interface</strong>) and <code>agtermctl session overlay hide|show|toggle</code> do the same.</li>
+<li>⇧⌘J hides a session's program and page overlays without closing them, and brings them back; a hidden program keeps running. The View menu, the command palette, an optional title-bar button (<strong>Settings ▸ Interface</strong>) and <code>agtermctl session overlay hide|show|toggle</code> do the same. File ▸ Edit Keymap…, Edit Hooks… and Edit ghostty.conf… cannot open over a session overlay out of sight: they beep, and bring a hidden one back unless a pane overlay is drawn over it.</li>
 </ul>
 <p><strong>Pages.</strong> With <code>--html</code> the overlay shows a local HTML page, such as a report or chart an agent just made; with <code>--url</code>, a web page such as a running dev server.</p>
 <ul>
@@ -940,7 +964,7 @@ The action palette over a split session. Attach Remote is greyed out: listed, bu
           <!-- REMOTE SERVER -->
           <section id="remote-sessions" class="doc-v2" style="scroll-margin-top: 88px; padding-top: 56px">
 <h2>Remote sessions</h2>
-<p>Open a session that runs on another Mac in this sidebar, as a row marked remote, splits and companions included. Its programs keep running over there; this Mac shows them at its own window size. For sessions on a Linux host, see <a href="#remote-server">Remote server</a>, which shows them in a remote window instead; a remote window can also show a whole window of another Mac (<a href="#remote-window-mac">A window of another Mac</a>).</p>
+<p>Open a session that runs on another Mac in this sidebar, as a row marked remote, splits and companions included. Its programs keep running over there; this Mac shows them at its own window size. A session on a Linux host running agterm-server attaches here the same way, or the whole host opens in a remote window (<a href="#remote-server">Remote server</a>); a remote window can also show a whole window of another Mac (<a href="#remote-window-mac">A window of another Mac</a>).</p>
 <h3 id="remote-sessions-setup">Set up the other Mac</h3>
 <ul>
 <li>agterm runs in <strong>Live sessions</strong> mode there (<a href="#restore-live">Restore</a>), which keeps a live program behind each pane. A page session needs no live program.</li>
@@ -967,25 +991,27 @@ agtermctl zmx tree                                    # without a host: what thi
 agtermctl zmx attach studio.local 7c1e…               # the id from that listing, not the name
 agtermctl zmx attach studio.local 7c1e… --companions  # with its companions
 agtermctl zmx attach studio.local 7c1e… --window &quot;$win&quot;  # into an open window (id from window list), not raised
+agtermctl zmx attach studio.local 7c1e… --workspace-name api --create-workspace  # into the workspace named api
 
 # pick from the listing and attach the choice
 s=$(agtermctl zmx tree studio.local --json \
   | jq &#39;[.result.remote.sessions[] | {id, label: .name, subtitle: (.windowName + &quot;/&quot; + .workspaceName + &quot; &quot; + .cwd)}]&#39; \
   | agtermctl pick --prompt &quot;Attach which session?&quot; | jq -r &#39;.id // empty&#39;)
 [ -n &quot;$s&quot; ] &amp;&amp; agtermctl zmx attach studio.local &quot;$s&quot;</code></pre>
-<p>Without <code>--window</code> the session opens in the frontmost window.</p>
+<p>Without <code>--window</code> the session opens in the frontmost window, and without <code>--workspace</code> or <code>--workspace-name</code> in that window's current workspace. <code>--create-workspace</code> adds a named workspace that does not exist yet. A companion that joins its parent's row goes where that row is.</p>
 <p><strong>What can be attached</strong></p>
 <ul>
 <li>Only a session whose every pane still has a live program is listed. The choice is checked again at attach time, so a session that ended in between fails instead of handing back a fresh shell wearing its name.</li>
 <li><code>--companions</code> attaches each companion under the session. If one cannot be attached, the rest stay and the command fails naming what is missing.</li>
-<li>A terminal companion attached on its own joins its parent's group when exactly one row in the window is attached from that parent. Companions created over there later are not followed.</li>
+<li>A terminal companion attached on its own joins its parent's group when exactly one row in the window is attached from that parent.</li>
+<li>A companion created over there later, or moved under the session, appears under its row here by itself, without changing the selection or taking the lead of its panes. One this Mac already shows stays where it is, and one you close here is not brought back. With two rows attached from the same session, a new companion gets one row, under either of them. A companion that could not be attached when it appeared, because it had ended or its program was not running yet, shows up once it runs again at the session's next companion change or reconnect, not at the restart; <code>agtermctl zmx attach</code> brings it sooner. A host on an older release sends no companion list, so nothing follows; <code>followsCompanions</code> in <code>tree</code> says whether a row follows.</li>
 <li>A page session is listed too: attaching it opens that Mac's page as a top-level row here. A page companion attaches only under the row attached from its parent, so the picker leaves it out.</li>
 </ul>
 <h3 id="remote-sessions-new">Start a session on another host</h3>
 <p><strong>File ▸ New Remote Session…</strong> (the <code>new_remote_session</code> action, no default key) starts a shell on a host in <code>remotes.conf</code> and attaches it here, at the end of the workspace that was current when you chose the item.</p>
 <ul>
 <li>With more than one host listed, the picker asks which. A Mac with several open windows is asked which window gets the session there.</li>
-<li>On the host the session goes into the workspace with your workspace's name, the first one when several share it, created when there is none. Nothing is selected there.</li>
+<li>On the host the session goes into the workspace with your workspace's name, the first one when several share it, created when there is none. Nothing is selected there. Started from the top-level sessions, it goes among the host's top-level sessions, and a host too old for them refuses before creating anything.</li>
 <li>The host must be a Mac in Live sessions mode or an agterm-server. A host that does not answer, or runs an agterm too old to tell, gets nothing created and the panel says why.</li>
 <li>A session created but not attached is named in the panel with its id; <code>agtermctl zmx attach HOST ID</code> attaches it later. When the host's reply is lost, the panel says it is unknown whether a session was created. Either way nothing is sent again.</li>
 <li>The item is greyed out while <code>remotes.conf</code> lists no host, and in a <a href="#remote-window">remote window</a>, whose new sessions come from its server.</li>
@@ -1001,7 +1027,7 @@ agtermctl session new --remote srv --window &quot;$win&quot;                   #
 <li>The title bar shows a cloud and the host; hide it with <strong>Settings ▸ Interface ▸ Remote host</strong>. The Ctrl-Tab switcher and the recent and attention lists mark the row the same way.</li>
 <li>Closing the row ends only this Mac's connection, and the programs over there keep running. <code>agtermctl session close --terminate</code> ends the session on the other Mac too, and <code>agtermctl zmx kill</code> ends the targeted pane's program there.</li>
 <li>A closed row joins <strong>File ▸ Open Recent</strong> under Remote Sessions. Reopening attaches again while the other Mac still lists the session, or has it reopen its own entry first. Reopen Closed Item (⌘Z) inside the other Mac's undo time undoes a terminate there.</li>
-<li>An open row is saved and attached again at the next launch. If the other Mac no longer has the session, the row says it ended there.</li>
+<li>An open session is saved and attached again at the next launch. If agterm confirms that an attached terminal session is gone on the host, it closes the session here.</li>
 <li><code>agtermctl tree --json</code> reports <code>remoteHost</code> and <code>remoteSessionID</code> on the row.</li>
 </ul>
 <h3 id="remote-sessions-lead">Who leads a pane</h3>
@@ -1011,7 +1037,8 @@ agtermctl session new --remote srv --window &quot;$win&quot;                   #
 <li>On the other Mac, those panes are covered with a note that they are in use elsewhere. A key press on the cover, or <code>agtermctl session lead</code>, takes the lead back and covers the pane here.</li>
 <li>Scripts typing into a covered pane on the other Mac still work, and so do their screen reads: both go through the session, not the covered view.</li>
 <li>Closing the session here uncovers the panes over there.</li>
-<li>In a <a href="#remote-window-mac">window of another Mac</a>, this Mac takes the lead when you open the window, in the rows you create, reopen or bring back with undo from here, and in the new pane of a split you add from here; the row's other pane keeps its leader. A reconnect, a relaunch, and rows created on the other Mac leave the lead where it is.</li>
+<li>When the connection drops and a pane or the scratch terminal reconnects, it takes the lead back if this Mac led it when the link dropped and nobody has used it since: the lead is still held by this Mac's lost connection, or another Mac took it only because the pane was free and nothing has been typed, pasted or clicked there since. Otherwise the pane comes back covered. After a relaunch or a reopened window, each pane this Mac led when it left takes the lead back the same way: in a session attached from another Mac, in a remote window, and in this Mac's own sessions while another Mac shows them. Opening a window of another Mac takes the lead outright, as the next item says. A session started on the host by an agterm without this behavior keeps leaving the lead where it is until it ends.</li>
+<li>In a <a href="#remote-window-mac">window of another Mac</a>, this Mac takes the lead when you open the window, in the rows you create, reopen or bring back with undo from here, and in the new pane of a split you add from here; the row's other pane keeps its leader. Rows created on the other Mac leave the lead where it is, and a relaunch or a reconnect takes it back only as described above.</li>
 <li>Both Macs need an agterm with this behavior; against an older one the session arrives at the other Mac's size until you type.</li>
 <li>While another Mac leads at a different size, cursor and screen-text reads here can disagree with the program's layout. Automation that relies on them is unsupported in that state.</li>
 </ul>
@@ -1086,6 +1113,7 @@ agtermctl session new --remote srv --window &quot;$win&quot;                   #
 </ul>
 <h3 id="remote-sessions-clipboard">Clipboard</h3>
 <p><code>pbcopy</code> on the other Mac fills that Mac's clipboard, not yours. <a href="/commands#clipboard"><code>agtermctl clipboard set</code></a> sends the text through the pane, asking every terminal attached to it to set its clipboard, this Mac's included; each applies its own <code>clipboard-write</code> setting. It needs no terminal, so an agent's shell tool can use it.</p>
+<p>Files and screenshots you paste or drop into an attached pane are copied to the other Mac, as <a href="#terminals-paste">Paste and drop</a> describes.</p>
 <h3 id="remote-sessions-disconnect">When the connection drops</h3>
 <p><strong>The presentation stream.</strong> Mirrored status, context and HUD clear here and return on reconnect. Retries run after 1, 2, 4, 8, 16, then 30 seconds, every 5 minutes after eight failures in a row, and never stop; waking the Mac or a network change retries at once. While it is down:</p>
 <ul>
@@ -1099,7 +1127,7 @@ agtermctl session new --remote srv --window &quot;$win&quot;                   #
 <li>If ssh itself failed (exit 255, which a refused login also gives), the panel reads <strong>Connection to HOST lost</strong> and says it is reconnecting. agterm attaches again once the host answers, on the stream's schedule; any key, waking the Mac or a network change retries at once and restarts the schedule. ⌘W still closes the session.</li>
 <li>While the host keeps refusing, the panel adds what ssh said last, such as a changed host key or a rejected login.</li>
 <li>When the host answers, the last screen is replaced before the new connection is up, so a link that drops again right away leaves an empty pane with only the panel.</li>
-<li>The pane comes back without taking the lead: if the other Mac leads by then, it arrives covered. It also arrives covered while the other Mac still counts this Mac's dropped connection as leader, which clears once that connection times out.</li>
+<li>The pane takes the lead back only as <a href="#remote-sessions-lead">Who leads a pane</a> describes; otherwise it arrives covered.</li>
 <li>Any other exit shows <strong>SESSION on HOST ended</strong>; any key closes the pane.</li>
 <li>If the other Mac closes the session, the row here closes by itself with no panel, whether it is open now or comes back at the next launch. A session closed there with undo keeps its row here until the undo window passes; undo there leaves it as it was.</li>
 </ul>
@@ -1160,6 +1188,7 @@ agtermctl session new --remote srv --window &quot;$win&quot;                   #
 <h3 id="remote-window">Open a remote window</h3>
 <p><strong>File ▸ Open Remote Window…</strong> offers the hosts in <code>remotes.conf</code>, the same list Attach Remote… reads, and opens the only one without asking. It is the <code>open_remote_window</code> keymap action, with no default key. <code>agtermctl window remote open HOST</code> does the same and prints the window id. A window already showing that host is raised rather than opened twice.</p>
 <p>The sidebar is the server's: creating, renaming, splitting, moving and closing sessions and workspaces happen on the server. Selection, focus, font size, split dividers and the window frame stay on this Mac.</p>
+<p>On agterm-server, a pane this Mac creates or restarts with a program holds that program until the first terminal attaches to it, at most 30 seconds, so a program that asks the terminal for its colors at startup, as codex does, gets its answers when a terminal attaches in time. A restart of a pane the window is not laying out, such as the hidden pane of a collapsed split, starts at once. A command created on the server itself, such as an agent there running <code>agtermctl session new --command codex</code>, starts at once even with no terminal attached, and codex started that way can draw its prompt line without the background band; add <code>--attach-pending</code> when a terminal attaches to the pane afterwards.</p>
 <h3 id="remote-window-mac">A window of another Mac</h3>
 <p>The host can also be a Mac running agterm in Live sessions mode. The remote window then shows one window of that Mac, and everything on this page about a remote window applies, with that Mac in the server's place. A Mac with one open window opens it at once; with several, the same picker asks which. From a script, <code>agtermctl window remote open HOST --origin-window W</code> names it by id or unique prefix; without it, a Mac with several open windows is refused with their names.</p>
 <ul>
@@ -1371,18 +1400,20 @@ The keymap editor.
           <!-- KEYMAP -->
           <section id="keymap" class="doc-v2" style="scroll-margin-top: 88px; padding-top: 56px">
 <h2>Custom commands &amp; keys</h2>
-<p><code>~/.config/agterm/keymap.conf</code> rebinds built-in shortcuts and defines your own shell commands, bound to keys and listed in the custom-commands palette (⌃⇧O). The file is optional: a commented starter is written on first launch, and <strong>Settings ▸ Key Mapping</strong> can point to another folder. It uses kitty-style syntax with three verbs; blank lines and <code>#</code> comments are ignored.</p>
+<p><code>~/.config/agterm/keymap.conf</code> rebinds built-in shortcuts and defines your own shell commands, bound to keys and listed in the custom-commands palette (⌃⇧O). The file is optional: a commented starter is written on first launch, and <strong>Settings ▸ Key Mapping</strong> can point to another folder. It uses kitty-style syntax with four verbs; blank lines and <code>#</code> comments are ignored.</p>
 <pre><code># rebind a built-in to a chord (modifiers joined by +)
 map cmd+shift+l   toggle_split
 map ctrl+shift+k  command_palette
 # or to several alternatives, joined by | with no spaces
 map cmd+t|ctrl+a&gt;t  toggle_scratch
 # custom commands: the quoted name shows in the palette; the chord is optional
-command &quot;Open in Zed&quot;  cmd+shift+e  open -a Zed {AGT_SESSION_PWD}
-command &quot;Lazygit&quot;      ctrl+a&gt;g     agtermctl session overlay open &#39;zsh -lc lazygit&#39; --socket {AGT_SOCKET}
+command &quot;Open in Zed&quot;  cmd+shift+e  open -a Zed &quot;$AGT_SESSION_PWD&quot;
+command &quot;Lazygit&quot;      ctrl+a&gt;g     agtermctl session overlay open &#39;zsh -lc lazygit&#39; --socket &quot;$AGT_SOCKET&quot;
 command &quot;Deploy&quot;               ./deploy.sh
 # one system-wide chord that summons the quick terminal from any app
-global-hotkey ctrl+opt+space</code></pre>
+global-hotkey ctrl+opt+space
+# your own viewer for ⌘-clicked files
+open *.md  glow-page.sh &quot;$AGT_PATH&quot;</code></pre>
 <p><strong>Editing.</strong> File ▸ Edit Keymap… (also in the action palette) opens the file in a 95% overlay running <code>$VISUAL</code> or <code>$EDITOR</code> (vi if neither is set) and reloads it when the editor quits. Apply edits made elsewhere with File ▸ Reload Keymap or <code>agtermctl keymap reload</code>. A bad line never discards the rest: it shows in the diagnostics list in Settings ▸ Key Mapping while the good lines apply.</p>
 <h3 id="keymap-chords">Chords</h3>
 <ul>
@@ -1419,7 +1450,7 @@ map cmd+opt+down|ctrl+a&gt;ctrl+l --repeat next_session</code></pre>
 <h3 id="keymap-actions">Built-in actions</h3>
 <pre><code>new_window   rename_window   delete_window
 new_workspace   rename_workspace   delete_workspace
-new_session   open_directory   rename_session   duplicate_session
+new_session   new_root_session   open_directory   rename_session   duplicate_session
 new_companion   duplicate_companion   convert_companion
 close_session   reopen_recent   undo_close   clear_status
 increase_font_size   decrease_font_size   reset_font_size
@@ -1525,6 +1556,19 @@ edit_flagged_sessions   edit_focused_workspaces</code></pre>
 <li>A missing or invalid value, a repeated flag, an unknown <code>--error-*</code> option or an empty command body skips the line with a diagnostic.</li>
 <li>The first ordinary word starts the command, so in <code>--error-hud ./script --error-pane right</code> the last two words go to the script. Use <code>--</code> to end the flags before a command whose first word looks like a flag. A chord is never read after the flags.</li>
 </ul>
+<h3 id="keymap-open">Your own viewer for clicked files</h3>
+<p>An <code>open</code> line runs your own program instead of agterm's page when you ⌘-click a file whose name it lists:</p>
+<pre><code>open *.md,*.markdown --error-hud glow-page.sh &quot;$AGT_PATH&quot;
+open Makefile,*.mk code &quot;$AGT_PATH&quot;</code></pre>
+<ul>
+<li>Selectors are comma-separated. <code>*.ext</code> takes that extension in any case; any other word takes that exact file name. A file name wins over an extension, and when two lines name the same selector the later one wins and the earlier is reported as a diagnostic.</li>
+<li>The command runs like a custom command, detached under <code>/bin/sh -c</code> on the app's PATH, and starts in your home folder. The clicked file is in <code>$AGT_PATH</code>, and the other <code>$AGT_*</code> variables describe the pane you clicked in. <code>{AGT_…}</code> tokens are refused on this line, since the path comes from terminal output: pass it quoted, as <code>&quot;$AGT_PATH&quot;</code>.</li>
+<li>The failure-panel flags work as on a <code>command</code> line. A chord and <code>--repeat</code> are refused.</li>
+<li>A rule runs on an ordinary link click on a path agterm found in the output (⌘-click, or ⌘⇧-click in a program that <a href="#links">captures the mouse</a>), and only for a regular file that opens as a picture, markdown, text or HTML page. A link a program printed as an OSC 8 hyperlink keeps the built-in page, because its target need not be what the screen shows. Sending a link to the browser or revealing it in Finder keeps its meaning, and a file no rule names opens as before.</li>
+<li>Treat the file as untrusted input: any program running in the terminal can print a path. A renderer that shows its result with <code>agtermctl session overlay open --html</code> gives that page the control API through <code>data-agterm</code> tags, even with its scripts off, so never put the file's own HTML into it unescaped. Show the file itself with <code>--markdown</code> or <code>--text</code>, which run nothing.</li>
+<li>Each run is reported as an <code>opener.run</code> event with the file, the rule's selectors and, for a copied file, the host it came from.</li>
+</ul>
+<p><strong>Files on another host.</strong> In a session attached from another Mac or served by agterm-server, the clicked file is on that host. agterm copies it to <code>agterm/open</code> in your cache folder, readable only by you, and runs the rule on the copy; copies older than an hour are removed at launch and on the next copy. Only that one file is copied: files next to it are not, and a log is copied once, not followed. A file larger than its page's limit is not copied and follows the built-in page rules. When a panel is up over the session and the path can still be clicked, the rule runs on a copy and the panel stays; such a click never opens a page. A host whose agterm predates rules opens its page as it always did. A failed copy is reported like any refused remote click.</p>
 <h3 id="keymap-check">Check what is bound</h3>
 <p><code>agtermctl keymap list</code> prints every built-in with the chords it resolved to (the menu shortcut first, then the alternatives, joined with <code>|</code>), the custom commands, each diagnostic in full, and the shortcuts the menu bar actually carries. If a binding does not fire, compare the last two: an action whose chord no menu item holds is usually a menu problem, not a keymap one. Only menu shortcuts appear in that last list: alternatives never do, nor do <code>undo_close</code> (⌘Z) and <code>toggle_fullscreen</code> (⌃⌘F), which agterm handles itself.</p>
 <p><code>increase_font_size</code>'s default is listed as <code>cmd++</code>, which the file cannot parse: write that chord as <code>cmd+shift+=</code> in <code>keymap.conf</code>.</p>
@@ -1594,6 +1638,10 @@ agtermctl notify &quot;needs input&quot; --target &quot;$AGT_SESSION_ID&quot; --
 <tr>
 <td><code>remote.opened</code>, <code>remote.closed</code></td>
 <td>a row attached from another Mac with <code>zmx attach</code> appears in or leaves the tree; carries its ssh destination as <code>host</code> and the origin's session id as <code>remoteSessionID</code>. It describes the row, not the connection, so undo fires <code>remote.opened</code> again</td>
+</tr>
+<tr>
+<td><code>opener.run</code></td>
+<td>an <code>open</code> rule ran on a clicked file; carries <code>path</code>, the rule's <code>selector</code> list and the clicked <code>pane</code>, plus <code>host</code> for a file copied from another host</td>
 </tr>
 <tr>
 <td><code>tree.changed</code></td>
@@ -1706,7 +1754,7 @@ for (const ws of tree.workspaces) for (const s of ws.sessions) {
 <ul>
 <li><code>--target</code> and <code>--workspace</code> take a session or workspace UUID, a unique prefix of it (git-style), or <code>active</code>. Never a name.</li>
 <li><code>--target</code> defaults to <code>active</code>, so the current session rarely needs naming.</li>
-<li>For a session, <code>active</code> is the selected one. For a workspace, it is the one a new session lands in: a workspace you just created in the foreground, else the selected session's, else the last one.</li>
+<li>For a session, <code>active</code> is the selected one. For a workspace, it is the one a new session lands in: a workspace you just created in the foreground, else the one the focus filter shows alone in the sidebar tree when it hides the selected session or nothing is selected, else the selected session's (the top-level sessions for one of them), else the last named workspace, else the top-level sessions. <code>root</code> names the top-level sessions; see <a href="/commands#workspace">the workspace commands</a> for which take it.</li>
 <li>A new workspace stays the target until the selection changes (to another session or to none), or until you delete it or hide it with the workspace filter. <code>workspace select</code> moves the target to the one you name, an empty one included. So <code>session new</code> right after <code>workspace new</code> lands in the new workspace.</li>
 <li><code>--window</code> addresses another window's tree; see <a href="#agtermctl-windows">Windows</a>.</li>
 </ul>
@@ -2824,7 +2872,7 @@ agtermctl session type --target &quot;$id&quot; $&#39;echo hi\n&#39;   # a backg
 </tr>
 </tbody>
 </table>
-<p>Markdown, text, log and diff pages wear the terminal's theme and open at the link-open size, 95% when links open in the browser.</p>
+<p>Markdown, text, log and diff pages wear the terminal's theme and open at the link-open size, 95% when links open in the browser. An <a href="#keymap-open"><code>open</code> rule</a> in <code>keymap.conf</code> opens a file type with your own program instead.</p>
 <ul>
 <li><code>./main.go:42:7</code>, as compilers and test runners print it, opens the file at that line. A relative path is looked up in the pane's own directory.</li>
 <li>A <code>.</code>, <code>?</code>, <code>!</code> or <code>;</code> ending a sentence after a path is dropped when only the file without it exists.</li>
@@ -2905,6 +2953,7 @@ A clicked <code>.md</code> file, rendered in the terminal's theme.
 <pre class="bash"><code>printf &#39;\e]8;;agterm://session/%s\e\\%s\e]8;;\e\\\n&#39; &quot;$AGTERM_SESSION_ID&quot; &quot;back to this session&quot;</code></pre>
 <p>In Claude Code markdown, <code>[label](agterm://session/&lt;id&gt;)</code> does the same, since Claude Code prints it as a link (OSC 8); while Claude Code captures the mouse, use ⌘⇧-click. The bare <code>agterm://session/&lt;id&gt;</code> in plain text is a link too, so an agent that prints such a markdown link as plain text, such as Codex, still gives you one to ⌘-click. In a session attached from another Mac the id is that Mac's, and the click selects the one row here showing it; it never attaches anything or acts there.</p>
 <p>Nothing happens for an unknown or closed session; when the destination window is zoomed, has the dashboard open or a picker pending; for any other <code>agterm://</code> form; on a ⌘⌥-click; or for a link in a HUD, the quick terminal or a program overlay.</p>
+<p><strong>From other apps.</strong> agterm registers <code>agterm://</code> with macOS, so the same link opened anywhere else selects that session and brings its window to the front: a notification app, a browser (which asks first), a note, or <code>open &quot;agterm://session/$AGTERM_SESSION_ID&quot;</code> in a script. When agterm is not running, it starts with your windows as you left them and then selects the session. The id must name exactly one open row in this agterm and is taken as it is, never translated from another Mac's id. A link that names no such row, or whose window is zoomed, has the dashboard open or a picker pending, leaves the selection unchanged.</p>
 <h4 id="links-mouse">Links in programs that use the mouse</h4>
 <p>While a program has mouse reporting on, such as tmux with <code>mouse on</code> or stock vim, ⌘-hover underlines nothing and ⌘-click opens nothing: links are detected only while reporting is off. Ghostty.app does the same, per program.</p>
 <ul>
@@ -3357,13 +3406,14 @@ Settings ▸ General ▸ Restore sessions. The note under it is a reminder that 
 </ul>
 <p>The program then lacks the feature until it asks again. fish 4.9.3 asks for kitty keyboard and XTVERSION only at startup: if unanswered, never again in that shell. zsh asks nothing at startup.</p>
 <h4 id="restore-reset">Reset Live Sessions</h4>
-<p><strong>Agterm ▸ Reset Live Sessions…</strong> restarts sessions that need it and reopens agterm with the same layout. The item appears only while Live sessions is both selected and running. It covers:</p>
+<p>Reserve <strong>Agterm ▸ Reset Live Sessions…</strong> for rare repairs. Running Live sessions can stay open through app updates. The reset restarts the sessions it selects and reopens agterm with the same layout. The item appears only while Live sessions is both selected and running. Use it for problems like these:</p>
 <ul>
-<li>sessions created before session-host support: tools there ask for the microphone after every update;</li>
-<li>sessions older than the latest Live update, so they pick up its changes;</li>
-<li>sessions under an older build's or another login's session host, which can block local network access after an update. agterm asks such a host to stop at each launch; it stops once no session uses it.</li>
+<li>a tool in a session created before session-host support asks for the microphone after every update;</li>
+<li>a session needs a Live fix that reaches only new sessions;</li>
+<li>a session under an older build's or another login's session host cannot reach the local network.</li>
 </ul>
-<p>The dialog shows how many sessions it resets. Their running work stops, and recorded commands restart where possible; agent conversations may need resuming by hand. Others are untouched. With banners on, a notification appears only when something went wrong: some sessions could not be reset (run it again for the rest), or the session list could not be read and nothing was reset. <code>agtermctl zmx reset --force</code> skips the dialog.</p>
+<p>The dialog shows how many sessions the reset can affect. It can include working sessions that predate the last Live update or still use an earlier session host. Their running work stops, and recorded commands restart where possible; agent conversations may need resuming by hand. Other sessions are untouched. Another Mac attached to a reset session may need to attach it again.</p>
+<p>With banners on, a notification appears only when something went wrong: some sessions could not be reset (run it again for the rest), or the session list could not be read and nothing was reset. <code>agtermctl zmx reset --force</code> skips the dialog.</p>
 <figure class="narrow">
 <img src="/assets/docs-reset-live-sessions.webp" alt="Reset Live Sessions confirmation dialog saying three live sessions will be reset" width="260" height="362" loading="lazy">
 <figcaption>

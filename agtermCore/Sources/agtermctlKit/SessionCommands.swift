@@ -35,6 +35,7 @@ struct Session: ParsableCommand {
         @OptionGroup var target: TargetOptions
         @OptionGroup var options: ClientOptions
         @OptionGroup var operation: OperationOptions
+        @OptionGroup var attach: AttachOptions
         var echoesResultID: Bool { true }
 
         func validate() throws {
@@ -48,8 +49,9 @@ struct Session: ParsableCommand {
         }
 
         func makeRequest() throws -> ControlRequest {
-            operation.stamp(ControlRequest(cmd: companion ? .sessionCompanionDuplicate : .sessionDuplicate, target: target.target,
-                                           args: options.withWindow(noSelect ? ControlArgs(noSelect: true) : nil)))
+            attach.stamp(operation.stamp(ControlRequest(cmd: companion ? .sessionCompanionDuplicate : .sessionDuplicate,
+                                                        target: target.target,
+                                                        args: options.withWindow(noSelect ? ControlArgs(noSelect: true) : nil))))
         }
     }
 
@@ -129,14 +131,17 @@ struct Session: ParsableCommand {
 
     struct Move: RequestCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Move a session: to another workspace, reorder with --to, place relative to an anchor with --after/--before, or put a companion under another session with --parent.")
-        @Argument(help: "Destination workspace id/prefix (relocate). Omit with --to or --after/--before.") var workspace: String?
+            abstract: "Move a session: to another workspace, reorder with --to, place relative to an anchor with --after/--before, "
+                + "put a companion under another session with --parent, or make one a top-level session with --top-level.")
+        @Argument(help: "Destination workspace id/prefix, or root for the top-level sessions (relocate). Omit with --to or --after/--before.") var workspace: String?
         @Option(name: .long, help: "Reorder within the workspace: up, down, top, or bottom.") var to: String?
         @Option(name: .long, help: "Place right AFTER this anchor session (id/prefix/active); the anchor carries its own workspace (relocates + positions in one shot).") var after: String?
         @Option(name: .long, help: "Place right BEFORE this anchor session (id/prefix/active); mirror of --after.") var before: String?
-        @Option(name: .long, help: "Move the target companion under this top-level session (id/prefix) instead.") var parent: String?
-        @Option(name: .long, help: "With --parent: the companion's slot among the new parent's companions, 0 first; omitted appends.")
+        @Option(name: .long, help: "Move the target under this top-level session (id/prefix) instead; a top-level target brings its companions.") var parent: String?
+        @Option(name: .long, help: "With --parent: the slot among the new parent's companions, 0 first; omitted appends.")
         var index: Int?
+        @Flag(name: .customLong("top-level"), help: "Make the target companion a top-level session: after its group, or in the workspace or beside the --after/--before anchor given.")
+        var topLevel = false
         @OptionGroup var target: BatchTargetOptions
         @OptionGroup var options: ClientOptions
         @OptionGroup var operation: OperationOptions
@@ -145,6 +150,7 @@ struct Session: ParsableCommand {
         // (anchor-relative)}; reject empty/conflicting cases at parse time as a clean usage error, unit-testable
         // without a socket. the anchor carries its own workspace, so placement excludes --to and a workspace.
         func validate() throws {
+            if topLevel { return try validateCompanionPromotion() }
             if parent != nil || index != nil { return try validateCompanionMove() }
             if after != nil, before != nil {
                 throw ValidationError("use either --after or --before, not both")
@@ -169,6 +175,7 @@ struct Session: ParsableCommand {
         }
 
         func makeRequest() throws -> ControlRequest {
+            if topLevel { return companionPromotionRequest() }
             if parent != nil { return companionMoveRequest() }
             let args: ControlArgs
             if let after {
@@ -268,6 +275,7 @@ struct Session: ParsableCommand {
         @OptionGroup var target: TargetOptions
         @OptionGroup var options: ClientOptions
         @OptionGroup var operation: OperationOptions
+        @OptionGroup var attach: AttachOptions
 
         func validate() throws {
             guard let expectScratch else { return }
@@ -280,7 +288,8 @@ struct Session: ParsableCommand {
         func makeRequest() throws -> ControlRequest {
             var args = ControlArgs(mode: mode, command: command, follow: follow ? true : nil)
             args.scratch = expectScratch
-            return operation.stamp(ControlRequest(cmd: .sessionScratch, target: target.target, args: options.withWindow(args)))
+            return attach.stamp(operation.stamp(ControlRequest(cmd: .sessionScratch, target: target.target,
+                                                               args: options.withWindow(args))))
         }
     }
 
@@ -671,6 +680,17 @@ struct Session: ParsableCommand {
 
             private var rowFlag: String? { companion ? "--companion" : page ? "--page" : nil }
 
+            // the app opens a page path in its own process, where a `<(...)` path names its own descriptor;
+            // matched as typed, so parsing never touches the caller's filesystem
+            private func validateNoDescriptorPath() throws {
+                let pages = [("--html", html), ("--image", image), ("--markdown", markdown), ("--text", text)]
+                for (flag, path) in pages {
+                    guard let path, path.wholeMatch(of: /\/dev\/fd\/[0-9]+/) != nil else { continue }
+                    let hint = flag == "--html" ? ", or use zsh =(...) with --block for self-contained HTML" : ""
+                    throw ValidationError("\(flag) \(path) names a process-local file descriptor. Pass a named file\(hint).")
+                }
+            }
+
             // reject the mutually-exclusive combos + a malformed color at parse time (before any connection),
             // so it's a clean usage error and is unit-testable without a socket.
             func validate() throws {
@@ -684,6 +704,7 @@ struct Session: ParsableCommand {
                 if [command, html, url, image, markdown, text].compactMap({ $0 }).count != 1 {
                     throw ValidationError("provide exactly one of COMMAND, --html, --url, --image, --markdown or --text")
                 }
+                try validateNoDescriptorPath()
                 if line != nil, text == nil { throw ValidationError("--line requires --text") }
                 if let line, line < 1 { throw ValidationError("--line must be 1 or more") }
                 try validateLog()

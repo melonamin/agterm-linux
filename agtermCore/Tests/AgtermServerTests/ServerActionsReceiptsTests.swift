@@ -58,6 +58,17 @@ struct ServerActionsReceiptsTests {
         #expect(Set(receipts.compactMap { $0?.opID }).count == replies.count)
     }
 
+    @Test func anOperationThatAttachesItsPaneHoldsTheCommand() async throws {
+        var pending = ControlArgs()
+        pending.attachPending = true
+        pending.command = "codex"
+
+        let reply = await serve(.sessionNew, pending, op: "held")
+
+        #expect(reply.result?.receipt?.outcome == .applied)
+        #expect(harness.runner.launches.last?.environment["ZMX_HOLD_UNTIL_ATTACH"] == "30")
+    }
+
     @Test func aCommandTheHostRefusesAnswersRefusedWithItsError() async {
         let reply = await serve(.sessionRename, target: UUID().uuidString, ControlArgs(name: "x"), op: "bad")
 
@@ -113,7 +124,8 @@ struct ServerActionsReceiptsTests {
         #expect(companion.parentID == second.id)
     }
 
-    @Test(arguments: [Command.sessionRestart, .sessionCompanionDuplicate, .sessionCompanionConvert, .sessionCompanionMove, .zmxKill, .zmxKillPane])
+    @Test(arguments: [Command.sessionRestart, .sessionCompanionDuplicate, .sessionCompanionConvert, .sessionCompanionMove, .sessionCompanionPromote,
+                      .zmxKill, .zmxKillPane])
     func aPaneLifecycleCommandTakesAnOperationId(_ command: Command) {
         #expect(CatalogOperationBook.receiptCommands.contains(command))
     }

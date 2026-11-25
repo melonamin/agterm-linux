@@ -94,7 +94,7 @@ public enum AgtermctlCommandCatalog {
     public static var subcommands: [ParsableCommand.Type] {
         [Tree.self, Events.self, Workspace.self, Session.self, Surface.self, Dashboard.self, Window.self, Quick.self,
          Sidebar.self, Notify.self, Msg.self, Font.self, Keymap.self, Hooks.self, Browser.self, Config.self, Theme.self,
-         Pick.self, Ask.self, Restore.self, Recent.self, Zmx.self, Catalog.self, Terminfo.self, Clipboard.self,
+         Pick.self, Ask.self, Restore.self, Recent.self, Zmx.self, Catalog.self, Terminfo.self, Paste.self, Clipboard.self,
          Update.self, Version.self, Server.self]
     }
 

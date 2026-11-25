@@ -419,7 +419,7 @@ struct SocketClient {
             let detail = [session.context, running.isEmpty ? nil : running.joined(separator: " | ")]
                 .compactMap { $0 }.joined(separator: "  ")
             let tail = detail.isEmpty ? "" : "  \(detail)"
-            let at = "\(session.windowName)/\(session.workspaceName)/\(session.name)"
+            let at = "\(session.placeLabel)/\(session.name)"
             return "  \(at)\(split)  [\(session.id)]  \(session.cwd)\(tail)"
         }.joined(separator: "\n")
     }
@@ -512,55 +512,6 @@ struct SocketClient {
         return lines.joined(separator: "\n")
     }
 
-    /// Render the `keymap.list` payload as sections: the resolved built-ins, then custom commands, parse
-    /// diagnostics, and the live menu key equivalents (no trailing newline). An overridden built-in is
-    /// marked `*`, a keyless one prints `-` rather than being dropped, so the listing is the full action set.
-    /// The chord column carries the whole binding set joined with `|`: the menu key equivalent first, then the
-    /// monitor-bound alternatives, each in canonical kitty syntax rather than the file's own spelling.
-    ///
-    /// The menu section is the point of the command: comparing it against the actions above is what shows
-    /// a chord the keymap resolved but the menu is not carrying. Menu items print in menu-bar order.
-    static func formatKeymap(_ keymap: ControlKeymap) -> String {
-        var lines = ["keymap: \(keymap.path)", "", "actions:"]
-        let width = keymap.actions.map(\.action.count).max() ?? 0
-        for action in keymap.actions {
-            let mark = action.overridden == true ? "*" : " "
-            let name = action.action.padding(toLength: max(width, action.action.count), withPad: " ", startingAt: 0)
-            let binds = ((action.chord.map { [$0] } ?? []) + (action.alternates ?? [])).joined(separator: "|")
-            lines.append("  \(mark) \(name)  \(binds.isEmpty ? "-" : binds)\(action.repeats == true ? "  --repeat" : "")")
-        }
-        if !keymap.commands.isEmpty {
-            lines.append(contentsOf: ["", "commands:"])
-            lines.append(contentsOf: keymap.commands.map { command in
-                var row = "    \(command.name)  \(command.shortcut ?? "(palette only)")"
-                if command.repeats { row += "  --repeat" }
-                if command.errorHud {
-                    row += "  --error-hud --error-position \(command.errorPosition.rawValue)"
-                    if let pane = command.errorPane { row += " --error-pane \(pane.rawValue)" }
-                }
-                return row
-            })
-        }
-        if !keymap.diagnostics.isEmpty {
-            lines.append(contentsOf: ["", "diagnostics:"])
-            // line 0 is the whole-file / cross-section sentinel, not a real line — drop the number
-            // rather than sending the reader looking for it, matching SettingsView.diagnosticLine.
-            lines.append(contentsOf: keymap.diagnostics.map {
-                $0.line > 0 ? "    line \($0.line): \($0.message)" : "    \($0.message)"
-            })
-        }
-        if let menu = keymap.menu {
-            lines.append(contentsOf: ["", "menu:"])
-            // mark a disabled item: its chord is inert (AppKit consumes the key and fires nothing, not
-            // even a same-chord sibling), and the default non-JSON output is the documented human
-            // workflow — an unmarked row reads as a live binding.
-            lines.append(contentsOf: menu.map {
-                "    \($0.chord)  \($0.menu) ▸ \($0.title)" + ($0.enabled == false ? "  (disabled)" : "")
-            })
-        }
-        return lines.joined(separator: "\n")
-    }
-
     /// Render the `window.list` payload as one `id  name  [open]  [active]` line per window (no trailing
     /// newline). Closed/inactive windows still list, with the bracket tag absent.
     static func formatWindows(_ windows: [ControlWindowNode]) -> String {
@@ -573,9 +524,12 @@ struct SocketClient {
     /// Render a tree as an indented workspace → session listing (no trailing newline).
     private static func formatTree(_ tree: ControlTree) -> String {
         var lines: [String] = []
-        for workspace in tree.workspaces {
+        // the sidebar shows the root's sessions above every workspace, so the listing does too
+        let ordered = tree.workspaces.filter { $0.root == true } + tree.workspaces.filter { $0.root != true }
+        for workspace in ordered {
             let mark = workspace.active ? "*" : " "
-            lines.append("\(mark) \(workspace.name)  [\(workspace.id)]")
+            let label = workspace.root == true ? ControlWorkspaceNode.rootLabel : workspace.name
+            lines.append("\(mark) \(label)  [\(workspace.id)]")
             for session in workspace.sessions {
                 let smark = session.active ? "*" : " "
                 // a hidden split still owns a live pane, so it needs a tag of its own: without one it
@@ -604,7 +558,8 @@ struct SocketClient {
                     "  presentation: \($0.state)" + ($0.mode == "presenter" ? ", presenter" : "")
                         + ($0.error.map { " (\($0))" } ?? "")
                 } ?? ""
-                let presenters = session.presenters.map { $0.viewedBy > 0 ? "  viewed by: \($0.viewedBy)" : "" } ?? ""
+                let presenters = (session.presenters.map { $0.viewedBy > 0 ? "  viewed by: \($0.viewedBy)" : "" } ?? "")
+                    + (session.followsCompanions == true ? "  follows companions" : "")
                 let cwds = session.cwd + splitCwdSuffix + scratchCwdSuffix
                 lines.append("  \(smark) \(session.name)\(tags)  [\(session.id)]  \(cwds)\(titleSuffix)\(attribution)\(splitAttribution)\(presentation)\(presenters)")
             }

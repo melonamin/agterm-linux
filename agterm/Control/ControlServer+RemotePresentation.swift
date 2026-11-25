@@ -23,10 +23,17 @@ extension ControlServer {
             return
         }
         let transport = pool.flatMap { pool in path.map { PooledTransport(pool: pool, path: $0, inner: remoteTransport) } }
-        let client = RemotePresentationClient(argv: argv, presentationVersion: binding.presentationVersion,
-                                              transport: transport ?? remoteTransport, effects: remoteEffects(for: id),
-                                              now: hudClock)
+        // a Mac's page root has no stream of its own, so its version is unset; zmx present predates page attachment and
+        // the hello is the capability check
+        let observer = Self.observesMembershipOnly(session, binding: binding)
+        let client = RemotePresentationClient(argv: argv, presentationVersion: observer ? PresentationCodec.version : binding.presentationVersion,
+                                              transport: transport ?? remoteTransport,
+                                              effects: observer ? observerEffects(for: id) : remoteEffects(for: id),
+                                              now: hudClock, observer: observer)
         remoteClients[id] = client
+        renewOpenerConnection(id)
+        // a row back from Undo keeps the flag its old stream set; a new stream follows nothing before its snapshot
+        library.store(forSession: id)?.setFollowsCompanions(false, forSession: id)
         library.store(forSession: id)?.onOriginFrame = { [weak self] session, body in
             MainActor.assumeIsolated { self?.sendToOrigin(body, forSession: session) ?? false }
         }
@@ -78,7 +85,9 @@ extension ControlServer {
     func stopRemotePresentation(_ id: UUID) {
         // nothing will answer a pending ping now, so its notice shows
         resolveRemoteEnd(id)
+        forgetCompanionFollow(id)
         remoteClients.removeValue(forKey: id)?.stop()
+        endOpenerConnection(id)
         linkForwards.release(row: id)
         catalogPool(forSession: id)?.release("present:\(id)")
     }
@@ -86,6 +95,8 @@ extension ControlServer {
     func stopRemotePresentations() {
         for client in remoteClients.values { client.stop() }
         remoteClients.removeAll()
+        for id in Array(remoteConnectionIDs.keys) { endOpenerConnection(id) }
+        companionFollow.rows.removeAll()
         linkForwards.stopAll()
         remoteTick?.cancel()
         remoteTick = nil
@@ -99,6 +110,21 @@ extension ControlServer {
         } else {
             stopRemotePresentation(session.id)
         }
+    }
+
+    /// observesMembershipOnly says `session` is a page root attached from a Mac: the origin shows the page's asks and
+    /// picks itself, so the row follows only its companion membership and keeps its page channel's state.
+    static func observesMembershipOnly(_ session: Session, binding: RemoteBinding) -> Bool {
+        session.content == .page && session.parentID == nil && !binding.originHeadless && !binding.catalogOwned
+    }
+
+    private func observerEffects(for id: UUID) -> RemotePresentationEffects {
+        RemotePresentationEffects(
+            status: { _ in }, snapshotStatus: { _ in }, hud: { _ in }, notify: { _ in },
+            connection: { [weak self] connection in self?.companionStreamChanged(connection, forSession: id) },
+            companions: { [weak self] companions in self?.applyOriginCompanions(companions, forSession: id) },
+            ended: { [weak self] in self?.forgetCompanionFollow(id) },
+            warn: { reason in remoteLogger.info("membership stream for \(id, privacy: .public): \(reason, privacy: .public)") })
     }
 
     private func remoteEffects(for id: UUID) -> RemotePresentationEffects {
@@ -118,7 +144,11 @@ extension ControlServer {
                                                 origin: .mirrored)
             },
             connection: { [weak self] connection in
-                if case .failed = connection { self?.resolveRemoteEnd(id) }
+                if case .failed = connection {
+                    self?.resolveRemoteEnd(id)
+                    self?.renewOpenerConnection(id)
+                }
+                self?.companionStreamChanged(connection, forSession: id)
                 self?.library.store(forSession: id)?.setRemoteConnection(connection, forSession: id)
             },
             context: { [weak self] context in
@@ -150,8 +180,11 @@ extension ControlServer {
             pageCommand: { [weak self] command in self?.applyReplicaPageCommand(command, forSession: id) },
             respawns: { [weak self] respawns, seed in self?.applyRemoteRespawns(respawns, seed: seed, forSession: id) },
             linkRefused: { [weak self] reason in self?.refuseRemoteLinkClick(reason, session: id) },
+            linkClickRefused: { [weak self] click in self?.remoteOpeners.finish(click) },
+            linkSnapshot: { [weak self] snapshot in self?.receiveLinkSnapshot(snapshot, forSession: id) },
             message: { [weak self] message in self?.library.store(forSession: id)?.emitRemoteMessage(message, forSession: id) },
             mail: { [weak self] mail in self?.library.store(forSession: id)?.applyRemoteMail(mail, forSession: id) },
+            companions: { [weak self] companions in self?.applyOriginCompanions(companions, forSession: id) },
             leads: { [weak self] in
                 guard let store = self?.library.store(forSession: id), let session = store.session(withID: id) else { return [] }
                 return store.originLeads(of: session)
@@ -226,6 +259,7 @@ extension ControlServer {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard let self, !Task.isCancelled else { return }
+                self.tickRemoteOpeners()
                 // respawn entries keep it alive so the last row's own prune still runs after that row is gone
                 guard !self.remoteClients.isEmpty || !RemoteReconnectBook.shared.isEmpty
                         || !RemoteRespawnBook.shared.entries.isEmpty else {
@@ -234,6 +268,7 @@ extension ControlServer {
                 }
                 for client in self.remoteClients.values { client.tick() }
                 self.tickReconnects()
+                self.tickCompanionFollow()
             }
         }
     }

@@ -37,6 +37,23 @@ struct ServerActionsSessionsTests {
         #expect(harness.store.selectedSessionID != session.id)
     }
 
+    @Test(arguments: [(true as Bool?, "htop" as String?, "30" as String?), (false, "htop", nil), (nil, "htop", nil), (true, nil, nil)])
+    func aNewPaneHoldsItsProgramOnlyWhenTheRequestAttachesIt(pending: Bool?, command: String?, hold: String?) async throws {
+        var args = ControlArgs()
+        args.attachPending = pending
+        args.command = command
+
+        try harness.session(await harness.actions.serve(ControlRequest(cmd: .sessionNew, args: args)))
+
+        #expect(harness.runner.launches.last?.environment["ZMX_HOLD_UNTIL_ATTACH"] == hold)
+    }
+
+    @Test func aStartOutsideARequestHoldsNothing() throws {
+        try harness.session(newSession())
+
+        #expect(harness.runner.launches.last?.environment["ZMX_HOLD_UNTIL_ATTACH"] == nil)
+    }
+
     @Test func aSessionCommandRunsThroughTheLoginShellAndEndsThePane() throws {
         _ = newSession(command: "htop")
 
@@ -52,6 +69,16 @@ struct ServerActionsSessionsTests {
 
         #expect(reply == ControlResponse(ok: false, error: "could not start the pane: zmx: boom"))
         #expect(harness.store.workspaces.flatMap(\.sessions).count == before)
+    }
+
+    @Test func aNewSessionGoesToTheRootByTheRootTarget() throws {
+        let reply = harness.actions.createSession(ControlSessionCreateOptions(window: nil, cwd: nil, workspace: "root",
+                                                                              workspaceName: nil, createWorkspace: nil, command: nil,
+                                                                              wait: nil, name: nil, after: nil, before: nil,
+                                                                              noSelect: false))
+
+        let session = try harness.session(reply)
+        #expect(harness.store.workspace(forSession: session.id)?.isRoot == true)
     }
 
     @Test func anUnsupportedLoginShellIsRefused() throws {

@@ -82,6 +82,10 @@ The event kinds and payloads are:
   carries the recipient's `paneID`, the sender's address as `from` (absent for a sender outside
   agterm) and `messageID`; never the body. One event per delivered recipient. The human line reads
   `HH:MM:SS message NAME pane-id=ID from=SENDER id=MESSAGE-ID`, with `from=-` for an anonymous sender.
+- `opener.run`: an `open` rule ran on a ⌘-clicked file. Session `name`, the clicked `pane`, the `path` the
+  command received in `$AGT_PATH`, the rule's `selector` list as `keymap.conf` wrote it, and `host` when the
+  file was copied from another host. Emitted once the command started. The human line reads
+  `HH:MM:SS opener.run NAME PANE selector=SELECTORS path=PATH [host=HOST]`.
 
 Every event has `seq` (app-wide sequence), `ts` (Unix timestamp), `kind`, optional
 `window`/`workspace`/`session` ids, and `payload`. Human mode prints one compact line. `--json` emits
@@ -123,10 +127,11 @@ waits forever on an absent app. SIGINT and SIGTERM use normal process behavior.
   restore it. Reselecting the already-selected session does not count: `session select`,
   `session overlay open --follow` and single-session `session go` leave it in place. `workspace select` on an EMPTY
   workspace has no session to select, so it takes the target instead (and is revealed if the filter was
-  hiding it). Else the selected session's workspace, else the last one. A background create (`workspace new --collapsed`,
+  hiding it). Else, in the sidebar tree while the applied focus filter shows exactly one workspace and the selected
+  session is outside it or nothing is selected, that one; else the selected session's workspace (the top-level sessions when the selected session is one of
+  them), else the last named workspace, else the top-level sessions. A background create (`workspace new --collapsed`,
   `session new --create-workspace --no-select`) never takes it. The tree workspace node's `active` flag
-  reads the SELECTED session's workspace only, so right after a foreground create it can name a
-  different workspace than `--target active` resolves to; address by id when the two must agree.
+  reads this same resolution, so it names what `--target active` resolves to.
 - **For an agent, `active` is the USER's GUI-selected session, not yours.** Your shell is
   `$AGTERM_SESSION_ID`; the user is usually on a different session while you work. Pass
   `--target "$AGTERM_SESSION_ID"` on any session-scoped command (`session overlay open`, `session scratch`,
@@ -175,12 +180,14 @@ from the server's catalog),
 `remoteSessionID` (the origin's id for the session an attached row shows, companions and page rows included,
 the id `zmx attach` takes; on a remote window's row it equals the row's `id`; omitted for a local session),
 `presentation` (on an attached session only: `state` is `connecting`, `connected`, `unsupported` for an
-origin too old to stream, or `failed` with the reason in `error`, and `mode` is `presenter` when this
+origin too old to stream and for a page row from another Mac, which reads `followsCompanions` instead, or `failed` with the reason in `error`, and `mode` is `presenter` when this
 row's stream holds the presenter role (see Remote sessions) or `mirror` when it does not; it says whether the stream is up,
 never whether the panes' ssh connections are),
 `presenters` (on an origin session: `viewers`, how many streams show it, one per attached row and not per
-Mac; `mirrors`, those without the presenter role; and `presenter: true` when one holds it; omitted when none
-does; an older origin omits `viewers`),
+Mac, a page root attached from another Mac included; `mirrors`, those without the presenter role; and
+`presenter: true` when one holds it; omitted when none does; an older origin omits `viewers`),
+`followsCompanions` (on an attached top-level row: true while it holds its origin's companion list and attaches
+new companions under itself; omitted for an origin too old to send one and while the stream is down),
 `remoteOverlays` (on an origin session: the overlay slots a presenting Mac holds, each `{pane?,
 sizePercent?, pageID?}`, `pageID` for a page, while the session itself stays uncovered here; omitted when
 none is held),
@@ -266,8 +273,8 @@ process — what it is running — omitted when the pane sits at its shell promp
 setuid/setgid foreground process like `top` or `sudo`, whose argv macOS refuses to expose),
 `foregroundShell`/`splitForegroundShell` (the shell HOLDING each pane's foreground as a basename — `zsh`,
 `fish` — present exactly when that pane's `foreground` is omitted because a shell holds it. For a pane that
-EXISTS, both omitted together means agterm could not read the process, which is how you tell "a shell has it"
-from "cannot tell"; check `hasSplit` before reading the split pair, since a session with no split omits both
+EXISTS, both omitted together means agterm could not read the process, or that the pane's program is still held
+until its terminal attaches, which is how you tell "a shell has it" from "cannot tell"; check `hasSplit` before reading the split pair, since a session with no split omits both
 simply because there is no pane. It is NOT a claim the pane is at a prompt and NEVER permission to type: a
 builtin like `read` runs inside the shell, so a pane blocked on input is indistinguishable from an idle one.
 A shell agterm does not recognize, outside its known set and your `$SHELL`, reports in `foreground` like any
@@ -321,8 +328,10 @@ the flat layout and, under the tree layout, the workspaces holding a flagged ses
 says, `tree` mode with the filter OFF renders the whole tree regardless of membership, and only `tree`
 mode with the filter ON narrows visibility to the members), and `collapsed` (whether this workspace is COLLAPSED in the sidebar tree — the read side of
 `workspace collapse`/`workspace expand` and `workspace new --collapsed`; `true` when collapsed, omitted
-when expanded, so an all-expanded tree carries no `collapsed` keys), and `tint`/`tintOn` (the workspace row's own
-tint, the read side of `workspace tint`; both omitted when untinted).
+when expanded, so an all-expanded tree carries no `collapsed` keys), `tint`/`tintOn` (the workspace row's own
+tint, the read side of `workspace tint`; both omitted when untinted), and `root` (`true` on the one node holding the
+window's top-level sessions, the sessions outside any workspace: its `name` is empty, it comes last in `workspaces` and
+shows first in the sidebar; omitted on every named workspace).
 
 The tree object itself carries these top-level read-only fields: `idleMs` (milliseconds since the last
 user input in the window, omitted before any activity), `autoFollowMs` (the window's Auto-follow
@@ -377,6 +386,12 @@ buys nothing. A caller with no tree uses `version`.
 
 ## workspace
 
+Each window also holds its top-level sessions, the sessions outside any workspace, in one container shown at the top
+of the sidebar. `root` names it wherever a workspace is expected: `session new --workspace`, `session move <workspace>`,
+`zmx attach --workspace`, `msg send --all --workspace`, and `--target` on `workspace focus` and `workspace flag`;
+`active` resolves to it when it is the current container (Addressing above). The commands that act on one named
+workspace (rename, delete, select, move, collapse, expand, tint and detach) refuse it, by `root`, id, prefix or `active`, with `top-level sessions are not a workspace`.
+
 - `workspace new [name] [--collapsed] [--tint COLOR [--tint-on PARTS]] [--window W]` — create a workspace; returns its id. Name defaults
   to an auto-generated one. `--collapsed` creates it CLOSED in the sidebar tree so a script can build a
   workspace and fill it with `session new --no-select` without it ever opening (a fresh workspace is
@@ -388,7 +403,8 @@ buys nothing. A caller with no tree uses `version`.
   row tint, as `workspace tint` sets one; `--tint-on` without `--tint` is refused, and an invalid value
   creates nothing.
 - `workspace rename <name> [--target] [--window W]`.
-- `workspace delete [--target] [--window W]` — keep-at-least-one; deleting the last workspace errors.
+- `workspace delete [--target] [--window W]` — deletes the last named workspace too, which leaves only the top-level
+  sessions.
 - `workspace select [--target] [--window W]`.
 - `workspace go --to next|prev [--window W]` — step the CURRENT workspace one place through the
   sidebar's visible order, wrapping at both ends, and select the workspace it lands on. Relative, so it
@@ -398,13 +414,15 @@ buys nothing. A caller with no tree uses `version`.
   like any other. While the focus filter is applied, stepping is confined to the marked workspaces, the
   same scoping `session go` gets. Errors with `no other workspace to navigate to` when there is nowhere
   to step: flagged mode under any layout (stepping follows the focus projection, which the flagged
-  tree does not render), or a single visible workspace.
+  tree does not render), no visible workspace, or a single visible one that is already current, except that a workspace the applied focus filter shows alone is
+  still entered while it holds a session and the selection is elsewhere or absent. The top-level
+  sessions are never a stop: from one of them
+  `next` enters the first visible workspace and `prev` the last, even when only one is visible.
 - `workspace move --to up|down|top|bottom [--target] [--window W]` — reorder among siblings. Missing
-  or invalid `--to` errors. Note: `--target active` resolves to the current workspace — a
-  foreground-created workspace that still holds the target, else the selected session's, else
-  the last one; address a specific workspace by id to step the same one.
-- `workspace focus [on|off|toggle|add] [--target] [--window W]` — mark or unmark ONE workspace in the
-  sidebar's focus SET; returns the workspace id. The sidebar renders the marked workspaces when the
+  or invalid `--to` errors. Note: `--target active` resolves to the current container (Addressing above),
+  which can change between calls; address a specific workspace by id to step the same one.
+- `workspace focus [on|off|toggle|add] [--target] [--window W]` — mark or unmark ONE workspace, or the top-level
+  sessions with `--target root`, in the sidebar's focus SET; returns the workspace id. The sidebar renders the marked workspaces when the
   filter is applied, all of them when it is not. `on` sets the marked set to just this workspace and
   APPLIES the filter (the single-workspace zoom); `off` removes it, and the filter switches off once the
   set empties; `toggle` (the default) replace-toggles — it clears when the set is exactly this workspace
@@ -454,7 +472,7 @@ buys nothing. A caller with no tree uses `version`.
   entry, and the `toggle_workspace_filter` keymap action.
 - `workspace flag [on|off|toggle] [--target W] [--window W]` — flag or unflag EVERY session of one workspace
   as one value, including those the flagged tree layout hides; the control twin of the workspace row's Flag
-  All Sessions. `toggle` (default) unflags only when every session is flagged and otherwise flags them all,
+  All Sessions. `--target root` flags the top-level sessions. `toggle` (default) unflags only when every session is flagged and otherwise flags them all,
   so it is not a per-session invert. `on`/`off` are idempotent; an empty workspace changes nothing; returns the workspace
   id. Read back from each session's `flagged`. Unflagging can move the selection like `session flag off`.
 - `workspace tint <COLOR|clear> [--on PARTS] [--target W] [--window W]` - tint the workspace's OWN sidebar
@@ -476,7 +494,7 @@ buys nothing. A caller with no tree uses `version`.
 - `session new [--cwd DIR] [--workspace W] [--workspace-name NAME] [--create-workspace] [--command CMD] [--wait] [--name NAME] [--after SID | --before SID] [--no-select] [--tint COLOR [--tint-on PARTS]] [--window W]`
   — create a session and focus it; returns the new id. `--cwd` sets the start directory (default
   `$HOME`). The destination workspace is addressed one of two mutually-exclusive ways: `--workspace`
-  (id / unique prefix / `active`, the default) or `--workspace-name` (the sidebar label) — the latter
+  (id / unique prefix / `active`, the default, or `root` for the top-level sessions) or `--workspace-name` (the sidebar label) — the latter
   errors if no workspace has that name unless `--create-workspace` is also passed, which reuses an
   existing one or creates it when absent (idempotent). `--command` runs that command as the session's
   process instead of the login shell (no echoed command line; the session closes when the command
@@ -538,7 +556,8 @@ buys nothing. A caller with no tree uses `version`.
   its output after it exits.
   A companion reorders among its siblings (drag or `session move`) and moves under another session with
   `session move --parent` or a drag onto that session; moving the parent carries its
-  companions. Other session commands (status, notify, type, split, rename, flag, close) act on a companion
+  companions. A top-level session joins another's group the same way, bringing its own companions, and
+  `session move --top-level` makes a companion top-level again. Other session commands (status, notify, type, split, rename, flag, close) act on a companion
   as on any session; closing one closes only it. Closing the parent closes its companions too, and one undo
   (Reopen Closed Item) restores the group. If the parent's shell exits while it has companions, a fresh
   login shell starts in that pane's last directory instead of the session closing (a parent created with
@@ -555,7 +574,9 @@ buys nothing. A caller with no tree uses `version`.
   here at the end of the window's current workspace, selected; prints the new row's id. On HOST it goes into the
   workspace named `--workspace-name`, default the current workspace's name, the first when several share it,
   created when missing, and selects
-  nothing there. `--origin-window` names a Mac's window by id or unique prefix, needed when it has several open;
+  nothing there. When the current container here is the top-level sessions and no `--workspace-name` is given, it
+  goes among HOST's top-level sessions, and a HOST predating them refuses before creating anything; a
+  `--workspace-name` still names HOST's workspace while the row here lands among the top-level sessions. `--origin-window` names a Mac's window by id or unique prefix, needed when it has several open;
   agterm-server refuses it. `--cwd` and `--command` are HOST's. A host that does not answer or does not report Live
   sessions or agterm-server is refused before anything is created. The create is sent once: a session created but
   not attached is named in the error for `zmx attach HOST ID`, and a lost reply is reported as an unknown outcome. Refuses `--parent`,
@@ -592,19 +613,33 @@ buys nothing. A caller with no tree uses `version`.
   session) and `result.parent` (the fresh one), and the human output prints the fresh id. Read back as both
   nodes' `parent`. GUI twin: Convert to Companion in the row context menu and the Session menu, a palette row,
   and the keyless `convert_companion` action.
-- `session move --parent SID [--index N] [--target T] [--window W]` - move a companion under another top-level
-  session of the same window, any workspace, keeping its id and running panes. `--index` is its 0-based place
+- `session move --parent SID [--index N] [--target T] [--window W]` - move a session under another top-level
+  session of the same window, any workspace, keeping its id and running panes; a top-level target brings its companions. `--index` is its 0-based place
   among the new parent's companions (omitted or past the end: last); on a server window it counts the server's
   group, rows this Mac detached included. The current parent reorders it. Takes no
-  workspace, `--to`, `--after`/`--before`, and one target. Refusals: `not a companion`, `the new parent must be a
-  top-level session`, `a companion moves only under a session from the same host`; an app predating it answers
+  workspace, `--to`, `--after`/`--before`, and one target. Refusals: `a session cannot move under itself`, `the new parent must be a
+  top-level session`, `a companion moves only under a session from the same host`; an owner predating top-level
+  movers refuses nesting a top-level session with `not a companion`; an app predating it answers
   `the running app is too old for companion moves`. A remote window's row moves on its server or Mac (an older one
   answers `the agterm-server on HOST is too old for companion moves`, or `the agterm on HOST ...` for a Mac); on a session attached from another Mac
-  both rows must come from it; for a new parent that Mac moves its companion and then the row moves here (a
-  reorder under the same parent stays here), and another Mac attached
+  both rows must come from it; for a new parent that Mac moves its own session, with the companions it has there, and then the row moves here with the
+  companions shown under it (a reorder under the same parent stays here), and another Mac attached
   to the same sessions keeps the old grouping until it reattaches. Wire command `session.companion.move`;
   returns `result.id` and `result.parent`. Read back as the node's `parent` and tree order. GUI twins: a drag in
-  the sidebar tree and Move to in a companion row's context menu.
+  the sidebar tree, a drop on another top-level session's row, and Move Under in a companion row's context menu.
+- `session move --top-level [WORKSPACE | --after SID | --before SID] [--target T] [--window W]` - make a companion a
+  top-level session, keeping its id and running panes: right after the group it leaves when no destination is given,
+  appended to a workspace (`root` for the top-level sessions), or beside the anchor's whole group, its former
+  parent included. Takes no `--parent`, `--index` or `--to`, and one target. Refusals: `not a companion`,
+  `a session cannot be placed beside itself`; an app predating it answers
+  `the running app is too old for companion promotion`. A plain `session move` that would take a companion out of its
+  group still refuses. A remote window's row is promoted by its server or Mac (an older one answers `the agterm-server
+  on HOST is too old for companion promotion`, or `the agterm on HOST ...` for a Mac); an older Mac a session is
+  attached from answers `the agterm on HOST is too old for this`. On a session attached from another Mac whose parent comes
+  from that Mac too, that Mac promotes its own session and the row takes its place here; under any other parent the
+  grouping is this Mac's alone and changes only here. Wire command `session.companion.promote`; returns `result.id`.
+  Read back as the node's absent `parent` and tree order. GUI twins: a drop on a workspace row or between top-level
+  rows, and the workspaces in Move to on a companion row.
 - `session duplicate [--target] [--window W]` — create a fresh session in the SAME workspace as the
   target, inserted directly AFTER it, rooted at the target's focused-pane working directory (the live
   OSC 7 cwd the sidebar row shows and `session reveal` opens); selects + focuses the new session and
@@ -665,7 +700,7 @@ buys nothing. A caller with no tree uses `version`.
   Nth session of that set in sidebar order, 1-based, sessions in a collapsed workspace included; past the end it
   errors `no session at position N: M navigable` and leaves the selection alone. Returns the newly selected id.
 - `session move <workspace> [--target] [--window W]` — relocate the session to another workspace
-  (appends). OR `session move --to up|down|top|bottom [--target]` — reorder within its workspace. OR
+  (appends), `root` among the top-level sessions. OR `session move --to up|down|top|bottom [--target]` — reorder within its workspace. OR
   `session move --after SID | --before SID [--target]` — place the session directly after / before an
   anchor session (id / unique prefix / `active`). The anchor CARRIES ITS OWN WORKSPACE (resolved across
   all workspaces), so it relocates + positions in one shot, wherever the anchor lives — cross-workspace
@@ -677,7 +712,7 @@ buys nothing. A caller with no tree uses `version`.
   `--to up|down|top|bottom` because relative reorder is per-session. Batch moves return `result.affected`,
   counting only sessions whose position/workspace changed. Moving a parent carries its companions; a move
   that would take a companion out of its group errors `a companion moves only among its siblings; use --parent
-  to move it under another session`, while an
+  to move it under another session, or --top-level to make it a top-level session`, while an
   ordinary no-op move still answers ok.
 
 Shared pane selectors accept `primary`/`left`/`top` for the primary pane and
@@ -728,7 +763,15 @@ error keeps those names for compatibility.
   omitted and `left` are the main pane, which still reaches a promoted split survivor. An unparseable value
   is `--pane must be left, right, or scratch`, rejected in the dispatcher so a raw socket client gets it too.
   Read it back with `session text --pane` naming the same pane. A never-shown session →
-  `session not realized`.
+  `session not realized`. It follows ⌘V's rule: copied files paste as shell-escaped paths, and an image-only
+  clipboard is saved as a PNG whose path is pasted. In a pane whose program runs on another host (an attached
+  pane, a remote window's pane) the files or image are copied there first, up to 100 MB and 10,000 files and folders, and
+  the path pasted is the remote one; the reply waits for the copy, a failure answers its reason and pastes
+  nothing, and a second paste while the pane is copying answers `a paste is still copying`. Claude Code attaches
+  a pasted image path, so ⌘V, not Ctrl-V, pastes a screenshot into Claude Code in a remote pane: its own Ctrl-V
+  reads the clipboard of the host it runs on. A ghostty.conf paste binding, and the bundled one at the V position on a Latin alternative layout, paste text only there.
+- `paste receive` — internal, run by agterm over ssh on the host where a pasted file must land; never run it by
+  hand.
 - `session select-all [--target] [--window W]` — select the session's entire terminal buffer (main pane),
   the socket analogue of ⌘A / Edit ▸ Select All (libghostty `select_all`). Read the resulting selection
   back with `session copy`. A never-shown session → `session not realized`.
@@ -792,7 +835,9 @@ error keeps those names for compatibility.
   4096 bytes. Clears that pane's status, ask, HUD and pane overlay; keeps its restore pin. A
   background or disowned job of the old shell is not ended. An error naming the old shell's pid means its
   daemon kill was confirmed. If the old foreground job survives SIGKILL or the pane cannot be rebuilt, the
-  pane closes and the error says so. A startup timeout reports only that no new shell was observed.
+  pane closes and the error says so. A new shell not confirmed within 10 s is an error ("could not be verified in
+  time"), though the line may already run, so read `tree` before retrying. Attached Macs still follow a
+  shell that comes up within a minute.
   Does not need the display awake.
 - `session swap [--target] [--window W]`: exchange both terminals' physical positions and primary/split
   roles without restarting either process. Focus follows its terminal; split axis and ratio stay fixed.
@@ -1127,6 +1172,9 @@ error keeps those names for compatibility.
   page gets NO file access (it is loaded from the file's text), so keep it self-contained: inline CSS and
   SVG, data URIs, or remote images and stylesheets. With `--cwd DIR` the page may read files inside DIR, relative links and assets work, and FILE
   must be inside DIR; `/` and the home directory are refused (`cwd must not be / or the home directory`).
+  agterm reads FILE itself, when the page shows and again on reload, so a `<(...)` path (`/dev/fd/N`) is refused
+  here and for `--image`, `--markdown` and `--text`: pass a named file. For self-contained HTML, zsh's
+  `=(...)` with `--block` keeps the file until the page closes.
   Relative paths resolve against your shell's directory. A page that styles nothing takes the
   terminal theme's background, text color and light/dark scheme (`--background-color` replaces the
   background); any CSS the page sets wins. Every page also gets the theme as CSS variables,
@@ -1359,7 +1407,8 @@ error keeps those names for compatibility.
   mode, and from Recent Closed; when its file or server is gone, the row stays with the error and a Reload
   button. A saved `--js` file page runs its scripts with the full control bridge at every launch and every
   reopen, with no user action, which is more than a restored `--command` gets (that reruns only in Re-run
-  commands mode); a URL page gets no bridge. A row attached from another Mac is never saved.
+  commands mode); a URL page gets no bridge. On relaunch, agterm restores an attached page session and asks its host for the
+  page again.
 - `session overlay reload [--current] [--pane left|right] [--target] [--window W]` — reload an HTML
   overlay: the file or URL it was opened with (after you rewrote the artifact), or with `--current` the
   page it shows now. Errors `no overlay`, and `the overlay is not an html page` for a program.
@@ -1580,7 +1629,9 @@ sandbox-local executable path.
 ## window
 
 - `window new [name] [--minimized]` — create and open a window; returns its id. It replies only once
-  the on-screen window exists, so an immediate `window resize`/`move` on the returned id works.
+  the on-screen window exists, so an immediate `window resize`/`move` on the returned id works. Its first shell
+  starts among the top-level sessions when the frontmost window's selected session is one, in a new `workspace 1`
+  otherwise and when the frontmost window is a remote window.
   `--minimized` parks it in the Dock right after creating it, and leaves frontmost on a window you can
   still see — for building a set of project windows and ending up on one you are looking at. The window
   is presented briefly before it is parked, so expect it to appear and take focus on its way to the Dock.
@@ -1688,6 +1739,11 @@ the Mac showing it; `catalog` is served by agterm-server and by that other Mac.
   mode takes them for the window `--window` names by full id and refuses a request naming none
   (`the request names no window on HOST`). That Mac's `window list` and `tree` report `catalogViewers` on a window
   other Macs show, omitted at none.
+- `--attach-pending` on `session new`, `duplicate`, `scratch` and `restart`: agterm-server holds the program a new
+  terminal pane starts (not a
+  plain shell) until a terminal attaches, at most 30 s, so its startup terminal queries can get answers. A Mac accepts and ignores it. agterm sends it when it
+  creates or restarts a server pane it will attach; a command created on the server without it starts at once (user guide,
+  Open a remote window).
 - On agterm-server: one window (the catalog, `--window` takes its id or `active`); `NAME is not available on
   agterm-server` for every command it does not serve (window mutations, sidebar, font, theme, keymap, quick,
   dashboard, zoom and more; `window list`, `msg send/read/ack` between its own panes and the presenter bridges
@@ -2079,7 +2135,7 @@ is drawn on screen.
   (`msg.send`). PANE is a pane id (`surfaces[].paneID` from `tree --json`) or `left` (alias `primary`, `top`), `right`
   (`split`, `bottom`) or `scratch`, resolved once at send time; a bare session is an error. Aliases of one pane are delivered
   once. `--all` reaches every live pane in every open window except the sender and remote rows;
-  `--workspace` narrows it. A split hidden since launch has no terminal yet and is not a live pane.
+  `--workspace` narrows it (`root` for the top-level sessions). A split hidden since launch has no terminal yet and is not a live pane.
   The reply carries `messageID` (shared by every copy), `delivered` (canonical `SESSION:PANE-ID`
   addresses) and `rejected` (`{address, reason, detail?}`, reason `mailbox full` or `unknown pane`; `detail`
   says more, as `remote session` does). The CLI prints the id, one stderr line per rejection (the detail when
@@ -2164,6 +2220,9 @@ still shows its panel. An unknown name answers `no custom command named NAME`.
   `--repeat` shortcut kept a leader sequence) and `errorHud` are
   always booleans, `errorPosition` is the canonical position (default `center`), and `errorPane` is `left` or `right`,
   omitted for session-wide placement. The human listing shows `--repeat` and error options for opted-in commands.
+- `openers[]` — the `open` lines: `selectors` (the ones each line still owns after a later line took one),
+  `command` and `line`, plus `errorHud`, `errorPosition` and `errorPane` (when set) for a line with `--error-hud`;
+  omitted when there are none.
 - `diagnostics[]` — `line` + `message` per parse problem (`keymap.reload` returns only the count).
 - `menu[]` — the key equivalents the menu bar carries: `chord`, the owning `menu`, the item `title`, its
   `selector`, and `enabled: false` when the item is disabled. agterm's own items report `menuAction:`;
@@ -2192,7 +2251,7 @@ line can express — such an item is AppKit's own and never matches an action.
 ### keymap.conf format
 
 The file lives at `<config dir>/keymap.conf` (default `~/.config/agterm`; the dir is set in Settings ▸
-Key Mapping). Three verbs, line-based; blank lines and `#` comments ignored:
+Key Mapping). Four verbs, line-based; blank lines and `#` comments ignored:
 
 - `map <chord> [--repeat] <action>` — rebind a built-in menu action.
 - `command "<name>" [chord] [--repeat] [error options] <shell...>` — define a custom shell command, listed in the action palette
@@ -2213,6 +2272,25 @@ Key Mapping). Three verbs, line-based; blank lines and `#` comments ignored:
   agterm's own monitor, so it takes NO part in the collision rules below — it may share a chord with a
   menu item, but the global hotkey wins even when agterm is frontmost.
   `global-hotkey f5` takes F5 from every application and from agterm local map/command bindings.
+- `open <selectors> [error options] <shell...>` — run the user's own program instead of the built-in page when
+  a file is ⌘-clicked. Selectors are comma-separated, no spaces: `*.ext` (any case) or an exact file name; a
+  file name beats an extension, and a selector named again on a later line moves there with a diagnostic.
+  No chord, no `--repeat`, and no `{AGT_…}` token: the shell text runs verbatim under `/bin/sh -c` from
+  HOME, the file in `$AGT_PATH` and the clicked pane's context in the other `$AGT_*` variables.
+
+  ```text
+  open *.md,*.markdown --error-hud glow-page.sh "$AGT_PATH"
+  ```
+
+  A rule runs only for a normal link click on a path ghostty detected in the output (never an OSC 8
+  hyperlink, whose target the screen need not show, nor the browser or reveal intent), on a regular file that
+  opens as a picture, markdown, text or HTML page. In a session attached from another Mac or an agterm-server
+  host, the file is copied here first (one file, within its page's size limit, under `agterm/open` in the
+  cache folder, swept after an hour at launch and on the next copy) and the rule runs on the copy; an
+  over-limit file and an older origin follow the built-in page rules, and a click sent under a panel can only
+  take the copy. The path is untrusted output:
+  a renderer must not feed the file's HTML unescaped to `overlay open --html`, whose page drives agterm
+  through `data-agterm` tags; show the file itself with `--markdown` or `--text`.
 
 On Linux, the verb is accepted for shared configuration compatibility but is not registered with the
 desktop or compositor. Quick Terminal remains in-window and its ordinary `quick_terminal` map is app-local.
@@ -2561,6 +2639,8 @@ and noninteractive SSH must find its `agtermctl`.
 `presentation` (the presentation protocol version, absent from an app too old to stream),
 and `sessions`, each with `id`, `name`, `windowID`/`windowName` and `workspaceID`/`workspaceName` (show the
 names, group by the ids — neither is unique, so two windows called `main` merge if you group by name),
+`workspaceRoot` (`true` for a session among that host's top-level sessions, whose `workspaceName` is empty; omitted
+otherwise and from a host predating them),
 `context` when its owner set one, `cwd`, `splitAxis` when it has a split, `status`/`statusColor`/`statusShape`
 as the far side's `tree` reports them (omitted when idle, and from an app too old to send them), `parent` on a
 companion, `content: "page"` on a page session, `companions` on a top-level session (every companion in
@@ -2579,11 +2659,15 @@ each pane (a page session needs none), and the far side must be new enough to an
 half-attached. It also needs `agtermctl` installed by the cask or the Help action: a machine merely
 running agterm has no CLI an ssh command can find, and the read fails with exit 127.
 
-`agtermctl zmx attach HOST SESSION [--window W]` opens one of those sessions here, marked remote, in
-the destination window's current workspace, selected, with the remote session's split when it has one.
+`agtermctl zmx attach HOST SESSION [--window W] [--workspace W | --workspace-name NAME [--create-workspace]]`
+opens one of those sessions here, marked remote, in the destination window's current workspace, selected, with the remote session's split when it has one.
 `--window` takes a local open window ID, unique prefix, or `active`; omitted, it uses the frontmost window
 after discovery. An invalid or closed destination fails without creating a session. Targeting a background
-window leaves the frontmost window unchanged. `SESSION` is the
+window leaves the frontmost window unchanged. `--workspace W` (id, unique prefix, `active`, or `root` for the top-level sessions) or
+`--workspace-name NAME` puts the row in that workspace of the window instead of the current one;
+`--create-workspace` with a name creates it when missing and reuses it otherwise, and a missing name without it
+fails before anything is created. A missing workspace is created only once the row can be placed, so a refused
+attach adds none. A companion that joins its parent's row goes where that row is. `SESSION` is the
 `id` from `zmx tree`, never the name: remote names are editable and repeat across workspaces. Returns the
 new local session's `id`; read `remoteHost` and `remoteSessionID` on its tree node. The remote is resolved AGAIN before anything
 is created, so a session that has gone since the listing fails and creates nothing. A connection that
@@ -2598,7 +2682,7 @@ pane's ssh joins an existing `ControlMaster` connection, that master's settings 
 
 A terminal companion attached on its own opens under the one row in the destination window attached from
 its parent, in that row's workspace (`result.parent` names it); with no such row, or more than one, it opens on its own.
-A top-level page session opens as a top-level row in the destination window's current workspace, showing that
+A top-level page session opens as a top-level row in the destination workspace, showing that
 Mac's page through its own channel; with `--companions` its companions attach under it.
 `agtermctl zmx attach HOST SESSION --companions` (`zmx.attach.group`) attaches a top-level session and then
 each of its companions under it from one read, in the origin's companion order when reported and in the
@@ -2607,7 +2691,7 @@ reply's `id` is the parent here and `remoteGroup` carries `membershipKnown` plus
 per member, `id` recording that the row was created, not that it still exists. Any member unavailable or failing makes the command fail with the attached rows kept and the
 error naming the parent and what is missing; `membershipKnown: false` means the origin does not report
 `companions`, so one it did not list cannot be named. An app too old for the command creates nothing.
-Companions created on the origin later are not followed.
+A top-level attached row then follows its origin session: a companion created or moved under it there later attaches under the row without changing the selection or the origin's lead, unless this Mac already shows it, and one closed here is never attached again by itself. With two rows attached from one origin session a new companion gets one row, under either. A listed companion that is not attachable yet (ended, its daemon not up) waits for the next membership change or reconnect, so one restarted on the origin is picked up then, not at the restart. A page root attached from another Mac follows through a membership-only stream. An origin that predates the `companions` kind follows nothing; `followsCompanions` in `tree` reads it back.
 
 File ▸ Attach Remote… is the same flow in the GUI and has no command of its own: it offers the machines in
 `<config dir>/remotes.conf` (one `destination [label]` per line, `#` comments), asks which in the picker
@@ -2617,8 +2701,7 @@ companions when it is a top-level session. It is the
 `zmx tree`, `pick` and `zmx attach --companions` instead.
 
 A program in an attached session runs on the origin and talks to the origin's agterm, so what it asks
-agterm to draw would show there only. Every terminal attach therefore also opens a presentation stream (a page row
-uses its page channel instead and mirrors nothing), and this
+agterm to draw would show there only. Every terminal attach therefore also opens a presentation stream (a page row from another Mac uses its page channel instead and mirrors nothing, following only its companions when it is top-level; one from agterm-server gets the full stream), and this
 Mac mirrors the origin session's status, its `session context`, its `session info` line, its `notify` notifications, its HUD and
 the layout of panes already attached.
 Nothing has to be set up beyond the `agtermctl` PATH precondition above. What to expect:
@@ -2729,7 +2812,8 @@ be typed.
 
 Closing a remote session here ends only this side's connection: the far-side processes keep running and
 nothing agterm does from this end can kill them. An open attached row is saved and attached again at the next
-launch whatever the restore mode is, without taking the lead from a Mac that took it meanwhile. A row whose
+launch whatever the restore mode is, and a reopened window attaches its rows again too; a pane this Mac led takes
+the lead back under the reconnect rule below. A row whose
 session the origin no longer has closes instead; an attached page waits for the origin to hand it
 over and retries while the host does not answer.
 
@@ -2749,6 +2833,15 @@ Each pane's `lead` in `tree` reads `leader`, `follower` or `unowned`. It is abse
 daemon to lead, which is every local pane outside Live sessions mode (`agtermctl restore mode`), and when
 an agterm on either side predates the lead. `agtermctl session lead [--pane left|right]` takes the lead
 for this Mac, as pressing a key on the cover does.
+
+A pane or scratch that reconnects after its ssh dropped takes the lead back when this Mac led it at the drop and
+nobody has used it since: this Mac's lost connection still holds the lead, or another Mac took it only
+because the pane was free and nothing was typed, pasted or clicked there since. Otherwise it comes back
+covered. A relaunch or a reopened window does the same for each pane this Mac led when it left: in an attached
+session, in a remote window, and in this Mac's own Live sessions while another Mac shows them; opening a
+window of another Mac takes the lead outright instead. Text a script
+types with `session type` on the Mac the session runs on does not count as use. A session started by an agterm without this
+behavior keeps leaving the lead where it is until it ends.
 
 On the Mac the session RUNS on, a covered pane stays fully drivable: `session type`, `session text` and
 `surface cursor` go through the session's daemon and answer for the real layout, so pane-to-pane
@@ -2796,7 +2889,8 @@ unless another window already holds its session or workspace; the window is not 
 `result.recentOpen`: `item` (the entry, as `list` shows it), `window` (where it went) and `complete`,
 false when the entry is still in the list afterwards; a Mac answering a remote window adds `restored`, every row
 the open brought back. An unknown or closed `--window` fails before
-anything is restored. Errors: `no recently closed items`, `no such recent item: ID`, ambiguous prefix.
+anything is restored. Without `--window`, a server window frontmost refuses it with
+`recent.open is not available in a remote window`. Errors: `no recently closed items`, `no such recent item: ID`, ambiguous prefix.
 A lone companion comes back under its parent, reopening the parent's entry (or the removed workspace
 holding the parent) first when the parent is not open; when the parent is neither open nor in Recent
 Closed it errors `parent session is not open or in Recent Closed`.

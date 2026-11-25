@@ -6,7 +6,11 @@ extension AppStore {
     /// rows; nil when it has none.
     func attachedSnapshots(of workspace: Workspace) -> [AttachedSessionSnapshot]? {
         let rows = workspace.sessions.enumerated().compactMap { index, session -> AttachedSessionSnapshot? in
-            session.attachedOrigin.map { AttachedSessionSnapshot(index: index, session: attachedSessionSnapshot(session), origin: $0) }
+            session.attachedOrigin.map {
+                AttachedSessionSnapshot(index: index, session: attachedSessionSnapshot(session), origin: $0,
+                                        followedCompanions: session.followedCompanions.isEmpty ? nil : session.followedCompanions.sorted(),
+                                        companionsBaselined: session.companionsBaselined ? true : nil)
+            }
         }
         return rows.isEmpty ? nil : rows
     }
@@ -25,8 +29,8 @@ extension AppStore {
                                ended: session.ended ? true : nil)
     }
 
-    /// attachedSession rebuilds a saved attached row. A terminal row runs its saved attach lines again without taking
-    /// the lead, and a page row waits for its origin to hand the page over.
+    /// attachedSession rebuilds a saved attached row. A terminal row runs its saved attach lines again without a lead
+    /// claim, reclaiming each pane's saved lead, and a page row waits for its origin to hand the page over.
     func attachedSession(from saved: AttachedSessionSnapshot) -> Session {
         let snapshot = saved.session
         let origin = saved.origin
@@ -53,8 +57,11 @@ extension AppStore {
                                                   right: hasSplit ? snapshot.paneBackgrounds?.right : nil)
         session.remotePresentation = RemotePresentationState(binding: binding)
         session.awaitsOriginCheck = true
+        session.followedCompanions = Set(saved.followedCompanions ?? [])
+        session.companionsBaselined = saved.companionsBaselined == true
         guard !page else {
-            // a Mac's page row has no stream, so its row says it waits for the page until the origin hands it over
+            // a Mac's page row has no full stream (a root only observes membership), so its row says it waits for the
+            // page until the origin hands it over
             session.remotePresentation?.connection = .connecting
             return session
         }
@@ -71,11 +78,12 @@ extension AppStore {
         return session
     }
 
-    // a relaunch attaches without claiming: whoever took the lead while this Mac was away keeps it
+    // without a claim, so a lead someone used while this Mac was away stays theirs; the saved lead names the old
+    // attach to take it back from, and zmx patch 0008 decides whether the current leader yields
     private func attachLine(_ origin: AttachedOriginSnapshot, pane: UUID, role: ZmxPaneRole) -> String? {
-        guard let daemon = origin.binding.daemon(forLocalPane: pane) else { return nil }
-        let lead = ZmxLeadAttachment(claim: false)
-        guard let line = try? RemoteSession.attachPaneCommand(host: origin.host, endpoint: origin.endpoint, daemon: daemon,
+        guard let saved = origin.panes.first(where: { $0.pane == pane }) else { return nil }
+        let lead = ZmxLeadAttachment(claim: false, reclaim: saved.lead)
+        guard let line = try? RemoteSession.attachPaneCommand(host: origin.host, endpoint: origin.endpoint, daemon: saved.daemon,
                                                               session: origin.sessionName, pane: role, lead: lead) else { return nil }
         ZmxLeadBook.shared.begin(lead, pane: pane)
         return line

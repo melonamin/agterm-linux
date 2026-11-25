@@ -48,13 +48,21 @@ public struct RemotePresentationEffects {
     public var respawns: @MainActor (PresentationRespawns, Bool) -> Void
     /// linkRefused reports the origin refused a click this Mac forwarded.
     public var linkRefused: @MainActor (RemoteLinkRefusal) -> Void
+    /// linkClickRefused names the forwarded click a refusal answers, when that click carried an id; `linkRefused` still
+    /// reports the refusal itself.
+    public var linkClickRefused: @MainActor (UUID) -> Void
+    /// linkSnapshot reports the origin offering a forwarded click's file for an `open` rule here.
+    public var linkSnapshot: @MainActor (PresentationLinkSnapshot) -> Void
     /// message reports mail queued on the origin for one of the session's panes, to every viewer alike.
     public var message: @MainActor (PresentationMessage) -> Void
     /// mail replaces the origin's unacked counts per origin pane; nil from a snapshot of an origin that sends none.
     public var mail: @MainActor (PresentationMail?) -> Void
+    /// companions is the origin's companion membership of the session; nil from a snapshot that carries none.
+    public var companions: @MainActor (PresentationCompanions?) -> Void
     /// leads is the set of the origin's panes this Mac leads, read whenever the client checks for a change.
     public var leads: @MainActor () -> Set<UUID>
-    /// ended reports the origin removed the session for good; the client has stopped and never reconnects.
+    /// ended reports the origin removed the session for good, or, for an observer, that the origin's hello left out the
+    /// companions kind; either way the client has stopped and never reconnects.
     public var ended: @MainActor () -> Void
     /// acked reports the origin's answer to `RemotePresentationClient.ping`.
     public var acked: @MainActor () -> Void
@@ -82,8 +90,11 @@ public struct RemotePresentationEffects {
                 pageCommand: @escaping @MainActor (PresentationPageCommand) -> Void = { _ in },
                 respawns: @escaping @MainActor (PresentationRespawns, Bool) -> Void = { _, _ in },
                 linkRefused: @escaping @MainActor (RemoteLinkRefusal) -> Void = { _ in },
+                linkClickRefused: @escaping @MainActor (UUID) -> Void = { _ in },
+                linkSnapshot: @escaping @MainActor (PresentationLinkSnapshot) -> Void = { _ in },
                 message: @escaping @MainActor (PresentationMessage) -> Void = { _ in },
                 mail: @escaping @MainActor (PresentationMail?) -> Void = { _ in },
+                companions: @escaping @MainActor (PresentationCompanions?) -> Void = { _ in },
                 leads: @escaping @MainActor () -> Set<UUID> = { [] },
                 ended: @escaping @MainActor () -> Void = {},
                 acked: @escaping @MainActor () -> Void = {},
@@ -110,8 +121,11 @@ public struct RemotePresentationEffects {
         self.pageCommand = pageCommand
         self.respawns = respawns
         self.linkRefused = linkRefused
+        self.linkClickRefused = linkClickRefused
+        self.linkSnapshot = linkSnapshot
         self.message = message
         self.mail = mail
+        self.companions = companions
         self.leads = leads
         self.ended = ended
         self.acked = acked
@@ -158,13 +172,21 @@ public final class RemotePresentationClient {
     /// sentLeads is the lead set last reported on the current link, nil until the first report.
     private var sentLeads: Set<UUID>?
 
+    /// observerKinds are all an observer asks for: an origin's companion membership and the session's end.
+    public static let observerKinds = [PresentationHub.companionsKind, PresentationHub.endedKind]
+
+    /// observer is a client that only follows the origin's companion membership, for a row the origin shows its asks
+    /// and pages to itself: it never asks for the presenter role and answers nothing but pings.
+    public let observer: Bool
+
     public init(argv: [String], presentationVersion: Int?, transport: RemotePresentationTransport,
-                effects: RemotePresentationEffects, now: @escaping () -> Date = Date.init) {
+                effects: RemotePresentationEffects, now: @escaping () -> Date = Date.init, observer: Bool = false) {
         self.argv = argv
         self.presentationVersion = presentationVersion
         self.transport = transport
         self.effects = effects
         self.now = now
+        self.observer = observer
     }
 
     /// Opens the stream. An origin that predates the protocol is never launched at all.
@@ -203,7 +225,7 @@ public final class RemotePresentationClient {
     /// refreshLeads reports the panes this Mac leads to an origin that takes lead reports, when they differ from
     /// what the current link last reported.
     public func refreshLeads() {
-        guard let link, originKinds.contains(PresentationHub.leadReportKind) else { return }
+        guard !observer, let link, originKinds.contains(PresentationHub.leadReportKind) else { return }
         let leads = effects.leads()
         guard leads != sentLeads else { return }
         sentLeads = leads
@@ -213,7 +235,7 @@ public final class RemotePresentationClient {
     /// Sends what this Mac answered about work the origin handed over. Dropped with no link: the origin
     /// takes that work back when the stream goes.
     public func answer(_ body: PresentationFrame.Body) {
-        guard let link else { return }
+        guard !observer, let link else { return }
         send(body, on: link)
     }
 
@@ -275,6 +297,7 @@ public final class RemotePresentationClient {
     }
 
     private func apply(_ body: PresentationFrame.Body, on link: RemotePresentationLink) {
+        guard !observer else { return observe(body, on: link) }
         switch body {
         case .snapshot(let snapshot):
             failures = 0
@@ -286,6 +309,7 @@ public final class RemotePresentationClient {
             effects.context(snapshot.context)
             effects.info(snapshot.info)
             effects.mail(snapshot.mail)
+            effects.companions(snapshot.companions)
             if let respawns = snapshot.respawns { effects.respawns(respawns, true) }
         case .status(let status): effects.status(status)
         case .context(let context): effects.context(context)
@@ -295,6 +319,7 @@ public final class RemotePresentationClient {
         case .notify(let notify): effects.notify(notify)
         case .message(let message): effects.message(message)
         case .mail(let mail): effects.mail(mail)
+        case .companions(let companions): effects.companions(companions)
         case .sound(let sound): effects.sound(sound)
         case .ping: send(.ack, on: link)
         // an origin that predates the role answers mirror, and nothing is asked of it
@@ -322,10 +347,11 @@ public final class RemotePresentationClient {
         case .pageClose(let change): effects.pageClose(change)
         case .pageCommand(let command): effects.pageCommand(command)
         case .respawn(let respawns): effects.respawns(respawns, false)
-        case .linkRefused(let refusal): effects.linkRefused(refusal.reason)
-        case .ended:
-            stop()
-            effects.ended()
+        case .linkRefused(let refusal):
+            refusal.click.map(effects.linkClickRefused)
+            effects.linkRefused(refusal.reason)
+        case .linkSnapshot(let snapshot): effects.linkSnapshot(snapshot)
+        case .ended: finish()
         case .pendingChunk(let chunk): pendingBatch.add(chunk)
         case .pendingCommit:
             guard let entries = try? pendingBatch.commit() else { return effects.warn("malformed pending batch") }
@@ -341,6 +367,28 @@ public final class RemotePresentationClient {
              .pageRejected, .pageClosed, .pageState, .pageResult:
             break
         }
+    }
+
+    private func observe(_ body: PresentationFrame.Body, on link: RemotePresentationLink) {
+        switch body {
+        case .hello(let answer):
+            originKinds = Set(answer.kinds)
+            if !originKinds.contains(PresentationHub.companionsKind) { finish() }
+        case .snapshot(let snapshot):
+            failures = 0
+            warnedReason = nil
+            report(.connected)
+            effects.companions(snapshot.companions)
+        case .companions(let companions): effects.companions(companions)
+        case .ping: send(.ack, on: link)
+        case .ended: finish()
+        default: break
+        }
+    }
+
+    private func finish() {
+        stop()
+        effects.ended()
     }
 
     private func applyLayout(_ layout: PresentationLayout) {
@@ -366,8 +414,8 @@ public final class RemotePresentationClient {
             onLine: { [weak self] line in self?.receive(line, launch: launch) },
             onClose: { [weak self] reason in self?.linkClosed(reason: reason, launch: launch) })
         link = opened
-        let hello = PresentationHello(version: PresentationCodec.version, kinds: PresentationHub.supportedKinds,
-                                      mode: .presenter)
+        let hello = PresentationHello(version: PresentationCodec.version, kinds: observer ? Self.observerKinds : PresentationHub.supportedKinds,
+                                      mode: observer ? .mirror : .presenter)
         send(.hello(hello), on: opened)
     }
 

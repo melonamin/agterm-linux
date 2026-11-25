@@ -139,6 +139,30 @@ public struct PresentationMail: Codable, Equatable, Sendable {
     }
 }
 
+/// PresentationCompanions is a session's companion membership in the origin's sidebar order, so a viewer can attach a
+/// member it has not handled yet. Only rows the origin owns are members: one it shows from another host is not its own.
+public struct PresentationCompanions: Codable, Equatable, Sendable {
+    public struct Member: Codable, Equatable, Sendable {
+        public enum Kind: String, Codable, Sendable {
+            case terminal, page
+        }
+
+        public var id: UUID
+        public var kind: Kind
+
+        public init(id: UUID, kind: Kind) {
+            self.id = id
+            self.kind = kind
+        }
+    }
+
+    public var members: [Member]
+
+    public init(members: [Member]) {
+        self.members = members
+    }
+}
+
 /// PresentationSound is a status sound the origin hands its presenter to play instead of playing it itself.
 /// A nil `name` is the presenter's own Settings blocked sound, so each Mac's choice applies where it plays.
 public struct PresentationSound: Codable, Equatable, Sendable {
@@ -623,57 +647,6 @@ public struct PresentationLeadReport: Codable, Equatable, Sendable {
     }
 }
 
-/// PresentationLinkClick is a path clicked in a pane the presenter shows, for the origin to open. `pane` is the
-/// origin's identity of that pane. The mode decodes leniently, an unknown one as `overlay`, because a frame that
-/// fails to decode closes the whole stream.
-public struct PresentationLinkClick: Codable, Equatable, Sendable {
-    public var raw: String
-    public var pane: UUID
-    public var mode: LinkOpenMode
-
-    private enum CodingKeys: String, CodingKey { case raw, pane, mode }
-
-    public init(raw: String, pane: UUID, mode: LinkOpenMode) {
-        self.raw = raw
-        self.pane = pane
-        self.mode = mode
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        raw = try container.decode(String.self, forKey: .raw)
-        pane = try container.decode(UUID.self, forKey: .pane)
-        mode = (try? container.decode(String.self, forKey: .mode)).flatMap(LinkOpenMode.init(rawValue:)) ?? .overlay
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(raw, forKey: .raw)
-        try container.encode(pane, forKey: .pane)
-        try container.encode(mode.rawValue, forKey: .mode)
-    }
-}
-
-/// PresentationLinkRefusal is the origin's answer to a forwarded click it did not open. An unknown reason decodes as
-/// `notOpened`, for the same reason the click's mode decodes leniently.
-public struct PresentationLinkRefusal: Codable, Equatable, Sendable {
-    public var reason: RemoteLinkRefusal
-
-    private enum CodingKeys: String, CodingKey { case reason }
-
-    public init(reason: RemoteLinkRefusal) { self.reason = reason }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        reason = (try? container.decode(String.self, forKey: .reason)).flatMap(RemoteLinkRefusal.init(rawValue:)) ?? .notOpened
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(reason.rawValue, forKey: .reason)
-    }
-}
-
 /// PresentationInfo is a session's local info line as the origin mirrors it. The viewer parses the source itself and
 /// runs no timer: `hideAfter` is the configured value for read-back, and the origin's expiry arrives as a clear.
 public struct PresentationInfo: Codable, Equatable, Sendable {
@@ -700,9 +673,14 @@ public struct PresentationSnapshot: Codable, Equatable, Sendable {
     public var info: PresentationInfo?
     /// mail is nil from an origin that predates mail counts.
     public var mail: PresentationMail?
+    /// companions is nil from an origin that predates the membership, for a row it shows from another host, and for
+    /// a parent in its undo grace. An empty list means no companions the origin owns, though it may still show a
+    /// companion from another host.
+    public var companions: PresentationCompanions?
 
     public init(status: PresentationStatus?, hud: PresentationHud?, context: String? = nil, layout: PresentationLayout? = nil,
-                respawns: PresentationRespawns? = nil, info: PresentationInfo? = nil, mail: PresentationMail? = nil) {
+                respawns: PresentationRespawns? = nil, info: PresentationInfo? = nil, mail: PresentationMail? = nil,
+                companions: PresentationCompanions? = nil) {
         self.status = status
         self.hud = hud
         self.context = context
@@ -710,6 +688,7 @@ public struct PresentationSnapshot: Codable, Equatable, Sendable {
         self.respawns = respawns
         self.info = info
         self.mail = mail
+        self.companions = companions
     }
 }
 
@@ -787,6 +766,8 @@ public struct PresentationFrame: Equatable, Sendable {
         case message(PresentationMessage)
         /// mail replaces the session's mail counts; sent only when they changed for that viewer.
         case mail(PresentationMail)
+        /// companions replaces the session's companion membership; sent only to a viewer listing the kind, when it changed.
+        case companions(PresentationCompanions)
         case sound(PresentationSound)
         /// A viewer asking to be the session's sole presenter. Sent only after the origin's hello offered it.
         case presenterAcquire
@@ -834,6 +815,8 @@ public struct PresentationFrame: Equatable, Sendable {
         case linkClick(PresentationLinkClick)
         /// linkRefused: the origin did not open a forwarded click.
         case linkRefused(PresentationLinkRefusal)
+        /// linkSnapshot: the origin offers the file a forwarded click resolved to, for an `open` rule on the viewer.
+        case linkSnapshot(PresentationLinkSnapshot)
         /// statusClear and statusSeen: the presenter saw what may end the origin's status or unseen badge.
         case statusClear(PresentationStatusClear)
         case statusSeen(PresentationSeen)
@@ -858,6 +841,7 @@ public struct PresentationFrame: Equatable, Sendable {
             case .notify: return "notify"
             case .message: return "message"
             case .mail: return "mail"
+            case .companions: return "companions"
             case .sound: return "sound"
             case .presenterAcquire: return "presenter.acquire"
             case .presenterGranted: return "presenter.granted"
@@ -890,6 +874,7 @@ public struct PresentationFrame: Equatable, Sendable {
             case .statusClear: return "status.clear"
             case .statusSeen: return "status.seen"
             case .linkRefused: return "link.refused"
+            case .linkSnapshot: return "link.snapshot"
             case .pendingChunk: return "pending.chunk"
             case .pendingCommit: return "pending.commit"
             case .unknown(let kind): return kind

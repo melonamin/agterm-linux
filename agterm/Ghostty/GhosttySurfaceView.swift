@@ -269,7 +269,7 @@ final class GhosttySurfaceView: NSView, PaneRoleMutableSurface {
     /// does not fire for the initializer default.
     private func updateDropRegistration() {
         if deckVisible {
-            registerForDraggedTypes([.fileURL, .string, .URL])
+            registerForDraggedTypes([.fileURL, .string, .URL, .png, .tiff])
         } else {
             unregisterDraggedTypes()
         }
@@ -355,9 +355,11 @@ final class GhosttySurfaceView: NSView, PaneRoleMutableSurface {
     /// makes an any-motion + sgr-pixel mouse-reporting TUI emit a synthetic motion report per packet.
     var lastReportedMousePoint: NSPoint?
 
-    // the nonisolated URL callback snapshots this during the synchronous release call.
-    nonisolated let releaseIntent = OSAllocatedUnfairLock(initialState: LinkPolicy.ClickIntent.normal)
+    // the nonisolated URL callback snapshots this during the synchronous release call; nil outside one.
+    nonisolated let releaseIntent = OSAllocatedUnfairLock<LinkPolicy.ClickIntent?>(initialState: nil)
     var linkPressDragged = false
+    /// pasteCopying is true while a paste into this pane copies its files or image; a further paste is refused.
+    var pasteCopying = false
     /// Whether any mouse button is down, system-wide; replaceable because a real click elsewhere answers it too.
     var mouseButtonsDown: () -> Bool = { NSEvent.pressedMouseButtons != 0 }
     /// linkHover is the label model of the host now showing this surface; see `LinkHoverModel.adopt`.
@@ -574,6 +576,15 @@ final class GhosttySurfaceView: NSView, PaneRoleMutableSurface {
     /// it with no main-actor hop.
     nonisolated var shouldCloseOnChildExitAction: Bool { command != nil && !waitAfterCommand }
 
+    /// exitConfig is what every per-surface config of a `--wait` surface carries: an updated config replaces the
+    /// surface's `wait_after_command`. A zmx pane also zeroes the abnormal-exit runtime: libghostty times the zmx
+    /// client, whose whole run with a held fast command stays under 250 ms, and macOS ignores the exit code, so a
+    /// success drew "failed to launch".
+    var exitConfig: String {
+        guard waitAfterCommand else { return "" }
+        return (backedByZmx ? "abnormal-command-exit-runtime = 0\n" : "") + "wait-after-command = true\n"
+    }
+
     /// consumesHeldExit hides libghostty's "Process exited" line; any key that encodes still closes the surface.
     nonisolated(unsafe) var consumesHeldExit = false
 
@@ -701,7 +712,7 @@ final class GhosttySurfaceView: NSView, PaneRoleMutableSurface {
         // `watermarkSession`, sessionless overlay/quick skip it. ALSO re-applies a standalone
         // `dashboardFontOverride` for a member realizing AFTER the dashboard set the transient font, since
         // `applyWatermarkFromSession` honors `dashboardFontOverride ?? session.fontSize`.
-        if effectiveWatermark != nil || dashboardFontOverride != nil {
+        if effectiveWatermark != nil || dashboardFontOverride != nil || !exitConfig.isEmpty {
             applyWatermarkFromSession()
         }
         // an overlay surface with its own background color applies it here too — the overlay is sessionless,

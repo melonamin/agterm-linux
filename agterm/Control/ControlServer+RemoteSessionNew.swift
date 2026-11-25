@@ -13,7 +13,15 @@ enum RemoteSessionOrigin {
 struct RemoteSessionDestination {
     let store: AppStore
     let workspace: UUID
-    let name: String
+    /// name is the workspace the origin creates in by default; nil for the root, which the origin's root takes.
+    let name: String?
+}
+
+extension RemoteSessionDestination {
+    @MainActor
+    init(store: AppStore, workspace: Workspace) {
+        self.init(store: store, workspace: workspace.id, name: workspace.isRoot ? nil : workspace.name)
+    }
 }
 
 extension ControlServer {
@@ -51,7 +59,7 @@ extension ControlServer {
         guard let id = store.currentWorkspaceID, let workspace = store.workspaces.first(where: { $0.id == id }) else {
             return .failure(ControlResponse(ok: false, error: "no workspace to attach into"))
         }
-        return .success(RemoteSessionDestination(store: store, workspace: id, name: workspace.name))
+        return .success(RemoteSessionDestination(store: store, workspace: workspace))
     }
 
     /// remoteSessionOrigin asks `host` what it is. Nothing here retries or treats silence as a server: a host that
@@ -77,11 +85,13 @@ extension ControlServer {
                              destination: RemoteSessionDestination, progress: (String) -> Void = { _ in }) async -> ControlResponse {
         let host = request.host
         let arguments = request.arguments(origin: origin, workspaceName: request.workspaceName ?? destination.name)
-        guard let argv = try? RemoteSession.controlCommand(host: host, arguments: arguments) else {
+        guard (try? RemoteSession.controlCommand(host: host, arguments: arguments)) != nil else {
             return ControlResponse(ok: false, error: "invalid host")
         }
         progress("creating a session on \(host)…")
-        let result = await remoteRunner.run(argv, deadline: Self.remoteCompanionDeadline)
+        guard let result = await runRemoteControl(host: host, arguments: arguments, attaching: request.command != nil) else {
+            return ControlResponse(ok: false, error: "invalid host")
+        }
         if result.refusedArguments {
             return ControlResponse(ok: false, error: "the agterm on \(host) is too old to create sessions for another Mac")
         }

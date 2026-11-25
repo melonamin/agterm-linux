@@ -31,6 +31,10 @@ public extension ControlActions {
         ControlResponse(ok: false, error: ControlActionsUnsupported.message("session.companion.move"))
     }
 
+    func promoteCompanion(_: String?, placement _: ControlCompanionPromotion, window _: String?) -> ControlResponse {
+        ControlResponse(ok: false, error: ControlActionsUnsupported.message("session.companion.promote"))
+    }
+
     func createPageCompanion(_: String?, window _: String?, options _: ControlSessionOverlayOpenOptions) -> ControlResponse {
         ControlResponse(ok: false, error: ControlActionsUnsupported.message("session.companion.page"))
     }
@@ -263,6 +267,20 @@ public extension ControlActions {
 
     func attachRemoteGroup(host _: String, session _: String, window _: String?) async -> ControlResponse {
         ControlResponse(ok: false, error: ControlActionsUnsupported.message("zmx.attach.group"))
+    }
+
+    func attachRemoteSession(host: String, session: String, window: String?, workspace: ControlAttachWorkspace?) async -> ControlResponse {
+        guard workspace == nil else {
+            return ControlResponse(ok: false, error: ControlActionsUnsupported.message("zmx.attach --workspace"))
+        }
+        return await attachRemoteSession(host: host, session: session, window: window)
+    }
+
+    func attachRemoteGroup(host: String, session: String, window: String?, workspace: ControlAttachWorkspace?) async -> ControlResponse {
+        guard workspace == nil else {
+            return ControlResponse(ok: false, error: ControlActionsUnsupported.message("zmx.attach.group --workspace"))
+        }
+        return await attachRemoteGroup(host: host, session: session, window: window)
     }
 
     func splitSession(_ target: String?, window: String?, mode: String?, axis _: SplitAxis?) -> ControlResponse {

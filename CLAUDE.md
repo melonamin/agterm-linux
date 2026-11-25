@@ -45,6 +45,8 @@ C-boundary concurrency before changing the bridge.
 - A decline of a feature request that a custom command covers explains the extension model with the request
   as the worked example: README's "bind X yourself", `site/docs.html#extend`, the agent skill, the cookbook.
   It also points "can you add X" requests to Discussions ▸ Ideas instead of issues.
+- Text a user reads (replies, docs, UI strings) names a sidebar entry a session or a companion;
+  `row` is the rules files' internal shorthand and never appears there.
 - Custom forks are not supported. An answer, recipe or decision is made for agterm itself and is never limited or
   adjusted for what a reporter's fork has or lacks. agterm-linux stays in view only as `agtermCore`'s downstream
   consumer (module boundaries below).
@@ -73,16 +75,19 @@ C-boundary concurrency before changing the bridge.
   `mkdir -p "$AGTERM_STATE_DIR/windows"` before launching to skip it: `FirstRunWelcome.hasPriorState`
   looks for `settings.json`, `workspaces.json`, or `windows` before the app writes anything.
   Leave the marker out only when the welcome itself is under test.
-- The control socket binds from the window scene's task, so a backgrounded `open -n -g` can leave the app
-  running with no socket until a window renders.
-  If the socket is still absent 10 s after launch, activate the instance; never leave a socket wait unbounded.
-  An activation by pid once left it unbound for 15 s more (2026-11-07); stopping it and relaunching without `-g`
-  bound the socket at once.
+- The control socket starts in the launch window's scene task; never leave a socket wait unbounded.
+  If the isolated socket still does not answer 10 s after launch, check whether a window rendered and the
+  socket path is right; comparing with a foreground launch tells a background-only failure apart.
+  `agtermApp.init` registers `ApplePersistenceIgnoreState` because AppKit saved state left by an unclean exit
+  otherwise suppresses that window, and with it the socket.
 - `agtermctl` never reads `AGTERM_SOCKET`; it resolves `--socket`, then `AGTERM_STATE_DIR`, then
   `~/Library/Application Support/agterm`. A shell inside the live terminal therefore defaults onto the
   live socket, and exporting a short `AGTERM_STATE_DIR` is what keeps inherited commands off it.
 - After launching an instance for manual testing, do not touch it. For an assisted experiment, announce
   every action. Ask before acting when unclear.
+- A check that needs another app in front when an open event reaches a Debug instance (a URL or a Finder
+  open) runs from a companion of this session in the live agterm, typed with `session type` and read with
+  `session text`, never handed to Eugene.
 - Put nontrivial work in an isolated worktree and remove it after merge. See the build section for artifact
   links and cleanup.
 - Comments and docs are liabilities kept short. Keep only non-obvious constraints, rejected alternatives,
@@ -102,10 +107,18 @@ C-boundary concurrency before changing the bridge.
 - Upstream macOS uses Xcodegen and Xcode 26. Linux CI and releases use the workflow-pinned Swift and
   SwiftLint versions through `mise`; repository scripts remain the source of truth.
 - Swift 6 `agtermCore` uses complete concurrency checking and has no Xcode/libghostty dependency.
-- `scripts/setup.sh` builds pinned libghostty with Homebrew `zig@0.17`, zmx with `zig@0.16`, and Xcode's
+- `scripts/setup.sh` builds pinned libghostty and zmx with Homebrew `zig@0.17` and uses Xcode's
   Metal Toolchain.
   It is idempotent after artifacts exist. zmx is the plain upstream pin plus `scripts/zmx-patches/`,
   whose README says what each patch is for and how to regenerate one.
+  In an unpacked zmx tree inside another git checkout, `git apply` treats the tree as a subdirectory of
+  that checkout, so it can skip the entire series and still exit 0:
+  verify or regenerate the series outside the enclosing checkout.
+  `scripts/zmx-patches/check.py <zmx> <previous zmx>` checks the upgrade from the previous release's zmx; pass
+  `agterm.app/Contents/MacOS/zmx` from a published release's DMG. Against a zmx before 1.0 the new client must
+  refuse `run`, `tail` and `write`; against a later one it must use them. A release predating `0008` keeps the reconnect
+  a follower, so the reclaim check fails and the screen check reads the old leader's grid with the expected
+  output; every other check is the upgrade verdict.
 - Commands:
   - `scripts/run.sh`: setup, generate, Debug build, launch.
   - `scripts/build.sh`: setup, generate, Release build.
@@ -125,6 +138,9 @@ C-boundary concurrency before changing the bridge.
 - The app build's Bundle helper executables phase runs `swift build` on `agtermCore/.build`, so any SwiftPM
   process holding that directory (a hung `swift test` included) stalls `xcodebuild` there with no output;
   check `ps` for one before reading a quiet build as compiling.
+- Every `xcodebuild` hosted run, `make test-app` or `-only-testing`, rewrites `agtermCore/Package.resolved`'s Sparkle
+  pin and hash. Revert it with `git checkout -- agtermCore/Package.resolved` before committing; it is never part of a
+  feature change.
 - An XCUITest or hosted test run that times out at runner init (`Timed out while enabling automation mode`)
   or waits with zero test cases started: see `.claude/rules/ui-tests.md` before retrying or restarting.
 - A TCC-gated tool run from a shell in the live terminal (`screencapture`, XCUITest) can be denied after a
@@ -148,8 +164,8 @@ C-boundary concurrency before changing the bridge.
   untracked and disappear with worktree removal.
 - Symlink an artifact set only while the main checkout's matching stamp equals what the worktree's
   `setup.sh` would write for that set: `GHOSTTY_REV` and the digest of
-  `scripts/ghostty-patches/*.patch` for ghostty, and `ZMX_REV`, `ZMX_TARGET` and the
-  digest of `scripts/zmx-patches/*.patch` and `scripts/zmx-patches/ghostty/*.patch` for zmx, so a target
+  `scripts/ghostty-patches/*.patch` for ghostty, and `ZMX_REV`, `ZMX_TARGET`, the Zig line
+  and the digest of `scripts/zmx-patches/*.patch` for zmx, so a target
   or a patch change invalidates a set whose revision still matches. When either differs, remove that
   set's artifact and stamp links before setup runs and let it build locally. `setup.sh` writes stamps
   through symlinks while replacing linked artifacts with local files and directories, so a linked build
@@ -252,8 +268,8 @@ C-boundary concurrency before changing the bridge.
   It sat at `4dcb09ada` (2026-04-30) from June while later builds blanked scrollback on a font-size
   increase; upstream fixed that and the case was re-verified by hand before the bump. Re-test the
   font-increase case when moving it, and check `minimum_zig_version` in `build.zig.zon` against
-  `GHOSTTY_ZIG_FORMULA`. zmx has its own `ZMX_ZIG_FORMULA`, so a ghostty compiler jump leaves zmx's
-  stamp and caches valid.
+  `ZIG_FORMULA`, which zmx shares: the compiler is part of zmx's stamp and cache keys, so a jump
+  rebuilds zmx too.
 - `.ghostty-build-stamp` records the revision and patch digest the staged artifacts came from
   and is what decides a rebuild.
   Presence alone would serve an xcframework built from a different rev silently, so a `GHOSTTY_REV`
@@ -304,8 +320,8 @@ C-boundary concurrency before changing the bridge.
   every detached app daemon in the state directory. Semantic deletion kills the named daemon, while app and
   reopenable-window close only end attach clients. Keep reap, semantic kill, and leader refresh synchronous:
   launch ordering, termination finalization, and same-call tree foreground depend on their completion.
-- Live fallback capture and replay are paired across two boundaries. Clean-exit capture reads zmx-backed panes
-  from one fresh resolver snapshot under the exit deadline. A restored factory consumes the pending argv only
+- Live fallback capture and replay are paired across two boundaries. Clean-exit capture reads each zmx-backed
+  pane from the kernel under the exit deadline, never from `zmx list`. A restored factory consumes the pending argv only
   after `.wrapped` is established, then passes it to zmx as a create-only attach payload. A surviving daemon
   ignores it; a missing daemon runs it. Never add an app-side daemon preflight or consume on fallback.
 

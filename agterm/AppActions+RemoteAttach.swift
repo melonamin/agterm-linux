@@ -123,9 +123,8 @@ extension AppActions {
     /// current when the action ran, whatever is selected by the time the picks and ssh waits end.
     func newRemoteSession() {
         guard let windowID = library.activeWindowID, let store = library.store(for: windowID),
-              let workspace = store.currentWorkspaceID,
-              let name = store.workspaces.first(where: { $0.id == workspace })?.name else { return }
-        let destination = RemoteSessionDestination(store: store, workspace: workspace, name: name)
+              let workspace = store.workspaces.first(where: { $0.id == store.currentWorkspaceID }) else { return }
+        let destination = RemoteSessionDestination(store: store, workspace: workspace)
         pickRemote(prompt: "New session on which host?", in: windowID) { [weak self] host in
             self?.newRemoteSession(on: host, into: destination, in: windowID)
         }
@@ -239,7 +238,7 @@ extension AppActions {
     /// parent is not in the listing.
     static func remotePickItem(_ session: ControlRemoteSession, parentName: String?) -> ControlPickItem {
         let programs = session.panes.compactMap { $0.foreground?.first.map { ($0 as NSString).lastPathComponent } }
-        let parts = ["\(session.windowName)/\(session.workspaceName)", session.context ?? "", session.cwd,
+        let parts = [session.placeLabel, session.context ?? "", session.cwd,
                      programs.joined(separator: " | ")]
         return ControlPickItem(id: session.id, label: parentName.map { "\($0) › \(session.name)" } ?? session.name,
                                subtitle: parts.filter { !$0.isEmpty }.joined(separator: "  ·  "),
@@ -248,7 +247,9 @@ extension AppActions {
     }
 }
 
-/// RemoteAttachHud owns an attach's progress and error panels, with notification fallback.
+/// RemoteAttachHud owns an attach's progress and error panels, with notification fallback. It opens a panel only into
+/// a slot that is empty, holds its own panel, or holds an error panel an earlier one left; a running operation's
+/// progress and a HUD a script or agent posted stay, and a failure then goes to the notification.
 @MainActor
 final class RemoteAttachHud {
     private let attacher: any RemoteAttaching
@@ -257,6 +258,8 @@ final class RemoteAttachHud {
     private let action: String
     /// owned is the HUD this attach opened; one another caller posted meanwhile is not its to close.
     private var owned: Int?
+    /// failed is the error panel a RemoteAttachHud last opened over each session, which a later one may replace.
+    private static var failed: [String: Int] = [:]
 
     init(attacher: any RemoteAttaching, session: String?, window: String, action: String = "Attach Remote") {
         self.attacher = attacher
@@ -266,7 +269,7 @@ final class RemoteAttachHud {
     }
 
     func progress(_ text: String) {
-        open(HudSpec(message: message(text), spinner: .bar, hideAfter: AppActions.remoteAttachProgressSeconds))
+        open(HudSpec(message: message(text), spinner: .bar, hideAfter: AppActions.remoteAttachProgressSeconds), error: false)
     }
 
     func close() {
@@ -279,18 +282,24 @@ final class RemoteAttachHud {
     func move(to session: String) {
         close()
         self.session = session
+        owned = nil
     }
 
     func fail(_ text: String) {
-        if open(HudSpec(message: message(text), hideAfter: AppActions.remoteAttachErrorSeconds)) { return }
+        if open(HudSpec(message: message(text), hideAfter: AppActions.remoteAttachErrorSeconds), error: true) { return }
         close()
         NotificationManager.shared.notifyCommandFailure(name: action, detail: text)
     }
 
     @discardableResult
-    private func open(_ spec: HudSpec) -> Bool {
-        guard let session, attacher.openHud(session, window: window, spec: spec).ok else { return false }
+    private func open(_ spec: HudSpec, error: Bool) -> Bool {
+        guard let session else { return false }
+        if let showing = attacher.hudGeneration(session: session), showing != owned, showing != Self.failed[session] {
+            return false
+        }
+        guard attacher.openHud(session, window: window, spec: spec).ok else { return false }
         owned = attacher.hudGeneration(session: session)
+        Self.failed[session] = error ? owned : nil
         return true
     }
 

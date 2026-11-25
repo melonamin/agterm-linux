@@ -20,10 +20,10 @@ enum ForegroundProcess {
     /// losing the `--wait` hold and the close-on-exit shape.
     @MainActor
     static func command(for view: GhosttySurfaceView, shellBasename: String?,
-                        zmxSnapshot: ZmxForegroundResolver.Snapshot? = nil) -> [String]? {
+                        zmxForeground: ZmxDaemonForeground? = nil) -> [String]? {
         let pid: pid_t?
         if view.backedByZmx, let sessionName = view.zmxSessionName {
-            pid = zmxSnapshot?.foregroundPID(sessionName: sessionName)
+            pid = zmxForeground?.foregroundPID(sessionName)
         } else {
             pid = view.foregroundPid()
         }
@@ -115,7 +115,7 @@ enum ForegroundProcess {
 
     /// Fetch and parse a process's argv via `sysctl(KERN_PROCARGS2)`; nil on any syscall failure, which is
     /// what a process owned by another user (setuid `login`, `sudo`) returns.
-    private static func procArgs(pid: pid_t) -> [String]? {
+    static func procArgs(pid: pid_t) -> [String]? {
         procArgsBlob(pid: pid).flatMap(CommandRestore.parseProcArgs)
     }
 

@@ -79,6 +79,14 @@ public enum RemoteSession {
         return sshArguments(host: host, connectTimeout: connectTimeout, interactive: false, controlPath: controlPath) + [remote]
     }
 
+    /// pasteReceiveCommand runs the far side's `agtermctl paste receive`, which reads a paste bundle on plain ssh stdin.
+    public static func pasteReceiveCommand(host: String, connectTimeout: Int = 5, controlPath: String? = nil) throws -> [String] {
+        try validate(host: host)
+        let chain = cliPathPrefix + " && exec agtermctl paste receive"
+        let remote = CommandRestore.shellQuotedLine(["/bin/sh", "-c", chain])
+        return sshArguments(host: host, connectTimeout: connectTimeout, interactive: false, controlPath: controlPath) + [remote]
+    }
+
     /// forwardCommand is a forward of its own for a row with no pooled master: ControlMaster and ControlPath are
     /// switched off over any ssh_config, so the listener lives in this process and ends with it. It takes the pane
     /// attach's keepalive, or a half-open link would leave it running with the page's port dead.
@@ -100,6 +108,13 @@ public enum RemoteSession {
     public static func connectionPID(_ output: String) -> Int32? {
         guard let start = output.range(of: "(pid=")?.upperBound, let end = output[start...].firstIndex(of: ")") else { return nil }
         return Int32(output[start..<end])
+    }
+
+    /// optionArgument joins a value to its flag, since ArgumentParser reads a following word starting with `-` as an
+    /// option, but keeps an empty one as its own word, since it reads a bare `--flag=` as a missing value.
+    public static func optionArgument(_ flag: String, _ value: String?) -> [String] {
+        guard let value else { return [] }
+        return value.isEmpty ? [flag, value] : [flag + "=" + value]
     }
 
     /// One ssh invocation running the far side's `agtermctl` with `arguments` plus `--json`, so the reply is the

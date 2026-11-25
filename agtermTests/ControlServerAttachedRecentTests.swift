@@ -54,6 +54,124 @@ final class ControlServerAttachedRecentTests: XCTestCase {
         XCTAssertEqual(runner.invocations.count, 4)
     }
 
+    func testATopLevelRowReopensAmongTheDestinationWindowsTopLevelSessions() async throws {
+        let listed = tree(sessions: session("origin-1"))
+        let runner = ScriptedRunner([ok(ControlResult(closed: ["origin-1"])), listed, listed, listed])
+        let (server, store) = try makeServer(runner)
+        try await terminate(try attachedRow(in: store, workspace: try XCTUnwrap(store.rootWorkspace).id), server)
+        let entry = try XCTUnwrap(library.remoteRecentClosedItems.first)
+        XCTAssertEqual(entry.placement.root, true)
+        let destinationID = library.newWindow().id
+        let destination = try XCTUnwrap(library.store(for: destinationID))
+        let named = destination.namedWorkspaces.map(\.id)
+        library.closeWindow(try XCTUnwrap(library.windowID(for: store)))
+
+        let reply = await server.reopenAttached(entry.id, window: destinationID.uuidString)
+
+        XCTAssertTrue(reply.ok, reply.error ?? "")
+        let shown = try XCTUnwrap(reply.result?.id.flatMap(UUID.init(uuidString:)))
+        XCTAssertEqual(destination.workspace(forSession: shown)?.id, destination.rootWorkspace?.id)
+        XCTAssertEqual(destination.namedWorkspaces.map(\.id), named)
+        XCTAssertTrue(named.allSatisfy { id in destination.workspaces.first { $0.id == id }?.sessions.allSatisfy { $0.id != shown } ?? true })
+    }
+
+    func testAnOriginReopenAsksTheOriginToHoldTheCommandsItAttachesHere() async throws {
+        let listed = tree(sessions: session("origin-1"))
+        let runner = ScriptedRunner([ok(ControlResult(closed: ["origin-1"], recentID: "r1")), tree(sessions: ""),
+                                     reopened("r1", sessions: ["origin-1"]), listed, listed])
+        let (server, store) = try makeServer(runner)
+        try await terminate(try attachedRow(in: store), server)
+        let entry = try XCTUnwrap(library.remoteRecentClosedItems.first)
+
+        let reply = await server.reopenAttached(entry.id, window: nil)
+
+        XCTAssertTrue(reply.ok, reply.error ?? "")
+        XCTAssertTrue(line(runner, 2).contains("recent open"), line(runner, 2))
+        XCTAssertFalse(line(runner, 2).contains("--attach-pending"), line(runner, 2))
+        XCTAssertTrue(line(runner, 2).contains("-- r1"), line(runner, 2))
+    }
+
+    func testABareTopLevelReopenStaysInTheWindowItResolvedWhenFrontmostChangesDuringDiscovery() async throws {
+        let listed = tree(sessions: session("origin-1"))
+        let runner = ScriptedRunner([ok(ControlResult(closed: ["origin-1"])), listed, listed, listed])
+        let (server, store) = try makeServer(runner)
+        try await terminate(try attachedRow(in: store, workspace: try XCTUnwrap(store.rootWorkspace).id), server)
+        let entry = try XCTUnwrap(library.remoteRecentClosedItems.first)
+        let destinationID = library.newWindow().id
+        let destination = try XCTUnwrap(library.store(for: destinationID))
+        let third = library.newWindow().id
+        library.closeWindow(try XCTUnwrap(library.windowID(for: store)))
+        library.frontmostWindowID = destinationID
+        let library = library!
+        runner.beforeCall = { index in if index == 3 { await MainActor.run { library.frontmostWindowID = third } } }
+
+        let reply = await server.reopenAttached(entry.id, window: nil)
+
+        XCTAssertTrue(reply.ok, reply.error ?? "")
+        let shown = try XCTUnwrap(reply.result?.id.flatMap(UUID.init(uuidString:)))
+        XCTAssertEqual(destination.workspace(forSession: shown)?.id, destination.rootWorkspace?.id)
+    }
+
+    func testABareTopLevelReopenStaysInTheWindowItResolvedWhenFrontmostChangesDuringTheFirstLookup() async throws {
+        let listed = tree(sessions: session("origin-1"))
+        let runner = ScriptedRunner([ok(ControlResult(closed: ["origin-1"])), listed, listed, listed])
+        let (server, store) = try makeServer(runner)
+        try await terminate(try attachedRow(in: store, workspace: try XCTUnwrap(store.rootWorkspace).id), server)
+        let entry = try XCTUnwrap(library.remoteRecentClosedItems.first)
+        let destinationID = library.newWindow().id
+        let destination = try XCTUnwrap(library.store(for: destinationID))
+        let third = library.newWindow().id
+        library.closeWindow(try XCTUnwrap(library.windowID(for: store)))
+        library.frontmostWindowID = destinationID
+        let library = library!
+        runner.beforeCall = { index in if index == 1 { await MainActor.run { library.frontmostWindowID = third } } }
+
+        let reply = await server.reopenAttached(entry.id, window: nil)
+
+        XCTAssertTrue(reply.ok, reply.error ?? "")
+        let shown = try XCTUnwrap(reply.result?.id.flatMap(UUID.init(uuidString:)))
+        XCTAssertEqual(destination.workspace(forSession: shown)?.id, destination.rootWorkspace?.id)
+    }
+
+    func testATopLevelRowReopenedInAnotherWindowTakesItsSavedPlaceAmongThatWindowsTopLevelSessions() async throws {
+        let listed = tree(sessions: session("origin-1"))
+        let runner = ScriptedRunner([ok(ControlResult(closed: ["origin-1"])), listed, listed, listed])
+        let (server, store) = try makeServer(runner)
+        let row = try attachedRow(in: store, workspace: try XCTUnwrap(store.rootWorkspace).id)
+        try await terminate(row, server)
+        let entry = try XCTUnwrap(library.remoteRecentClosedItems.first)
+        XCTAssertEqual(entry.placement.sessionIndex, 0)
+        let destinationID = library.newWindow().id
+        let destination = try XCTUnwrap(library.store(for: destinationID))
+        let destinationRoot = try XCTUnwrap(destination.rootWorkspace).id
+        let resident = try XCTUnwrap(destination.addSession(toWorkspace: destinationRoot, cwd: NSHomeDirectory()))
+        library.closeWindow(try XCTUnwrap(library.windowID(for: store)))
+
+        let reply = await server.reopenAttached(entry.id, window: destinationID.uuidString)
+
+        XCTAssertTrue(reply.ok, reply.error ?? "")
+        let shown = try XCTUnwrap(reply.result?.id.flatMap(UUID.init(uuidString:)))
+        XCTAssertEqual(destination.rootWorkspace?.sessions.map(\.id), [shown, resident.id])
+    }
+
+    func testAnUndoneTopLevelTerminateReturnsToItsPlaceAmongTheTopLevelSessions() async throws {
+        let listed = tree(sessions: session("origin-1"))
+        let runner = ScriptedRunner([ok(ControlResult(undoable: true, closed: ["origin-1"], undoID: "u1")),
+                                     ok(ControlResult(id: "u1")), listed, listed])
+        let (server, store) = try makeServer(runner)
+        let root = try XCTUnwrap(store.rootWorkspace).id
+        try await terminate(try attachedRow(in: store, workspace: root), server, undoable: true)
+        let resident = try XCTUnwrap(store.addSession(toWorkspace: root, cwd: NSHomeDirectory()))
+        let window = try XCTUnwrap(library.windowID(for: store))
+        let undo = try XCTUnwrap(library.takeAttachedUndo(window: window))
+
+        let reply = await server.undoOriginClose(undo, window: window.uuidString)
+
+        XCTAssertTrue(reply.ok, reply.error ?? "")
+        let shown = try XCTUnwrap(shownRow("origin-1", in: store)).id
+        XCTAssertEqual(store.rootWorkspace?.sessions.map(\.id), [shown, resident.id])
+    }
+
     func testALocalEntryIsLeftToTheLocalReopen() async throws {
         let (server, store) = try makeServer(ScriptedRunner([ok(ControlResult(closed: ["origin-1"]))]))
         try await terminate(try attachedRow(in: store), server)
@@ -93,6 +211,38 @@ final class ControlServerAttachedRecentTests: XCTestCase {
         XCTAssertFalse(reply.ok)
         XCTAssertEqual(runner.invocations.count, 1)
         XCTAssertEqual(library.remoteRecentClosedItems.map(\.id), [entry.id])
+    }
+
+    func testABareReopenWithAServerWindowFrontmostIsRefusedBeforeTheOriginIsAsked() async throws {
+        let runner = ScriptedRunner([ok(ControlResult(closed: ["origin-1"], recentID: "r1"))])
+        let (server, store) = try makeServer(runner)
+        try await terminate(try attachedRow(in: store), server)
+        let entry = try XCTUnwrap(library.remoteRecentClosedItems.first)
+        let remote = try XCTUnwrap(library.store(for: library.newRemoteWindow(host: "box").id))
+
+        let reply = await server.dispatch(ControlRequest(cmd: .recentOpen, target: entry.id.uuidString))
+
+        XCTAssertFalse(reply.ok)
+        XCTAssertEqual(reply.error, "recent.open is not available in a remote window")
+        XCTAssertEqual(runner.invocations.count, 1)
+        XCTAssertEqual(library.remoteRecentClosedItems.map(\.id), [entry.id])
+        XCTAssertNil(shownRow("origin-1", in: remote))
+    }
+
+    func testTheMenusReopenWithAServerWindowFrontmostIsRefusedBeforeTheOriginIsAsked() async throws {
+        let runner = ScriptedRunner([ok(ControlResult(closed: ["origin-1"], recentID: "r1"))])
+        let (server, store) = try makeServer(runner)
+        try await terminate(try attachedRow(in: store), server)
+        let entry = try XCTUnwrap(library.remoteRecentClosedItems.first)
+        let remote = try XCTUnwrap(library.store(for: library.newRemoteWindow(host: "box").id))
+
+        let reply = await server.reopenAttached(entry.id, window: nil)
+
+        XCTAssertFalse(reply.ok)
+        XCTAssertEqual(reply.error, "recent.open is not available in a remote window")
+        XCTAssertEqual(runner.invocations.count, 1)
+        XCTAssertEqual(library.remoteRecentClosedItems.map(\.id), [entry.id])
+        XCTAssertNil(shownRow("origin-1", in: remote))
     }
 
     func testAGoneSessionWithNoRecordedEntryIsFoundInTheOriginsList() async throws {
@@ -297,12 +447,13 @@ final class ControlServerAttachedRecentTests: XCTestCase {
                                    identity: AppIdentity(version: "9.9.9", commit: "testsha"), remoteRunner: runner,
                                    socketPath: stateDir.appendingPathComponent("control-\(UUID().uuidString).sock").path)
         server.remoteCompanionPause = {}
+        server.remoteTransport = StreamTransport()
         servers.append(server)
         return (server, try XCTUnwrap(library.activeStore))
     }
 
-    private func attachedRow(in store: AppStore) throws -> Session {
-        let workspace = try XCTUnwrap(store.currentWorkspaceID)
+    private func attachedRow(in store: AppStore, workspace: UUID? = nil) throws -> Session {
+        let workspace = try XCTUnwrap(workspace ?? store.currentWorkspaceID)
         let row = try XCTUnwrap(store.addSession(toWorkspace: workspace, cwd: NSHomeDirectory(), remoteHost: "buildbox"))
         store.bindRemote(RemoteBinding(remoteSessionID: "origin-1", daemonsByLocalPane: [row.paneIdentity: ZmxSupport.daemonName(for: UUID())],
                                        presentationVersion: 1,

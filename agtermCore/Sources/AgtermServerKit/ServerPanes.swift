@@ -1,6 +1,12 @@
 import Foundation
 import agtermCore
 
+/// AttachIntent carries the served request's `ControlArgs.attachPending`, bound for that request alone, so a pane it
+/// starts after a suspension cannot take another request's intent.
+enum AttachIntent {
+    @TaskLocal static var pending = false
+}
+
 /// ServerPanes starts and ends the zmx daemons behind the server's panes. A pane joins
 /// `Session.daemonBackedPanes` only once its daemon was created.
 @MainActor
@@ -17,8 +23,9 @@ final class ServerPanes {
     let baseEnvironment: [String: String]
     /// leaders is each listed pane's shell pid from the last applied listing, which the tree's foreground reads start at.
     var leaders: [UUID: Int32] = [:]
-    /// restarting are panes a restart has killed and not yet started again, which no listing may settle meanwhile.
-    var restarting: Set<UUID> = []
+    /// restartHolds counts, per pane, the restarts replacing its shell that have not yet confirmed or given up on the new
+    /// one, which no listing may settle meanwhile; each restart releases only its own hold.
+    private var restartHolds: [UUID: Int] = [:]
     /// processes is the host's process table, through which a kill hangs up the pane's foreground job.
     var processes: any ProcessTable = ProcProcessTable()
     private var startedAt: [UUID: Date] = [:]
@@ -54,7 +61,12 @@ final class ServerPanes {
         let directory: String
         /// scratch starts the pane under `scratchDaemonName` and leaves `daemonBackedPanes` to the session's panes.
         var scratch = false
+        /// attachPending holds a program (never the plain login shell) until a terminal attaches, up to
+        /// `attachHoldSeconds`; it defaults to what the request being served asked for (`AttachIntent.pending`).
+        var attachPending = AttachIntent.pending
     }
+
+    static let attachHoldSeconds = 30
 
     /// daemonName is `identity`'s daemon: the scratch name for a scratch this run started.
     func daemonName(for identity: UUID) -> String {
@@ -79,6 +91,7 @@ final class ServerPanes {
         environment["ZMX_SESSION_PREFIX"] = ""
         environment["ZMX_NO_DETACH_KEY"] = "1"
         environment["ZMX_EXIT_FILE"] = record
+        if start.attachPending, start.program != .loginShell { environment["ZMX_HOLD_UNTIL_ATTACH"] = String(Self.attachHoldSeconds) }
         let integration = (configuration.resourcesDirectory as NSString).appendingPathComponent("shell-integration")
         let launch = shell.launch(integration: integration, environment: environment, program: start.program)
         let home = baseEnvironment["HOME"] ?? "/"
@@ -98,6 +111,25 @@ final class ServerPanes {
     /// cannot hold it.
     func started(_ identity: UUID, since date: Date) -> Bool {
         startedAt[identity].map { $0 >= date } ?? false
+    }
+
+    /// confirmed records that a restart saw `identity`'s new shell run: a listing begun before then may predate the
+    /// daemon, so it counts as a start.
+    func confirmed(_ identity: UUID) {
+        startedAt[identity] = Date()
+    }
+
+    func holdRestart(_ identity: UUID) {
+        restartHolds[identity, default: 0] += 1
+    }
+
+    func releaseRestart(_ identity: UUID) {
+        guard let count = restartHolds[identity] else { return }
+        restartHolds[identity] = count > 1 ? count - 1 : nil
+    }
+
+    func isRestarting(_ identity: UUID) -> Bool {
+        restartHolds[identity] != nil
     }
 
     /// end kills the daemons of panes the store finalized before the command that closed them replies, so a

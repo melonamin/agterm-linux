@@ -393,8 +393,7 @@ public struct ControlSessionNode: Codable, Sendable, Equatable {
     /// each omitted when its pane is unrealized.
     public let realized: Bool?
 
-    /// The host a teleported session is attached to; nil/omitted for a local one. Live-only — a remote
-    /// session is never persisted, so this never survives a relaunch.
+    /// remoteHost is the SSH destination of a remote session; omitted for a local one.
     public let remoteHost: String?
     /// The origin's id for the session an attached row shows, the id `zmx attach` takes; omitted for a local one.
     public let remoteSessionID: String?
@@ -407,6 +406,9 @@ public struct ControlSessionNode: Codable, Sendable, Equatable {
     /// The presentation streams on this session: how many mirror it, a count of connections so two rows
     /// attached from one Mac are two, and whether one presents it. Omitted when there is none.
     public let presenters: ControlPresentersNode?
+    /// followsCompanions is true while an attached top-level row holds its origin's companion list and attaches new
+    /// members under itself; omitted for an origin that does not send one, a companion row, and while the stream is down.
+    public let followsCompanions: Bool?
     /// Overlay slots a viewer presenting this session holds, on the origin; omitted when none is held. Such
     /// an overlay covers nothing here, so `overlay` and `paneOverlays` leave it out.
     public let remoteOverlays: [ControlRemoteOverlayNode]?
@@ -443,8 +445,9 @@ public struct ControlSessionNode: Codable, Sendable, Equatable {
                 remoteOverlays: [ControlRemoteOverlayNode]? = nil, htmlOverlays: [ControlHtmlOverlayNode]? = nil,
                 hiddenOverlays: [String]? = nil, lastSelectedAt: Double? = nil,
                 tint: String? = nil, tintOn: [String]? = nil, parent: String? = nil, collapsed: Bool? = nil,
-                content: String? = nil, info: SessionInfo? = nil, remoteSessionID: String? = nil) {
+                content: String? = nil, info: SessionInfo? = nil, remoteSessionID: String? = nil, followsCompanions: Bool? = nil) {
         self.remoteSessionID = remoteSessionID
+        self.followsCompanions = followsCompanions
         self.content = content
         self.info = info?.source
         self.infoMarkdown = info?.markdown
@@ -720,10 +723,20 @@ public struct ControlWorkspaceNode: Codable, Sendable, Equatable {
     public let tint: String?
     /// The workspace row parts the tint colors; present exactly when `tint` is.
     public let tintOn: [String]?
+    /// true for the window's root container, omitted for a named workspace. The root has an empty `name` and no row,
+    /// so the formula above does not apply: its sessions show at the top level of the ordinary tree while
+    /// `!tree.workspaceFilter || focused`, and in every flagged layout by each session's own `flagged`.
+    public let root: Bool?
     public let sessions: [ControlSessionNode]
 
+    /// The root container's label in the CLI tree listing and the focus editor.
+    public static let rootLabel = "Top-Level Sessions"
+
+    /// The workspace target that names the root container.
+    public static let rootTarget = "root"
+
     public init(id: String, name: String, active: Bool, focused: Bool? = nil,
-                collapsed: Bool? = nil, tint: String? = nil, tintOn: [String]? = nil,
+                collapsed: Bool? = nil, tint: String? = nil, tintOn: [String]? = nil, root: Bool? = nil,
                 sessions: [ControlSessionNode]) {
         self.id = id
         self.name = name
@@ -732,6 +745,7 @@ public struct ControlWorkspaceNode: Codable, Sendable, Equatable {
         self.collapsed = collapsed
         self.tint = tint
         self.tintOn = tintOn
+        self.root = root
         self.sessions = sessions
     }
 }
