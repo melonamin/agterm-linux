@@ -17,12 +17,10 @@ extension AppStore {
     func scheduleCompanionsFlush() {
         guard presentationHub != nil, !companionsFlushDue else { return }
         companionsFlushDue = true
-        DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.companionsFlushDue = false
-                self.flushCompanions()
-            }
+        MainTimer.schedule(after: 0) { [weak self] in
+            guard let self else { return }
+            self.companionsFlushDue = false
+            self.flushCompanions()
         }
     }
 

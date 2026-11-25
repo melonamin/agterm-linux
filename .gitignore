@@ -11,6 +11,8 @@ agterm/Resources/zmx
 # build artifacts
 build/
 .build/
+# AT-SPI smoke diagnostics (scripts/test-linux-ui.sh; CI uploads them from here)
+artifacts/
 agterm.xcodeproj/
 .swiftpm/
 
@@ -27,6 +29,9 @@ windows/
 __pycache__/
 .ruff_cache/
 
+# Local working plans, including those inherited from upstream.
+docs/plans/
+
 # revmux review scaffolding: caller-written task context plus its run archive, local to a review.
 # profile.md is the exception — it calibrates every review of this repo, so it is tracked. Excluding
 # the directory itself would make that re-include unreachable, hence the glob.
@@ -37,3 +42,6 @@ __pycache__/
 !.claude/
 .claude/*
 !.claude/rules/
+agterm-linux-*.tar.gz
+agterm-linux-*.tar.gz.sha256
+dist-linux/

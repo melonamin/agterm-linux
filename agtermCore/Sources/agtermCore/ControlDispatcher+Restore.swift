@@ -106,6 +106,6 @@ extension ControlDispatcher {
     }
 }
 
-struct ArgumentRejection: Error {
-    let message: String
+public struct ArgumentRejection: Error {
+    public let message: String
 }

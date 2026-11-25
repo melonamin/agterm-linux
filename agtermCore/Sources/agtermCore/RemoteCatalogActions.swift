@@ -391,6 +391,7 @@ public final class RemoteCatalogActions {
 
     /// mirror is the window's catalog, which detach and the Detached Sessions picker act on.
     @ObservationIgnored public let mirror: RemoteCatalogMirror
+    @ObservationIgnored private let automaticLookups: Bool
     @ObservationIgnored private let runner: RemoteCatalogClient.Runner
     @ObservationIgnored private let pool: SshConnectionPool?
     private var entries: [String: Entry] = [:] {
@@ -412,7 +413,9 @@ public final class RemoteCatalogActions {
     @ObservationIgnored private var lookupAgain = false
     @ObservationIgnored private var lookupRound = false
 
-    public init(mirror: RemoteCatalogMirror, runner: @escaping RemoteCatalogClient.Runner, pool: SshConnectionPool? = nil) {
+    public init(mirror: RemoteCatalogMirror, runner: @escaping RemoteCatalogClient.Runner, pool: SshConnectionPool? = nil,
+                automaticLookups: Bool = true) {
+        self.automaticLookups = automaticLookups
         self.mirror = mirror
         self.runner = runner
         self.pool = pool
@@ -480,10 +483,39 @@ public final class RemoteCatalogActions {
     /// is still pending. `selectingCreated` selects the row it created once the window shows it, unless the selection
     /// moved after the operation was asked for.
     public func send(_ prepared: PreparedRemoteOperation, selectingCreated: Bool = false) async -> ControlResponse {
+        var pending: ([String], [String], @MainActor (Outcome) -> Void)?
+        var response: ControlResponse?
+        sendUsing(prepared, selectingCreated: selectingCreated,
+                  launch: { words, operands, done in pending = (words, operands, done) },
+                  completion: { response = $0 })
+        while let (words, operands, done) = pending {
+            pending = nil
+            done(await run(words, operands: operands))
+        }
+        return response ?? ControlResponse(ok: false, error: "no remote response")
+    }
+
+    /// Callback transport entry point for hosts whose main loop does not drain Swift's main-actor executor.
+    /// Preparation, receipt reconciliation and unknown-outcome handling are shared with the async entry point.
+    public func send(_ prepared: PreparedRemoteOperation, selectingCreated: Bool = false,
+                     launch: @escaping @MainActor ([String], @escaping @MainActor (RemoteCommandResult) -> Void) -> Void,
+                     completion: @escaping @MainActor (ControlResponse) -> Void) {
+        sendUsing(prepared, selectingCreated: selectingCreated, launch: { [self] words, operands, done in
+            let words = words + (mirror.originWindow.map { ["--window", $0.uuidString] } ?? [])
+            guard let argv = try? RemoteSession.controlCommand(host: host, arguments: words, operands: operands) else {
+                return done(.notSent)
+            }
+            launch(argv) { done(Self.outcome($0)) }
+        }, completion: completion)
+    }
+
+    private func sendUsing(_ prepared: PreparedRemoteOperation, selectingCreated: Bool,
+                           launch: @escaping @MainActor ([String], [String], @escaping @MainActor (Outcome) -> Void) -> Void,
+                           completion: @escaping @MainActor (ControlResponse) -> Void) {
         let operation = prepared.operation
-        guard !stopped, mirror.state == .connected else { return ControlResponse(ok: false, error: "\(host) is not connected") }
+        guard !stopped, mirror.state == .connected else { return completion(ControlResponse(ok: false, error: "\(host) is not connected")) }
         if entries.values.contains(where: { $0.operation.key == operation.key && $0.holdsRepeat }) {
-            return ControlResponse(ok: false, error: "\(operation.label) is still pending on \(host)")
+            return completion(ControlResponse(ok: false, error: "\(operation.label) is still pending on \(host)"))
         }
         var words = operation.words
         if let panes = prepared.panes { words += ["--expect-panes", panes.map(\.uuidString).joined(separator: ",")] }
@@ -494,37 +526,43 @@ public final class RemoteCatalogActions {
         let newSplit = operation.newSplit(in: mirror.store)
         // read before the request: the offer can expire while an undo it allowed is in flight
         let undone = if case .undoClose(let undoID) = operation { undoRows[undoID] ?? [] } else { [UUID]() }
-        words += ["--op-id", opID, "--epoch", prepared.sent.epoch]
-        var outcome = await run(words + (prepared.attachesPane ? ["--attach-pending"] : []), operands: operation.operands)
-        // a far CLI too old for the intent refused it before sending anything, so the same operation id is still unused
-        if prepared.attachesPane, case .refusedArguments = outcome {
-            outcome = await run(words, operands: operation.operands)
+        let requestWords = words + ["--op-id", opID, "--epoch", prepared.sent.epoch]
+        func launchWithFallback(_ done: @escaping @MainActor (Outcome) -> Void) {
+            launch(requestWords + (prepared.attachesPane ? ["--attach-pending"] : []), operation.operands) { outcome in
+                if prepared.attachesPane, case .refusedArguments = outcome {
+                    launch(requestWords, operation.operands, done)
+                } else {
+                    done(outcome)
+                }
+            }
         }
-        if let (command, what) = operation.ownCommand, Self.tooOld(outcome, for: command) {
-            entries[opID] = nil
-            let app = mirror.originIsMac ? "agterm" : "agterm-server"
-            return ControlResponse(ok: false, error: "the \(app) on \(host) is too old for \(what)")
-        }
-        switch outcome {
-        case .notSent:
-            entries[opID] = nil
-            return ControlResponse(ok: false, error: "no connection to \(host)")
-        case .reply(let reply) where reply.result?.receipt?.opID == opID:
-            settle(opID, reply.result?.receipt)
-            if reply.ok { claimLead(operation.claimedRows(reply.result) + undone, newSplit: newSplit) }
-            if selectingCreated, reply.ok, let id = reply.result?.id.flatMap(UUID.init(uuidString:)) {
-                mirror.selectWhenShown(id, from: prepared.selection)
+        launchWithFallback { [self] outcome in
+            if let (command, what) = operation.ownCommand, Self.tooOld(outcome, for: command) {
+                entries[opID] = nil
+                let app = mirror.originIsMac ? "agterm" : "agterm-server"
+                return completion(ControlResponse(ok: false, error: "the \(app) on \(host) is too old for \(what)"))
             }
-            if case .newWorkspace(_, true, _) = operation, reply.ok, let id = reply.result?.id.flatMap(UUID.init(uuidString:)) {
-                mirror.collapseWhenShown(id)
+            switch outcome {
+            case .notSent:
+                entries[opID] = nil
+                return completion(ControlResponse(ok: false, error: "no connection to \(host)"))
+            case .reply(let reply) where reply.result?.receipt?.opID == opID:
+                settle(opID, reply.result?.receipt)
+                if reply.ok { claimLead(operation.claimedRows(reply.result) + undone, newSplit: newSplit) }
+                if selectingCreated, reply.ok, let id = reply.result?.id.flatMap(UUID.init(uuidString:)) {
+                    mirror.selectWhenShown(id, from: prepared.selection)
+                }
+                if case .newWorkspace(_, true, _) = operation, reply.ok, let id = reply.result?.id.flatMap(UUID.init(uuidString:)) {
+                    mirror.collapseWhenShown(id)
+                }
+                if reply.ok, reply.result?.undoable == true, let undoID = reply.result?.undoID {
+                    noteUndo(undoID, rows: reply.result?.closed?.compactMap(UUID.init(uuidString:)) ?? [])
+                }
+                return completion(reply)
+            case .reply, .lost, .refusedArguments:
+                settle(opID, nil)
+                return completion(ControlResponse(ok: false, error: "\(host) did not answer \(operation.label); its outcome is unknown until \(host) can be asked"))
             }
-            if reply.ok, reply.result?.undoable == true, let undoID = reply.result?.undoID {
-                noteUndo(undoID, rows: reply.result?.closed?.compactMap(UUID.init(uuidString:)) ?? [])
-            }
-            return reply
-        case .reply, .lost, .refusedArguments:
-            settle(opID, nil)
-            return ControlResponse(ok: false, error: "\(host) did not answer \(operation.label); its outcome is unknown until \(host) can be asked")
         }
     }
 
@@ -536,8 +574,7 @@ public final class RemoteCatalogActions {
     private func noteUndo(_ undoID: String, rows: [UUID]) {
         undoIDs = Array((undoIDs + [undoID]).suffix(Self.undoDepth))
         undoRows[undoID] = rows
-        Task { @MainActor [weak self, grace = undoGrace] in
-            try? await Task.sleep(for: .seconds(grace))
+        MainTimer.schedule(after: undoGrace) { [weak self] in
             self?.undoIDs.removeAll { $0 == undoID }
             self?.undoRows[undoID] = nil
         }
@@ -648,7 +685,7 @@ public final class RemoteCatalogActions {
     /// startLookups asks about every lost reply once per round. A reply lost while a batch runs joins it; a `round`
     /// (a new snapshot) asks about every one again after it, so a lookup that failed is retried only then.
     private func startLookups(round: Bool = false) {
-        guard !stopped, mirror.state == .connected, entries.values.contains(where: { $0.state == .lookup }) else { return }
+        guard automaticLookups, !stopped, mirror.state == .connected, entries.values.contains(where: { $0.state == .lookup }) else { return }
         guard lookupTask == nil else {
             lookupAgain = true
             lookupRound = lookupRound || round
@@ -681,8 +718,23 @@ public final class RemoteCatalogActions {
         return asked
     }
 
-    // an older CLI refuses `--parent` or `--top-level`, a newer CLI's request is refused by an older running server:
-    // either way nothing ran there, unlike any other lost reply
+    /// Lost operations to ask about once per connection/snapshot, for callback-driven transports.
+    public var pendingLookups: [String: [String]] {
+        guard !stopped, mirror.state == .connected else { return [:] }
+        return Dictionary(uniqueKeysWithValues: entries.values.filter { $0.state == .lookup }.map { entry in
+            (entry.opID, ["catalog", "op", entry.opID, "--epoch", entry.sent.epoch, "--rev", String(entry.sent.rev)]
+                + (mirror.originWindow.map { ["--window", $0.uuidString] } ?? []))
+        })
+    }
+
+    public func acceptLookup(_ result: RemoteCommandResult, operation opID: String) {
+        guard case .reply(let reply) = Self.outcome(result), let receipt = reply.result?.receipt,
+              receipt.opID == opID, entries[opID]?.state == .lookup else { return }
+        settle(opID, receipt)
+    }
+
+    // an older CLI refuses `--parent`, a newer CLI's request is refused by an older running server: either way
+    // nothing ran there, unlike any other lost reply
     private static func tooOld(_ outcome: Outcome, for command: Command) -> Bool {
         switch outcome {
         case .refusedArguments: true
@@ -702,6 +754,10 @@ public final class RemoteCatalogActions {
             return .notSent
         }
         let result = await runner(argv)
+        return Self.outcome(RemoteCommandResult(status: result.status, stdout: result.stdout, stderr: ""))
+    }
+
+    private static func outcome(_ result: RemoteCommandResult) -> Outcome {
         if result.status == 64, result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .refusedArguments }
         guard let reply = try? JSONDecoder().decode(ControlResponse.self, from: Data(result.stdout.utf8)) else { return .lost }
         return .reply(reply)

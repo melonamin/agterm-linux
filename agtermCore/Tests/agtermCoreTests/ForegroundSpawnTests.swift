@@ -12,7 +12,6 @@ final class ForegroundSpawnTests {
 
     deinit { try? FileManager.default.removeItem(at: root) }
 
-    #if canImport(Darwin)
     @Test func runFeedsDataOnStdin() throws {
         let out = root.appendingPathComponent("out")
 
@@ -67,11 +66,4 @@ final class ForegroundSpawnTests {
             try ForegroundSpawn.run(["/bin/cat"], input: .file(root.appendingPathComponent("absent").path), environment: [:])
         }
     }
-    #else
-    @Test func itRefusesOffDarwin() {
-        #expect(throws: ForegroundSpawn.Failure(operation: "foreground spawn", errno: ENOTSUP)) {
-            try ForegroundSpawn.run(["/bin/true"], input: .nothing, environment: [:])
-        }
-    }
-    #endif
 }

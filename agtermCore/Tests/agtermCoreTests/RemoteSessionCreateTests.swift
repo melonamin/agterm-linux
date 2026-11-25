@@ -163,7 +163,7 @@ struct RemoteSessionCreateTests {
     }
 }
 
-private extension Result where Failure == ArgumentRejection {
+private extension Result where Failure == RemoteSessionCreate.Refusal {
     var failureMessage: String? {
         if case .failure(let rejection) = self { return rejection.message }
         return nil

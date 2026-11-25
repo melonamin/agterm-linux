@@ -10,6 +10,8 @@ paths:
   - "agtermCore/Sources/agtermCore/QuickTerminalMetrics.swift"
   - "agtermCore/Sources/agtermCore/SettingsStore.swift"
   - "agtermUITests/SettingsUITests.swift"
+  - "agterm-linux/Sources/AgtermLinux/LinuxExitCapturePolicy.swift"
+  - "agterm-linux/Sources/AgtermLinux/LinuxForegroundCapture.swift"
 ---
 
 ## Settings
@@ -195,12 +197,20 @@ paths:
   restore can't tell that window's file from one open at exit, so its argv could replay via the
   never-windowless reopen fallback, and on demand a capture can now have written argv there mid-run.
   Ordinary and rerun argv comes from `ghostty_surface_foreground_pid`, `sysctl(KERN_PROCARGS2)`, and
-  host-free parsing. Wrapped argv capture never runs `zmx list`, which probes daemons one at a time with up
-  to 1 s each (#1042): `ZmxDaemonForeground` reads each daemon's pid from its socket (`LOCAL_PEERPID`,
-  answered by the kernel while the daemon is stopped), takes its one terminal-owning child
-  (`ZmxDaemonLeader`) and parses that terminal's foreground group the same way. A live hidden split is
-  captured while its backing surface exists; an ordinary or rerun hidden split remains nil. A lookup miss
-  leaves that pane unread and no other; once the deadline passes, no further pane read starts.
+  host-free parsing. Live panes use one fresh zmx leader snapshot, then the same sysctl parsing against the
+  daemon-side leaders. A live hidden split is captured while its backing surface exists; an ordinary or
+  rerun hidden split remains nil. Refresh failure or deadline expiry clears the affected slots rather than
+  reading the resolver's retained map.
+  Linux (`LinuxExitCapturePolicy`) runs the same arms at inverted edges: its quit confirm sets
+  `isTerminating` BEFORE `gtk_window_close`, and `windowWillClose` drops the window from `gWindows`.
+  So a terminating or last-window close captures, a non-last close clears as above, and `flushOnQuit`
+  (also reached by SIGTERM/SIGINT) captures only windows still in `gWindows`.
+  Never widen it to `library.allOpenSessions()`: an already-closed window's torn-down surfaces read nil
+  and overwrite its capture.
+  Each window is captured at most once per exit.
+  Linux exit capture matches filesystem sockets to listener inodes with a bounded kernel diagnostic dump,
+  then finds their current owner and terminal through `/proc` (`LinuxZmxDaemonForeground`).
+  It never asks a daemon to answer, so a stalled daemon cannot consume the capture budget.
   Strip login `-` before shell recognition; a known shell with only flags is idle and omitted, while
   scripts/payload args remain, including `/bin/sh <script>`.
   System shutdown, restart, and logout skip quit confirmation so `applicationWillTerminate` can capture

@@ -95,6 +95,16 @@ struct InterfaceMetricsTests {
         #expect(tiny == 300 - 2 * InterfaceMetrics.panelMargin)
     }
 
+    @Test func maximumFontPickerFitsTheMinimumLinuxWindow() {
+        let metrics = InterfaceMetrics(fontSize: 20)
+        let width = metrics.fittedPanelWidth(idealAtDefault: 320, windowWidth: 480, terminalAreaInset: 0)
+        #expect(width == 480 - 2 * InterfaceMetrics.panelMargin)
+        #expect(width < metrics.scaled(320))
+        let switcher = metrics.fittedPanelWidth(idealAtDefault: 460, windowWidth: 480, terminalAreaInset: 0)
+        #expect(switcher == 480 - 2 * InterfaceMetrics.panelMargin)
+        #expect(switcher < metrics.scaled(460))
+    }
+
     /// Pins the decision behind the switcher panel's height. The rendered result has no harness — hosted
     /// tests do not render SwiftUI and XCUITest cannot hold Ctrl for the switcher — so this covers the
     /// choice, and the trap it exists for is named on `measuredPanelHeight`.

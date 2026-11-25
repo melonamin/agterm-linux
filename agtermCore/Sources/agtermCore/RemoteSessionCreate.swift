@@ -54,28 +54,28 @@ public struct RemoteSessionCreate: Equatable, Sendable {
     }
 
     // the row always lands appended and selected, so any other placement or creation field is refused, not dropped
-    static func parse(_ request: ControlRequest) -> Result<RemoteSessionCreate, ArgumentRejection> {
+    public static func parse(_ request: ControlRequest) -> Result<RemoteSessionCreate, Refusal> {
         let args = request.args
         guard let host = args?.host?.trimmedOrNil else {
-            return .failure(ArgumentRejection(message: "session.remote.new requires a host"))
+            return .failure(Refusal(message: "session.remote.new requires a host"))
         }
         guard RemoteSession.isHost(host) else {
-            return .failure(ArgumentRejection(message: "session.remote.new: not a host ssh can be given"))
+            return .failure(Refusal(message: "session.remote.new: not a host ssh can be given"))
         }
         if request.target != nil || args?.targets != nil || args?.workspace != nil || args?.createWorkspace != nil
             || args?.after != nil || args?.before != nil || args?.parent != nil {
-            return .failure(ArgumentRejection(message: "a remote session takes no target, workspace id or placement: "
+            return .failure(Refusal(message: "a remote session takes no target, workspace id or placement: "
                                               + "it lands in the window's current workspace"))
         }
         if args?.wait != nil || args?.name != nil || args?.noSelect != nil || args?.tint != nil || args?.tintOn != nil {
-            return .failure(ArgumentRejection(message: "a remote session takes no --wait, --name, --no-select or tint"))
+            return .failure(Refusal(message: "a remote session takes no --wait, --name, --no-select or tint"))
         }
         if args?.opID != nil {
-            return .failure(ArgumentRejection(message: "a remote session takes no operation id"))
+            return .failure(Refusal(message: "a remote session takes no operation id"))
         }
         // blank is refused, not read as omitted: omitted takes the local workspace's name, a different destination
         if let name = args?.workspaceName, name.trimmedOrNil == nil {
-            return .failure(ArgumentRejection(message: "workspace name must not be blank"))
+            return .failure(Refusal(message: "workspace name must not be blank"))
         }
         return .success(RemoteSessionCreate(host: host, originWindow: args?.originWindow?.trimmedOrNil,
                                             workspaceName: args?.workspaceName?.trimmedOrNil, cwd: args?.cwd,

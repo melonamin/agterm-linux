@@ -75,7 +75,7 @@ public final class SnapshotOfferBook {
     public func adopt(descriptor: Int32, claim: UUID) -> Bool {
         guard let offer = claimed.removeValue(forKey: claim) else { return false }
         let stream = SnapshotServeStream(descriptor: descriptor, file: offer.file, name: offer.name, size: offer.size) { [weak self] in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.streams[claim] = nil } }
+            MainActorHop.enqueue { self?.streams[claim] = nil }
         }
         streams[claim] = stream
         stream.start()

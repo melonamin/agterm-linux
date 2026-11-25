@@ -1,7 +1,6 @@
 import Foundation
 import Testing
 @testable import agtermCore
-
 @MainActor
 struct AppStorePaneTests {
     @Test(arguments: OverlayPane.allCases, ["session", "left", "right"])
@@ -1492,7 +1491,10 @@ struct AppStorePaneTests {
         store.openPaneOverlay(session.id, pane: .left, command: "revdiff")
         let surface = SpySurface()
         session.leftOverlaySurface = surface
-        store.recordPaneOverlayExit(session.id, pane: .left, code: 3)
+        surface.onTeardown = {
+            #expect(session.paneOverlayRole(of: surface) == .left)
+            store.recordPaneOverlayExit(session.id, pane: .left, code: 3)
+        }
         #expect(store.closePaneOverlay(session.id, pane: .left) == true)
         #expect(session.leftOverlay == nil)
         #expect(session.leftOverlaySurface == nil)

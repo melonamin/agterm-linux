@@ -307,6 +307,7 @@
       placers.forEach((place) => place());
       scrollTo(log && following ? scroller.scrollHeight : lineTop(line) - bar.offsetHeight + gap);
       draw();
+      finder.repaint();
       if (own) send({ wrap: wrapped });
       // the app reopens a paused log at the offset it was last told
       if (log) logControls.post();
@@ -390,6 +391,7 @@
     // queries this document's field sent and has not seen echoed yet, oldest first
     let pending = [];
     let windowStart = -1;
+    let windowEnd = -1;
     let nodes = [];
     let starts = new Int32Array(0);
 
@@ -459,18 +461,41 @@
         marks.clear();
         mark.clear();
         windowStart = -1;
+        windowEnd = -1;
         return;
       }
-      const span = Math.min(paintLimit, offsets.length);
-      const focus = Math.max(current, 0);
-      if (force || windowStart < 0 || focus < windowStart || focus >= windowStart + span) {
-        windowStart = Math.max(0, Math.min(focus - (span >> 1), offsets.length - span));
+      // Offscreen CSS highlights can stall WebKit's input processing even with StaticRange.
+      // Count the entire document, but paint only the viewport and a small scroll margin.
+      const edge = (y, after) => {
+        let low = 0, high = offsets.length;
+        while (low < high) {
+          const mid = (low + high) >> 1, rect = rangeOf(mid).getBoundingClientRect();
+          if (after ? rect.top <= y : rect.bottom < y) low = mid + 1; else high = mid;
+        }
+        return low;
+      };
+      const start = edge(bar.offsetHeight - 32, false);
+      const end = Math.min(edge(scroller.clientHeight + 32, true), start + paintLimit);
+      if (force || windowStart !== start || windowEnd !== end) {
+        windowStart = start;
+        windowEnd = end;
         marks.clear();
-        for (let i = windowStart; i < windowStart + span; i += 1) marks.add(markOf(i));
+        for (let i = start; i < end; i += 1) {
+          const rect = rangeOf(i).getBoundingClientRect();
+          if (rect.right >= -32 && rect.left <= scroller.clientWidth + 32) marks.add(markOf(i));
+        }
       }
       mark.clear();
       if (current >= 0) mark.add(markOf(current));
     };
+    let paintScheduled = false;
+    const schedulePaint = () => {
+      if (paintScheduled) return;
+      paintScheduled = true;
+      requestAnimationFrame(() => { paintScheduled = false; paint(true); });
+    };
+    window.addEventListener('scroll', schedulePaint, { passive: true });
+    window.addEventListener('resize', schedulePaint);
 
     const draw = () => {
       counter.textContent = !query ? '' : offsets.length ? `${current + 1} of ${offsets.length}` : 'no matches';
@@ -505,9 +530,9 @@
     const run = (move) => {
       find();
       pick();
-      paint(true);
       draw();
       if (move && !(log && following)) reveal();
+      paint(true);
       report();
     };
 
@@ -517,9 +542,9 @@
       if (!offsets.length) return;
       if (log && following) logControls.pause();
       current = (current + (forward ? 1 : offsets.length - 1)) % offsets.length;
-      paint(false);
       draw();
       reveal();
+      paint(false);
       report();
       if (log) logControls.post();
     };
@@ -581,6 +606,7 @@
     return {
       field,
       jump,
+      repaint: schedulePaint,
       hasQuery: () => query !== '',
       start() {
         mapNodes();

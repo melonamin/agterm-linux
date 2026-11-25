@@ -1,13 +1,17 @@
-#if os(macOS)
 import ArgumentParser
+#if canImport(CryptoKit)
 import CryptoKit
+#endif
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import agtermCore
 
 // MARK: - server
 
-/// Server groups the agterm-server commands. Local-only, like `terminfo`: it runs ssh and a download on this Mac and never opens the control socket.
-/// macOS only, since it installs the release this app shipped with.
+/// Server groups the agterm-server commands. Local-only, like `terminfo`: it runs ssh and a download on this machine and never opens the control socket.
+/// It installs the release this app shipped with.
 struct Server: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "agterm-server on Linux hosts.",
@@ -22,7 +26,7 @@ struct Server: ParsableCommand {
             (aarch64 or x86_64), downloads that release tarball from GitHub, checks it against the sha256 the app \
             was built with, unpacks it into ~/.local/lib/agterm-server and runs its installer, which sets up the \
             systemd user service, enables linger and installs the agent hooks. Running it again upgrades in place. \
-            --from FILE uses a tarball already on this Mac instead of downloading one; it must match the same \
+            --from FILE uses a tarball already on this machine instead of downloading one; it must match the same \
             sha256 for the host's architecture.
 
             The connection is interactive, as with terminfo install: a password or host-key prompt is answered on \
@@ -42,7 +46,7 @@ struct Server: ParsableCommand {
         @Option(name: .customShort("F"), help: ArgumentHelp("Per-user ssh configuration file.", valueName: "file"))
         var config: String?
         @Option(name: .customLong("from"),
-                help: ArgumentHelp("Use a tarball already on this Mac instead of downloading one; it must still match this app's sha256.",
+                help: ArgumentHelp("Use a tarball already on this machine instead of downloading one; it must still match this app's sha256.",
                                    valueName: "file"))
         var source: String?
 
@@ -77,7 +81,11 @@ struct ServerInstaller {
             bundle: {
                 guard let client = Version.clientPath() else { return nil }
                 let contents = URL(fileURLWithPath: client).deletingLastPathComponent().deletingLastPathComponent()
+                #if os(Linux)
+                return contents.appendingPathComponent("share/agterm")
+                #else
                 return contents.lastPathComponent == "Contents" ? contents.deletingLastPathComponent() : nil
+                #endif
             },
             capture: { try ForegroundSpawn.capture($0, environment: ProcessInfo.processInfo.environment) },
             run: { try ForegroundSpawn.run($0, input: $1, environment: ProcessInfo.processInfo.environment) },
@@ -153,6 +161,16 @@ struct ServerInstaller {
     }
 
     private func releaseInfo() throws -> (version: String, checksums: String) {
+        #if os(Linux)
+        let refusal = "this agtermctl has no matching release metadata; scripts/install-server.sh installs from a source tree"
+        guard let directory = effects.bundle(),
+              let version = try? String(contentsOf: directory.appendingPathComponent("UPSTREAM_VERSION"), encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines), !version.isEmpty,
+              let checksums = try? String(contentsOf: directory.appendingPathComponent(ServerInstall.checksumFile), encoding: .utf8) else {
+            throw SocketClientError(refusal)
+        }
+        return (version, checksums)
+        #else
         let refusal = "this agtermctl is not inside a release agterm.app; scripts/install-server.sh installs from a source tree"
         guard let bundle = effects.bundle(), let identity = AppIdentity.installed(bundleURL: bundle) else {
             throw SocketClientError(refusal)
@@ -160,6 +178,7 @@ struct ServerInstaller {
         let file = bundle.appendingPathComponent("Contents/Resources/\(ServerInstall.checksumFile)")
         guard let checksums = try? String(contentsOf: file, encoding: .utf8) else { throw SocketClientError(refusal) }
         return (identity.version, checksums)
+        #endif
     }
 
     private func probeArchitecture(_ argv: [String]) throws -> String {
@@ -182,8 +201,15 @@ struct ServerInstaller {
     }
 
     private func sha256(of file: URL) throws -> String {
+        #if canImport(CryptoKit)
         let data = try Data(contentsOf: file, options: .alwaysMapped)
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        #else
+        let result = try ForegroundSpawn.capture(["/usr/bin/sha256sum", "--", file.path], environment: [:])
+        guard result.outcome == .exited(0), let value = String(decoding: result.output, as: UTF8.self).split(separator: " ").first,
+              value.count == 64 else { throw SocketClientError("could not hash \(file.path)") }
+        return String(value)
+        #endif
     }
 }
 
@@ -263,4 +289,3 @@ final class ReleaseDownload: NSObject, URLSessionDataDelegate, @unchecked Sendab
         done.signal()
     }
 }
-#endif

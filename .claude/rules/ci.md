@@ -5,14 +5,12 @@ paths:
 
 ## CI (`ci.yml`)
 
-- `ci.yml` runs for pushes and PRs to `master`; concurrency cancels the older run for the same PR, while each
-  master push keys its group on the sha and completes. All macOS jobs use `macos-26`. Releases are local;
-  see `.claude/rules/release.md`.
-- On a same-repo PR by the repository owner, `changes` sets `full` false and `test`, `coverage`, `hosted`
-  and `build` skip: those PRs arrive after the local gates, and the jobs run on the master push. The teardown
-  and entitlement checks in `build` have no local equivalent, so a break there first shows on master;
-  `release.md` owns the release precondition on `build`. `linux` still runs under the Swift filter and `cookbook`
-  under its own, and a PR touching `ci.yml` runs everything.
+- Linux branch and release jobs pin the exact incorporated upstream tag for boundary checks.
+  After building the bundled zmx and shell resources, they run `ServerLifecycleTests` with
+  `AGTERM_REQUIRE_ZMX=1`, `AGTERM_REQUIRE_FISH=1`, and explicit bundled runtime paths.
+  Missing prerequisites must fail this gate instead of silently skipping real process coverage.
+- `ci.yml` runs for pushes and PRs to `master`; concurrency cancels the older run for the same ref. All
+  macOS jobs use `macos-26`. Releases are local; see `.claude/rules/release.md`.
 - `docs/ci-flakes.md` records every investigated intermittent failure by test name and log text; read it
   before investigating a red run, and add an entry after one.
 - Every job carries its own `timeout-minutes`, with generous headroom over observed runtime. A job without

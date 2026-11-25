@@ -3,7 +3,7 @@ import Foundation
 /// ForegroundSpawn runs a command, ssh in practice, in the caller's foreground process group with the caller's stderr, so a
 /// password or host-key prompt it reads from the controlling tty works. Foundation's `Process` puts its child in a
 /// new process group, and a background group reading the tty is stopped by SIGTTIN, leaving the caller waiting on a
-/// child that can never answer. Darwin only: the Linux build is a server and never runs these commands.
+/// child that can never answer.
 public enum ForegroundSpawn {
     /// Outcome is how the command ended: its exit status, or the signal that killed it.
     public enum Outcome: Equatable, Sendable {
@@ -39,6 +39,9 @@ public enum ForegroundSpawn {
                               capture: Bool) throws -> (outcome: Outcome, output: Data) {
         #if canImport(Darwin)
         var actions: posix_spawn_file_actions_t?
+        #else
+        var actions = posix_spawn_file_actions_t()
+        #endif
         try check(posix_spawn_file_actions_init(&actions), "posix_spawn_file_actions_init")
         defer { posix_spawn_file_actions_destroy(&actions) }
 
@@ -60,13 +63,23 @@ public enum ForegroundSpawn {
             outputEnds = ends
             try check(posix_spawn_file_actions_adddup2(&actions, ends.write, STDOUT_FILENO), "posix_spawn_file_actions_adddup2")
         } else {
+            #if canImport(Darwin)
             try check(posix_spawn_file_actions_addinherit_np(&actions, STDOUT_FILENO), "posix_spawn_file_actions_addinherit_np")
+            #endif
         }
+        #if canImport(Darwin)
         try check(posix_spawn_file_actions_addinherit_np(&actions, STDERR_FILENO), "posix_spawn_file_actions_addinherit_np")
+        #else
+        try check(posix_spawn_file_actions_addclosefrom_np(&actions, 3), "posix_spawn_file_actions_addclosefrom_np")
+        #endif
 
         // the child gets only the descriptors named above: another thread spawning between pipe() and close() would
         // otherwise hand its child a write end, and the command would wait for an EOF that never arrives
+        #if canImport(Darwin)
         var attributes: posix_spawnattr_t?
+        #else
+        var attributes = posix_spawnattr_t()
+        #endif
         try check(posix_spawnattr_init(&attributes), "posix_spawnattr_init")
         defer { posix_spawnattr_destroy(&attributes) }
         // the child also inherits the spawning thread's signal mask and ignored handlers; a caller that blocks
@@ -77,7 +90,10 @@ public enum ForegroundSpawn {
         sigfillset(&allSignals)
         try check(posix_spawnattr_setsigmask(&attributes, &noSignals), "posix_spawnattr_setsigmask")
         try check(posix_spawnattr_setsigdefault(&attributes, &allSignals), "posix_spawnattr_setsigdefault")
-        let flags = POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF
+        var flags = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF
+        #if canImport(Darwin)
+        flags |= POSIX_SPAWN_CLOEXEC_DEFAULT
+        #endif
         try check(posix_spawnattr_setflags(&attributes, Int16(flags)), "posix_spawnattr_setflags")
 
         var arguments = try copyStrings(argv)
@@ -88,7 +104,7 @@ public enum ForegroundSpawn {
         let spawned = argv[0].withCString { path in
             arguments.withUnsafeMutableBufferPointer { args in
                 variables.withUnsafeMutableBufferPointer { vars in
-                    posix_spawnp(&pid, path, &actions, &attributes, args.baseAddress, vars.baseAddress)
+                    posix_spawnp(&pid, path, &actions, &attributes, args.baseAddress!, vars.baseAddress!)
                 }
             }
         }
@@ -115,12 +131,8 @@ public enum ForegroundSpawn {
         }
         let signal = status & 0x7f
         return (signal == 0 ? .exited((status >> 8) & 0xff) : .signaled(signal), output)
-        #else
-        throw Failure(operation: "foreground spawn", errno: ENOTSUP)
-        #endif
     }
 
-    #if canImport(Darwin)
     private static func makePipe() throws -> (read: Int32, write: Int32) {
         var fds: [Int32] = [-1, -1]
         // pipe reports through errno, unlike the posix_spawn calls that return the code itself
@@ -131,7 +143,25 @@ public enum ForegroundSpawn {
     // a command that exits before reading would otherwise SIGPIPE the caller before it can report; the EPIPE the
     // write gets instead is dropped, because the command's own stderr and status say what happened
     private static func feed(_ data: Data, to descriptor: Int32) {
+        #if canImport(Darwin)
         _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)
+        #else
+        // Block SIGPIPE only on this thread. Consume a new pending signal before restoring its
+        // mask, preserving any signal that was already pending when the caller entered.
+        var blocked = sigset_t(), previous = sigset_t(), pending = sigset_t()
+        sigemptyset(&blocked)
+        sigaddset(&blocked, SIGPIPE)
+        pthread_sigmask(SIG_BLOCK, &blocked, &previous)
+        sigpending(&pending)
+        let wasPending = sigismember(&pending, SIGPIPE) == 1
+        defer {
+            if !wasPending {
+                var timeout = timespec(tv_sec: 0, tv_nsec: 0)
+                _ = sigtimedwait(&blocked, nil, &timeout)
+            }
+            pthread_sigmask(SIG_SETMASK, &previous, nil)
+        }
+        #endif
         data.withUnsafeBytes { buffer in
             var offset = 0
             while offset < buffer.count {
@@ -169,5 +199,4 @@ public enum ForegroundSpawn {
         strings.append(nil)
         return strings
     }
-    #endif
 }

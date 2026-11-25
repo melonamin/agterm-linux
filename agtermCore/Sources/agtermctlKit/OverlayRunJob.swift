@@ -1,6 +1,9 @@
 import ArgumentParser
 import Foundation
 import agtermCore
+#if canImport(Glibc)
+import Glibc
+#endif
 
 /// OverlayJobRunner supervises one remote overlay job on the origin: it claims the job over the app's
 /// socket, runs the program under the pty it inherited from the viewer's ssh, reports how it ended, and

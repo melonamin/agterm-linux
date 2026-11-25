@@ -57,6 +57,8 @@ public enum TerminfoInstall {
             #if os(Linux)
             // agterm-server's install keeps its resources beside the CLI
             candidates.append((directory as NSString).appendingPathComponent("resources/terminfo"))
+            let prefix = (directory as NSString).deletingLastPathComponent
+            candidates.append((prefix as NSString).appendingPathComponent("share/terminfo"))
             #else
             let contents = (directory as NSString).deletingLastPathComponent
             candidates.append((contents as NSString).appendingPathComponent("Resources/terminfo"))
@@ -158,16 +160,11 @@ public enum TerminfoInstall {
     }
 
     /// ssh runs in the caller's foreground process group so its prompts work; see `ForegroundSpawn`.
-    /// Off Darwin it refuses: installing pushes a Mac's terminfo to a remote host, and the Linux build is a server.
     private static func install(argv: [String], source: Data, environment: [String: String]) throws -> Outcome {
-        #if canImport(Darwin)
         do {
             return try ForegroundSpawn.run(argv, input: .data(source), environment: environment)
         } catch let failure as ForegroundSpawn.Failure {
             throw Failure.spawnFailed(operation: failure.operation, errno: failure.errno)
         }
-        #else
-        throw Failure.spawnFailed(operation: "terminfo install", errno: ENOTSUP)
-        #endif
     }
 }

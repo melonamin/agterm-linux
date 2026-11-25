@@ -1,0 +1,88 @@
+name: publish AUR package
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Published stable Linux release tag
+        required: true
+        type: string
+    secrets:
+      AUR_SSH_PRIVATE_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agterm-aur-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check AUR credentials
+        id: setup
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$AUR_SSH_PRIVATE_KEY" ]]; then
+            echo '::notice::AUR_SSH_PRIVATE_KEY is not configured; skipping AUR publication'
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      # Use the workflow's maintained template, including when rebuilding an older release tag.
+      - name: Check out package tooling
+        if: steps.setup.outputs.enabled == 'true'
+        uses: actions/checkout@v7
+
+      - name: Validate AUR release tag
+        if: steps.setup.outputs.enabled == 'true'
+        id: tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: python3 scripts/aur_release.py validate-tag "$TAG" "$GITHUB_OUTPUT"
+
+      - name: Download release checksum
+        if: steps.tag.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "agterm-linux-${TAG#linux-}-SHA256SUMS" --dir "$RUNNER_TEMP/aur-release"
+          gh api --method GET "repos/$GITHUB_REPOSITORY/contents/LICENSE" -f ref="$TAG" \
+            --jq .content | base64 --decode > "$RUNNER_TEMP/aur-release/LICENSE"
+          python3 scripts/aur_release.py update-from-manifest packaging/aur/PKGBUILD "$TAG" \
+            "$RUNNER_TEMP/aur-release/agterm-linux-${TAG#linux-}-SHA256SUMS" "$RUNNER_TEMP/aur-release/LICENSE"
+
+      - name: Regenerate .SRCINFO
+        if: steps.tag.outputs.publish == 'true'
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$GITHUB_WORKSPACE/packaging/aur:/pkg" archlinux:base-devel \
+            bash -c 'cd /pkg && makepkg --printsrcinfo > .SRCINFO'
+
+      - name: Publish package to AUR
+        if: steps.tag.outputs.publish == 'true'
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          umask 077
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/aur-key"
+          AUR_HOST_KEY="$(ssh-keyscan -t ed25519 aur.archlinux.org 2>/dev/null)"
+          test "$(printf '%s\n' "$AUR_HOST_KEY" | ssh-keygen -lf - | awk '{print $2}')" = \
+            'SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4'
+          printf '%s\n' "$AUR_HOST_KEY" > "$RUNNER_TEMP/aur-known-hosts"
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/aur-key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/aur-known-hosts -o StrictHostKeyChecking=yes"
+          scripts/publish-aur-package.sh packaging/aur \
+            ssh://aur@aur.archlinux.org/agterm-linux-bin.git "$TAG"

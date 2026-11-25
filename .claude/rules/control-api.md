@@ -14,10 +14,19 @@ paths:
   - "agtermCore/Sources/agtermCore/SkillInstall.swift"
   - "agtermUITests/Control*.swift"
   - "agtermUITests/SessionTextUITests.swift"
+  - "agterm-linux/Sources/AgtermLinux/Control*.swift"
+  - "agterm-linux/Sources/AgtermLinux/LinuxControlDispatcher.swift"
+  - "agterm-linux/Sources/agtermctl/*.swift"
   - "plugins/agterm/skills/agterm/**"
 ---
 
 ## Control API
+
+- The GTK frontend implements the same wire protocol through `LinuxControlDispatcher` and the
+  Linux-local `agtermctl` package. Keep host-free validation and response shaping in `agtermCore`.
+  Linux window size is restored and clamped, but GTK4 cannot reliably expose restorable x/y placement;
+  omit geometry rather than fabricating it on Wayland or X11. Fullscreen requests are serialized through
+  `notify::fullscreened` so rapid GUI, keymap, and socket toggles converge on one desired state.
 
 - `agtermctl` drives app/store actions over a local Unix socket. One-shot commands and polled
   `events.read` are in scope; terminal-output streaming is not.
@@ -154,8 +163,8 @@ paths:
   `session wait`'s `{id, status}` object are the deliberate exceptions, each printing its own nested object
   rather than the response.
 - Human output shows IDs only for created session/workspace/window, retains them in JSON, uses
-  `result.affected` for session counts and for `zmx.prune`'s killed-daemon count, and reserves
-  `result.count` for diagnostics/search.
+  `result.affected` for session counts, `zmx.prune`'s killed-daemon count, and removed-recent-item counts,
+  and reserves `result.count` for diagnostics/search.
   A command that reuses `count` for something else must carry its own `result.text`, which the shared
   formatter prefers over every count spelling; `restore.capture` does, or its pane total would print as
   "N diagnostic(s)".
@@ -381,7 +390,9 @@ side, and reads `lastAppliedIsDark` when bare. Refuse it outside XCUITest; provi
   spawns, the deck mounting every session, and takes no focus: `deckActive` gates the grab.
   `ControlActions` keeps the four-argument requirement and defaults the `follow:` overload to it.
 - `session.focus primary|split|left|right|top|bottom|other` requires an existing split and works shown or
-  hidden. The pane is positional; read `splitFocused`.
+  hidden. `primary`/`split` select model roles; `left`/`right`/`top`/`bottom` select physical sides, using
+  the live GtkPaned slot order after a Linux promotion ([[libghostty]]). Read `splitFocused`, whose boolean
+  remains role-based.
 - `session.resize` accepts exactly one absolute ratio or one relative
   `--grow-left|right|primary|split|top|bottom` delta, defaulting an unset ratio to 0.5. Require a split,
   clamp through store limits, persist, then post the object-scoped live-divider notification. Hidden split
@@ -2686,6 +2697,10 @@ side, and reads `lastAppliedIsDark` when bare. Refuse it outside XCUITest; provi
   started dropping. This is what keeps pane-to-pane automation, the chat transport included, working on
   the Mac a session runs on while another Mac leads it. A failed daemon call is an error, never a fall
   back to the surface. The main pane's realize poll repeats the check before each inject.
+  Linux retires an uncovered held pane's cached lead when its daemon socket is confirmed gone,
+  even if a synchronous control read is still holding up the queued held-exit callback.
+  Its reads then use the retained surface as they do after the callback; covered or reconnecting panes
+  and failed calls to a daemon whose socket still exists keep the error path.
 - Accepted limit: between a local pane's attach and its first role report the pane types through its
   surface, so a `session.type` there can answer ok for input a daemon led from another Mac drops. The
   window is one pane spawn plus the report lag. Probing `zmx type` before every call was rejected: a

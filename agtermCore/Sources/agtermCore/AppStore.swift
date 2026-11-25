@@ -1,6 +1,5 @@
 import Foundation
 import Observation
-
 /// A relative step through the flattened session list for keyboard navigation. `next`/`previous` step one
 /// and wrap, `first`/`last` jump to a tree end, `nextAttention`/`previousAttention` step (wrapping) through
 /// only the sessions needing attention — status `blocked` or `completed`, plus `active` under
@@ -146,7 +145,9 @@ public final class AppStore {
 
     @ObservationIgnored var pendingCloseRecords: [UUID: PendingCloseRecord] = [:]
     @ObservationIgnored var pendingCloseOrder: [UUID] = []
-    @ObservationIgnored var pendingCloseTasks: [UUID: Task<Void, Never>] = [:]
+    /// The armed grace finalizer per pending close, held as the `MainTimer` cancel closure it returned:
+    /// calling the stored closure disarms that record's finalization (a no-op once it has fired).
+    @ObservationIgnored var pendingCloseCancels: [UUID: @MainActor () -> Void] = [:]
 
     @ObservationIgnored let persistence: PersistenceStore
     /// catalogOperations is the operation table of the catalog this store serves, written in every save; nil before its first operation.
@@ -192,7 +193,7 @@ public final class AppStore {
     @ObservationIgnored public var onOriginFrame: ((UUID, PresentationFrame.Body) -> Bool)?
     /// onReplicaPageChanged is told the local id of a page shown for an origin whose reported state changed.
     @ObservationIgnored public var onReplicaPageChanged: ((UUID) -> Void)?
-    @ObservationIgnored var remoteTextWaits: [RemoteTextWait: CheckedContinuation<RemoteTextOutcome, Never>] = [:]
+    @ObservationIgnored var remoteTextWaits: [RemoteTextWait: @MainActor (RemoteTextOutcome) -> Void] = [:]
     /// remoteTextDeadline is how long a text page action waits for the presenter's result.
     @ObservationIgnored public var remoteTextDeadline = PresentationPageResult.deadline
     @ObservationIgnored let paneFinalizer: (([UUID]) -> Void)?
@@ -996,5 +997,4 @@ public final class AppStore {
         }
         return nil
     }
-
 }

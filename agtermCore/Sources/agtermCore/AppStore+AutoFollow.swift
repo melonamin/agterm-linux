@@ -87,7 +87,8 @@ extension AppStore {
         withObservationTracking {
             _ = attentionSessions // the observable inputs: workspaces + each agentIndicator
         } onChange: { [weak self] in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.scheduleAutoFollowRearm() } }
+            // Observation may report on any thread; the host owns the hop to its UI loop.
+            MainActorHop.enqueue { self?.scheduleAutoFollowRearm() }
         }
     }
 
@@ -96,7 +97,9 @@ extension AppStore {
     private func scheduleAutoFollowRearm() {
         guard !autoFollowRearmScheduled else { return }
         autoFollowRearmScheduled = true
-        DispatchQueue.main.async { [weak self] in
+        // Zero delay through the host timer seam, not `DispatchQueue.main.async`: a host whose main loop
+        // does not drain the dispatch main queue (the GTK port's GLib loop) would never run the re-arm.
+        MainTimer.schedule(after: 0) { [weak self] in
             guard let self else { return }
             self.autoFollowRearmScheduled = false
             guard let timeout = self.autoFollowTimeout else { return } // disabled: let the tracker die

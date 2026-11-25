@@ -1,0 +1,19 @@
+diff --git a/src/termio/Exec.zig b/src/termio/Exec.zig
+--- a/src/termio/Exec.zig
++++ b/src/termio/Exec.zig
+@@ -1723,9 +1723,12 @@ const ReadThread = struct {
+                 return;
+             }
+ 
+-            // If our pty fd is closed, then we're also done with our
+-            // read thread.
+-            if (pollfds[0].revents & posix.POLL.HUP != 0) {
++            // A fast child can close its slave with its last bytes still
++            // readable on the master. HUP and IN may arrive together: drain
++            // that tail on the next iteration before declaring EOF.
++            if (pollfds[0].revents & posix.POLL.HUP != 0 and
++                pollfds[0].revents & posix.POLL.IN == 0)
++            {
+                 log.info("pty fd closed, read thread exiting", .{});
+                 return;
+             }

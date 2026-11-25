@@ -27,8 +27,7 @@ extension WindowLibrary {
         var undos = attachedUndos[window] ?? []
         undos.insert(undo, at: undos.lastIndex { $0.initiated <= undo.initiated }.map { $0 + 1 } ?? 0)
         attachedUndos[window] = undos
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(grace))
+        MainTimer.schedule(after: grace) { [weak self] in
             self?.dropAttachedUndo(undo, window: window)
         }
     }
@@ -115,9 +114,11 @@ extension WindowLibrary {
         return reopenRecentClosedReportingWindow(item.id, into: targetStore)
     }
 
-    public func clearRecentClosedItems() {
-        recentClosedStore.clear()
-        refreshRecentClosedItems()
+    @discardableResult
+    public func clearRecentClosedItems() -> Bool {
+        let cleared = recentClosedStore.clear()
+        if cleared { refreshRecentClosedItems() }
+        return cleared
     }
 
     /// recentClosedItems(inWindow:) is the window's own list, the one a remote window on another Mac mirrors:

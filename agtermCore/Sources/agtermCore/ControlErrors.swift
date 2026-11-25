@@ -166,3 +166,8 @@ public enum OverlayPointError {
 public enum ControlNotify {
     public static let bannersOffNote = "badge updated, but \"Show notification banners\" is off, so no banner was posted"
 }
+
+/// Stable failure text for clearing persisted recently closed entries.
+public enum RecentClearError {
+    public static let persistenceFailed = "could not clear recent items"
+}

@@ -2,28 +2,37 @@ name: build
 
 on:
   push:
-    branches: [master]
+    branches: [linux-port]
   pull_request:
-    branches: [master]
+    branches: [linux-port]
 
-# a master push keys on its sha: sharing the ref, a later docs-only push would cancel it and then skip
-# the Swift jobs, leaving the earlier merge unchecked
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  UPSTREAM_BASE_TAG: "v0.44.1"
+  UPSTREAM_BASE_COMMIT: "f37a8a2fcc01a626bed2c114a590bb97ced8d328"
+  SWIFTLINT_VERSION: "0.65.0"
+  SWIFTLINT_SHA256: "79306a34e5c7cc55a220cd108cbb861dcad5f10138dcdf261e2624ae8b0a486b"
+  LINUX_SOURCEKIT_LIB_PATH: "/usr/lib/libsourcekitdInProc.so"
+  ZIG_SHA256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
+
+permissions:
+  contents: read
 
 jobs:
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       swift: ${{ steps.filter.outputs.swift }}
       cookbook: ${{ steps.filter.outputs.cookbook }}
-      # the owner's same-repo PRs defer the macOS jobs to the master push: they reach CI after the local test,
-      # test-app and lint gates, and the Release checks run on master before a release; a workflow change still
-      # runs everything before merge
-      full: ${{ github.event_name != 'pull_request' || github.event.pull_request.user.id != github.event.repository.owner.id || github.event.pull_request.head.repo.id != github.event.repository.id || steps.filter.outputs.workflow == 'true' }}
+      aur: ${{ steps.filter.outputs.aur }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
@@ -34,597 +43,238 @@ jobs:
               - "**/*.swift"
               - "agtermCore/**"
               - "agterm/**"
-              # the agent skill and its plugin manifests: SkillInstallTests reads
-              # them, so a skill- or manifest-only change must still run the suite
+              - "agterm-linux/**"
+              # The agent skill and its plugin manifests are test inputs.
               - "plugins/**"
               - ".claude-plugin/**"
               - ".agents/**"
+              - "linux/**"
+              - "packaging/linux/**"
               - "project.yml"
               - "scripts/**"
               - ".swiftlint.yml"
               - "agtermTests/.swiftlint.yml"
               - "agtermUITests/.swiftlint.yml"
               - ".github/workflows/ci.yml"
+              - ".github/workflows/release-linux.yml"
             cookbook:
               - "cookbook/**"
               - ".github/workflows/ci.yml"
-            workflow:
+            aur:
+              - "packaging/aur/**"
+              - "scripts/*aur*"
+              - "scripts/verify-linux-packages.sh"
+              - "scripts/verify-published-linux-release.sh"
+              - "scripts/test-linux-ui.sh"
+              - "agterm-linux/tests/gl_teardown_exit_test.py"
+              - ".github/workflows/publish-aur.yml"
+              - ".github/workflows/release-linux.yml"
               - ".github/workflows/ci.yml"
 
-  test:
-    name: Unit tests
+  test-aur-package:
+    name: Validate AUR package in Arch
     needs: changes
-    if: needs.changes.outputs.swift == 'true' && needs.changes.outputs.full == 'true'
-    runs-on: macos-26
-    timeout-minutes: 35
+    if: needs.changes.outputs.aur == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
-      - name: Read pinned zmx revision
-        id: revisions
-        shell: bash
-        run: |
-          zmx=$(sed -nE 's/^ZMX_REV="([^"]+)".*/\1/p' scripts/setup.sh)
-          zmx_target=$(sed -nE 's/^ZMX_TARGET="([^"]+)".*/\1/p' scripts/setup.sh)
-          zig_formula=$(sed -nE 's/^ZIG_FORMULA="([^"]+)".*/\1/p' scripts/setup.sh)
-          ghostty=$(sed -nE 's/^GHOSTTY_REV="([^"]+)".*/\1/p' scripts/setup.sh)
-          [ -n "$zmx" ] && [ -n "$zmx_target" ] && [ -n "$zig_formula" ] && [ -n "$ghostty" ]
-          echo "zmx=$zmx" >> "$GITHUB_OUTPUT"
-          echo "zmx_target=$zmx_target" >> "$GITHUB_OUTPUT"
-          echo "zig_formula=$zig_formula" >> "$GITHUB_OUTPUT"
-          echo "ghostty=$ghostty" >> "$GITHUB_OUTPUT"
-      - name: Cache zmx
-        uses: actions/cache@v6
-        with:
-          path: |
-            agterm/Resources/zmx
-            .zmx-build-stamp
-          key: zmx-v2-${{ steps.revisions.outputs.zmx }}-${{ steps.revisions.outputs.zmx_target }}-${{ steps.revisions.outputs.zig_formula }}-${{ hashFiles('scripts/zmx-patches/*.patch') }}
-      # the session-host fixtures attach to a real zmx daemon; a cache miss builds it here
-      - name: Stage zmx
-        run: scripts/setup.sh --zmx-only
-      - name: Cache the shell integration
-        uses: actions/cache@v6
-        with:
-          path: |
-            build/linux/ghostty
-            build/linux/.shell-integration-stamp
-          key: shell-integration-macos-v1-${{ steps.revisions.outputs.ghostty }}
-      # the server's real-daemon panes load it; this job builds no libghostty, so it comes from ghostty's source at the pin
-      - name: Stage the shell integration
-        run: scripts/setup-zmx-linux.sh --shell-integration
-      - name: Install fish
-        run: brew install fish
-      - name: Verify fish
-        run: which fish && fish --version
-      - name: Read the Xcode build
-        id: xcode
-        run: |
-          echo "build=$(xcodebuild -version | awk '/Build version/ {print $3}')" >> "$GITHUB_OUTPUT"
-          xcodebuild -version && echo "SDK $(xcrun --show-sdk-build-version), image $ImageOS $ImageVersion"
-      - name: Restore the SwiftPM build
-        id: spm
-        uses: actions/cache/restore@v6
-        with:
-          path: agtermCore/.build
-          key: swiftpm-v1-macos-arm64-debug-coverage-${{ steps.xcode.outputs.build }}-${{ hashFiles('agtermCore/Package.resolved') }}-${{ github.sha }}
-          restore-keys: swiftpm-v1-macos-arm64-debug-coverage-${{ steps.xcode.outputs.build }}-${{ hashFiles('agtermCore/Package.resolved') }}-
-      # built outside the watchdog so a slow runner's compile cannot spend its budget; the test step reuses it,
-      # which takes the same flags here and there
-      - name: swift build tests (with coverage)
-        working-directory: agtermCore
-        run: swift build --build-tests --enable-code-coverage -Xswiftc -enable-incremental-file-hashing
-      - name: Save the SwiftPM build
-        if: github.event_name == 'push' && steps.spm.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: agtermCore/.build
-          key: ${{ steps.spm.outputs.cache-primary-key }}
-      - name: Report the SwiftPM build cache
-        run: echo "restored '${{ steps.spm.outputs.cache-matched-key }}', $(du -sh agtermCore/.build | cut -f1)"
-      - name: swift test (with coverage)
-        working-directory: agtermCore
-        run: ../scripts/watchdog.sh swift test --enable-code-coverage -Xswiftc -enable-incremental-file-hashing
+      - name: Build, install, and exercise the release in clean Arch
+        run: scripts/test-aur-package.sh
+      - name: Build and test the direct-release Arch artifact from local sources
         env:
-          AGTERM_REQUIRE_FISH: "1"
-          AGTERM_REQUIRE_ZMX: "1"
-          AGTERM_SHELL_INTEGRATION: ${{ github.workspace }}/build/linux/ghostty/shell-integration
-          WATCHDOG_SECONDS: "600"
-          DIAG_DIR: ${{ github.workspace }}/test-hang
-      # the server logs why it closed each presentation stream only to the unified log
-      - name: save the agterm log
-        if: failure()
-        continue-on-error: true
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p test-hang
-          perl -e 'alarm shift; exec @ARGV' 120 log show --style compact --last 45m \
-            --predicate 'subsystem == "com.umputun.agterm"' > test-hang/agterm.log 2>&1
-      - name: upload hang diagnostics
+          version="$(sed -n 's/^pkgver=//p' packaging/aur/PKGBUILD)"
+          gh release download "linux-v$version" --repo melonamin/agterm-linux \
+            --pattern "agterm-linux-v${version}-*" --dir dist-linux
+          scripts/test-aur-package.sh "$version" dist-linux
+      - name: Upload Arch diagnostics on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: test-hang
-          path: test-hang
-          if-no-files-found: ignore
-      - name: export lcov
-        working-directory: agtermCore
-        # rewrite the absolute SF: paths llvm-cov emits to repo-relative so the
-        # separate linux coverage job can resolve them against its own checkout
-        run: |
-          BIN=$(swift build --show-bin-path)
-          xcrun llvm-cov export \
-            "$BIN/agtermCorePackageTests.xctest/Contents/MacOS/agtermCorePackageTests" \
-            -instr-profile "$BIN/codecov/default.profdata" \
-            -format=lcov \
-            -ignore-filename-regex='(\.build|Tests|checkouts)/' \
-            | sed "s|SF:$GITHUB_WORKSPACE/|SF:|g" > coverage.lcov
-      - name: upload lcov artifact
-        # coverage is best-effort: a transient artifact-service outage must not
-        # red the build when the tests themselves passed
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-lcov
-          path: agtermCore/coverage.lcov
+          name: aur-ui-diagnostics
+          path: artifacts/aur
+          if-no-files-found: warn
 
-  coverage:
-    name: Coverage upload
-    needs: [changes, test]
-    if: needs.changes.outputs.swift == 'true' && needs.changes.outputs.full == 'true'
-    # the coveralls action installs its reporter via a brew tap on macOS (now blocked
-    # by homebrew's tap-trust gate); on linux it downloads a binary, so upload here
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
-        # the upload side is best-effort; if the artifact never landed, don't fail
-        # this job either — the coveralls submit below is already continue-on-error
-        continue-on-error: true
-        with:
-          name: coverage-lcov
-      - name: submit coverage to coveralls
-        continue-on-error: true
-        uses: coverallsapp/github-action@v2
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          file: coverage.lcov
-          format: lcov
-
-  linux:
-    name: Linux core tests
+  test-linux:
+    name: Unit tests (Linux)
     needs: changes
     if: needs.changes.outputs.swift == 'true'
     runs-on: ubuntu-24.04
-    # build, then the watchdog's 10-minute test cap and its diagnostics
-    timeout-minutes: 45
-    container:
-      image: swift:6.3.2-noble
-      # the watchdog's lldb attaches, as root, to the test runner owned by agterm-test
-      options: --cap-add=SYS_PTRACE
+    # Keep the shared, host-free controller package green on Linux because it backs the GTK frontend.
+    container: swift:6.3.2-noble
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - name: Install jq, zsh, fish and tcsh
-        # jq: the codex status hook reads its JSON with it where plutil does not exist; the shells: tests run
-        # scripts under each login shell the remote commands must survive, and server panes run zsh, fish and bash
-        run: apt-get update && apt-get install -y --no-install-recommends jq zsh fish tcsh xz-utils curl ca-certificates
-      - name: Read the pinned zmx and ghostty revisions
-        id: zmx
-        run: |
-          echo "rev=$(sed -nE 's/^ZMX_REV="([^"]+)".*/\1/p' scripts/setup.sh)" >> "$GITHUB_OUTPUT"
-          echo "zig_version=$(sed -nE 's/^ZIG_LINUX_VERSION="([^"]+)".*/\1/p' scripts/setup.sh)" >> "$GITHUB_OUTPUT"
-          echo "zig_sha256=$(sed -nE 's/^ZIG_LINUX_SHA256="([^"]+)".*/\1/p' scripts/setup.sh)" >> "$GITHUB_OUTPUT"
-          echo "ghostty=$(sed -nE 's/^GHOSTTY_REV="([^"]+)".*/\1/p' scripts/setup.sh)" >> "$GITHUB_OUTPUT"
-      - name: Cache the Linux shell integration
-        uses: actions/cache@v6
         with:
-          path: |
-            build/linux/ghostty
-            build/linux/.shell-integration-stamp
-          key: shell-integration-linux-v1-${{ steps.zmx.outputs.ghostty }}
-      - name: Stage the Linux shell integration
-        # the zsh, fish and bash integration agterm-server panes load, from ghostty's source at the pin
-        run: scripts/setup-zmx-linux.sh --shell-integration
-      - name: Cache the Linux zmx
-        id: zmx-cache
-        uses: actions/cache@v6
-        with:
-          path: build/linux/x86_64
-          key: zmx-linux-v2-${{ steps.zmx.outputs.rev }}-x86_64-${{ steps.zmx.outputs.zig_version }}-${{ hashFiles('scripts/zmx-patches/*.patch') }}
-      - name: Build the Linux zmx
-        # the musl zmx agterm-server runs; AgtermServerTests drive real daemons with it
-        if: steps.zmx-cache.outputs.cache-hit != 'true'
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Trust checkout directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Install test shells and hook dependencies
         run: |
-          zig_version="${{ steps.zmx.outputs.zig_version }}"
-          zig_dist="zig-x86_64-linux-$zig_version"
-          curl -fsSL -o "/tmp/$zig_dist.tar.xz" "https://ziglang.org/download/$zig_version/$zig_dist.tar.xz"
-          echo "${{ steps.zmx.outputs.zig_sha256 }}  /tmp/$zig_dist.tar.xz" | sha256sum -c -
-          tar -xJf "/tmp/$zig_dist.tar.xz" -C /opt
-          AGTERM_ZMX_ZIG="/opt/$zig_dist/zig" AGTERM_ZMX_TARGET=x86_64-linux-musl \
-            AGTERM_ZMX_STAGE_DIR=build/linux/x86_64/zmx AGTERM_ZMX_STAMP_FILE=build/linux/x86_64/.zmx-build-stamp \
-            scripts/setup.sh --zmx-only
-      - name: Read the Swift toolchain
-        id: toolchain
-        run: echo "swift=$(swift --version 2>&1 | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
-      # restored before the chown below so the test user owns it
-      - name: Restore the SwiftPM build
-        id: spm
-        uses: actions/cache/restore@v6
-        with:
-          path: agtermCore/.build
-          key: swiftpm-v1-linux-x86_64-debug-${{ steps.toolchain.outputs.swift }}-${{ hashFiles('agtermCore/Package.resolved') }}-${{ github.sha }}
-          restore-keys: swiftpm-v1-linux-x86_64-debug-${{ steps.toolchain.outputs.swift }}-${{ hashFiles('agtermCore/Package.resolved') }}-
-      - name: Create the test user
-        # root passes the permission checks several tests rely on failing
+          apt-get update
+          apt-get install -y --no-install-recommends jq ripgrep zsh fish csh tcsh
+      - name: Materialize and verify upstream boundary tag
         run: |
-          useradd --create-home agterm-test
-          chown -R agterm-test "$GITHUB_WORKSPACE"
-      - name: swift build
+          git tag --force "$UPSTREAM_BASE_TAG" "$UPSTREAM_BASE_COMMIT"
+          git merge-base --is-ancestor "$UPSTREAM_BASE_TAG" HEAD
+      # Two persistence tests deliberately verify write failures through POSIX directory permissions.
+      # The official Swift container runs as root, which bypasses those permissions, so exercise the
+      # package as an ordinary desktop user like the application itself.
+      - name: swift test as an unprivileged user
         working-directory: agtermCore
-        run: >-
-          runuser --user agterm-test -- env HOME=/home/agterm-test
-          swift build --build-tests -Xswiftc -enable-incremental-file-hashing
-      - name: Save the SwiftPM build
-        if: github.event_name == 'push' && steps.spm.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: agtermCore/.build
-          key: ${{ steps.spm.outputs.cache-primary-key }}
-      - name: Report the SwiftPM build cache
-        run: echo "restored '${{ steps.spm.outputs.cache-matched-key }}', $(du -sh agtermCore/.build | cut -f1)"
-      - name: swift test
-        working-directory: agtermCore
-        # the server's real-daemon suite and the fish cases fail rather than skip without zmx or fish
-        run: >-
-          ../scripts/watchdog.sh runuser --user agterm-test --
-          env HOME=/home/agterm-test AGTERM_REQUIRE_ZMX=1 AGTERM_REQUIRE_FISH=1 swift test --skip-build
-        env:
-          WATCHDOG_SECONDS: "600"
-          WATCHDOG_DIAG_SECONDS: "300"
-          WATCHDOG_RUNNER: agtermCorePackageTests.xctest
-          # relative: in a container job github.workspace names the host path, not the mounted one
-          DIAG_DIR: ../test-hang
-      - name: upload hang diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-hang-linux
-          path: test-hang
-          if-no-files-found: ignore
+        run: |
+          useradd --create-home --user-group agterm-test
+          chown -R agterm-test:agterm-test "$GITHUB_WORKSPACE"
+          runuser --user agterm-test -- env HOME=/home/agterm-test swift test --no-parallel
+      - name: Enforce host-free core boundary
+        run: scripts/check-linux-core-boundary.sh "$UPSTREAM_BASE_TAG"
+      - name: Reject Linux CLI parser drift
+        run: scripts/check-linux-cli-drift.sh
 
-  build:
-    name: Build app
+  lint-linux:
+    name: SwiftLint (Linux)
     needs: changes
-    if: needs.changes.outputs.swift == 'true' && needs.changes.outputs.full == 'true'
-    runs-on: macos-26
-    timeout-minutes: 30
+    if: needs.changes.outputs.swift == 'true'
+    runs-on: ubuntu-24.04
+    container: swift:6.3.2-noble
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      # a job of its own would be a sixth macOS job in a full run, past the five a free account runs at once
-      - name: Install swiftlint
-        run: brew install swiftlint
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Trust checkout directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Install SwiftLint
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends curl ca-certificates unzip
+          curl -fsSLo /tmp/swiftlint.zip \
+            "https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/swiftlint_linux_amd64.zip"
+          echo "${SWIFTLINT_SHA256}  /tmp/swiftlint.zip" | sha256sum --check
+          unzip -q /tmp/swiftlint.zip -d /usr/local/bin
+          chmod +x /usr/local/bin/swiftlint
+          swiftlint --version
       - name: swiftlint (strict)
-        run: swiftlint lint --strict
-      - name: Read pinned helper revisions
-        id: revisions
-        shell: bash
+        run: swiftlint lint --strict --quiet
+      - name: Materialize and verify upstream boundary tag
         run: |
-          ghostty=$(sed -nE 's/^GHOSTTY_REV="([^"]+)".*/\1/p' scripts/setup.sh)
-          zmx=$(sed -nE 's/^ZMX_REV="([^"]+)".*/\1/p' scripts/setup.sh)
-          zmx_target=$(sed -nE 's/^ZMX_TARGET="([^"]+)".*/\1/p' scripts/setup.sh)
-          zig_formula=$(sed -nE 's/^ZIG_FORMULA="([^"]+)".*/\1/p' scripts/setup.sh)
-          [ -n "$ghostty" ] && [ -n "$zmx" ] && [ -n "$zmx_target" ] && [ -n "$zig_formula" ]
-          echo "ghostty=$ghostty" >> "$GITHUB_OUTPUT"
-          echo "zmx=$zmx" >> "$GITHUB_OUTPUT"
-          echo "zmx_target=$zmx_target" >> "$GITHUB_OUTPUT"
-          echo "zig_formula=$zig_formula" >> "$GITHUB_OUTPUT"
-      - name: Cache libghostty (GhosttyKit + resources)
-        uses: actions/cache@v6
-        with:
-          path: |
-            GhosttyKit.xcframework
-            agterm/Resources/ghostty
-            agterm/Resources/terminfo
-            .ghostty-build-stamp
-          key: ghosttykit-v3-${{ steps.revisions.outputs.ghostty }}-${{ hashFiles('scripts/ghostty-patches/*.patch') }}
-      - name: Cache zmx
-        uses: actions/cache@v6
-        with:
-          path: |
-            agterm/Resources/zmx
-            .zmx-build-stamp
-          key: zmx-v2-${{ steps.revisions.outputs.zmx }}-${{ steps.revisions.outputs.zmx_target }}-${{ steps.revisions.outputs.zig_formula }}-${{ hashFiles('scripts/zmx-patches/*.patch') }}
-      - name: Install xcodegen
-        run: brew install xcodegen
-      - name: Read the Xcode build
-        id: xcode
+          git tag --force "$UPSTREAM_BASE_TAG" "$UPSTREAM_BASE_COMMIT"
+          git merge-base --is-ancestor "$UPSTREAM_BASE_TAG" HEAD
+      - name: Reject whitespace errors
         run: |
-          echo "build=$(xcodebuild -version | awk '/Build version/ {print $3}')" >> "$GITHUB_OUTPUT"
-          xcodebuild -version && echo "SDK $(xcrun --show-sdk-build-version), image $ImageOS $ImageVersion"
-      - name: Restore the compilation cache
-        id: cas
-        uses: actions/cache/restore@v6
-        with:
-          path: build/cas
-          key: xcode-cas-v1-arm64-${{ steps.xcode.outputs.build }}-Release-${{ github.sha }}
-          restore-keys: xcode-cas-v1-arm64-${{ steps.xcode.outputs.build }}-Release-
-      - name: Restore the helper build
-        id: helpers
-        uses: actions/cache/restore@v6
-        with:
-          path: agtermCore/.build/helpers
-          key: swiftpm-helpers-v1-macos-arm64-release-${{ steps.xcode.outputs.build }}-${{ hashFiles('agtermCore/Package.resolved') }}-${{ github.sha }}
-          restore-keys: swiftpm-helpers-v1-macos-arm64-release-${{ steps.xcode.outputs.build }}-${{ hashFiles('agtermCore/Package.resolved') }}-
-      # keyed on the dependency declarations; restoring them lets Xcode reuse its checkouts
-      - name: Restore the package checkouts
-        id: packages
-        uses: actions/cache/restore@v6
-        with:
-          path: build/DerivedData/SourcePackages
-          key: source-packages-v1-${{ hashFiles('project.yml', 'agtermCore/Package.swift', 'agtermCore/Package.resolved') }}
-      - name: Build libghostty + app (Release)
-        env:
-          AGTERM_HELPER_HASHING: "1"
-        run: scripts/with-helper-prebuild.sh scripts/build.sh COMPILATION_CACHE_ENABLE_CACHING=YES COMPILATION_CACHE_CAS_PATH="$GITHUB_WORKSPACE/build/cas" COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=YES AGTERM_HELPER_HASHING=1
-      - name: Save the package checkouts
-        if: github.event_name == 'push' && steps.packages.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: build/DerivedData/SourcePackages
-          key: ${{ steps.packages.outputs.cache-primary-key }}
-      - name: Save the helper build
-        if: github.event_name == 'push' && steps.helpers.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: agtermCore/.build/helpers
-          key: ${{ steps.helpers.outputs.cache-primary-key }}
-      - name: Save the compilation cache
-        if: github.event_name == 'push' && steps.cas.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: build/cas
-          key: ${{ steps.cas.outputs.cache-primary-key }}
-      - name: Report the compilation cache
-        run: echo "restored '${{ steps.cas.outputs.cache-matched-key }}', $(du -sh build/cas | cut -f1)"
-      - name: Surface teardown under mailbox pressure
-        run: python3 scripts/test-surface-teardown.py build/DerivedData/Build/Products/Release/agterm.app --evidence surface-teardown
-      - name: Upload surface teardown diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: surface-teardown
-          path: surface-teardown
-          if-no-files-found: ignore
-      # Nested helpers are standalone executables. A deep app re-seal with entitlements can stamp the
-      # app's TCC grants onto them while leaving the build green (issue #396).
-      - name: Verify helper signatures and entitlements
-        shell: bash
-        run: |
-          app=build/DerivedData/Build/Products/Release/agterm.app
-          for name in agtermctl zmx agterm-session-host; do
-            helper="$app/Contents/MacOS/$name"
-            [ -f "$helper" ] || { echo "$name not found at $helper" >&2; exit 1; }
-            codesign --verify --strict "$helper"
-            if codesign -d --entitlements - "$helper" 2>/dev/null | grep -q 'com.apple.security'; then
-              echo "$name carries app entitlements" >&2
-              exit 1
-            fi
-          done
-      # this ad-hoc Release build carries the TCC set plus disable-library-validation, which it needs to load
-      # Sparkle.framework; allow-jit and allow-unsigned-executable-memory stay Debug-only, and the TCC set must
-      # not shrink either — losing one silently removes the user's only path to granting that permission (#396).
-      # Pin the exact set; adding or dropping a key is a deliberate act that edits this list. The notarized app's
-      # strict set is checked by scripts/release.sh after its Developer ID re-sign.
-      - name: Verify the app's Release entitlements
-        shell: bash
-        run: |
-          app=build/DerivedData/Build/Products/Release/agterm.app
-          [ -d "$app" ] || { echo "app not found at $app" >&2; exit 1; }
-          # values and their types, not just names. A key set to <false/> is not granted and macOS treats
-          # it exactly like a missing one, so a name-only compare would pass that through; and codesign
-          # accepts <string>true</string>, which renders as bare true without the tojson below.
-          expected=$(printf '%s=true\n' \
-            com.apple.security.automation.apple-events \
-            com.apple.security.cs.disable-library-validation \
-            com.apple.security.device.audio-input \
-            com.apple.security.device.camera \
-            com.apple.security.personal-information.addressbook \
-            com.apple.security.personal-information.calendars \
-            com.apple.security.personal-information.location \
-            com.apple.security.personal-information.photos-library)
-          # get-task-allow is added by the ad-hoc "Sign to Run Locally" identity this job builds with,
-          # and never survives the Developer ID re-sign in scripts/release.sh. Drop it, then match exactly.
-          actual=$(codesign -d --entitlements - --xml "$app" 2>/dev/null \
-            | plutil -convert json -o - -- - \
-            | jq -r 'to_entries[] | select(.key != "com.apple.security.get-task-allow")
-                     | "\(.key)=\(.value|tojson)"' | sort)
-          if [ "$actual" != "$expected" ]; then
-            echo "Release entitlements changed. expected:" >&2; echo "$expected" >&2
-            echo "actual:" >&2; echo "$actual" >&2
-            exit 1
-          fi
-      # the split states the shipping set twice, and only the Release copy is pinned above. A TCC key
-      # added to the shipping file and missed here leaves Debug unable to prompt for it, with every job
-      # green — the failure surfaces only when someone verifies the new permission by hand in a Debug
-      # instance. Derive Debug's expected content from the shipping file so the two cannot drift.
-      - name: Verify the Debug and ad-hoc entitlements are the shipping set plus their exceptions
-        shell: bash
-        run: |
-          keys() { plutil -convert json -o - -- "$1" | jq -r 'to_entries[] | "\(.key)=\(.value|tojson)"' | sort; }
-          release=$(keys agterm/agterm.entitlements)
-          debug=$(keys agterm/agterm-debug.entitlements)
-          exceptions=$(printf '%s=true\n' \
-            com.apple.security.cs.allow-jit \
-            com.apple.security.cs.allow-unsigned-executable-memory \
-            com.apple.security.cs.disable-library-validation | sort)
-          expected=$(printf '%s\n%s\n' "$release" "$exceptions" | sort)
-          if [ "$debug" != "$expected" ]; then
-            echo "agterm-debug.entitlements is not the shipping set plus the three exceptions." >&2
-            diff <(echo "$expected") <(echo "$debug") >&2 || true
-            exit 1
-          fi
-          adhoc=$(keys agterm/agterm-adhoc.entitlements)
-          expected=$(printf '%s\ncom.apple.security.cs.disable-library-validation=true\n' "$release" | sort)
-          if [ "$adhoc" != "$expected" ]; then
-            echo "agterm-adhoc.entitlements is not the shipping set plus disable-library-validation." >&2
-            diff <(echo "$expected") <(echo "$adhoc") >&2 || true
-            exit 1
-          fi
+          git diff --check
+          git diff --check "$UPSTREAM_BASE_TAG"...HEAD
 
-  hosted:
-    name: App-hosted tests (${{ matrix.shard }})
-    needs: changes
-    if: needs.changes.outputs.swift == 'true' && needs.changes.outputs.full == 'true'
-    runs-on: macos-26
-    timeout-minutes: 35
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
-    # two lists balanced by measured class time; shard 3 runs every class not named here, so a new one
-    # always runs. The fish login seam step needs SessionHostFishSeamTests' shard.
-    env:
-      HOSTED_SHARD1: TextPageRenderingTests AskDialogViewTests CustomCommandRunnerTests
-      HOSTED_SHARD2: >-
-        SessionHostFishSeamTests HtmlOverlayRegistryTests SessionHostClientTests TextPageBridgeTests
-        MarkdownPageRenderingTests GhosttySurfaceViewInputTests ControlServerRemotePresentationTests
-        AppActionsRemoteCatalogTests
+      - name: Test published-release verifier
+        run: scripts/test-published-linux-release.sh
+
+  build-linux:
+    name: Build app (Linux GTK)
+    needs: [changes, test-linux, lint-linux]
+    if: needs.changes.outputs.swift == 'true'
+    runs-on: ubuntu-24.04
+    # A cold Ghostty/Swift build takes about 24 minutes before the 72-scenario UI suite.
+    # Keep headroom for both on a hosted runner, including runtime-cache misses.
+    timeout-minutes: 75
+    # The official Swift image carries the toolchain; apt adds GTK4, libadwaita and GL deps,
+    # and pinned Zig 0.17 builds libghostty and zmx.
+    container: swift:6.3.2-noble
     steps:
       - uses: actions/checkout@v7
-      - name: Read pinned helper revisions
-        id: revisions
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Trust checkout directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Install GTK4, accessibility, software GL, test shells, and zig
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libepoxy-dev librsvg2-common webp-pixbuf-loader pkg-config git curl ca-certificates xz-utils ncurses-bin \
+            jq ripgrep zsh fish csh tcsh gcc file at-spi2-core dbus-x11 gir1.2-atspi-2.0 openbox python3-gi xdotool xvfb xauth x11-xkb-utils ibus ibus-gtk4 \
+            libatk-bridge2.0-0 libgl1-mesa-dri libegl-mesa0 mesa-utils
+          curl -fsSLo /tmp/zig.tar.xz \
+            https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
+          echo "${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum --check
+          tar -xJf /tmp/zig.tar.xz -C /opt
+          echo "/opt/zig-x86_64-linux-0.17.0" >> "$GITHUB_PATH"
+          echo "GHOSTTY_ZIG=/opt/zig-x86_64-linux-0.17.0/zig" >> "$GITHUB_ENV"
+      - name: Materialize and verify upstream boundary tag
+        run: |
+          git tag --force "$UPSTREAM_BASE_TAG" "$UPSTREAM_BASE_COMMIT"
+          git merge-base --is-ancestor "$UPSTREAM_BASE_TAG" HEAD
+      - name: Enforce host-free core boundary and CLI sharing
+        run: |
+          scripts/check-linux-core-boundary.sh "$UPSTREAM_BASE_TAG"
+          scripts/check-linux-cli-drift.sh
+      - name: Test Linux architecture verification
+        run: scripts/test-linux-architecture.sh
+      - name: Resolve Linux architecture
+        id: linux-architecture
         shell: bash
         run: |
-          ghostty=$(sed -nE 's/^GHOSTTY_REV="([^"]+)".*/\1/p' scripts/setup.sh)
-          zmx=$(sed -nE 's/^ZMX_REV="([^"]+)".*/\1/p' scripts/setup.sh)
-          zmx_target=$(sed -nE 's/^ZMX_TARGET="([^"]+)".*/\1/p' scripts/setup.sh)
-          zig_formula=$(sed -nE 's/^ZIG_FORMULA="([^"]+)".*/\1/p' scripts/setup.sh)
-          [ -n "$ghostty" ] && [ -n "$zmx" ] && [ -n "$zmx_target" ] && [ -n "$zig_formula" ]
-          echo "ghostty=$ghostty" >> "$GITHUB_OUTPUT"
-          echo "zmx=$zmx" >> "$GITHUB_OUTPUT"
-          echo "zmx_target=$zmx_target" >> "$GITHUB_OUTPUT"
-          echo "zig_formula=$zig_formula" >> "$GITHUB_OUTPUT"
-      - name: Cache libghostty (GhosttyKit + resources)
+          source linux/arch.sh
+          echo "host=$HOST_ARCH" >> "$GITHUB_OUTPUT"
+      - name: Cache vendored Linux runtimes
+        id: ghostty-cache
         uses: actions/cache@v6
         with:
           path: |
-            GhosttyKit.xcframework
-            agterm/Resources/ghostty
-            agterm/Resources/terminfo
-            .ghostty-build-stamp
-          key: ghosttykit-v3-${{ steps.revisions.outputs.ghostty }}-${{ hashFiles('scripts/ghostty-patches/*.patch') }}
-      - name: Cache zmx
-        uses: actions/cache@v6
-        with:
-          path: |
-            agterm/Resources/zmx
-            .zmx-build-stamp
-          key: zmx-v2-${{ steps.revisions.outputs.zmx }}-${{ steps.revisions.outputs.zmx_target }}-${{ steps.revisions.outputs.zig_formula }}-${{ hashFiles('scripts/zmx-patches/*.patch') }}
-      - name: Install xcodegen
-        run: brew install xcodegen
-      # The zsh plain-login seam needs zsh here; the fish seam switches the runner shell below.
-      - name: Give the runner account a zsh login shell
-        run: sudo dscl . -create "/Users/$(id -un)" UserShell /bin/zsh
-      - name: Install fish
-        run: brew install fish
-      - name: Verify fish
-        run: which fish && fish --version
-      # staged and compiled outside the watchdog so a cache miss or a slow build cannot spend its budget
-      - name: Stage libghostty and zmx
-        run: scripts/setup.sh
-      - name: Read the Xcode build
-        id: xcode
-        run: |
-          echo "build=$(xcodebuild -version | awk '/Build version/ {print $3}')" >> "$GITHUB_OUTPUT"
-          xcodebuild -version && echo "SDK $(xcrun --show-sdk-build-version), image $ImageOS $ImageVersion"
-      - name: Restore the compilation cache
-        id: cas
-        uses: actions/cache/restore@v6
-        with:
-          path: build/cas
-          key: xcode-cas-v1-arm64-${{ steps.xcode.outputs.build }}-Debug-${{ github.sha }}
-          restore-keys: xcode-cas-v1-arm64-${{ steps.xcode.outputs.build }}-Debug-
-      - name: Restore the helper build
-        id: helpers
-        uses: actions/cache/restore@v6
-        with:
-          path: agtermCore/.build/helpers
-          key: swiftpm-helpers-v1-macos-arm64-debug-${{ steps.xcode.outputs.build }}-${{ hashFiles('agtermCore/Package.resolved') }}-${{ github.sha }}
-          restore-keys: swiftpm-helpers-v1-macos-arm64-debug-${{ steps.xcode.outputs.build }}-${{ hashFiles('agtermCore/Package.resolved') }}-
-      # keyed on the dependency declarations; restoring them lets Xcode reuse its checkouts
-      - name: Restore the package checkouts
-        id: packages
-        uses: actions/cache/restore@v6
-        with:
-          path: build/DerivedData/SourcePackages
-          key: source-packages-v1-${{ hashFiles('project.yml', 'agtermCore/Package.swift', 'agtermCore/Package.resolved') }}
-      - name: Build hosted tests
+            agterm-linux/vendor/ghostty
+            agterm-linux/vendor/zmx
+          key: linux-runtimes-${{ steps.linux-architecture.outputs.host }}-${{ hashFiles('scripts/setup-linux.sh', 'scripts/verify-linux-vendor-cache.sh', 'scripts/verify-linux-zmx-cache.sh', 'scripts/verify-linux-architecture.sh', 'scripts/verify-linux-resources.sh', 'scripts/zmx-patches/**/*.patch', 'linux/arch.sh', 'linux/ghostty-resources.env', 'linux/ghostty-build.sh', 'scripts/ghostty-patches/**/*.patch', 'linux/zmx.env', 'linux/patches/*.patch') }}
+      - name: Verify restored libghostty cache
+        if: steps.ghostty-cache.outputs.cache-hit == 'true'
+        run: scripts/verify-linux-vendor-cache.sh agterm-linux/vendor/ghostty
+      - name: Verify restored zmx cache
+        if: steps.ghostty-cache.outputs.cache-hit == 'true'
+        run: scripts/verify-linux-zmx-cache.sh agterm-linux/vendor/zmx
+      - name: Test deterministic Ghostty resources
+        run: scripts/test-linux-resources.sh
+      - name: Build libghostty (skips if the cache restored it)
+        run: scripts/setup-linux.sh
+      - name: Verify built libghostty cache
+        run: scripts/verify-linux-vendor-cache.sh agterm-linux/vendor/ghostty
+      - name: Verify built zmx cache
+        run: scripts/verify-linux-zmx-cache.sh agterm-linux/vendor/zmx
+
+      - name: Exercise headless server lifecycle with bundled runtimes
+        working-directory: agtermCore
         env:
-          AGTERM_HELPER_CONFIG: debug
-          AGTERM_HELPER_HASHING: "1"
+          AGTERM_REQUIRE_ZMX: "1"
+          AGTERM_REQUIRE_FISH: "1"
         run: |
-          xcodegen generate
-          scripts/with-helper-prebuild.sh xcodebuild build-for-testing \
-            -project agterm.xcodeproj \
-            -scheme agtermTests \
-            -destination 'platform=macOS' \
-            -derivedDataPath build/DerivedData \
-            COMPILATION_CACHE_ENABLE_CACHING=YES COMPILATION_CACHE_CAS_PATH="$GITHUB_WORKSPACE/build/cas" COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=YES AGTERM_HELPER_HASHING=1
-      - name: Save the helper build
-        if: github.event_name == 'push' && steps.helpers.outputs.cache-hit != 'true' && matrix.shard == 1
-        uses: actions/cache/save@v6
-        with:
-          path: agtermCore/.build/helpers
-          key: ${{ steps.helpers.outputs.cache-primary-key }}
-      - name: Save the compilation cache
-        if: github.event_name == 'push' && steps.cas.outputs.cache-hit != 'true' && matrix.shard == 1
-        uses: actions/cache/save@v6
-        with:
-          path: build/cas
-          key: ${{ steps.cas.outputs.cache-primary-key }}
-      - name: Report the compilation cache
-        run: echo "restored '${{ steps.cas.outputs.cache-matched-key }}', $(du -sh build/cas | cut -f1)"
-      # xcodebuild hands the test host only TEST_RUNNER_-prefixed variables, prefix stripped.
-      - name: Application-hosted unit tests
+          export AGTERM_ZMX_BIN="$GITHUB_WORKSPACE/agterm-linux/vendor/zmx/zmx"
+          export AGTERM_SHELL_INTEGRATION="$GITHUB_WORKSPACE/agterm-linux/vendor/ghostty/share/ghostty/shell-integration"
+          swift test --filter ServerLifecycleTests
+      - name: swift test (agterm-linux)
+        working-directory: agterm-linux
+        run: swift test
+      - name: swift build (agterm-linux)
+        working-directory: agterm-linux
+        run: swift build
+      - name: swift build Release/WMO (agterm-linux)
+        working-directory: agterm-linux
+        run: swift build -c release
+      - name: Validate staged Linux payload
+        run: scripts/stage-linux.sh "$RUNNER_TEMP/agterm-stage"
+      - name: GTK AT-SPI smoke tests
         env:
-          TEST_RUNNER_AGTERM_REQUIRE_FISH: "1"
-          WATCHDOG_SECONDS: "600"
-          WATCHDOG_RUNNER: '^${{ github.workspace }}/build/DerivedData/Build/Products/Debug/agterm\.app/Contents/MacOS/agterm( |$)'
-          DIAG_DIR: ${{ github.workspace }}/hosted-test-hang
-        run: |
-          selection=()
-          case "${{ matrix.shard }}" in
-            1) for c in $HOSTED_SHARD1; do selection+=("-only-testing:agtermTests/$c"); done ;;
-            2) for c in $HOSTED_SHARD2; do selection+=("-only-testing:agtermTests/$c"); done ;;
-            *) for c in $HOSTED_SHARD1 $HOSTED_SHARD2; do selection+=("-skip-testing:agtermTests/$c"); done ;;
-          esac
-          scripts/watchdog.sh xcodebuild test-without-building \
-            -project agterm.xcodeproj \
-            -scheme agtermTests \
-            -destination 'platform=macOS' \
-            -derivedDataPath build/DerivedData \
-            "${selection[@]}"
-      - name: upload hosted hang diagnostics
+          AGTERM_UI_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/linux-ui
+        run: scripts/test-linux-ui.sh
+      - name: Upload GTK diagnostics on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: hosted-test-hang-${{ matrix.shard }}
-          path: |
-            hosted-test-hang
-            build/DerivedData/Logs/Test
-          if-no-files-found: ignore
-      - name: Plain fish login shell seam
-        if: matrix.shard == 2
-        env:
-          TEST_RUNNER_AGTERM_REQUIRE_FISH_LOGIN_SHELL: "1"
-          TEST_RUNNER_AGTERM_REQUIRE_FISH: "1"
-        run: |
-          sudo dscl . -create "/Users/$(id -un)" UserShell "$(which fish)"
-          xcodebuild test-without-building \
-            -project agterm.xcodeproj \
-            -scheme agtermTests \
-            -destination 'platform=macOS' \
-            -derivedDataPath build/DerivedData \
-            -only-testing:agtermTests/SessionHostFishSeamTests/testPlainLoginShellStartsIntegratedFish
+          name: linux-ui-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/linux-ui
+          if-no-files-found: warn
 
   cookbook:
     name: Cookbook checks

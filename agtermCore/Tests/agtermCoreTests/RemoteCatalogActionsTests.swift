@@ -156,6 +156,37 @@ final class RemoteCatalogActionsTests {
         }
     }
 
+    @Test func callbackTransportSettlesAReplyWithoutTheAsyncRunner() throws {
+        actions = RemoteCatalogActions(mirror: mirror, runner: { _ in
+            Issue.record("the callback host used the async runner")
+            return (1, "")
+        }, automaticLookups: false)
+        install(snapshot(rev: 3))
+        guard case .ready(let prepared) = actions.prepare(rename) else { Issue.record("preparation failed"); return }
+        var response: ControlResponse?
+        actions.send(prepared, launch: { argv, done in
+            let opID = Script.opID(Script.plain(argv))
+            done(RemoteCommandResult(status: 0, stdout: self.reply(.applied, rev: 3)(opID), stderr: ""))
+        }, completion: { response = $0 })
+        #expect(response?.ok == true)
+        #expect(actions.marks.isEmpty)
+    }
+
+    @Test func callbackTransportKeepsALostOutcomeUntilItsReceiptArrives() {
+        actions = RemoteCatalogActions(mirror: mirror, runner: { _ in (1, "") }, automaticLookups: false)
+        install(snapshot(rev: 3))
+        guard case .ready(let prepared) = actions.prepare(rename) else { Issue.record("preparation failed"); return }
+        var response: ControlResponse?
+        actions.send(prepared, launch: { _, done in done(RemoteCommandResult(status: 1, stdout: "", stderr: "lost")) },
+                     completion: { response = $0 })
+        #expect(response?.ok == false)
+        #expect(actions.marks.map(\.unknown) == [true])
+        guard let id = actions.marks.first?.opID else { return }
+        #expect(actions.pendingLookups[id]?.contains("e1") == true)
+        actions.acceptLookup(RemoteCommandResult(status: 0, stdout: reply(.applied, rev: 3)(id), stderr: ""), operation: id)
+        #expect(actions.marks.isEmpty)
+    }
+
     @Test func aWorkspaceAskedForCollapsedArrivesFolded() async {
         install(snapshot())
         let created = UUID()

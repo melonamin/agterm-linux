@@ -108,6 +108,34 @@ final class SshConnectionPoolTests {
         #expect(starts == 1)
     }
 
+    @Test func nativeCallbacksCoalescePreparationWithoutTheAsyncExecutor() {
+        let pool = SshConnectionPool(host: "box", root: "/pool", key: "native", automaticPreparation: false) { _ in
+            Issue.record("native preparation must not invoke the async runner")
+            return 255
+        }
+        let path = pool.lease("catalog")
+        var commands: [[String]] = []
+        var callbacks: [@MainActor (Int32) -> Void] = []
+        var answers: [Bool] = []
+        let launch: @MainActor ([String], @escaping @MainActor (Int32) -> Void) -> Void = { argv, done in
+            commands.append(argv)
+            callbacks.append(done)
+        }
+        pool.ready(path, launch: launch) { answers.append($0) }
+        pool.ready(path, launch: launch) { answers.append($0) }
+        #expect(commands == [SshConnectionPool.checkCommand(host: "box", path: path)])
+        callbacks.removeFirst()(255)
+        #expect(commands.count == 2)
+        callbacks.removeFirst()(0)
+        #expect(answers == [true, true])
+        pool.ready(path, launch: { _, done in done(0) }, completion: { answers.append($0) })
+        #expect(answers == [true, true, true])
+        _ = pool.close()
+        pool.ready(path, launch: launch) { answers.append($0) }
+        #expect(answers.last == false)
+        #expect(commands.count == 2)
+    }
+
     @Test func aLiveConnectionIsNotStartedAgainAndADeadOneIsReplacedOnce() async {
         let pool = pool()
         let path = pool.lease("catalog")
