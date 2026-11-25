@@ -35,10 +35,10 @@ enum LinuxRemoteCompanionRequest: Sendable {
             return ["session", "duplicate", "--companion", "--target", originSession, "--no-select"]
         case .terminal(let options):
             var arguments = ["session", "new", "--parent", originSession, "--no-select"]
-            if let cwd = options.cwd { arguments += ["--cwd=" + cwd] }
-            if let command = options.command { arguments += ["--command=" + command] }
+            arguments += RemoteSession.optionArgument("--cwd", options.cwd)
+            arguments += RemoteSession.optionArgument("--command", options.command)
             if options.wait { arguments.append("--wait") }
-            if let name = options.name { arguments += ["--name=" + name] }
+            arguments += RemoteSession.optionArgument("--name", options.name)
             return arguments
         case .page(let options):
             return Self.pageArguments(options, originSession: originSession)

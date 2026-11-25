@@ -479,6 +479,8 @@ omitted when expanded).
 - `session lead [--pane left|right|scratch]`: for a session shared with another Mac, take the lead of a pane here
   (what a key press on its "in use" cover does). `tree`'s `surfaces[].lead` reads `leader`/`follower`/
   `unowned`. On the Mac the session runs on, a covered pane still takes `session type`/`text`.
+  During a managed remote pane's disconnected retry, the Linux viewer remembers `session lead` or a
+  plain reconnect key and takes the lead after reconnecting, even if another viewer has typed meanwhile.
 - `session restart --pane-id ID [--command LINE]`: end one pane's shell and its foreground program, and start a
   new login shell there running LINE. Same pane, same stable id, blank screen, nothing typed. Without
   `--command` it runs the program the pane is running now again, with the same arguments, and refuses when

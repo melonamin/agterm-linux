@@ -210,8 +210,8 @@ final class ControlServer: @unchecked Sendable {
         if request.cmd == .sessionPaste { return performPasteRequest(request) }
         if let response = performOriginRequest(request) { return response }
         if let response = performRemoteTextRequest(request) { return response }
-        if let response = performCatalogRequest(request) { return response }
         if let response = performAttachedRecent(request) { return response }
+        if let response = performCatalogRequest(request) { return response }
         if let response = performAttachedRequest(request) { return response }
         if [.sessionCompanionNew, .sessionCompanionPage, .sessionCompanionDuplicate].contains(request.cmd) {
             return performCompanionRequest(request)

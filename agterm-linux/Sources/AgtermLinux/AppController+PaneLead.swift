@@ -18,8 +18,14 @@ extension AppController {
     }
 
     func takePaneLead(_ surface: GhosttySurface) {
-        guard let identity = UUID(uuidString: surface.paneToken),
-              ZmxLeadBook.shared.covered(pane: identity) else { return }
+        guard let identity = UUID(uuidString: surface.paneToken) else { return }
+        if RemoteReconnectBook.shared.entries[identity]?.cover == true {
+            ZmxLeadBook.shared.claimOnReport(pane: identity)
+            RemoteReconnectBook.shared.retryNow(pane: identity, now: Date())
+            tickReconnects()
+            return
+        }
+        guard ZmxLeadBook.shared.covered(pane: identity) else { return }
         if ZmxLeadBook.shared.reattaching(pane: identity) {
             if ZmxLeadBook.shared.states[identity]?.attachment.claim == false { ZmxLeadBook.shared.claimOnReport(pane: identity) }
             return
@@ -39,10 +45,12 @@ extension AppController {
                 return err("session not realized")
             }
             guard ZmxLeadBook.shared.role(pane: identity) != nil
+                    || RemoteReconnectBook.shared.entries[identity]?.cover == true
                     || ZmxLeadBook.shared.covered(pane: identity) else {
                 return err("pane has no lead to take")
             }
-            if ZmxLeadBook.shared.covered(pane: identity) { takePaneLead(surface) }
+            if ZmxLeadBook.shared.covered(pane: identity)
+                || RemoteReconnectBook.shared.entries[identity]?.cover == true { takePaneLead(surface) }
             return ok(id)
         }
     }

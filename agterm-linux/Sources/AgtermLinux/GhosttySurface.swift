@@ -437,7 +437,7 @@ final class GhosttySurface: PaneRoleMutableSurface {
         let inherited = role.statusPane.flatMap { pane in
             controller?.store.session(withID: sessionID)?.effectiveBackground(for: pane)
         }
-        guard oscBackgroundColorHex != nil
+        guard waitAfterCommand || oscBackgroundColorHex != nil
                 || fixedBackgroundColor != nil
                 || usesSessionWatermark && inherited != nil else { return }
         reapplyBackgroundOverlay(windowOpacity: windowOpacity, settings: settings)
@@ -815,6 +815,9 @@ final class GhosttySurface: PaneRoleMutableSurface {
 
     func handleHeldProcessExit() {
         guard waitAfterCommand, let pane = UUID(uuidString: paneToken) else { return }
+        // Link-loss handling already cleared the role; a later held-exit callback must not
+        // erase a takeover queued while reconnecting.
+        guard !RemoteReconnectBook.shared.waiting(pane: pane) else { return }
         ZmxLeadBook.shared.forget(pane: pane)
         syncLeadCover()
         controller?.store.leadRoleChanged()

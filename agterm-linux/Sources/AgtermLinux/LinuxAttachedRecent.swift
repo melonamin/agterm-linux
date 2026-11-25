@@ -4,6 +4,7 @@ import agtermCore
 private final class LinuxAttachedRecentBox: @unchecked Sendable {
     var item: RemoteRecentClosedItem?
     var refusal: ControlResponse?
+    var window: String?
 }
 
 extension ControlServer {
@@ -11,10 +12,29 @@ extension ControlServer {
         guard request.cmd == .recentOpen else { return nil }
         let box = LinuxAttachedRecentBox()
         _ = companionOnMain {
+            guard !gLibrary.remoteRecentClosedItems.isEmpty else { return ControlResponse(ok: true) }
+            if request.args?.window != nil,
+               case .controller(let controller) = Self.route(for: request),
+               let controller, gLibrary.windows.first(where: { $0.id == controller.windowID })?.isRemote == true {
+                return ControlResponse(ok: true)
+            }
             switch RecentClosedTarget.resolve(request.target, in: gLibrary.recentClosedItems, remote: gLibrary.remoteRecentClosedItems) {
             case .failure(let refusal): box.refusal = ControlResponse(ok: false, error: refusal.message)
             case .success(.local): break
             case .success(.remote(let id)): box.item = gLibrary.remoteRecentClosedItems.first { $0.id == id }
+            }
+            if box.item != nil {
+                switch Self.route(for: request) {
+                case .failure(let error): box.refusal = ControlResponse(ok: false, error: error)
+                case .controller(let controller):
+                    if let controller {
+                        if gLibrary.windows.first(where: { $0.id == controller.windowID })?.isRemote == true {
+                            box.refusal = ControlResponse(ok: false, error: "recent.open is not available in a remote window")
+                        } else {
+                            box.window = controller.windowID.uuidString
+                        }
+                    } else { box.refusal = ControlResponse(ok: false, error: "no controller") }
+                }
             }
             return ControlResponse(ok: true)
         }
@@ -35,7 +55,7 @@ extension ControlServer {
             guard reopened.ok, let open = reopened.result?.recentOpen else { return reopened }
             sessions = open.item.sessionIDs
         }
-        return reattachRecent(sessions, item: item, window: request.args?.window)
+        return reattachRecent(sessions, item: item, window: box.window)
     }
 
     func undoAttached(_ undo: AttachedUndo, window: UUID) -> ControlResponse {

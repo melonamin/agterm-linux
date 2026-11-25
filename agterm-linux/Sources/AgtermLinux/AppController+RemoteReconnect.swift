@@ -12,7 +12,9 @@ extension AppController {
         let state = ZmxLeadBook.shared.states[pane]
         let cover = state?.role != nil || state?.reattaching == true
         let reclaim = state?.reclaimAfterDrop
+        let claim = ZmxLeadBook.shared.takeClaim(pane: pane)
         ZmxLeadBook.shared.forget(pane: pane)
+        if claim { ZmxLeadBook.shared.claimOnReport(pane: pane) }
         store.remotePaneHeld(pane, forSession: session.id)
         remoteHeldExits.paneHeld(surface, forSession: session.id)
         RemoteReconnectBook.shared.wait(pane: pane, session: session.id, host: host, cover: cover, reclaim: reclaim, now: Date())
@@ -30,6 +32,7 @@ extension AppController {
 
     func retryRemotePane(_ surface: GhosttySurface, keycode: UInt32) -> Bool {
         guard let pane = UUID(uuidString: surface.paneToken), RemoteReconnectBook.shared.waiting(pane: pane) else { return false }
+        if RemoteReconnectBook.shared.entries[pane]?.cover == true { ZmxLeadBook.shared.claimOnReport(pane: pane) }
         LinuxLeaderState.shared.consumed.insert(keycode)
         RemoteReconnectBook.shared.retryNow(pane: pane, now: Date())
         tickReconnects()
