@@ -456,3 +456,31 @@ Causes not found, left as backlog items with their capture steps:
   Bound the Zig download's connection, total time and low-speed interval, with two retries and unchanged SHA-256 verification.
   Allow 75 minutes for provisioning, cold builds and the full GTK suite, matching the Linux app CI budget.
   Dispatch the maintained workflow against the existing tag to apply infrastructure fixes without moving its source.
+
+## Linux Live command exit races
+
+- **Symptoms.** Release run `45688798218` receives a valid startup DSR reply but retains only the held-exit prompt.
+  A separate held-command scenario gets `failed to read surface buffer` while polling across command exit.
+- **Causes, demonstrated.** libghostty's POSIX reader returns on `POLLHUP` even when the same event has `POLLIN`.
+  A fast child's unread tail is discarded.
+  Separately, a synchronous `zmx screen` can outlive its daemon while the UI's cached lead still routes reads to it.
+  The held-exit callback that clears that lead cannot run while the control handler waits.
+- **Reproduction.** `pty_hangup_fixture.c` waits for a real readable PTY hangup without fabricating event flags or bytes.
+  The existing app fails on its first startup query; replacing only libghostty retains the marker before the exit prompt.
+  The held-read fixture delays the real screen invocation until the gated command's daemon removes its socket.
+  The existing app returns the same control error as CI.
+- **Fixes.** Drain `POLLIN` before treating `POLLHUP` as EOF.
+  Retire the cached lead only for an uncovered, non-reconnecting held pane whose daemon socket is confirmed gone.
+  Text and cursor reads then use its retained terminal, as after the queued held-exit callback.
+  A real daemon stopped with `SIGSTOP` retains its socket, read error and lead; the fixture always resumes it.
+- **Validation.** Both deterministic regressions pass, including text-first and cursor-first exit reads.
+  Native restart/rendering/teardown, real SSH takeover and two-viewer scenarios pass.
+  A process from published v0.43.0 keeps its PID and accepts input after the candidate reconnects.
+
+### Local test-run constraints
+
+An unconstrained parallel core run delayed main-actor fixtures by 77–92 seconds and exceeded undo-grace and catalog-opening windows.
+The affected 15 tests pass in isolation; all 7,190 pass with the release workflow's `swift test --no-parallel` command.
+No core code or assertions were changed.
+Linux command-process fixtures also reject overlong Unix socket paths with `.pathTooLong`.
+Use the established short persistent `TMPDIR=/validation/tmp` container path; all 650 Linux tests pass there.

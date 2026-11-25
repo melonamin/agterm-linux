@@ -233,3 +233,27 @@ A correct menu missing the action still fails without retrying that assertion.
 Failures retain model, accessibility and screenshot diagnostics.
 Ten calibrated GUI repetitions pass with all assertions and postflight guards under a two-CPU root container.
 Application code remains unchanged; the test correction requires fresh exact-commit CI before release tagging.
+
+### Release-run exit races
+
+Branch CI `45670569018` passes all 84 GTK scenarios, so immutable tag object
+`390ab92f3a0449da60021158a15bc37625a04e38` is created at `d767443a`.
+No GitHub release is published.
+The maintained workflow gains bounded toolchain downloads, compatible gzip runtime-cache use,
+and a 75-minute build budget in `5e0cc634` after two infrastructure-limited release attempts.
+
+Release run `45688798218` confirms that cache fix but exposes two intermittent command-exit races.
+Both now have deterministic baseline failures and fixed-path regressions:
+
+- A real `POLLIN|POLLHUP` event loses the fast command's final bytes in libghostty.
+  The Linux patch drains readable data before EOF; replacing only the library fixes the regression.
+- A synchronous daemon read races its socket disappearing before the held-exit callback runs.
+  The Linux adapter retires only a confirmed ended, uncovered held lead and preserves live/unresponsive and reconnecting error paths.
+  Both text-first and cursor-first exit reads pass; a stopped live daemon keeps its error and lead.
+
+Local validation passes 7,190 core tests with the release's serial command, 650 Linux tests,
+Debug/Release builds, strict lint, 12 native GTK scenarios and the deterministic exit regressions.
+Real SSH takeover, extended controls, two viewers and a published-v0.43.0 process upgrade also pass.
+The local parallel-fixture and overlong-TMPDIR limitations are recorded in `docs/ci-flakes.md`.
+The new source still needs exact-commit hosted CI and package verification.
+Present a concrete unpublished-tag move gate only after those pass; never silently repoint the existing tag.

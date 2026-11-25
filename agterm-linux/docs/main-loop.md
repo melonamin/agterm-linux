@@ -137,6 +137,17 @@ Remote catalog operations also start hidden Live panes through this adapter and 
 They resolve the same launch seed as the eventual terminal widget, then refresh catalog evidence before answering the receipt.
 Widget realization attaches to the existing daemon; it does not run the creation command again.
 
+## Held process exit and control reads
+
+libghostty's POSIX reader must drain readable data when `poll` reports both `POLLIN` and `POLLHUP`.
+The hangup alone does not mean the master has no unread tail.
+The Linux bridge carries `ghostty-drain-readable-hangup.patch`; the startup-query regression forces those real OS flags.
+
+A synchronous control read can also wait on a daemon that exits while the held-exit callback is queued on GLib.
+For an uncovered held pane whose daemon socket is gone, the read retires the cached lead immediately and reads the retained surface.
+It does not do this for covered or reconnecting panes, or when a live/unresponsive daemon's socket still exists.
+The callback remains safe to run later and performs the same idempotent lead cleanup.
+
 ## Testing through the seam
 
 `MainTimer.scheduleTimer` is a process-global mutable static and swift-testing runs tests in parallel, so a

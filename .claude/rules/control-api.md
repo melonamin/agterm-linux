@@ -2697,6 +2697,10 @@ side, and reads `lastAppliedIsDark` when bare. Refuse it outside XCUITest; provi
   started dropping. This is what keeps pane-to-pane automation, the chat transport included, working on
   the Mac a session runs on while another Mac leads it. A failed daemon call is an error, never a fall
   back to the surface. The main pane's realize poll repeats the check before each inject.
+  Linux retires an uncovered held pane's cached lead when its daemon socket is confirmed gone,
+  even if a synchronous control read is still holding up the queued held-exit callback.
+  Its reads then use the retained surface as they do after the callback; covered or reconnecting panes
+  and failed calls to a daemon whose socket still exists keep the error path.
 - Accepted limit: between a local pane's attach and its first role report the pane types through its
   surface, so a `session.type` there can answer ok for input a daemon led from another Mac drops. The
   window is one pane spawn plus the report lag. Probing `zmx type` before every call was rejected: a

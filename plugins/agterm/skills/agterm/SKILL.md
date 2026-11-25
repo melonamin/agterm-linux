@@ -470,6 +470,7 @@ omitted when expanded).
   and overrides `--pane` when it resolves, while an unknown token without `--pane` fails with
   `unknown pane id: <id>`; `--json` reports the pane read as `result.pane`; `--all` adds available scrollback (alternate-screen buffers
   have none); `--lines N` keeps the last N lines.
+  Linux held `--wait` panes keep their final output readable across command exit.
 - `session search [needle] [--next|--prev|--close]` — search the terminal scrollback; prints the "N of M" counter.
 - `session split [on|off|toggle] [--axis vertical|horizontal]` · `session split close` - second shell, left/right by
   default or top/bottom with `--axis horizontal`. Omitting `--axis` preserves the current axis and the
