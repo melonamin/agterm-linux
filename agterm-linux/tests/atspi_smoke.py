@@ -7454,7 +7454,8 @@ def main():
         failures = []
         for child_scenario in (
             "normal", "upstream-controls", "upstream-v0391", "upstream-v0400", "upstream-v0411", "upstream-v0430", "sidebar-v0400", "links-v0400", "remote-v0391", "html-overlay", "overlay-visual", "live-restart", "live-fish-restart", "live-command-restart",
-            "v0430-gui", "v0430-input", "v0430-sidebar", "live-wait-output", "live-scratch", "startup-environment",
+            "v0430-gui", "v0430-input", "v0430-sidebar", "live-wait-output", "live-control-memory", "live-scratch",
+            "startup-environment",
             "dashboard-modal", "context-menu",
             "window-key-dispatch",
             "split-exit", "split-primary-exit", "split-ratio-restore", "window-ownership", "preferences-pages",
@@ -7603,6 +7604,9 @@ def main():
         elif scenario == "live-wait-output":
             from atspi_live_wait_output import verify_live_wait_output
             verify_live_wait_output(env, state)
+        elif scenario == "live-control-memory":
+            from atspi_live_control_memory import verify_live_control_memory
+            verify_live_control_memory(env, state)
         elif scenario == "live-scratch":
             from atspi_v0430 import verify_live_scratch
             verify_live_scratch(env, state)

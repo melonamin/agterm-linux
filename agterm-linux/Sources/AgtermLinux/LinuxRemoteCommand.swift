@@ -37,6 +37,8 @@ enum LinuxRemoteCommand {
         } catch {
             return RemoteCommandResult(status: 1, stdout: "", stderr: String(describing: error))
         }
+        // Foundation's Process retains itself through its run-loop source until waitUntilExit() drops it.
+        defer { process.waitUntilExit() }
         if finished.wait(timeout: .now() + deadline) == .timedOut {
             process.terminate()
             if finished.wait(timeout: .now() + terminationGrace) == .timedOut {
@@ -112,7 +114,10 @@ private final class TemporaryOutput {
     }
 
     func read() -> String {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return "" }
+        // Data(contentsOf:) leaks 4 KiB per empty file until the toolchain carries swift-foundation#2311.
+        var info = stat()
+        guard lstat(path, &info) == 0, info.st_size > 0,
+              let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return "" }
         return String(decoding: data, as: UTF8.self)
     }
 }
