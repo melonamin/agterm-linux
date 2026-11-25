@@ -134,6 +134,8 @@ struct LinuxForegroundCaptureTests {
         let lostDaemon = AppController.wrappedAttachCommand(
             configuration, replay: nil, durable: "make dev", denylist: ["tmux"])
         #expect(lostDaemon.contains("make dev"))
+        #expect(lostDaemon.contains("ZMX_HOLD_UNTIL_ATTACH=5"))
+        #expect(!command.contains("ZMX_HOLD_UNTIL_ATTACH"))
     }
 
     @Test("remote rows are neither read nor counted; the count is slots written")

@@ -6,6 +6,15 @@ import Testing
 @Suite("Pane lead key policy")
 @MainActor
 struct LinuxPaneLeadKeyPolicyTests {
+    @Test func pressDuringAReconnectClaimsOnTheFirstReportAndConsumesItsRepeats() {
+        let attachment = ZmxLeadAttachment(claim: false, reclaim: "previous")
+        book.begin(attachment, pane: pane, reattaching: true)
+        #expect(press(Self.keyA) == .consume)
+        #expect(book.takeClaim(pane: pane))
+        #expect(press(Self.keyA) == .consume)
+        #expect(!book.takeClaim(pane: pane))
+        #expect(policy.release(keycode: Self.keyA.keycode))
+    }
     nonisolated static let keyA: (keyval: UInt32, keycode: UInt32) = (0x61, 38)
     nonisolated static let keyB: (keyval: UInt32, keycode: UInt32) = (0x62, 56)
     nonisolated static let tab: (keyval: UInt32, keycode: UInt32) = (0xFF09, 23)

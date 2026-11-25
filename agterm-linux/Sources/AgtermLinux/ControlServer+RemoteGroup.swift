@@ -4,14 +4,14 @@ import agtermCore
 extension ControlServer {
     /// One fresh discovery read supplies both parent and membership. SSH waits remain on this request's
     /// worker; each insertion re-resolves the parent's current store on the GTK thread.
-    func attachRemoteGroup(host: String, session: String, tree: ControlRemoteTree, window: String?) -> ControlResponse {
+    func attachRemoteGroup(host: String, session: String, tree: ControlRemoteTree, window: String?, workspace: ControlAttachWorkspace? = nil) -> ControlResponse {
         guard let remote = tree.sessions.first(where: { $0.id == session }) else {
             return ControlResponse(ok: false, error: "no attachable session \(session) on \(host)")
         }
         guard remote.parent == nil, remote.content == nil else {
             return ControlResponse(ok: false, error: "\(session) is a companion, not a group's parent")
         }
-        let attached = attachRemoteOnMain(host: host, session: session, tree: tree, window: window)
+        let attached = attachRemoteOnMain(host: host, session: session, tree: tree, window: window, workspace: workspace)
         guard attached.ok, let parent = attached.result?.id.flatMap(UUID.init(uuidString:)) else { return attached }
         let members = remote.companions
             ?? tree.sessions.filter { $0.parent == remote.id }.map { ControlRemoteMember(id: $0.id, name: $0.name) }

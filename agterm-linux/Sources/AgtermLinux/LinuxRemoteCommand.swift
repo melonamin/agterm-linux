@@ -9,13 +9,18 @@ enum LinuxRemoteCommand {
     private static let terminationGrace: TimeInterval = 0.25
 
     static func run(_ argv: [String], deadline: TimeInterval,
-                    input: Data? = nil) -> RemoteCommandResult {
+                    input: Data? = nil, inputURL: URL? = nil) -> RemoteCommandResult {
         guard !argv.isEmpty else {
             return RemoteCommandResult(status: 127, stdout: "", stderr: "no command to run")
         }
         let output = TemporaryOutput()
         let errors = TemporaryOutput()
         let inputFile = input.flatMap(TemporaryInput.init)
+        let inputHandle = inputURL.flatMap { try? FileHandle(forReadingFrom: $0) }
+        defer { try? inputHandle?.close() }
+        if inputURL != nil, inputHandle == nil {
+            return RemoteCommandResult(status: 1, stdout: "", stderr: "could not open command input file")
+        }
         guard let output, let errors else {
             return RemoteCommandResult(status: 1, stdout: "", stderr: "could not create command output files")
         }
@@ -29,7 +34,7 @@ enum LinuxRemoteCommand {
         process.environment = gdkEnvironment.restoringChildEnvironment(ProcessInfo.processInfo.environment)
         process.standardOutput = output.handle
         process.standardError = errors.handle
-        if let inputFile { process.standardInput = inputFile.handle }
+        process.standardInput = inputHandle ?? inputFile?.handle ?? FileHandle.nullDevice
         let finished = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in finished.signal() }
         do {
@@ -62,7 +67,7 @@ private final class TemporaryInput {
     let handle: FileHandle
 
     init?(data: Data) {
-        var template = Array("/tmp/agterm-input-XXXXXX".utf8CString)
+        var template = Array((NSTemporaryDirectory() + "/agterm-input-XXXXXX").utf8CString)
         let descriptor = mkstemp(&template)
         guard descriptor >= 0 else { return nil }
         path = String(decoding: template.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self)
@@ -96,7 +101,7 @@ private final class TemporaryOutput {
     let handle: FileHandle
 
     init?() {
-        var template = Array("/tmp/agterm-remote-XXXXXX".utf8CString)
+        var template = Array((NSTemporaryDirectory() + "/agterm-remote-XXXXXX").utf8CString)
         let descriptor = mkstemp(&template)
         guard descriptor >= 0 else { return nil }
         path = String(decoding: template.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self)

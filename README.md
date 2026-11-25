@@ -41,7 +41,7 @@ Code layout:
 
 ### Linux feature parity and platform differences
 
-The `linux-port` branch carries the exact upstream v0.43.0 terminal model and control protocol, including
+The `linux-port` branch carries the exact upstream v0.44.1 terminal model and control protocol, including
 split/scratch/overlay terminals, Quick terminal input and read-back, terminal zoom, fullscreen,
 recently closed sessions with grouped undo, light/dark themes, configurable toolbar and sidebar text,
 recent-session and attention popovers, agent status in the multi-session dashboard, stable pane status
@@ -67,11 +67,23 @@ Attached sessions mirror origin status, context, notifications, HUDs, asks, over
 changes through a presentation stream.
 Remote file pages stream their granted assets and bridge requests from the origin through SSH.
 Companions appear as nested, collapsible rows, including terminal duplicates and temporary page companions.
+Sessions can also live above the named workspaces, without a workspace header.
+Use **New Top-Level Session** in the palette, or `agtermctl session new --workspace root`.
+**Move to…** chooses a workspace or Top-Level Sessions; **Move Under…** nests a row under another session.
+Dragging onto a session nests it; dragging a companion between top-level rows promotes it.
+Attached top-level rows follow newly created or moved origin companions without changing the selected session.
 Closing an attached page view leaves its origin page alive; a parent shell can respawn while its companions remain.
 Remote group attach includes companions with per-member results and can adopt a standalone attached companion
 under its matching parent.
 Local PNG, JPEG, GIF, WebP, and Markdown files open as pages through terminal links or `--image`/`--markdown`.
 On Linux, Ctrl-click supports local paths under `/home`, including plain printed paths and OSC 8 `file://` links.
+An `open` rule in `keymap.conf` can replace the built-in page for a detected file path.
+For example, `open *.txt xdg-open "$AGT_PATH"` runs in your home directory with the clicked pane's `AGT_*` context.
+OSC 8 links keep their built-in route, and remote openers receive a bounded private snapshot of the origin file.
+Ctrl+Shift+V, the Paste palette action, `session paste`, and terminal drops share file-transfer handling.
+Files and folders go to the pane's origin before their paths are pasted; clipboard images stage as PNG files.
+Staged pastes expire after 24 hours, and opener snapshots after one hour.
+External `agterm://session/<UUID>` links select an existing session through the desktop URI handler.
 The macOS automount-root restrictions apply only on macOS; remote file hosts and UNC paths remain blocked on both platforms.
 Markdown uses the bundled renderer with contained local pictures; authored scripts, network resources, and
 the control bridge are unavailable in generated image and Markdown pages.
@@ -333,7 +345,7 @@ Requirements:
 - SVG image loading at runtime for toolbar and sidebar icons (`librsvg2-common` on Ubuntu/Debian).
 - WebP image loading at runtime for image and Markdown pages (`webp-pixbuf-loader`).
 - zsh, required by the shared `agtermCore` tests.
-- Zig 0.17.0 for Ghostty and Zig 0.16.0 for zmx (install both with mise; set `GHOSTTY_ZIG` when not using mise).
+- Zig 0.17.0 for Ghostty and zmx (install with mise; set `GHOSTTY_ZIG` when not using mise).
 
 ```sh
 scripts/setup-linux.sh

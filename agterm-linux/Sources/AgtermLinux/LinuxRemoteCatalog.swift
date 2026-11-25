@@ -176,7 +176,7 @@ final class LinuxRemoteCatalog: RemoteCatalogEffects {
     }
 
     func attachCommand(host: String, pane: CatalogPane, claim: Bool) -> String {
-        let lead = ZmxLeadAttachment(claim: claim)
+        let lead = ZmxLeadAttachment(claim: claim, reclaim: ZmxLeadBook.shared.pendingReclaim(pane: pane.identity))
         leads[pane.identity] = lead
         ZmxLeadBook.shared.begin(lead, pane: pane.identity)
         let path = pool.lease("pane:\(pane.identity)")
@@ -187,10 +187,12 @@ final class LinuxRemoteCatalog: RemoteCatalogEffects {
     }
 
     func scratchAttachCommand(host: String, pane: CatalogPane) -> String {
+        let lead = ZmxLeadAttachment(claim: false, reclaim: ZmxLeadBook.shared.pendingReclaim(pane: pane.identity))
+        ZmxLeadBook.shared.begin(lead, pane: pane.identity)
         let path = pool.lease("pane:\(pane.identity)")
         LinuxSshPoolRoot.prepare(pool, path: path) { _ in }
         return (try? RemoteSession.attachPaneCommand(host: host, endpoint: pane.endpoint, daemon: pane.daemon,
-                                             session: pane.daemon, pane: .scratch, controlPath: path)) ?? RemoteSession.endedCommand(host: host)
+                                             session: pane.daemon, pane: .scratch, lead: lead, controlPath: path)) ?? RemoteSession.endedCommand(host: host)
     }
 
     private func scheduleRedraw() {

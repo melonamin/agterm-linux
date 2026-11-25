@@ -4,6 +4,11 @@ import Foundation
 
 @MainActor
 extension GhosttySurface {
+    /// Every replacement surface config must preserve the pane's explicit wait policy.
+    var exitConfig: String {
+        guard waitAfterCommand else { return "" }
+        return (backedByZmx ? "abnormal-command-exit-runtime = 0\n" : "") + "wait-after-command = true\n"
+    }
     /// Reserve the one exit transition for an explicit zmx kill. The later libghostty child-exit action
     /// becomes inert, so the already-finalized daemon cannot close or promote the pane twice.
     func claimProcessExit() -> Bool {

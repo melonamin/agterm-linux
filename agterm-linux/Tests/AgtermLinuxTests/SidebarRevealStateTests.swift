@@ -220,15 +220,18 @@ struct SidebarRevealStateTests {
     func mirrorSpansAFilteredOutCurrentWorkspace() {
         let buried = Session(initialCwd: "/tmp", customName: "buried")
         let open = Workspace(name: "open", sessions: [Session(initialCwd: "/tmp")])
+        let other = Workspace(name: "other", sessions: [Session(initialCwd: "/tmp")])
         let folded = Workspace(name: "folded", sessions: [buried], isExpanded: false)
-        let store = AppStore(workspaces: [open, folded], selectedSessionID: buried.id)
+        let store = AppStore(workspaces: [open, other, folded], selectedSessionID: buried.id)
         var reveal = SidebarRevealState()
         store.noteSidebarExpansion(reveal.syncedExpansion(store: store))
 
         store.selectSession(nil)
         store.setFocusMembership(open.id, member: true)
+        store.setFocusMembership(other.id, member: true)
         store.setFocusEnabled(true)
-        #expect(store.visibleWorkspaces.map(\.id) == [open.id])
+        // A sole focus now deliberately becomes current, so use a multi-workspace filter here.
+        #expect(store.visibleWorkspaces.map(\.id) == [open.id, other.id])
         #expect(store.currentWorkspaceID == folded.id)
 
         store.noteSidebarExpansion(reveal.syncedExpansion(store: store))

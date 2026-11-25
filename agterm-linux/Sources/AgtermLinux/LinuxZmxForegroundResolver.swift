@@ -10,9 +10,11 @@ final class LinuxZmxForegroundResolver {
     struct Snapshot: Sendable {
         let leaders: [String: Int32]
         let probe: Probe
+        var daemonForeground: (@Sendable (String) -> Int32?)?
 
         func foregroundPID(sessionName: String) -> Int32? {
-            leaders[sessionName].flatMap(probe)
+            if let daemonForeground { return daemonForeground(sessionName) }
+            return leaders[sessionName].flatMap(probe)
         }
     }
 
@@ -27,6 +29,14 @@ final class LinuxZmxForegroundResolver {
     /// Nil when the listing failed or timed out, which leaves every wrapped pane of the pass unknown.
     func freshSnapshot(timeout: TimeInterval?) -> Snapshot? {
         client.sessionLeaderPIDs(timeout: timeout).map { Snapshot(leaders: $0, probe: probe) }
+    }
+
+    /// Exit capture must not wait on a listing that serially asks every daemon, including unrelated stalled ones.
+    func captureSnapshot() -> Snapshot {
+        let daemons = LinuxZmxDaemonForeground.snapshot(directory: client.socketDirectory)
+        return Snapshot(leaders: [:], probe: probe, daemonForeground: {
+            daemons.foreground(name: $0)
+        })
     }
 
     func passSnapshot(for sessions: [Session], timeout: TimeInterval?) -> Snapshot? {

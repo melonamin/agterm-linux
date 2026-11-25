@@ -118,7 +118,7 @@ extension AppController {
     }
 
     /// Open a brand-new window (the New Window palette action).
-    func openNewWindow() { openWindow(gLibrary.newWindow().id) }
+    func openNewWindow() { openWindow(gLibrary.newWindow(source: store).id) }
 
     func reopenRecentClosed() {
         if store.isRemoteWindow { sendRemoteHistory(.recentOpen); return }

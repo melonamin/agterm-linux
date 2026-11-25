@@ -30,6 +30,7 @@ final class LinuxPageChannel {
     typealias BridgeReply = @MainActor (Result<String, LinuxPageChannelError>) -> Void
     private struct Fetch {
         let path: String
+        var maxBytes = Int.max
         var reply: FetchReply?
         var logReply: LogReply?
         var logStamp: BoundedFile.FileStamp?
@@ -43,7 +44,8 @@ final class LinuxPageChannel {
     private var queuedBridges: [(Int, String, BridgeReply)] = []
     private var nextID = 0
     private var closed = false
-    private let expected = LinuxPageLock(Set<Int>())
+    var isClosed: Bool { closed }
+    private let expected = LinuxPageLock([Int: Int]())
     private let expectedBridges = LinuxPageLock(Set<Int>())
     var onClose: (() -> Void)?
 
@@ -74,7 +76,7 @@ final class LinuxPageChannel {
             runOnMain { MainActor.assumeIsolated { self?.receive(event) } }
         }
         connection.start(onLine: { line in
-            if !spooler.receive(line) { connection.shutdown() }
+            if !spooler.receive(line) { spooler.close(); connection.shutdown() }
         }, onClose: { [weak self] in
             spooler.close()
             runOnMain { MainActor.assumeIsolated { self?.close() } }
@@ -82,10 +84,10 @@ final class LinuxPageChannel {
         drain()
     }
 
-    func fetch(_ path: String, reply: @escaping FetchReply) {
+    func fetch(_ path: String, maxBytes: Int = Int.max, reply: @escaping FetchReply) {
         guard !closed else { return reply(.failure(.closed)) }
         nextID += 1
-        queued.append((nextID, Fetch(path: path, reply: reply)))
+        queued.append((nextID, Fetch(path: path, maxBytes: maxBytes, reply: reply)))
         drain()
     }
 
@@ -141,7 +143,7 @@ final class LinuxPageChannel {
         while resources.count < ControlServer.pageServeResourceLimit, !queued.isEmpty {
             let (id, fetch) = queued.removeFirst()
             resources[id] = fetch
-            expected.withLock { _ = $0.insert(id) }
+            expected.withLock { $0[id] = fetch.maxBytes }
             send(fetch.logReply != nil ? .logTail(id: id, stamp: fetch.logStamp) : .resource(id: id, path: fetch.path))
         }
         while bridges.count < ControlServer.pageServeBridgeLimit, !queuedBridges.isEmpty {
@@ -160,7 +162,7 @@ final class LinuxPageChannel {
         guard !closed else { return }
         switch event {
         case .resource(let id, let resource):
-            expected.withLock { _ = $0.remove(id) }
+            expected.withLock { $0[id] = nil }
             guard let fetch = resources.removeValue(forKey: id) else { break }
             fetch.reply?(.success(resource))
             if let reply = fetch.logReply {
@@ -177,7 +179,7 @@ final class LinuxPageChannel {
         case .unchanged(let id):
             resources.removeValue(forKey: id)?.logReply?(.success(nil))
         case .failure(let id, let error):
-            expected.withLock { _ = $0.remove(id) }
+            expected.withLock { $0[id] = nil }
             let fetch = resources.removeValue(forKey: id)
             fetch?.reply?(.failure(.refused(error)))
             fetch?.logReply?(.failure(.refused(error)))
@@ -200,39 +202,44 @@ private final class LinuxPageSpooler: @unchecked Sendable {
     struct Spool {
         let handle: FileHandle
         let resource: LinuxPageResource
+        let limit: Int
+        var bytes = 0
     }
     private var spools: [Int: Spool] = [:]
-    private let expected: LinuxPageLock<Set<Int>>
+    private var closed = false
+    private let expected: LinuxPageLock<[Int: Int]>
     private let expectedBridges: LinuxPageLock<Set<Int>>
     private let deliver: @Sendable (Event) -> Void
 
-    init(expected: LinuxPageLock<Set<Int>>, expectedBridges: LinuxPageLock<Set<Int>>, deliver: @escaping @Sendable (Event) -> Void) {
+    init(expected: LinuxPageLock<[Int: Int]>, expectedBridges: LinuxPageLock<Set<Int>>, deliver: @escaping @Sendable (Event) -> Void) {
         self.expected = expected
         self.expectedBridges = expectedBridges
         self.deliver = deliver
     }
 
     func receive(_ line: Data) -> Bool {
-        guard let frame = try? PageServeCodec.decode(line) else { return false }
+        guard !closed, let frame = try? PageServeCodec.decode(line) else { return false }
         switch frame {
         case .head(let id, let mime):
             guard begin(id, mime: mime) else { return false }
         case .logHead(let id, let stamp, let offset):
             guard offset >= 0, begin(id, mime: "application/octet-stream", logStamp: stamp, logOffset: offset) else { return false }
         case .logUnchanged(let id):
-            guard expected.withLock({ $0.remove(id) != nil }), spools[id] == nil else { return false }
+            guard expected.withLock({ $0.removeValue(forKey: id) != nil }), spools[id] == nil else { return false }
             deliver(.unchanged(id))
         case .chunk(let id, let data):
             guard let spool = spools[id] else { return false }
+            guard data.count <= spool.limit - spool.bytes else { return false }
             do { try spool.handle.write(contentsOf: data) } catch { return false }
+            spools[id]?.bytes += data.count
         case .end(let id):
             guard let spool = spools.removeValue(forKey: id) else { return false }
             try? spool.handle.close()
-            expected.withLock { _ = $0.remove(id) }
+            expected.withLock { $0[id] = nil }
             deliver(.resource(id, spool.resource))
         case .failure(let id, let error):
             if let spool = spools.removeValue(forKey: id) { try? spool.handle.close() }
-            let resource = expected.withLock { $0.remove(id) != nil }
+            let resource = expected.withLock { $0.removeValue(forKey: id) != nil }
             let bridge = expectedBridges.withLock { $0.remove(id) != nil }
             if resource || bridge { deliver(.failure(id, error)) }
         case .reply(let id, let response):
@@ -243,18 +250,19 @@ private final class LinuxPageSpooler: @unchecked Sendable {
     }
 
     private func begin(_ id: Int, mime: String, logStamp: BoundedFile.FileStamp? = nil, logOffset: Int = 0) -> Bool {
-        guard expected.withLock({ $0.contains(id) }), spools[id] == nil else { return false }
+        guard let limit = expected.withLock({ $0[id] }), limit >= 0, spools[id] == nil else { return false }
         var template = Array((NSTemporaryDirectory() + "/agterm-page-XXXXXX").utf8CString)
         let fd = mkstemp(&template)
         guard fd >= 0 else { return false }
         _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
         let path = String(decoding: template.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self)
         let resource = LinuxPageResource(path: path, mime: mime, logStamp: logStamp, logOffset: logOffset)
-        spools[id] = Spool(handle: FileHandle(fileDescriptor: fd, closeOnDealloc: true), resource: resource)
+        spools[id] = Spool(handle: FileHandle(fileDescriptor: fd, closeOnDealloc: true), resource: resource, limit: limit)
         return true
     }
 
     func close() {
+        closed = true
         for spool in spools.values { try? spool.handle.close() }
         spools.removeAll()
     }

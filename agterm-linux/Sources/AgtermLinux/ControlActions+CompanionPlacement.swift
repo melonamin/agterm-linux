@@ -56,6 +56,44 @@ extension AppController {
         moveLinuxCompanion(target, parent: parent, index: index)
     }
 
+    func resolveCompanionPromotion(_ placement: ControlCompanionPromotion) -> ResolveResponse<CompanionPromotion> {
+        switch placement {
+        case .afterOwnGroup: return .success(.afterOwnGroup)
+        case .workspace(let target):
+            switch resolveWorkspaceResponse(target) {
+            case .failure(let response): return .failure(response)
+            case .success(let id): return .success(.workspace(id, slot: nil))
+            }
+        case .beside(let target, let after):
+            switch resolveSessionResponse(target) {
+            case .failure(let response): return .failure(response)
+            case .success(let id): return .success(.beside(id, after: after))
+            }
+        }
+    }
+
+    func promoteLinuxCompanion(_ target: String?, placement: ControlCompanionPromotion) -> ControlResponse {
+        let id: UUID
+        switch resolveSessionResponse(target) {
+        case .failure(let response): return response
+        case .success(let resolved): id = resolved
+        }
+        switch resolveCompanionPromotion(placement) {
+        case .failure(let response): return response
+        case .success(let promotion):
+            switch store.promoteCompanion(id, to: promotion) {
+            case .failure(let refusal): return err(refusal.message)
+            case .success:
+                reconcile(focusActive: false)
+                return ok(id)
+            }
+        }
+    }
+
+    func promoteCompanion(_ target: String?, placement: ControlCompanionPromotion, window: String?) async -> ControlResponse {
+        promoteLinuxCompanion(target, placement: placement)
+    }
+
     func createPageSession(_ target: String?, window: String?, options: ControlSessionOverlayOpenOptions) async -> ControlResponse {
         createLinuxPageSession(target, options: options)
     }

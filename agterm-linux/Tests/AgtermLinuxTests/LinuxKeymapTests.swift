@@ -5,6 +5,14 @@ import agtermCore
 
 @Suite("Linux keymap compatibility")
 struct LinuxKeymapTests {
+    @Test("Linux chord resolution preserves file openers and their control read-back")
+    func fileOpenersSurviveLinuxResolution() throws {
+        let loaded = try loadKeymap("open *.txt printf '%s' \"$AGT_PATH\"\n")
+        #expect(loaded.diagnostics.isEmpty)
+        #expect(loaded.keymap.opener(forFile: "example.txt") != nil)
+        let projected = projectLinuxKeymap(loaded.keymap, diagnostics: [], path: "/config/keymap.conf")
+        #expect(projected.openers?.first?.selectors == ["*.txt"])
+    }
     @Test("dropping a reserved override does not restore a shadowed Linux default")
     func reservedOverrideRestoresDefault() throws {
         let loaded = try loadKeymap("""

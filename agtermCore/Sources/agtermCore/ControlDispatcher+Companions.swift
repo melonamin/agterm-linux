@@ -106,7 +106,7 @@ extension ControlDispatcher {
     }
 
     // one session takes at most one placement; a field another form uses is refused, not dropped
-    static func companionPromoteArguments(_ args: ControlArgs?) -> Result<ControlCompanionPromotion, ArgumentRejection> {
+    public static func companionPromoteArguments(_ args: ControlArgs?) -> Result<ControlCompanionPromotion, ArgumentRejection> {
         if args?.parent != nil || args?.index != nil || args?.to != nil {
             return .failure(ArgumentRejection(message: "session.companion.promote takes no --parent, --index or --to"))
         }

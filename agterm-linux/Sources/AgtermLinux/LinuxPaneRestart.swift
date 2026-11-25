@@ -133,12 +133,16 @@ private final class LinuxPaneRestart {
         }
         MessageBus.shared.dispose(pane: identity)
         controller.store.clearPaneOwnedState(session.id, pane: role == .right ? .right : .left)
-        let launch = ZmxSupport.attachCommand(config, replaying: replay?.argv, creationCommand: command, denylist: [])
+        let launch = LinuxZmxLaunch.holdUntilAttached(
+            ZmxSupport.attachCommand(config, replaying: replay?.argv, creationCommand: command, denylist: []),
+            program: command != nil || replay?.argv != nil)
         guard let replacement = controller.replacePane(surface, command: launch, environment: config.environment, wait: false, lead: lead, workingDirectory: replay?.workingDirectory) else {
             closeEnded()
             return finish("the old shell ended; the pane could not be rebuilt and was closed")
         }
         surface = replacement
+        // The observer outlives this request's reply deadline, including a command still held for attachment.
+        gControlServer.ownerRespawned(session: session.id, daemon: daemon, prior: oldPID)
         guard replacement.isRealized else {
             replacement.teardown()
             closeEnded()
@@ -179,7 +183,10 @@ private final class LinuxPaneRestart {
     nonisolated private static func shell(name: String, client: LinuxZmxClient, otherThan: Int32?, timeout: TimeInterval) -> Int32? {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
-            if let pid = client.sessionLeaderPIDs(timeout: 1)?[name], pid != otherThan { return pid }
+            if let pid = LinuxZmxDaemonForeground.leader(directory: client.socketDirectory, name: name), pid != otherThan {
+                let argv = (try? Data(contentsOf: URL(fileURLWithPath: "/proc/\(pid)/cmdline"))).flatMap(CommandRestore.parseProcCmdline)
+                if argv.map({ !CommandRestore.isHeldCreation($0) }) ?? true { return pid }
+            }
             Thread.sleep(forTimeInterval: 0.1)
         } while Date() < deadline
         return nil

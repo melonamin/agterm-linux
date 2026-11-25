@@ -17,7 +17,7 @@ extension AppController {
     }
 
     func windowNewSync(name: String?, minimized: Bool) -> ControlResponse {
-        let info = library.newWindow(name: name?.linuxTrimmedOrNil)
+        let info = library.newWindow(name: name?.linuxTrimmedOrNil, source: store)
         openWindow(info.id)
         if minimized, let controller = gWindows[info.id] {
             gtk_window_minimize(WIN(controller.windowPointer))

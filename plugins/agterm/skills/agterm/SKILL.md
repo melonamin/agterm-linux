@@ -35,6 +35,13 @@ scratch pane visibility, structural tree changes (an overlay, page or HUD openin
 and the app's launch; `hooks.conf` runs a shell line on any of them, so `on app.launched` is where a
 script recreates what a relaunch does not restore. They do not stream terminal output; use `session text` to read a buffer.
 
+On Linux, Ctrl-click drives file links and configured `open` rules; OSC 8 links keep their built-in route.
+`session paste`, Ctrl+Shift+V, the Paste palette action, and terminal drops copy files or images to the pane's origin before inserting paths.
+The Linux desktop registers `agterm://session/<UUID>` links for selecting an existing session.
+Use `session new --workspace root` for Top-Level Sessions, `session companion promote` to lift a companion,
+and `session companion move --parent ID` to nest a running session and its group.
+An attached top-level row reports `followsCompanions` in `tree` while it follows new origin companions.
+
 ## Am I inside agterm?
 
 Each shell agterm spawns gets these environment variables. Check `AGTERM_ENABLED` before assuming

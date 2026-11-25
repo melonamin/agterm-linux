@@ -256,6 +256,7 @@ extension AppController {
             gtk_box_append(cast(wrapper), W(row))
         } else if let label = op(gtk_label_new("Flagged")) {
             header = label
+            if case .workspace = section.key { gtk_widget_set_visible(W(label), 0) }
             gtk_label_set_xalign(label, 0)
             gtk_widget_add_css_class(W(label), "heading")
             gtk_widget_set_margin_top(W(label), 8)
@@ -265,7 +266,7 @@ extension AppController {
 
         guard let header, let listBox = op(gtk_list_box_new()) else { return nil }
         gtk_widget_add_css_class(W(listBox), "navigation-sidebar")
-        if case .workspace = section.key { gtk_widget_set_margin_start(W(listBox), linuxSettingsStore().load().effectiveSidebarDensity == .compact ? 8 : 14) }
+        if section.header != nil { gtk_widget_set_margin_start(W(listBox), linuxSettingsStore().load().effectiveSidebarDensity == .compact ? 8 : 14) }
         // Selection mode NONE: the custom shift/ctrl logic owns selection (painted through the
         // `agterm-selected` class), which lets the session-row click gesture run WITHOUT claiming
         // the sequence — see agterm-linux/docs/sidebar.md (no claiming click gesture).
@@ -613,19 +614,19 @@ extension AppController {
     /// B on D's top half must be a no-op, not a hop over the hidden C).
     func handleWorkspaceDrop(source: UUID, onto target: UUID, y: Double, targetHeight: Double) {
         guard source != target,
-              let s = store.workspaces.firstIndex(where: { $0.id == source }) else { return }
-        let visible = store.visibleWorkspaces
+              let s = store.namedWorkspaces.firstIndex(where: { $0.id == source }) else { return }
+        let visible = store.visibleWorkspaces.filter { !$0.isRoot }
         guard let targetVisibleIndex = visible.firstIndex(where: { $0.id == target }) else { return }
         let visibleIndices = visible.compactMap { workspace in
-            store.workspaces.firstIndex(where: { $0.id == workspace.id })
+            store.namedWorkspaces.firstIndex(where: { $0.id == workspace.id })
         }
         let childIndex = LinuxSidebarPolicy.workspaceDropChildIndex(
             targetVisibleIndex: targetVisibleIndex, visibleIndices: visibleIndices,
             y: y, height: targetHeight)
-        guard let res = SidebarDrop.resolveWorkspace(sourceIndex: s, count: store.workspaces.count,
+        guard let res = SidebarDrop.resolveWorkspace(sourceIndex: s, count: store.namedWorkspaces.count,
                                                      childIndex: childIndex) else { return }
         if LinuxRemoteCatalogs.windows[windowID] != nil {
-            guard let step = RemoteOperation.workspaceStep(from: s, to: res.destination, count: store.workspaces.count) else { return }
+            guard let step = RemoteOperation.workspaceStep(from: s, to: res.destination, count: store.namedWorkspaces.count) else { return }
             _ = sendRemoteGUI(ControlRequest(cmd: .workspaceMove, target: source.uuidString, args: ControlArgs(to: step)))
             return
         }
@@ -639,6 +640,10 @@ extension AppController {
         guard store.session(withID: session) != nil,
               let target = store.workspaces.first(where: { $0.id == workspace }) else { return }
         let ids = LinuxSidebarPolicy.draggedSessionBlock(source: session, selection: store.sidebarSelectionIDs)
+        if ids.count == 1, store.session(withID: session)?.parentID != nil {
+            _ = promoteCompanionRespectingHost(session, placement: .workspace(workspace.uuidString))
+            return
+        }
         let sources = ids.compactMap { id -> SidebarDrop.SessionSource? in
             guard let location = store.sessionLocation(ofSession: id) else { return nil }
             return SidebarDrop.SessionSource(workspace: location.workspace, index: location.index)

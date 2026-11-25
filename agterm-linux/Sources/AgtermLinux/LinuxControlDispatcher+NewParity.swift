@@ -20,7 +20,7 @@ extension LinuxControlDispatcher {
         case .sessionTint, .workspaceTint:
             return dispatchTint(request)
         case .sessionCompanionNew, .sessionCompanionPage, .sessionCompanionDuplicate, .sessionCompanionPageAttach,
-             .sessionPage, .sessionCompanionConvert, .sessionCompanionMove,
+             .sessionPage, .sessionCompanionConvert, .sessionCompanionMove, .sessionCompanionPromote,
              .sessionCollapse, .sessionExpand:
             return dispatchCompanionCommand(request)
         case .recentList, .recentOpen, .recentClear:

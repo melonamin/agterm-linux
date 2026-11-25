@@ -48,7 +48,7 @@ extension ControlServer {
                 case .success(let id): mirror.detach(sessions: [id]); completion(controller.ok(id))
                 }
             } else {
-                switch controller.resolveWorkspaceResponse(request.target) {
+                switch controller.resolveNamedWorkspaceResponse(request.target) {
                 case .failure(let response): completion(response)
                 case .success(let id): mirror.detach(workspace: id); completion(controller.ok(id))
                 }
@@ -140,12 +140,12 @@ extension ControlServer {
         let checked = companionOnMain {
             guard case .controller(let controller?) = Self.route(for: request), !controller.store.isRemoteWindow,
                   let workspace = controller.store.currentWorkspaceID,
-                  let name = controller.store.workspaces.first(where: { $0.id == workspace })?.name else {
+                  let target = controller.store.workspaces.first(where: { $0.id == workspace }) else {
                 return ControlResponse(ok: false, error: "no local workspace to attach into")
             }
             destination.window = controller.windowID
             destination.workspace = workspace
-            destination.name = name
+            destination.name = target.isRoot ? nil : target.name
             return controller.ok()
         }
         guard checked.ok, let window = destination.window, let workspace = destination.workspace else { return checked }
@@ -154,11 +154,16 @@ extension ControlServer {
         case .failure(let refusal): return ControlResponse(ok: false, error: refusal.message)
         case .success(let node): origin = node.map { .mac(window: $0.id) } ?? .server
         }
+        let words = create.arguments(origin: origin, workspaceName: create.workspaceName ?? destination.name)
         guard let argv = try? RemoteSession.controlCommand(host: create.host,
-            arguments: create.arguments(origin: origin, workspaceName: create.workspaceName ?? destination.name)) else {
+            arguments: words + (create.command != nil ? ["--attach-pending"] : [])) else {
             return ControlResponse(ok: false, error: "invalid host")
         }
-        let result = LinuxRemoteCommand.run(argv, deadline: 8)
+        var result = LinuxRemoteCommand.run(argv, deadline: 8)
+        if create.command != nil, result.refusedArguments,
+           let legacy = try? RemoteSession.controlCommand(host: create.host, arguments: words) {
+            result = LinuxRemoteCommand.run(legacy, deadline: 8)
+        }
         guard let reply = try? JSONDecoder().decode(ControlResponse.self, from: Data(result.stdout.utf8)) else {
             return ControlResponse(ok: false, error: "\(create.host) gave no answer; whether the session was created is unknown")
         }
@@ -185,7 +190,7 @@ extension ControlServer {
 private final class LinuxRemoteDestination: @unchecked Sendable {
     var window: UUID?
     var workspace: UUID?
-    var name = ""
+    var name: String?
 }
 
 private struct LinuxOriginError: Error {

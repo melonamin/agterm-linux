@@ -7,6 +7,26 @@ import agtermCore
 @MainActor
 @Suite(.serialized)
 struct LinuxPageChannelTests {
+    @Test func snapshotRefusesBytesPastTheOfferedSizeBeforeSpoolingThem() throws {
+        let frames: [PageServeFrame] = [.head(id: 1, mimeType: "text/plain"),
+                                      .chunk(id: 1, data: Data("too many bytes".utf8)), .end(id: 1)]
+        let encoded = try frames.map { CommandRestore.shellQuotedLine([String(decoding: try PageServeCodec.encode($0), as: UTF8.self)]) }
+        let script = "IFS= read -r request\nprintf '%s' " + encoded.joined(separator: " ") + "\nIFS= read -r ignored\n"
+        let channel = LinuxPageChannel()
+        defer { channel.close() }
+        var refused = false, delivered = false
+        channel.start(["/bin/sh", "-c", script])
+        channel.fetch("offered.txt", maxBytes: 1) { result in
+            switch result {
+            case .success: delivered = true
+            case .failure: refused = true
+            }
+        }
+        pump(until: { refused || delivered })
+        #expect(refused)
+        #expect(!delivered)
+        #expect(channel.isClosed)
+    }
     @Test func chunkedResourceUsesAPrivateSpoolAndRemovesItAfterDelivery() throws {
         let first = Data(repeating: 120, count: PageServeCodec.maxChunkBytes)
         let second = Data(repeating: 121, count: PageServeCodec.maxChunkBytes)

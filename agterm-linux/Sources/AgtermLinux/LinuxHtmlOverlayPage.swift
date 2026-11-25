@@ -47,6 +47,8 @@ final class LinuxHtmlOverlayPage {
     private var theme: HtmlOverlayTheme
     private var appliedRevision: Int
     private var loadFailed = false
+    let imageSource = LinuxImagePageSource()
+    var imageLoadError: String?
     private var sourceLoadRevision = 0
     private var pendingExternalURL: URL?
     private var pendingDialog: OpaquePointer?
@@ -122,6 +124,7 @@ final class LinuxHtmlOverlayPage {
 
     func close() {
         closed = true
+        imageSource.clear()
         textPage?.stop()
         agterm_disconnect_signals(RAW(manager), Unmanaged.passUnretained(self).toOpaque())
         let data = Unmanaged.passUnretained(self).toOpaque()
@@ -157,7 +160,7 @@ final class LinuxHtmlOverlayPage {
         guard newer.reloadRevision != appliedRevision else { return }
         controller?.replicaPages[id]?.channel?.cancelResources()
         appliedRevision = newer.reloadRevision
-        if newer.reloadTarget == .current, !loadFailed, webkit_web_view_get_uri(cast(webView)) != nil {
+        if newer.source.kind != .image, newer.reloadTarget == .current, !loadFailed, webkit_web_view_get_uri(cast(webView)) != nil {
             webkit_web_view_reload(cast(webView))
         } else {
             loadOriginal()
@@ -184,12 +187,12 @@ final class LinuxHtmlOverlayPage {
             webkit_user_content_manager_add_style_sheet(manager, sheet)
             webkit_user_style_sheet_unref(sheet)
         }
-        if themed || overlay.source.imagePath != nil {
+        if themed || overlay.source.kind == .image {
             let rgb = UInt32(newer.background.dropFirst(), radix: 16) ?? 0x282c34
             var color = GdkRGBA(red: Float((rgb >> 16) & 255) / 255, green: Float((rgb >> 8) & 255) / 255,
                                 blue: Float(rgb & 255) / 255, alpha: 1)
             webkit_web_view_set_background_color(cast(webView), &color)
-            if webkit_web_view_get_uri(cast(webView)) != nil {
+            if themed, webkit_web_view_get_uri(cast(webView)) != nil {
                 if let textPage { textPage.load(fresh: false) } else { webkit_web_view_reload(cast(webView)) }
             }
         }
@@ -268,7 +271,8 @@ final class LinuxHtmlOverlayPage {
 
     private func loadOriginal() {
         sourceLoadRevision += 1
-        loadFailed = false
+        imageSource.clear()
+        loadFailed = imageLoadError != nil
         store?.setHtmlLoadState(id, state: .loading, error: nil)
         if let links = overlay.markdownLinks {
             var uri = URLComponents()
@@ -319,8 +323,7 @@ final class LinuxHtmlOverlayPage {
                     guard let self, !self.closed, self.sourceLoadRevision == revision else { return }
                     switch loaded {
                     case .failure(let failure): self.fail(failure.message)
-                    case .success(let html):
-                        html.withCString { webkit_web_view_load_html(cast(self.webView), $0, nil) }
+                    case .success(let content): self.displayGenerated(content)
                     }
                 }
             }
@@ -329,6 +332,7 @@ final class LinuxHtmlOverlayPage {
 
     func fail(_ message: String) {
         loadFailed = true
+        if overlay.source.kind == .image { imageLoadError = message; imageSource.clear() }
         store?.setHtmlLoadState(id, state: .failed, error: message)
         message.withCString { gtk_label_set_text(errorLabel, $0) }
         gtk_widget_set_visible(W(errorLabel), 1)
@@ -487,6 +491,7 @@ final class LinuxHtmlOverlayPage {
     func loadChanged(_ event: Int32) {
         switch event {
         case 0:
+            if imageLoadError != nil { return }
             loadFailed = false
             gtk_widget_set_visible(W(errorLabel), 0)
             store?.setHtmlLoadState(id, state: .loading, error: nil)

@@ -193,7 +193,9 @@ extension AppController {
     }
 
     func attachRemoteSession(host: String, session remoteID: String,
-                             tree: ControlRemoteTree, parent: UUID? = nil, select: Bool = true, tint: SidebarTint? = nil, placementWorkspace: UUID? = nil) -> ControlResponse {
+                             tree: ControlRemoteTree, parent: UUID? = nil, select: Bool = true, tint: SidebarTint? = nil,
+                             placementWorkspace: UUID? = nil, workspaceTarget: ControlAttachWorkspace? = nil,
+                             claimLead: Bool = true) -> ControlResponse {
         guard let remote = tree.sessions.first(where: { $0.id == remoteID }) else {
             return ControlResponse(ok: false, error: "no attachable session \(remoteID) on \(host)")
         }
@@ -203,9 +205,6 @@ extension AppController {
                 && row.remotePresentation?.binding.origin?.endpoint == tree.endpoint
         }
         let parent = parent ?? (matchingParents.count == 1 ? matchingParents.first?.id : nil)
-        guard let workspace = parent.flatMap({ store.workspace(forSession: $0)?.id }) ?? placementWorkspace ?? store.currentWorkspaceID else {
-            return ControlResponse(ok: false, error: "no window to attach into")
-        }
         let byRole = Dictionary(remote.panes.map { (ZmxPaneRole(controlName: $0.pane), $0.daemon) },
                                 uniquingKeysWith: { first, _ in first })
         guard byRole.count == remote.panes.count, let left = byRole[.left] else {
@@ -213,7 +212,7 @@ extension AppController {
         }
         let primary: String
         let split: String?
-        let leads = (left: ZmxLeadAttachment(claim: true), right: ZmxLeadAttachment(claim: true))
+        let leads = (left: ZmxLeadAttachment(claim: claimLead), right: ZmxLeadAttachment(claim: claimLead))
         do {
             primary = try RemoteSession.attachPaneCommand(
                 host: host, endpoint: tree.endpoint, daemon: left,
@@ -227,6 +226,13 @@ extension AppController {
             }
         } catch {
             return ControlResponse(ok: false, error: "\(host) reported a session agterm cannot address")
+        }
+        let workspace: UUID
+        if let existing = parent.flatMap({ store.workspace(forSession: $0)?.id }) ?? placementWorkspace { workspace = existing } else {
+            switch attachWorkspace(workspaceTarget) {
+            case .failure(let response): return response
+            case .success(let id): workspace = id
+            }
         }
         guard let created = store.addSession(
             toWorkspace: workspace, cwd: Self.homeCwd, command: primary,

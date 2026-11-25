@@ -23,10 +23,17 @@ extension ControlServer {
         guard tree.sessions.contains(where: { $0.id == plan.parentOrigin }) else {
             return ControlResponse(ok: false, error: "the session on \(plan.host) is not attachable now; nothing was created")
         }
+        let held = LinuxCompanionFollower.Host(plan.host, endpoint: tree.endpoint)
+        _ = companionOnMain { LinuxCompanionFollower.shared.hold(held); return ControlResponse(ok: true) }
+        defer { _ = companionOnMain { LinuxCompanionFollower.shared.release(held); return ControlResponse(ok: true) } }
+        let words = plan.request.arguments(originSession: plan.origin)
         guard let argv = try? RemoteSession.controlCommand(host: plan.host, arguments: plan.request.arguments(originSession: plan.origin)) else {
             return ControlResponse(ok: false, error: "invalid host")
         }
-        let result = LinuxRemoteCommand.run(argv, deadline: 30)
+        var result = LinuxRemoteCommand.run(
+            (try? RemoteSession.controlCommand(host: plan.host,
+                arguments: words + (plan.request.attachesPane ? ["--attach-pending"] : []))) ?? argv, deadline: 30)
+        if plan.request.attachesPane, result.refusedArguments { result = LinuxRemoteCommand.run(argv, deadline: 30) }
         if result.refusedArguments { return companionUnsupported(plan.host) }
         guard let reply = try? JSONDecoder().decode(ControlResponse.self, from: Data(result.stdout.utf8)) else {
             let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -40,13 +47,23 @@ extension ControlServer {
         guard let created = reply.result?.id, UUID(uuidString: created) != nil else {
             return ControlResponse(ok: false, error: "\(plan.host) created a companion but did not name it")
         }
+        func leaveToUser() {
+            _ = companionOnMain {
+                gLibrary.markOriginCompanionsHandled([created], parent: reply.result?.parent ?? plan.parentOrigin,
+                                                     host: plan.host, endpoint: tree.endpoint)
+                LinuxCompanionFollower.shared.markHandled(created, on: held)
+                return ControlResponse(ok: true)
+            }
+        }
         func failed(_ reason: String) -> ControlResponse {
-            ControlResponse(ok: false, error: "created companion \(created) on \(plan.host) but could not attach it: \(reason); "
+            leaveToUser()
+            return ControlResponse(ok: false, error: "created companion \(created) on \(plan.host) but could not attach it: \(reason); "
                 + "`agtermctl zmx attach \(plan.host) \(created)` attaches it")
         }
         guard result.status == 0 else { return failed("the connection failed") }
         if case .page = plan.request {
             let response = attachRemotePage(created, host: plan.host, parent: plan.parent, select: plan.select)
+            if response.ok { leaveToUser() }
             return response.ok ? response : failed(response.error ?? "attach failed")
         }
         let deadline = Date().addingTimeInterval(20)
@@ -64,6 +81,7 @@ extension ControlServer {
                     return controller.attachRemoteSession(host: plan.host, session: created, tree: tree,
                                                           parent: plan.parent, select: plan.select, tint: plan.request.tint)
                 }
+                if response.ok { leaveToUser() }
                 return response.ok ? response : failed(response.error ?? "attach failed")
             }
             reason = listing.error ?? reason

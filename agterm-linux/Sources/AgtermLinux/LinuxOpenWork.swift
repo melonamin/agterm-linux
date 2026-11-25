@@ -55,11 +55,11 @@ final class LinuxRemoteAttachLines: RemoteAttachLines {
     }
 
     func scratchAttach(_ origin: RemoteBinding.Origin, daemon: String, local: UUID) -> String {
-        line(origin, daemon: daemon, local: local, role: .left)
+        line(origin, daemon: daemon, local: local, role: .scratch)
     }
 
     private func line(_ origin: RemoteBinding.Origin, daemon: String, local: UUID, role: ZmxPaneRole) -> String {
-        let lead = ZmxLeadAttachment(claim: false)
+        let lead = ZmxLeadAttachment(claim: false, reclaim: ZmxLeadBook.shared.pendingReclaim(pane: local))
         ZmxLeadBook.shared.begin(lead, pane: local)
         return (try? RemoteSession.attachPaneCommand(host: origin.host, endpoint: origin.endpoint, daemon: daemon,
                                                     session: origin.sessionName, pane: role, lead: lead))

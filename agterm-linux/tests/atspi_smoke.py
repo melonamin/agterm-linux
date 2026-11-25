@@ -4132,7 +4132,8 @@ def verify_sidebar_session_drag(env):
             return window_tree(env, window_id)["workspaces"]
 
         def distribution():
-            return {w["name"]: [s["name"] for s in w["sessions"]] for w in workspaces()}
+            return {w["name"]: [s["name"] for s in w["sessions"]] for w in workspaces()
+                    if not w.get("root") or w["sessions"]}
 
         def session_id_of(name):
             session_id = next((s["id"] for w in workspaces() for s in w["sessions"]
@@ -4252,7 +4253,7 @@ def verify_sidebar_workspace_drag(env):
             return window_tree(env, window_id)["workspaces"]
 
         def ws_names():
-            return [w["name"] for w in workspaces()]
+            return [w["name"] for w in workspaces() if not w.get("root")]
 
         def distribution():
             return {w["name"]: [s["id"] for s in w["sessions"]] for w in workspaces()}
@@ -4489,7 +4490,7 @@ def verify_sidebar_multiselect_collapse(env):
 
         def distribution():
             return {w["name"]: [s["name"] for s in w["sessions"]]
-                    for w in window_tree(env, window_id)["workspaces"]}
+                    for w in window_tree(env, window_id)["workspaces"] if not w.get("root") or w["sessions"]}
 
         def session_id_of(name):
             session_id = next((s["id"] for w in window_tree(env, window_id)["workspaces"]
@@ -7454,7 +7455,7 @@ def main():
         failures = []
         for child_scenario in (
             "normal", "upstream-controls", "upstream-v0391", "upstream-v0400", "upstream-v0411", "upstream-v0430", "sidebar-v0400", "links-v0400", "remote-v0391", "html-overlay", "overlay-visual", "live-restart", "live-fish-restart", "live-command-restart",
-            "v0430-gui", "v0430-input", "v0430-sidebar", "live-wait-output", "live-control-memory", "live-scratch",
+            "v0430-gui", "v0430-input", "v0430-sidebar", "v0441", "live-wait-output", "live-control-memory", "live-scratch",
             "startup-environment",
             "dashboard-modal", "context-menu",
             "window-key-dispatch",
@@ -7553,6 +7554,9 @@ def main():
         elif scenario == "upstream-v0411":
             from atspi_v0411 import verify_v0411
             verify_v0411(env, state)
+        elif scenario == "v0441":
+            from atspi_v0441 import verify_v0441
+            verify_v0441(env, state)
         elif scenario == "v0430-input":
             from atspi_v0430_input import verify_input_v0430
             verify_input_v0430(env, state)
@@ -7565,9 +7569,10 @@ def main():
         elif scenario == "upstream-v0430":
             from atspi_v0430 import verify_v0430
             verify_v0430(env, state)
-        elif scenario in ("remote-v0430", "v0430-viewers", "v0430-history"):
+        elif scenario in ("remote-v0430", "v0430-viewers", "v0430-history", "v0441-remote"):
             from atspi_v0430_remote import verify_v0430_remote
-            verify_v0430_remote(env, state, acceptance=scenario == "v0430-viewers", history_only=scenario == "v0430-history")
+            verify_v0430_remote(env, state, acceptance=scenario == "v0430-viewers", history_only=scenario == "v0430-history",
+                               v0441_only=scenario == "v0441-remote")
         elif scenario == "sidebar-v0400":
             from atspi_v0400_sidebar import verify_sidebar_v0400
             verify_sidebar_v0400(env, state)

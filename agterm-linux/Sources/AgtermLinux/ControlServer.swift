@@ -38,7 +38,9 @@ final class ControlServer: @unchecked Sendable {
     @MainActor var pendingJobCancels: Set<String> = []
     @MainActor let originEpoch = UUID().uuidString
     @MainActor var respawnGenerations: [UUID: [String: Int]] = [:]
+    @MainActor var originRespawnWatches: [String: UUID] = [:]
     @MainActor var pageServeStreams: [UUID: LinuxPageServeStream] = [:]
+    @MainActor lazy var snapshotBook = SnapshotOfferBook()
     @MainActor var pendingPageClaims: [String: PendingPageClaim] = [:]
     @MainActor var companionPageTokens: [String: CompanionPageToken] = [:]
     @MainActor var pendingCompanionClaims: [UUID: CompanionPageServing] = [:]
@@ -205,6 +207,7 @@ final class ControlServer: @unchecked Sendable {
 
     /// Shared one-request entry point for socket and file-page workers.
     func performRequest(_ request: ControlRequest) -> ControlResponse {
+        if request.cmd == .sessionPaste { return performPasteRequest(request) }
         if let response = performOriginRequest(request) { return response }
         if let response = performRemoteTextRequest(request) { return response }
         if let response = performCatalogRequest(request) { return response }
@@ -301,9 +304,10 @@ final class ControlServer: @unchecked Sendable {
     /// SSH waits on a per-connection worker, never GTK's main thread and never the listener thread.
     private func dispatchRemoteZmx(_ request: ControlRequest) -> ControlResponse {
         Self.dispatchRemoteZmx(request, readTree: readRemoteTree(host:)) { host, session, tree, window in
-            request.cmd == .zmxAttachGroup
-                ? self.attachRemoteGroup(host: host, session: session, tree: tree, window: window)
-                : self.attachRemoteOnMain(host: host, session: session, tree: tree, window: window)
+            let workspace = try? ControlDispatcher.attachWorkspace(request.args).get()
+            return request.cmd == .zmxAttachGroup
+                ? self.attachRemoteGroup(host: host, session: session, tree: tree, window: window, workspace: workspace)
+                : self.attachRemoteOnMain(host: host, session: session, tree: tree, window: window, workspace: workspace)
         }
     }
 
@@ -317,6 +321,9 @@ final class ControlServer: @unchecked Sendable {
                 ? "invalid host" : "\(request.cmd.rawValue) requires a host")
         }
         guard request.cmd == .zmxAttach || request.cmd == .zmxAttachGroup else { return readTree(host) }
+        if case .failure(let rejection) = ControlDispatcher.attachWorkspace(request.args) {
+            return ControlResponse(ok: false, error: rejection.message)
+        }
         guard let remoteID = request.target?.linuxTrimmedOrNil else {
             return ControlResponse(ok: false, error: "\(request.cmd.rawValue) requires a remote session")
         }
@@ -353,10 +360,10 @@ final class ControlServer: @unchecked Sendable {
     }
 
     func attachRemoteOnMain(
-        host: String, session: String, tree: ControlRemoteTree, window: String?
+        host: String, session: String, tree: ControlRemoteTree, window: String?, workspace: ControlAttachWorkspace? = nil
     ) -> ControlResponse {
         if let remote = tree.sessions.first(where: { $0.id == session && $0.content == "page" }) {
-            return attachRemotePageRow(remote, tree: tree, host: host, window: window)
+            return attachRemotePageRow(remote, tree: tree, host: host, window: window, workspace: workspace)
         }
         let sem = DispatchSemaphore(value: 0)
         let box = ResponseBox()
@@ -380,7 +387,7 @@ final class ControlServer: @unchecked Sendable {
                 } else {
                     controller = gController
                 }
-                box.value = controller?.attachRemoteSession(host: host, session: session, tree: tree)
+                box.value = controller?.attachRemoteSession(host: host, session: session, tree: tree, workspaceTarget: workspace)
                     ?? ControlResponse(ok: false, error: "window not open")
                 sem.signal()
             }
@@ -444,7 +451,7 @@ final class ControlServer: @unchecked Sendable {
         }
         switch req.cmd {
         case .sessionCompanionNew, .sessionCompanionPage, .sessionCompanionDuplicate, .sessionCompanionPageAttach,
-             .sessionPage, .sessionCompanionConvert, .sessionCompanionMove, .sessionTerminate, .sessionUndo, .sessionRemoteNew,
+             .sessionPage, .sessionCompanionConvert, .sessionCompanionMove, .sessionCompanionPromote, .sessionTerminate, .sessionUndo, .sessionRemoteNew,
              .sessionCollapse, .sessionExpand, .sessionTint,
              .sessionOverlayHide, .sessionOverlayShow, .sessionOverlayToggle,
              .sessionRestart, .sessionOverlaySubmit, .keymapRun, .sessionClose, .sessionDuplicate, .sessionSelect, .sessionGo, .sessionRename, .sessionReveal,
@@ -516,6 +523,7 @@ final class ControlServer: @unchecked Sendable {
 
     @MainActor private static func routeOwningWorkspace(_ target: String?) -> ControllerRoute? {
         guard let target = explicitTarget(target) else { return nil }
+        if target == ControlWorkspaceNode.rootTarget { return nil }
         let controllers = gWindows.values
         let candidates = controllers.flatMap { $0.store.workspaces.map(\.id) }
         switch ControlResolve.resolve(target, candidates: candidates, active: nil) {

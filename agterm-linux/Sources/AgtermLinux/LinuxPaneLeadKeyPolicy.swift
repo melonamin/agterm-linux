@@ -32,7 +32,14 @@ final class LinuxPaneLeadKeyPolicy {
         if state & ModifierKeyMods.superBit != 0 || ModifierKeyMods.modifierBit(forKeyval: keyval) != nil {
             return .consume
         }
-        guard takeoverKeycode == nil, !book.reattaching(pane: pane) else { return .consume }
+        guard takeoverKeycode == nil else { return .consume }
+        if book.reattaching(pane: pane) {
+            if let pane, book.states[pane]?.attachment.claim == false {
+                takeoverKeycode = keycode
+                book.claimOnReport(pane: pane)
+            }
+            return .consume
+        }
         takeoverKeycode = keycode
         return .takeover
     }

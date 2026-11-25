@@ -7,6 +7,8 @@ struct LinuxAttachedPlan: Sendable {
     let row: UUID
     var parent: UUID?
     var index: Int?
+    var promotion: CompanionPromotion?
+    var attaches = false
 }
 
 private final class LinuxAttachedBox: @unchecked Sendable {
@@ -16,7 +18,7 @@ private final class LinuxAttachedBox: @unchecked Sendable {
 
 extension ControlServer {
     static let attachedCommands: Set<Command> = [
-        .sessionRestart, .zmxKill, .zmxKillPane, .sessionCompanionConvert, .sessionCompanionMove,
+        .sessionRestart, .zmxKill, .zmxKillPane, .sessionCompanionConvert, .sessionCompanionMove, .sessionCompanionPromote,
         .sessionDuplicate, .sessionSplit, .sessionSplitClose, .sessionScratch, .sessionRestore,
     ]
 
@@ -30,6 +32,14 @@ extension ControlServer {
             guard case .controller(let controller?) = Self.route(for: request),
                   case .success(let id) = controller.resolveSessionResponse(request.target),
                   let row = controller.store.session(withID: id), let origin = AttachedOrigin(row) else { return ControlResponse(ok: true) }
+            if request.cmd == .sessionCompanionPromote {
+                guard let parent = row.parentID.flatMap(controller.store.session(withID:)),
+                      let parentOrigin = AttachedOrigin(parent), parentOrigin.shares(origin) else { return controller.ok() }
+            }
+            if request.cmd == .sessionCompanionMove, let target = request.args?.parent,
+               case .success(let parent) = controller.resolveSessionResponse(target), row.parentID == parent {
+                return controller.ok()
+            }
             if request.cmd == .zmxKill || request.cmd == .zmxKillPane,
                request.target == "active" || request.args?.window == "active" { return ControlResponse(ok: true) }
             switch controller.attachedPlan(request, row: row, origin: origin) {
@@ -40,17 +50,20 @@ extension ControlServer {
         }
         if let response = box.response { return response }
         guard let plan = box.plan else { return nil }
-        switch runAttached(plan.action, origin: plan.origin) {
+        switch runAttached(plan.action, origin: plan.origin, attaching: plan.attaches) {
         case .refused(let reason), .unknown(let reason): return ControlResponse(ok: false, error: reason)
         case .done(let reply): return finishAttached(plan, reply: reply)
         }
     }
 
-    private func runAttached(_ action: AttachedForward, origin: AttachedOrigin) -> AttachedOutcome {
-        guard let argv = try? RemoteSession.controlCommand(host: origin.host, arguments: action.words, operands: action.operands) else {
+    private func runAttached(_ action: AttachedForward, origin: AttachedOrigin, attaching: Bool = false) -> AttachedOutcome {
+        guard let argv = try? RemoteSession.controlCommand(host: origin.host,
+            arguments: action.words + (attaching ? ["--attach-pending"] : []), operands: action.operands) else {
             return .refused("invalid host")
         }
-        return action.outcome(of: LinuxRemoteCommand.run(argv, deadline: 30), host: origin.host)
+        let result = LinuxRemoteCommand.run(argv, deadline: 30)
+        if attaching, result.refusedArguments { return runAttached(action, origin: origin) }
+        return action.outcome(of: result, host: origin.host)
     }
 
     private func finishAttached(_ plan: LinuxAttachedPlan, reply: ControlResponse) -> ControlResponse {
@@ -69,6 +82,14 @@ extension ControlServer {
                 if let parent = plan.parent {
                     if case .failure(let refusal) = store.moveCompanion(plan.row, under: parent, at: plan.index) {
                         return controller.err("moved on \(plan.origin.host), but not here: \(refusal.message)")
+                    }
+                }
+                if let promotion = plan.promotion {
+                    if reply.ok, store.session(withID: plan.row)?.companionsBaselined == false {
+                        store.baselineCompanions([], forSession: plan.row)
+                    }
+                    if case .failure(let refusal) = store.promoteCompanion(plan.row, to: promotion) {
+                        return controller.err("top-level on \(plan.origin.host), but not here: \(refusal.message)")
                     }
                 }
                 if case .scratch = plan.action, plan.index == -1 { store.selectSession(plan.row) }
@@ -193,9 +214,23 @@ extension AppController {
         let session = origin.session
         let action: AttachedForward
         var parent: UUID?
+        var promotion: CompanionPromotion?
         switch request.cmd {
         case .sessionDuplicate: action = .duplicate(after: session, cwd: row.focusedCwd)
         case .sessionCompanionConvert: action = .convert(session: session)
+        case .sessionCompanionPromote:
+            guard let placement = ControlDispatcher.companionPromotion(args) else {
+                return .failure(.init(message: "invalid companion placement"))
+            }
+            switch resolveCompanionPromotion(placement) {
+            case .failure(let response): return .failure(.init(message: response.error ?? "invalid companion placement"))
+            case .success(let resolved):
+                if case .failure(let refusal) = store.canPromoteCompanion(row.id, to: resolved) {
+                    return .failure(.init(message: refusal.message))
+                }
+                promotion = resolved
+            }
+            action = .promoteCompanion(session: session)
         case .sessionSplit: action = .split(session: session, mode: args?.mode ?? "toggle", axis: args?.axis)
         case .sessionSplitClose: action = .closeSplit(session: session)
         case .sessionScratch:
@@ -252,8 +287,14 @@ extension AppController {
             default: return .failure(.init(message: "unsupported attached command"))
             }
         }
+        var mounted = true
+        if request.cmd == .sessionRestart,
+           case .success(let pane) = originPane(args, row: row, origin: origin, policy: .strict) {
+            mounted = OverlayPane(rawValue: pane.role.rawValue).map(row.rendersPane) ?? false
+        }
         return .success(LinuxAttachedPlan(action: action, origin: origin, row: row.id, parent: parent,
-                                         index: args?.follow == true && request.cmd == .sessionScratch ? -1 : args?.index))
+                                         index: args?.follow == true && request.cmd == .sessionScratch ? -1 : args?.index,
+                                         promotion: promotion, attaches: action.attachesPane && mounted))
     }
 }
 

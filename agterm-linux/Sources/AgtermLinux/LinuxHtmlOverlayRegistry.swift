@@ -18,7 +18,7 @@ final class LinuxHtmlOverlayRegistry {
         }
         guard !installed, let context = webkit_web_context_get_default() else { return }
         installed = true
-        for scheme in [Self.fileScheme, HtmlSource.replicaScheme] {
+        for scheme in [Self.fileScheme, HtmlSource.replicaScheme, LinuxImagePageSource.scheme] {
             scheme.withCString {
                 webkit_web_context_register_uri_scheme(context, $0, onHtmlSchemeRequest, nil, nil)
                 let security = webkit_web_context_get_security_manager(context)
@@ -143,6 +143,7 @@ final class LinuxHtmlOverlayRegistry {
             if let request { agterm_uri_scheme_deny(request) }
             return
         }
+        if uri.scheme == LinuxImagePageSource.scheme { return page.imageSource.serve(uri.path, request: request) }
         if uri.scheme == HtmlSource.replicaScheme {
             return page.fetchReplica(uri.path, request: request)
         }

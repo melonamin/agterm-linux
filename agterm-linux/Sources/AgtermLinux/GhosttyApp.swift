@@ -259,7 +259,10 @@ final class GhosttyApp: @unchecked Sendable {
             case GHOSTTY_ACTION_OPEN_URL:
                 let value = action.action.open_url
                 if let raw = GhosttyActionDecoder.utf8String(value.url, length: value.len) {
-                    Self.queueTerminalLink(raw, from: Self.wrapper(fromTarget: target))
+                    let surface = Self.wrapper(fromTarget: target)
+                    let source: LinkPolicy.ClickSource = value.kind == GHOSTTY_ACTION_OPEN_URL_KIND_OSC8 ? .osc8
+                        : value.kind == GHOSTTY_ACTION_OPEN_URL_KIND_UNKNOWN && surface?.releasingLinkClick == true ? .detected : .other
+                    Self.queueTerminalLink(raw, source: source, from: surface)
                 }
                 return true
             case GHOSTTY_ACTION_MOUSE_OVER_LINK:

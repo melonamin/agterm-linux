@@ -151,7 +151,8 @@ func loadLinuxKeymap(configDirectory: URL) -> (keymap: Keymap, diagnostics: [Key
             builtinSequences: sequences,
             builtinUnbound: parsed.builtinUnbound,
             builtinRepeating: parsed.builtinRepeating,
-            globalHotkey: parsed.globalHotkey
+            globalHotkey: parsed.globalHotkey,
+            openers: parsed.openers
         ),
         diagnostics
     )
@@ -187,7 +188,8 @@ func projectLinuxKeymap(
         path: path,
         actions: actions,
         commands: commands,
-        diagnostics: diagnostics.map { ControlKeymapDiagnostic(line: $0.line, message: $0.message) }
+        diagnostics: diagnostics.map { ControlKeymapDiagnostic(line: $0.line, message: $0.message) },
+        openers: ControlKeymap.project(keymap: keymap, diagnostics: [], path: path).openers
     )
 }
 
@@ -448,6 +450,7 @@ extension AppController {
         case .renameWorkspace: if let ws = store.currentWorkspaceID { beginRename(id: ws, isWorkspace: true) }
         case .deleteWorkspace: if store.canRemoveWorkspace, let ws = store.currentWorkspaceID { removeWorkspaceRespectingHost(ws); reconcile() }
         case .newSession: newSession()
+        case .newRootSession: newRootSession()
         case .openDirectory: openDirectory()
         case .renameSession: startRenameActive()
         case .duplicateSession: _ = duplicateSession(sessionID)

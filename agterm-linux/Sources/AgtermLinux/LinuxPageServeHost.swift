@@ -3,6 +3,7 @@ import Foundation
 import agtermCore
 
 extension ControlServer: PageServeHost {
+    var snapshotOffers: SnapshotOfferBook? { snapshotBook }
     @MainActor
     func claimRemotePage(token: String) -> (page: UUID, served: PageServeClaim)? {
         for store in openPageStores {

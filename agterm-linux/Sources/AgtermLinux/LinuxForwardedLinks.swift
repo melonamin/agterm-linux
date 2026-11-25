@@ -6,11 +6,12 @@ extension AppController {
     func receiveForwardedLink(_ click: PresentationLinkClick, session id: UUID, sender: Int) {
         let hub = gControlServer.presentationHub
         let refuse: @MainActor (RemoteLinkRefusal) -> Void = {
-            hub.send(.linkRefused(PresentationLinkRefusal(reason: $0)), toOwner: sender)
+            hub.send(.linkRefused(PresentationLinkRefusal(reason: $0, click: click.click)), toOwner: sender)
         }
         guard let target = store.forwardedClickPane(id, pane: click.pane) else { return refuse(.paneNotAttached) }
         let origin = LinkPolicy.ClickOrigin.pane(id)
         let candidates = LinkPolicy.locations(for: click.raw, origin: origin, cwd: target.cwd)
+        let selectors = hub.snapshotSelectors(click, from: sender)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let route = LinkPolicy.resolvedRoute(for: click.raw, candidates: candidates, mode: click.mode, origin: origin,
                                                 exists: { FileManager.default.fileExists(atPath: $0) })
@@ -24,8 +25,13 @@ extension AppController {
             default: (source, percent) = (nil, nil)
             }
             let exists = route.localFile.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            let snapshot = exists ? SnapshotCandidate.find(route, selectors: selectors) : nil
             runOnMain { MainActor.assumeIsolated {
                 guard let self, hub.isConnected(owner: sender) else { return }
+                if let snapshot, let clickID = click.click, self.store.session(withID: id) != nil {
+                    return hub.offerSnapshot(snapshot, click: clickID, book: gControlServer.snapshotBook, to: sender)
+                }
+                if click.snapshotOnly == true { return refuse(.hidden) }
                 guard let source else { return refuse(.notAPage) }
                 guard exists else { return refuse(.notFound) }
                 let links = source.markdownPath.flatMap { MarkdownPage.linkGrant(for: $0) }

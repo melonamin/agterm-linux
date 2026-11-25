@@ -67,7 +67,7 @@ extension AppController {
     }
 
     func setWorkspaceExpansion(_ target: String?, window: String?, expanded: Bool) -> ControlResponse {
-        switch resolveWorkspaceResponse(target) {
+        switch resolveNamedWorkspaceResponse(target) {
         case .failure(let response): return response
         case .success(let id):
             setWorkspaceExpanded(id, expanded: expanded)

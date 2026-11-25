@@ -15,24 +15,24 @@ extension LinuxHtmlOverlayPage {
                 return LinuxRemoteMarkdown(page: self, channel: channel, revision: revision).load(resource, origin: path)
             }
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                let loaded: Result<String, LinuxFilePageFailure>
+                let loaded: Result<LinuxFilePageContent, LinuxFilePageFailure>
                 switch content {
                 case .image:
-                    loaded = ImageProbe.load(path: resource.path).map { ImagePage.html(data: $0.1, mimeType: $0.0.mimeType) }
+                    loaded = ImageProbe.load(path: resource.path).map { .image($0.1, $0.0.mimeType) }
                         .mapError { .message($0.description) }
                 case .text(let line):
                     loaded = TextProbe.load(path: resource.path).map {
-                        TextPage.html(text: $0, language: TextPage.language(forFile: path), line: line, style: MarkdownAssets.shared.textStyle)
+                        .html(TextPage.html(text: $0, language: TextPage.language(forFile: path), line: line, style: MarkdownAssets.shared.textStyle))
                     }.mapError { .message($0.description) }
                 case .document:
-                    loaded = DocumentProbe.load(path: resource.path).mapError { .message($0.description) }
+                    loaded = DocumentProbe.load(path: resource.path).map(LinuxFilePageContent.html).mapError { .message($0.description) }
                 case .html, .markdown: loaded = .failure(.message(OverlayHtmlError.remoteFile))
                 }
                 runOnMain { MainActor.assumeIsolated {
                     guard let self, !self.closed, self.overlay.reloadRevision == revision else { return }
                     switch loaded {
                     case .failure(let failure): self.fail(failure.message)
-                    case .success(let html): html.withCString { webkit_web_view_load_html(cast(self.webView), $0, nil) }
+                    case .success(let content): self.displayGenerated(content)
                     }
                 } }
             }

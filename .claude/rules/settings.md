@@ -207,8 +207,10 @@ paths:
   (also reached by SIGTERM/SIGINT) captures only windows still in `gWindows`.
   Never widen it to `library.allOpenSessions()`: an already-closed window's torn-down surfaces read nil
   and overwrite its capture.
-  Each window is captured at most once per exit, and every capture of one edge shares one zmx listing
-  under `LinuxZmxClient.captureInvocationTimeout`.
+  Each window is captured at most once per exit.
+  Linux exit capture matches filesystem sockets to listener inodes with a bounded kernel diagnostic dump,
+  then finds their current owner and terminal through `/proc` (`LinuxZmxDaemonForeground`).
+  It never asks a daemon to answer, so a stalled daemon cannot consume the capture budget.
   Strip login `-` before shell recognition; a known shell with only flags is idle and omitted, while
   scripts/payload args remain, including `/bin/sh <script>`.
   System shutdown, restart, and logout skip quit confirmation so `applicationWillTerminate` can capture

@@ -3,7 +3,7 @@ import agtermCore
 
 extension ControlServer {
     func attachRemotePageRow(_ remote: ControlRemoteSession, tree: ControlRemoteTree, host: String,
-                             window: String?) -> ControlResponse {
+                             window: String?, workspace: ControlAttachWorkspace? = nil) -> ControlResponse {
         if remote.parent == nil {
             guard let argv = try? RemoteSession.controlCommand(host: host,
                 arguments: ["session", "overlay", "page-attach", "--target", remote.id]) else { return ControlResponse(ok: false, error: "invalid host") }
@@ -14,13 +14,21 @@ extension ControlServer {
             guard response.ok, let page = response.result?.companionPage else { return response }
             return companionOnMain {
                 let id: UUID?
-                if let window, case .resolved(let resolved) = gLibrary.resolveWindow(window) { id = resolved } else { id = gLibrary.activeWindowID }
-                guard let id, let controller = gWindows[id], let workspace = controller.store.currentWorkspaceID else {
+                if let window {
+                    guard case .resolved(let resolved) = gLibrary.resolveWindow(window) else { return ControlResponse(ok: false, error: "window not open") }
+                    id = resolved
+                } else { id = gLibrary.activeWindowID }
+                guard let id, let controller = gWindows[id] else {
                     return ControlResponse(ok: false, error: "no local workspace to attach into")
+                }
+                let destination: UUID
+                switch controller.attachWorkspace(workspace) {
+                case .failure(let response): return response
+                case .success(let id): destination = id
                 }
                 let binding = RemoteBinding(remoteSessionID: remote.id, daemonsByLocalPane: [:], presentationVersion: tree.presentation,
                     origin: RemoteBinding.Origin(host: host, endpoint: tree.endpoint, sessionName: remote.name), originHeadless: tree.headless == true)
-                return controller.placeRemotePage(page, host: host, originSession: remote.id, placement: .root(workspace), select: true,
+                return controller.placeRemotePage(page, host: host, originSession: remote.id, placement: .root(destination), select: true,
                                                   binding: binding, name: remote.name)
             }
         }

@@ -10,7 +10,7 @@ import tempfile
 from atspi_smoke import ROOT, launch, raw_control_json, stop, wait_for
 
 
-def verify_v0430_remote(env, state, acceptance=False, history_only=False):
+def verify_v0430_remote(env, state, acceptance=False, history_only=False, v0441_only=False):
     config = env.get("AGTERM_TEST_SSH_CONFIG")
     assert config, "this scenario requires an isolated real SSH host"
     root = Path(state)
@@ -52,6 +52,12 @@ def verify_v0430_remote(env, state, acceptance=False, history_only=False):
 
     try:
         wait_for(lambda: (origin / "agterm.sock").exists(), "headless server did not start")
+        if v0441_only:
+            viewer, viewer_app = launch(viewer_env)
+            local_window = request(viewer_env, "window.list")["windows"][0]["id"]
+            from atspi_v0441_remote import verify_v0441_remote
+            verify_v0441_remote(origin_env, viewer_env, viewer, viewer_app, local_window, root, request)
+            return
         created = request(origin_env, "session.new", args={"name": "SSH origin"})["id"]
         for index in range(19):
             request(origin_env, "session.new", args={"name": "SSH scale " + str(index), "noSelect": True})

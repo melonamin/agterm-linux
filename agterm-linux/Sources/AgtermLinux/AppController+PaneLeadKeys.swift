@@ -18,8 +18,10 @@ extension AppController {
     func paneLeadCoverKey(_ surface: GhosttySurface, keyval: UInt32, keycode: UInt32, state: UInt32) {
         let decision = Self.paneLeadKeys.route(keyval: keyval, keycode: keycode, state: state,
                                                pane: UUID(uuidString: surface.paneToken)) {
-            handleKey(keyval: keyval, keycode: keycode, state: state, sessionID: surface.sessionID,
-                      origin: surface, context: nil)
+            if handleKey(keyval: keyval, keycode: keycode, state: state, sessionID: surface.sessionID,
+                         origin: surface, context: nil) { return true }
+            if surface.handlesPasteKey(keyval: keyval, keycode: keycode, state: state) { surface.userPaste(); return true }
+            return false
         }
         if decision == .takeover { takePaneLead(surface) }
     }

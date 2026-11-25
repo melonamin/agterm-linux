@@ -37,7 +37,7 @@ extension AppController {
         let identity = pane == .right ? session.splitPaneIdentity : session.paneIdentity
         let decision = gRestoreLaunchDecision
         let disposition: ZmxSupport.LaunchDisposition
-        let lead = ZmxLeadAttachment(claim: false)
+        let lead = ZmxLeadAttachment(claim: false, reclaim: identity.flatMap { ZmxLeadBook.shared.pendingReclaim(pane: $0) })
         if decision.requested == .live, session.remoteHost == nil, let identity {
             let configuration = try? LinuxZmxLaunch.configuration(
                 paneIdentity: identity, baseEnvironment: baseEnvironment, lead: lead
@@ -121,9 +121,11 @@ extension AppController {
     nonisolated static func wrappedAttachCommand(_ configuration: ZmxSupport.Configuration, replay: [String]?,
                                                  durable: String?, denylist: Set<String>, endsWithCommand: Bool = false,
                                                  detached: Bool = false) -> String {
-        ZmxSupport.attachCommand(configuration, replaying: replay,
-                                 creationCommand: replay == nil && !endsWithCommand ? durable : nil,
-                                 paneCommand: replay == nil && endsWithCommand ? durable : nil, denylist: denylist, detached: detached)
+        let command = ZmxSupport.attachCommand(configuration, replaying: replay,
+            creationCommand: replay == nil && !endsWithCommand ? durable : nil,
+            paneCommand: replay == nil && endsWithCommand ? durable : nil, denylist: denylist, detached: detached)
+        let program = replay.map { CommandRestore.shouldRestore(argv: $0, denylist: denylist) } ?? (durable != nil)
+        return LinuxZmxLaunch.holdUntilAttached(command, program: program)
     }
 
     private func shouldPace(session: Session, pane: StatusPane,

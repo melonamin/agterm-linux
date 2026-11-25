@@ -22,12 +22,12 @@ extension AppController {
                 return false
             }
             guard !destinations.isEmpty else { return }
-            appendSidebarAction(to: box, title: "Move to…") { [weak self] in
+            appendSidebarAction(to: box, title: "Move Under…") { [weak self] in
                 guard let self else { return }
                 dismissContextMenu()
                 let pick = PendingPick(id: UUID().uuidString,
                     items: destinations.map { ControlPickItem(id: $0.id.uuidString, label: $0.displayName,
-                        subtitle: self.store.workspace(forSession: $0.id)?.name) }, prompt: "Move companion to which session?")
+                        subtitle: self.store.workspace(forSession: $0.id)?.label) }, prompt: "Move under which session?")
                 guard openPick(pick, window: nil, follow: true).ok else { return }
                 controlPickCompletion = { [weak self] answer in
                     guard let self, answer.result == .picked, let parent = answer.id else { return }

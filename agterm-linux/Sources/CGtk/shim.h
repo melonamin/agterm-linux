@@ -4,6 +4,7 @@
 #include <glib-unix.h>
 #include <epoxy/gl.h>
 #include "ghostty.h"
+#include "linux_socket_diag.h"
 
 // GLib 2.88 imports flag-enum members differently in Swift. Keep the C constant at the boundary.
 static inline GFileMonitorFlags

@@ -353,9 +353,12 @@ let onHeaderDrop: @MainActor @convention(c) (OpaquePointer?, UnsafePointer<GValu
             controller.handleWorkspaceDrop(source: src, onto: targetWS,
                                            y: y, targetHeight: Double(gtk_widget_get_height(w)))
         } else if let src = UUID(uuidString: s) {
-            // A session dropped on a workspace HEADER appends (unambiguous — no slot), carrying
-            // its whole selected block like a row drop.
-            controller.handleSessionToWorkspace(session: src, workspace: targetWS)
+            let store = controller.store
+            let atRootGap = store.sidebarMode == .tree && y < Double(gtk_widget_get_height(w)) / 4
+                && store.visibleWorkspaces.first(where: { !$0.isRoot })?.id == targetWS
+                && store.visibleWorkspaces.contains(where: \.isRoot)
+            controller.handleSessionToWorkspace(session: src,
+                workspace: atRootGap ? (store.rootWorkspace?.id ?? targetWS) : targetWS)
         }
         return 1
     }

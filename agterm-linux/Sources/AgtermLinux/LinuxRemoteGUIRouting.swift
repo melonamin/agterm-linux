@@ -48,17 +48,32 @@ extension AppController {
     }
 
     func moveSessionRespectingHost(_ id: UUID, toWorkspace workspace: UUID) {
-        if sendRemoteGUI(ControlRequest(cmd: .sessionMove, target: id.uuidString, args: ControlArgs(workspace: workspace.uuidString))) { return }
-        store.moveSession(id, toWorkspace: workspace)
+        _ = moveSessionsRespectingHost([id], toWorkspace: workspace)
     }
 
     @discardableResult
     func moveSessionsRespectingHost(_ ids: [UUID], toWorkspace workspace: UUID, at index: Int? = nil) -> Int {
         let target = store.workspaces.first(where: { $0.id == workspace })?.sessions[safe: index ?? -1]?.id
+        if ids.count == 1, let id = ids.first, store.session(withID: id)?.parentID != nil {
+            return promoteCompanionRespectingHost(id, placement: target.map { .beside($0.uuidString, after: false) }
+                ?? .workspace(workspace.uuidString)) ? 1 : 0
+        }
         let args = target.map { ControlArgs(targets: ids.map(\.uuidString), before: $0.uuidString) }
             ?? ControlArgs(targets: ids.map(\.uuidString), workspace: workspace.uuidString)
         if sendRemoteGUI(ControlRequest(cmd: .sessionMove, target: ids.first?.uuidString, args: args)) { return 0 }
         return store.moveSessions(ids, toWorkspace: workspace, at: index)
+    }
+
+    @discardableResult
+    func promoteCompanionRespectingHost(_ id: UUID, placement: ControlCompanionPromotion) -> Bool {
+        let args: ControlArgs
+        switch placement {
+        case .afterOwnGroup: args = ControlArgs()
+        case .workspace(let target): args = ControlArgs(workspace: target)
+        case .beside(let anchor, let after): args = after ? ControlArgs(after: anchor) : ControlArgs(before: anchor)
+        }
+        if sendRemoteGUI(ControlRequest(cmd: .sessionCompanionPromote, target: id.uuidString, args: args)) { return true }
+        return promoteLinuxCompanion(id.uuidString, placement: placement).ok
     }
 
     func reorderSessionRespectingHost(_ id: UUID, _ direction: ReorderDirection) {

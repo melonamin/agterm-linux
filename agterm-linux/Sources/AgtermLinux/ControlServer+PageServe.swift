@@ -30,6 +30,7 @@ extension ControlServer {
     }
 
     func shutdownPageStreams() {
+        snapshotBook.shutdown()
         for stream in pageServeStreams.values { stream.shutdown() }
         for stream in companionPageStreams.values { stream.shutdown() }
         pendingPageClaims.removeAll()

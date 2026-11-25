@@ -123,7 +123,7 @@ extension ControlDispatcher {
 
     /// attachWorkspace reads an attach's destination workspace with `session.new`'s rules and wording; nil leaves the
     /// window's current workspace.
-    static func attachWorkspace(_ args: ControlArgs?) -> Result<ControlAttachWorkspace?, ArgumentRejection> {
+    public nonisolated static func attachWorkspace(_ args: ControlArgs?) -> Result<ControlAttachWorkspace?, ArgumentRejection> {
         if args?.workspace != nil, args?.workspaceName != nil {
             return .failure(ArgumentRejection(message: "use either --workspace or --workspace-name, not both"))
         }

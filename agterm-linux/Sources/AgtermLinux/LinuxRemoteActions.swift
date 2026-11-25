@@ -125,13 +125,22 @@ extension AppController {
         if !response.ok { NotificationManager.send(title: "Convert to Companion", body: response.error ?? "could not convert session") }
     }
 
-    func forwardRemoteLink(_ path: String, session id: UUID, pane: UUID?) {
+    func forwardRemoteLink(_ path: String, session id: UUID, pane: UUID?, surface: GhosttySurface? = nil) {
         let client = remoteClients[id]
         let click = RemoteLinkClick(raw: path, session: id, pane: pane, mode: linuxSettingsStore().load().effectiveLinkOpenMode)
         let hidden = terminalZoom.target != nil || store.session(withID: id)?.hudActive == true
+        let snapshots = surface != nil && client?.originSupports(PresentationHub.linkSnapshotKind) == true
         switch store.linkClickRequest(click, originSupportsClick: client?.originSupports(PresentationHub.linkClickKind) == true,
-                                     hidden: hidden, originTakesLeads: client?.claimsLead == true) {
-        case .success(let frame): client?.answer(.linkClick(frame))
+                                     hidden: hidden && !snapshots, originTakesLeads: client?.claimsLead == true) {
+        case .success(var frame):
+            if snapshots, let surface, let booked = remoteOpeners.record(path, session: id, surface: surface, rules: keymap.openers) {
+                frame.click = booked
+                frame.openers = remoteOpeners.book.selectors(for: booked)
+                frame.snapshotOnly = hidden ? true : nil
+            } else if hidden {
+                return
+            }
+            client?.answer(.linkClick(frame))
         case .failure(let reason):
             let host = store.session(withID: id)?.remoteHost ?? "origin"
             NotificationManager.send(title: "Open remote file", body: reason.message(host: host))

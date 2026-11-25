@@ -9,11 +9,13 @@ extension AppController {
               notice.nonce == ZmxLeadBook.shared.states[pane]?.attachment.nonce,
               let session = store.session(withID: surface.sessionID), let host = session.remoteHost,
               session.surface === surface || session.splitSurface === surface else { return }
-        let cover = ZmxLeadBook.shared.role(pane: pane) != nil || ZmxLeadBook.shared.reattaching(pane: pane)
+        let state = ZmxLeadBook.shared.states[pane]
+        let cover = state?.role != nil || state?.reattaching == true
+        let reclaim = state?.reclaimAfterDrop
         ZmxLeadBook.shared.forget(pane: pane)
         store.remotePaneHeld(pane, forSession: session.id)
         remoteHeldExits.paneHeld(surface, forSession: session.id)
-        RemoteReconnectBook.shared.wait(pane: pane, session: session.id, host: host, cover: cover, now: Date())
+        RemoteReconnectBook.shared.wait(pane: pane, session: session.id, host: host, cover: cover, reclaim: reclaim, now: Date())
         surface.syncLeadCover()
         surface.refreshReconnectNote()
         store.leadRoleChanged()
@@ -63,8 +65,8 @@ extension AppController {
                                                                   stderr: result.stderr, now: Date()) else { return }
                         guard let session = self.store.session(withID: entry.session),
                               let surface = (session.paneIdentity == pane ? session.surface : session.splitSurface) as? GhosttySurface,
-                              self.reattachPane(surface, claim: false, cover: entry.cover) else {
-                            book.wait(pane: pane, session: entry.session, host: entry.host, cover: entry.cover, now: Date())
+                              self.reattachPane(surface, claim: false, cover: entry.cover, reclaim: entry.reclaim) else {
+                            book.wait(pane: pane, session: entry.session, host: entry.host, cover: entry.cover, reclaim: entry.reclaim, now: Date())
                             return
                         }
                         self.store.remotePaneResumed(pane, forSession: entry.session)

@@ -14,9 +14,14 @@ extension LinuxControlDispatcher {
             if request.args?.workspace != nil || request.args?.to != nil || request.args?.after != nil || request.args?.before != nil {
                 return actions.err("session.companion.move takes no workspace, --to, --after or --before")
             }
-            if request.args?.targets != nil { return actions.err("session.companion.move moves one companion, named by target") }
+            if request.args?.targets != nil { return actions.err("session.companion.move moves one session, named by target") }
             if let index = request.args?.index, index < 0 { return actions.err("index must be 0 or more") }
             return actions.moveLinuxCompanion(request.target, parent: parent, index: request.args?.index)
+        case .sessionCompanionPromote:
+            switch ControlDispatcher.companionPromoteArguments(request.args) {
+            case .failure(let refusal): return actions.err(refusal.message)
+            case .success(let placement): return actions.promoteLinuxCompanion(request.target, placement: placement)
+            }
         case .sessionPage:
             return dispatchCompanionPage(request, create: nil)
         case .sessionCompanionNew:

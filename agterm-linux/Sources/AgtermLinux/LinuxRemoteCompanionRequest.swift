@@ -20,6 +20,14 @@ enum LinuxRemoteCompanionRequest: Sendable {
         }
     }
 
+    var attachesPane: Bool {
+        switch self {
+        case .terminal(let options): options.command != nil
+        case .duplicate: true
+        case .page: false
+        }
+    }
+
     // the origin keeps its own selection: the companion is wanted here, not there
     func arguments(originSession: String) -> [String] {
         switch self {
@@ -27,10 +35,10 @@ enum LinuxRemoteCompanionRequest: Sendable {
             return ["session", "duplicate", "--companion", "--target", originSession, "--no-select"]
         case .terminal(let options):
             var arguments = ["session", "new", "--parent", originSession, "--no-select"]
-            if let cwd = options.cwd { arguments += ["--cwd", cwd] }
-            if let command = options.command { arguments += ["--command", command] }
+            if let cwd = options.cwd { arguments += ["--cwd=" + cwd] }
+            if let command = options.command { arguments += ["--command=" + command] }
             if options.wait { arguments.append("--wait") }
-            if let name = options.name { arguments += ["--name", name] }
+            if let name = options.name { arguments += ["--name=" + name] }
             return arguments
         case .page(let options):
             return Self.pageArguments(options, originSession: originSession)
@@ -43,16 +51,16 @@ enum LinuxRemoteCompanionRequest: Sendable {
         switch options.page {
         case .unreadable: break
         case .file(let path, let grantRoot):
-            arguments += ["--html", path]
-            if let grantRoot { arguments += ["--cwd", grantRoot] }
-        case .url(let url): arguments += ["--url", url.absoluteString]
+            arguments += ["--html=" + path]
+            if let grantRoot { arguments += ["--cwd=" + grantRoot] }
+        case .url(let url): arguments += ["--url=" + url.absoluteString]
         case .replica, .image, .markdown, .text, .document, nil: break
         }
         let flags: [(Bool, String)] = [(options.navigation, "--navigation"), (options.javascript, "--js"),
                                        (options.chromeless, "--chromeless"), (options.persistent, "--persistent"),
                                        (options.browse, "--browse")]
         arguments += flags.filter(\.0).map(\.1)
-        if let color = options.backgroundColor { arguments += ["--background-color", color] }
+        if let color = options.backgroundColor { arguments += ["--background-color=" + color] }
         return arguments
     }
 }

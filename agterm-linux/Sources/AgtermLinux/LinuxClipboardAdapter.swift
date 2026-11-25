@@ -198,7 +198,9 @@ final class ClipboardTextRead: @unchecked Sendable {
     /// then leaks: no C API frees it without the surface.
     @MainActor func finish(text: String?) {
         guard let surface = retained.surface.surface else { return }
-        let completion = LinuxClipboardPolicy.textCompletion(text: text, list: list)
+        // Engine-specific paste bindings do no transfer. Never insert this host's file paths on the origin.
+        let remoteFiles = advertisesURIList && retained.surface.pasteOriginHost != nil
+        let completion = LinuxClipboardPolicy.textCompletion(text: remoteFiles ? nil : text, list: list)
         LinuxClipboardAdapter.complete(surface, items: completion.items, available: completion.available, state: state)
     }
 }

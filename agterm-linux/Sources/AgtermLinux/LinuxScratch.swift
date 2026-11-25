@@ -16,13 +16,15 @@ extension AppController {
             if gRestoreLaunchDecision.active == .live, session.remoteHost == nil {
                 let identity = session.localScratchIdentity ?? UUID()
                 environment["AGTERM_PANE_ID"] = identity.uuidString
-                let lead = ZmxLeadAttachment(claim: false)
+                let lead = ZmxLeadAttachment(claim: false, reclaim: ZmxLeadBook.shared.pendingReclaim(pane: identity))
                 if case .success(let configuration) = LinuxZmxLaunch.configuration(
                     paneIdentity: identity, baseEnvironment: environment, lead: lead) {
                     store.recordLiveScratch(session.id, identity: identity)
                     environment = configuration.environment
-                    spawn = ZmxSupport.attachCommand(configuration, replaying: nil, paneCommand: command, denylist: [])
-                    detached = ZmxSupport.attachCommand(configuration, replaying: nil, paneCommand: command, denylist: [], detached: true)
+                    spawn = LinuxZmxLaunch.holdUntilAttached(
+                        ZmxSupport.attachCommand(configuration, replaying: nil, paneCommand: command, denylist: []), program: command != nil)
+                    detached = LinuxZmxLaunch.holdUntilAttached(
+                        ZmxSupport.attachCommand(configuration, replaying: nil, paneCommand: command, denylist: [], detached: true), program: command != nil)
                     backed = true
                     ZmxLeadBook.shared.begin(lead, pane: identity)
                 }

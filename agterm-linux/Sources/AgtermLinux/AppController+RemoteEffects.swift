@@ -19,6 +19,8 @@ extension AppController {
             },
             connection: { [weak self] connection in
                 guard let self else { return }
+                LinuxCompanionFollower.shared.disconnected(connection, row: id)
+                if connection != .connected { remoteOpeners.renew(id) }
                 let previous = store.session(withID: id)?.remotePresentation?.connection
                 store.setRemoteConnection(connection, forSession: id)
                 if Self.remoteConnectionNeedsReconcile(from: previous, to: connection) {
@@ -74,14 +76,28 @@ extension AppController {
             },
             pageCommand: { [weak self] command in self?.applyReplicaPageCommand(command, forSession: id) },
             respawns: { [weak self] counts, seed in self?.applyRemoteRespawns(counts, seed: seed, forSession: id) },
+            linkRefused: { [weak self] reason in
+                let host = self?.store.session(withID: id)?.remoteHost ?? "origin"
+                NotificationManager.send(title: "Open remote file", body: reason.message(host: host))
+            },
+            linkClickRefused: { [weak self] in self?.remoteOpeners.finish($0) },
+            linkSnapshot: { [weak self] snapshot in
+                guard let self else { return }
+                remoteOpeners.receive(snapshot, session: id, controller: self)
+            },
             message: { [weak self] in self?.store.emitRemoteMessage($0, forSession: id) },
             mail: { [weak self] in self?.store.applyRemoteMail($0, forSession: id) },
+            companions: { [weak self] list in
+                LinuxCompanionFollower.shared.receive(list, row: id)
+                self?.reconcile(focusActive: false)
+            },
             leads: { [weak self] in
                 guard let self, let session = store.session(withID: id) else { return [] }
                 return store.originLeads(of: session)
             },
             ended: { [weak self] in
                 guard let self else { return }
+                LinuxCompanionFollower.shared.forget(id)
                 for local in store.remoteSessionEnded(forSession: id) { closeRemovedRemotePane(local, forSession: id) }
                 reconcile(focusActive: false)
             },

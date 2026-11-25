@@ -113,9 +113,13 @@ extension SidebarSnapshot {
                                              flaggedView: flaggedView, renamingID: renaming?.id, expandedParentIDs: expandedParentIDs)
         var snapshot = SidebarSnapshot()
         if flaggedTree {
-            snapshot.sections = store.workspaces.compactMap { workspace in
+            snapshot.sections = store.displayWorkspaces.compactMap { workspace in
                 let flagged = workspace.sessions.filter(\.flagged)
                 guard !flagged.isEmpty else { return nil }
+                if workspace.isRoot {
+                    return builder.section(key: .workspace(workspace.id), header: nil,
+                                           sessions: flagged, expanded: true, showsHint: false)
+                }
                 let expanded = expandedWorkspaceIDs.contains(workspace.id)
                 let header = HeaderContent(name: workspace.name,
                                            renaming: builder.renamingID == workspace.id,
@@ -135,7 +139,12 @@ extension SidebarSnapshot {
             snapshot.sections = [builder.section(key: .flagged, header: nil, sessions: sessions,
                                                  expanded: true, showsHint: sessions.isEmpty)]
         } else {
-            snapshot.sections = store.visibleWorkspaces.map { workspace in
+            snapshot.sections = store.visibleWorkspaces.compactMap { workspace in
+                if workspace.isRoot {
+                    guard !workspace.sessions.isEmpty else { return nil }
+                    return builder.section(key: .workspace(workspace.id), header: nil,
+                                           sessions: workspace.sessions, expanded: true, showsHint: false)
+                }
                 let expanded = expandedWorkspaceIDs.contains(workspace.id)
                 let header = HeaderContent(
                     name: workspace.name,

@@ -15,7 +15,7 @@ extension AppController {
     }
 
     func setWorkspaceTint(_ target: String?, window: String?, update: ControlTintUpdate) -> ControlResponse {
-        switch resolveWorkspaceResponse(target) {
+        switch resolveNamedWorkspaceResponse(target) {
         case .failure(let response): return response
         case .success(let id):
             let current = store.workspaces.first { $0.id == id }?.tint

@@ -51,7 +51,7 @@ enum LinuxSidebarPolicy {
     @MainActor
     static func flaggedRowLabel(for session: Session, in store: AppStore) -> String {
         if let workspace = store.workspace(forSession: session.id) {
-            return "\(store.listLabel(for: session))  —  \(workspace.name)"
+            return "\(store.listLabel(for: session))  —  \(workspace.label)"
         }
         return session.displayName
     }

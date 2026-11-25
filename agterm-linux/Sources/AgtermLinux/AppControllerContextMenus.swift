@@ -73,11 +73,12 @@ extension AppController {
                              unsafeBitCast(onCtxClearStatus as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
         }
         if targets.count == 1 {
-            addContextButton(box, "Focus Workspace",
+            addContextButton(box, store.workspace(forSession: sid)?.isRoot == true ? "Focus Top-Level Sessions" : "Focus Workspace",
                              unsafeBitCast(onCtxFocus as @convention(c) (OpaquePointer?, gpointer?) -> Void, to: GCallback.self))
         }
-        for ws in store.workspaces where targets.contains(where: { store.workspace(forSession: $0)?.id != ws.id }) {
-                if let btn = op(gtk_button_new_with_label("Move to \(ws.name)")) {
+        for ws in store.displayWorkspaces where targets.contains(where: { store.workspace(forSession: $0)?.id != ws.id })
+            || (targets.count == 1 && sessions.first?.parentID != nil) {
+                if let btn = op(gtk_button_new_with_label("Move to \(ws.label)")) {
                     gtk_button_set_has_frame(BUTTON(btn), 0)
                     gtk_widget_set_halign(W(btn), GTK_ALIGN_FILL)
                     contextMoveTargets[btn] = ws.id

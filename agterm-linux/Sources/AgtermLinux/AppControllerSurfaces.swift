@@ -296,7 +296,7 @@ extension AppController {
         return LinuxForegroundCapture.capture(
             sessions: owned.map(\.session), preserveUnconsumedPending: preserveUnconsumedPending,
             panes: { (owners[$0.id]?.surfaces[$0.id], owners[$0.id]?.splitSurfaces[$0.id]) },
-            snapshot: { gZmxForegroundResolver?.freshSnapshot(timeout: LinuxZmxClient.captureInvocationTimeout) },
+            snapshot: { gZmxForegroundResolver?.captureSnapshot() },
             read: { surface, snapshot in surface.foregroundCommand(zmxSnapshot: snapshot) })
     }
 
@@ -369,6 +369,7 @@ extension AppController {
         guard let id = store.selectedSessionID else { return }
         let path = ConfigPaths.keymapPath(configDirectory: configDirectory()).path
         store.openOverlay(id, command: ConfigPaths.editorCommand(forPath: path), sizePercent: 95)
+        store.revealSessionOverlay(id)
         reconcile()
     }
 
@@ -376,6 +377,7 @@ extension AppController {
         guard let id = store.selectedSessionID else { return }
         let path = ConfigPaths.hooksPath(configDirectory: configDirectory()).path
         store.openOverlay(id, command: ConfigPaths.editorCommand(forPath: path), sizePercent: 95)
+        store.revealSessionOverlay(id)
         reconcile()
     }
 
@@ -383,6 +385,7 @@ extension AppController {
         guard let id = store.selectedSessionID else { return }
         let path = ConfigPaths.ghosttyConfigPath(configDirectory: configDirectory()).path
         store.openOverlay(id, command: ConfigPaths.editorCommand(forPath: path), sizePercent: 95)
+        store.revealSessionOverlay(id)
         reconcile()
     }
 

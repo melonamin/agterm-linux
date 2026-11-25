@@ -96,7 +96,7 @@ def verify_v0430_gui(env, state):
         destination = request("session.new", args={"name": "GUI destination"})["id"]
         request("session.select", identity)
         mouse_click(lambda: sidebar_session_row(app, "GUI acceptance"), process.pid, button="right")
-        activate(button("Move to…"))
+        activate(button("Move Under…"))
         type_x11_text("GUI destination", process.pid)
         wait_for(lambda: collect(app, role="label", name="GUI destination"), "companion destination chooser missing")
         press_x11_key("Return", process.pid)

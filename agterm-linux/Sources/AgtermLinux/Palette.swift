@@ -43,7 +43,13 @@ extension AppController {
                                             dashboardOpen: dashboard.isOpen,
                                             pickerActive: pickController.pending != nil,
                                             activeSessionHasOverlay: !(activeSession?.hideableOverlaySlots(nil).isEmpty ?? true),
-                                            activeSessionIsPage: activeSession?.content == .page)
+                                            activeSessionIsPage: activeSession?.content == .page,
+                                            activeSessionIsCompanion: activeSession?.parentID != nil,
+                                            activeSessionIsRemote: activeSession?.remoteHost != nil,
+                                            remoteWindow: store.isRemoteWindow,
+                                            remoteConnected: remoteActions?.mirror.state == .connected,
+                                            activeWorkspaceIsRoot: store.isCurrentWorkspaceRoot,
+                                            hasRootWorkspace: store.rootWorkspace != nil)
         var items: [LinuxPaletteItem] = PaletteCommand.allCases.filter { $0.isVisible(in: paletteContext) }.map { cmd in
             let row = LinuxPaletteRow.action(cmd, in: paletteContext, chord: cmd.builtinAction.flatMap(resolvedChord(for:)))
             return (row: row, run: run(for: cmd))
@@ -62,7 +68,7 @@ extension AppController {
         items.append((row: LinuxPaletteRow(title: "About agterm"), run: { self.showAbout() }))
         // Linux has no global macOS-style Edit menu; expose the same terminal actions in the command palette.
         items.append((row: LinuxPaletteRow(title: "Copy Selection"), run: { self.activeSurface()?.performBindingAction("copy_to_clipboard") }))
-        items.append((row: LinuxPaletteRow(title: "Paste"), run: { self.activeSurface()?.performBindingAction("paste_from_clipboard") }))
+        items.append((row: LinuxPaletteRow(title: "Paste"), run: { self.activeSurface()?.userPaste() }))
         items.append((row: LinuxPaletteRow(title: "Select All"), run: { self.activeSurface()?.performBindingAction("select_all") }))
         // Dynamic: explicitly reopen persisted closed windows, matching upstream's "Open Window" palette
         // rows. Other live windows remain available as Linux-only switch targets. Both paths use
@@ -78,9 +84,9 @@ extension AppController {
         }
         // Dynamic: move the active session to any OTHER workspace.
         if let sid = store.selectedSessionID, let current = store.workspace(forSession: sid) {
-            for ws in store.workspaces where ws.id != current.id {
+            for ws in store.displayWorkspaces where ws.id != current.id || activeSession?.parentID != nil {
                 let target = ws.id
-                items.append((row: LinuxPaletteRow(title: "Move Session to \(ws.name)"), run: { self.moveActiveSession(to: target) }))
+                items.append((row: LinuxPaletteRow(title: "Move Session to \(ws.label)"), run: { self.moveActiveSession(to: target) }))
             }
         }
         // Dynamic: custom shell commands from keymap.conf (run via the palette; built-in chord dispatch
@@ -99,7 +105,7 @@ extension AppController {
         if store.soleFocusedWorkspaceID == nil, store.workspaces.count > 1 {
             for ws in store.workspaces {
                 let target = ws.id
-                items.append((row: LinuxPaletteRow(title: "Focus Workspace \(ws.name)"), run: { self.focusWorkspace(target) }))
+                items.append((row: LinuxPaletteRow(title: "Focus \(ws.label)"), run: { self.focusWorkspace(target) }))
             }
         }
         return items
@@ -124,6 +130,7 @@ extension AppController {
         case .editFocusedWorkspaces: return { self.showMembershipEditor(workspaces: true) }
 
         case .newSession: return { self.newSession() }
+        case .newRootSession: return { self.newRootSession() }
         case .previousWindow: return { _ = self.windowGo(direction: .previous) }
         case .nextWindow: return { _ = self.windowGo(direction: .next) }
         case .newWorkspace: return { self.newWorkspace() }

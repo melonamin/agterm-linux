@@ -5,6 +5,12 @@ import Glibc
 #endif
 
 enum LinuxZmxLaunch {
+    /// The CLI's direct creation path needs the same bounded hold as the upstream session host.
+    /// The daemon removes this variable before exec, and a plain login shell starts immediately.
+    static func holdUntilAttached(_ command: String, program: Bool) -> String {
+        guard program else { return command }
+        return CommandRestore.shellQuotedLine(["/usr/bin/env", "ZMX_HOLD_UNTIL_ATTACH=5", "/bin/sh", "-c", "exec " + command])
+    }
     /// Latched once for the app run: reloading config cannot rename a running daemon's shell.
     static let liveCommandShell: String? = {
         let settings = linuxSettingsStore().load(), env = ProcessInfo.processInfo.environment
