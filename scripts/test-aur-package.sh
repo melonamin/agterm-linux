@@ -33,6 +33,7 @@ mkdir -p "$OUT"
 docker run --rm \
     -e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)" \
     -e "RELEASE_VERSION=$VERSION" -e SOURCE_DATE_EPOCH \
+    -e TMPDIR=/test/tmp \
     -v "$ROOT:/repo:ro" -v "$WORKDIR:/test" -v "$ARTIFACTS:/artifacts" \
     -v "$OUT:/output" \
     -w /repo archlinux:base-devel bash -euo pipefail -c '
@@ -50,6 +51,7 @@ docker run --rm \
             useradd --uid "$HOST_UID" --gid "$HOST_GID" --create-home aur-builder
             builder=aur-builder
         fi
+        mkdir -p "$TMPDIR"
         chown -R "$HOST_UID:$HOST_GID" /test
         runuser -u "$builder" -- python3 scripts/test_aur_release.py
         runuser -u "$builder" -- python3 scripts/test-aur-publishing.py
