@@ -146,21 +146,37 @@ def verify_live(env, state):
             if env.get('AGTERM_AUDIT_LIVE_PART') == 'wait':
                 return
 
-        # A real DSR query must be answered at startup, including its first screen paint.
-        query = root / 'startup-query.py'
-        answer = root / 'startup-answer'
-        query.write_text('import os,select,sys,tty\n'
-                         'tty.setraw(0)\nos.write(1,b"\\x1b[6n")\n'
-                         'r=select.select([0],[],[],3)[0]\n'
-                         'data=os.read(0,1024) if r else b"TIMEOUT"\n'
-                         'open(sys.argv[1],"wb").write(data)\n'
-                         'os.write(1,b"STARTUP-QUERY-DONE\\r\\n")\n')
-        queried = request('session.new', args={'name': 'Startup terminal query',
-            'command': '/usr/bin/python3 ' + shlex.quote(str(query)) + ' ' + shlex.quote(str(answer)), 'wait': True})['id']
-        wait_for(answer.exists, 'startup query did not complete')
-        assert answer.read_bytes().startswith(b'\x1b[') and answer.read_bytes().endswith(b'R'), answer.read_bytes()
-        wait_for(lambda: 'STARTUP-QUERY-DONE' in request('session.text', queried)['text'], 'startup output was lost')
-        request('session.close', queried)
+        startup_repeats = int(env.get('AGTERM_AUDIT_STARTUP_REPEATS', '5'))
+        assert startup_repeats > 0, 'startup query coverage requires at least one attempt'
+        for startup_attempt in range(startup_repeats):
+            # A real DSR query must be answered at startup, including its first screen paint.
+            query = root / 'startup-query.py'
+            answer = root / 'startup-answer'
+            answer.unlink(missing_ok=True)
+            query.write_text('import os,select,sys,tty\n'
+                             'tty.setraw(0)\nos.write(1,b"\\x1b[6n")\n'
+                             'r=select.select([0],[],[],3)[0]\n'
+                             'data=os.read(0,1024) if r else b"TIMEOUT"\n'
+                             'open(sys.argv[1],"wb").write(data)\n'
+                             'os.write(1,b"STARTUP-QUERY-DONE\\r\\n")\n')
+            queried = request('session.new', args={'name': 'Startup terminal query',
+                'command': '/usr/bin/python3 ' + shlex.quote(str(query)) + ' ' + shlex.quote(str(answer)), 'wait': True})['id']
+            wait_for(answer.exists, 'startup query did not complete')
+            assert answer.read_bytes().startswith(b'\x1b[') and answer.read_bytes().endswith(b'R'), answer.read_bytes()
+            try:
+                wait_for(lambda: 'STARTUP-QUERY-DONE' in request('session.text', queried)['text'], 'startup output was lost')
+            except AssertionError:
+                print('STARTUP failed attempt:', startup_attempt + 1, 'of', startup_repeats, flush=True)
+                print('STARTUP failure row:', row(queried), flush=True)
+                print('STARTUP visible text:', request('session.text', queried), flush=True)
+                print('STARTUP all text:', request('session.text', queried, {'all': True}), flush=True)
+                print('STARTUP DSR response:', answer.read_bytes().hex(), flush=True)
+                with contextlib.suppress(Exception):
+                    from x11_capture import capture
+                    capture(str(Path(env['AGTERM_UI_ARTIFACT_DIR'], 'startup-failure.png')))
+                raise
+            request('session.close', queried)
+        print('OK:', startup_repeats, 'fast startup queries answered and retained their output', flush=True)
 
         # Save lead on a running pane, then exercise both relaunch and closed-window restoration.
         leader = request('session.new', args={'name': 'Saved lead'})['id']

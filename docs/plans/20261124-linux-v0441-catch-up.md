@@ -211,3 +211,14 @@ Final local validation:
 Current logs and screenshots are retained under `/mnt/bulk/agterm-v0441-feature-audit`.
 The original feature matrix and failure evidence remain in that directory's `report.md`.
 The earlier release gate remains historical; the resumed release requires fresh exact-commit CI and rebuilt packages.
+
+### Resumed release CI investigation
+
+Hosted run `45650380070` on `5b3b11a8` passes shared and Linux unit tests, lint, Debug/Release builds,
+and 83 GTK scenarios, but the startup-query fixture receives its DSR response without finding its final output marker.
+No tag is created from this failed run.
+The failure does not reproduce in repeated unprivileged/root cold launches or two 100-query stress runs with CI-length temporary paths.
+Application code is unchanged because the evidence does not establish a product fix.
+The fixture now runs five rapid startup/exit queries with the original response and output assertions,
+and preserves the failed row, visible text, scrollback, DSR bytes and screenshot if it fails again.
+Fresh exact-commit CI remains required before tagging.
