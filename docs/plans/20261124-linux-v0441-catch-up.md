@@ -6,8 +6,9 @@ The downstream starting point is `984861cdd5cd8a1338d8640c1d597b6fddbc34c3`, inc
 The user selected the stable release and excluded the 24 later commits on upstream/master.
 Preserve other branches, worktrees, live application state, and unrelated screenshots.
 
-Publication is stopped at the user's request.
-The earlier tag approval is withdrawn; no `linux-v0.44.1` tag or release has been created.
+The user resumed the release on 2026-11-25 after the additional feature audit and fixes.
+The new instruction authorizes continuing branch publication and the release after current validation passes.
+No `linux-v0.44.1` tag or release has been created yet.
 The maintained branches contain candidate `8162c363`; the isolated branch carries audit fixes `6baaa886` and `c442fce7`.
 
 ## Integration rules
@@ -209,4 +210,4 @@ Final local validation:
 
 Current logs and screenshots are retained under `/mnt/bulk/agterm-v0441-feature-audit`.
 The original feature matrix and failure evidence remain in that directory's `report.md`.
-The release gate stays withdrawn; fresh branch CI and release/package publication checks require the later authorized release flow.
+The earlier release gate remains historical; the resumed release requires fresh exact-commit CI and rebuilt packages.
